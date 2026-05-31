@@ -258,7 +258,6 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
   const [composer, setComposer] = useState('');
   const [messages, setMessages] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingText, setStreamingText] = useState('');
   const [streamSql, setStreamSql] = useState('');
   const [leadAgentSubs, setLeadAgentSubs] = useState([]);
   const [traceSteps, setTraceSteps] = useState([]);
