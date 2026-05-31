@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
@@ -95,7 +96,6 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     node_start_times: dict[str, float] = {}
 
     try:
-        import time
         logger.info("[_stream_chat] 开始 astream_events 工作流...")
         async for event in app_graph.astream_events(initial_state, version="v2"):
             kind: str = event["event"]
@@ -107,26 +107,24 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             # ── 节点开始 ────────────────────────────────────
             if kind == "on_chain_start" and lg_node in _NODE_DISPLAY_NAMES:
                 node_start_times[lg_node] = time.monotonic()
-                payload = {
+                sse_payload = {
                     "type": "step",
                     "node": lg_node,
                     "display_name": _NODE_DISPLAY_NAMES[lg_node],
                     "status": "running",
                 }
                 logger.info(f"[_stream_chat] step running: {lg_node}")
-                yield {"data": json.dumps(payload, ensure_ascii=False)}
+                yield {"data": json.dumps(sse_payload, ensure_ascii=False)}
 
             # ── 节点完成 ────────────────────────────────────
             elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES:
                 elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
                 output: dict = event.get("data", {}).get("output", {}) or {}
-                # 合并节点输出到 final_state
+                # 合并节点输出到 final_state（允许 None 值传播）
                 if isinstance(output, dict):
-                    for k, v in output.items():
-                        if v is not None:
-                            final_state[k] = v
+                    final_state.update(output)
 
-                payload = {
+                sse_payload = {
                     "type": "step",
                     "node": lg_node,
                     "display_name": _NODE_DISPLAY_NAMES[lg_node],
@@ -135,26 +133,30 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 }
                 # 节点特定数据
                 if lg_node == "intent_recognition":
-                    payload["intent"]   = final_state.get("intent") or ""
-                    payload["entities"] = final_state.get("entities") or {}
+                    sse_payload["intent"]   = final_state.get("intent") or ""
+                    sse_payload["entities"] = final_state.get("entities") or {}
                 elif lg_node == "dsl_generate":
-                    payload["dsl"] = final_state.get("dsl") or {}
+                    sse_payload["dsl"] = final_state.get("dsl") or {}
                 elif lg_node == "schema_recall":
                     schema = final_state.get("schema_context", "") or ""
                     lines_  = [l for l in schema.split("\n") if l.strip() and not l.startswith("-")]
-                    payload["schema_summary"] = lines_[:3]
+                    sse_payload["schema_summary"] = lines_[:3]
                 elif lg_node == "dsl_compiler":
-                    payload["sql"] = final_state.get("sql") or ""
+                    sse_payload["sql"] = final_state.get("sql") or ""
                 elif lg_node == "sql_execute":
                     result = final_state.get("sql_result") or {}
-                    payload["rows"]       = result.get("row_count", 0)
-                    payload["columns"]    = result.get("columns", [])
-                    payload["elapsed_ms"] = elapsed_ms
+                    sse_payload["rows"]       = result.get("row_count", 0)
+                    sse_payload["columns"]    = result.get("columns", [])
+                    sse_payload["elapsed_ms"] = elapsed_ms
                 logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
-                yield {"data": json.dumps(payload, ensure_ascii=False)}
+                yield {"data": json.dumps(sse_payload, ensure_ascii=False)}
 
             # ── LLM token ───────────────────────────────────
             elif kind == "on_chat_model_stream":
+                # 仅对报告生成节点的 token 进行流式推送
+                # 意图识别、DSL 生成等节点的 LLM 输出为结构化 JSON，不应推送给前端
+                if meta.get("langgraph_node") not in (None, "report_generator"):
+                    continue
                 chunk = event.get("data", {}).get("chunk")
                 token: str = getattr(chunk, "content", "") or ""
                 if token:
