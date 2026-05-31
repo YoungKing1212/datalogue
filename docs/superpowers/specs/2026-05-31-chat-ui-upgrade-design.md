@@ -248,6 +248,66 @@ streamChat() — fetch /api/chat/stream (ReadableStream)
 
 ---
 
+## 会话切换支持
+
+### 痛点
+
+侧边栏「最近会话」按钮点击后只跳到 `/chat`（空页面），无法恢复历史消息。直接访问 `/chat/:id` 会整页白屏（TopBar CRUMBS_MAP bug）。
+
+### 改动清单
+
+#### 1. 修复 TopBar 崩溃（`src/App.jsx` 第 74 行）
+
+`Object.entries().find()` 返回 `[key, value]` 元组，`.crumb` 为 undefined：
+
+```js
+// 修复前
+const c = CRUMBS_MAP[path]
+  || Object.entries(CRUMBS_MAP).find(([k]) => k !== '/' && path.startsWith(k))
+  || CRUMBS_MAP['/'];
+
+// 修复后
+const entry = Object.entries(CRUMBS_MAP).find(([k]) => k !== '/' && path.startsWith(k));
+const c = CRUMBS_MAP[path] || (entry ? entry[1] : null) || CRUMBS_MAP['/'];
+```
+
+#### 2. 侧边栏按钮导航携带 ID（`src/components/sidebar.jsx`）
+
+最近会话按钮改为 `navigate('/chat/' + conv.id)`，从后端拉取的会话列表中取 id。
+
+#### 3. ChatScreen 挂载时加载历史消息（`src/components/chat.jsx`）
+
+```js
+const { id: convId } = useParams();   // 从 /chat/:id 取参数
+
+useEffect(() => {
+  if (!convId) return;
+  getConversation(convId).then(data => {
+    // data.messages: [{role, content, sql, ...}]
+    const msgs = data.messages.map(m => ({
+      role: m.role,
+      content: m.content,
+      sql: m.sql_list?.[0] ?? null,
+    }));
+    setMessages(msgs);
+  }).catch(console.error);
+}, [convId]);
+```
+
+后续问数时把 `convId` 作为 `conversation_id` 传给 `streamChat`，实现多轮对话。
+
+#### 4. 新对话后更新侧边栏（`src/components/sidebar.jsx`）
+
+`onDone` 回调完成后触发 sidebar 刷新（通过 Context 或简单的 `window.dispatchEvent`），使新会话立即出现在「最近会话」列表。
+
+### 不包含
+
+- 会话重命名、删除（保留在 `/history` 页面操作）
+- 会话搜索
+- 文件夹/分组管理
+
+---
+
 ## 不在本次范围内
 
 - 会话列表（独立侧边栏）— 留到后续迭代
@@ -264,5 +324,7 @@ streamChat() — fetch /api/chat/stream (ReadableStream)
 | `app/api/chat.py` | 修改：astream → astream_events，SSE 格式加 type 字段；sql_execute 节点增加 elapsed_ms 返回 |
 | `src/api/client.js` | 修改：streamChat 增加 onToken 回调 |
 | `src/components/agent-panel.jsx` | **新建** |
-| `src/components/chat.jsx` | 修改：新增 streaming state、布局改为 flex-row、删除 TracePanel/StreamStepBar |
+| `src/components/chat.jsx` | 修改：新增 streaming state、布局改为 flex-row、删除 TracePanel/StreamStepBar；新增 convId 加载历史 |
+| `src/components/sidebar.jsx` | 修改：最近会话按钮导航到 `/chat/:id`；新对话完成后刷新列表 |
+| `src/App.jsx` | 修复：TopBar CRUMBS_MAP find() 返回元组导致的白屏崩溃 |
 | `src/styles.css` | 修改：chat-layout flex-direction、新增 .agent-panel 样式 |
