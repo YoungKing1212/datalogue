@@ -277,6 +277,7 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
   // Token 流 state — 逐字追加
   const [streamingAnswer, setStreamingAnswer] = useState('');
   const streamingAnswerRef = useRef('');  // onDone 闭包里读最新值
+  const streamSqlRef = useRef('');        // onDone 闭包里读最新 SQL
 
   // Agent 面板数据
   const [intent,    setIntent]    = useState(null);
@@ -331,6 +332,7 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
     setComposer('');
     setIsStreaming(true);
     setStreamSql('');
+    streamSqlRef.current = '';
     setTraceSteps([]);
     traceStepsRef.current = []; // 重置 ref 与 state 保持同步
     setLeadAgentSubs([]);
@@ -362,6 +364,7 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
             setIntent({ intent: data.intent, entities: data.entities });
           }
           if (data.node === 'dsl_compiler' && data.status === 'done') {
+            streamSqlRef.current = data.sql || '';
             setStreamSql(data.sql || '');
           }
           if (data.node === 'sql_execute' && data.status === 'done') {
@@ -379,20 +382,27 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
           streamingAnswerRef.current = '';
           setIsStreaming(false);
           setStreamingAnswer('');
-          setMessages(prev => [...prev, {
-            role:    'assistant',
-            content: answer,
-            status:  'done',
-            sql:     finalData?.sql ?? streamSql,
-            sqlOpen: false,
-            setSqlOpen: (v) => setMessages(ms =>
-              ms.map((m, i) => i === ms.length - 1 ? { ...m, sqlOpen: v } : m)
-            ),
-          }]);
+          setMessages(prev => {
+            const insertIdx = prev.length;
+            return [...prev, {
+              role:    'assistant',
+              content: answer,
+              status:  'done',
+              sql:     finalData?.sql ?? streamSqlRef.current,
+              sqlOpen: false,
+              setSqlOpen: (v) => setMessages(ms =>
+                ms.map((m, i) => i === insertIdx ? { ...m, sqlOpen: v } : m)
+              ),
+            }];
+          });
           // intent/sqlResult/traceSteps 保留，直到用户关闭面板
           setStreamSql('');
+          streamSqlRef.current = '';
           traceStepsRef.current = [];
-          window.dispatchEvent(new Event('new-conversation'));
+          // 仅新建对话时通知 sidebar 刷新，历史对话继续追问不触发
+          if (!convId) {
+            window.dispatchEvent(new Event('new-conversation'));
+          }
         },
       }
     );
