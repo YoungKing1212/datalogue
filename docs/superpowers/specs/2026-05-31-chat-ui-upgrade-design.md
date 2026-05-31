@@ -89,7 +89,7 @@ AgentPanel({
   steps,          // {node, display_name, status, ...}[]
   intent,         // {intent, entities} | null
   sql,            // string | null
-  sqlResult,      // {rows, columns, elapsed_ms} | null
+  sqlResult,      // {rows, columns} | null  — elapsed_ms 需后端 sql_execute 节点新增返回
 })
 ```
 
@@ -128,10 +128,11 @@ if (data.type === "final")  → onDone?.(data)
 
 ### 修改：`src/components/chat.jsx`
 
-#### 新增 state
+#### 新增 state 与 ref
 
 ```js
 const [streamingAnswer, setStreamingAnswer] = useState('');  // token 追加目标
+const streamingAnswerRef = useRef('');                        // onDone 读最新值用
 const [intent, setIntent]         = useState(null);
 const [sqlResult, setSqlResult]   = useState(null);
 ```
@@ -140,7 +141,8 @@ const [sqlResult, setSqlResult]   = useState(null);
 
 ```js
 onToken: (token) => {
-  setStreamingAnswer(prev => prev + token);   // 真打字效果
+  streamingAnswerRef.current += token;         // 同步更新 ref
+  setStreamingAnswer(prev => prev + token);    // 触发渲染（打字效果）
 },
 onEvent: (data) => {
   // step 类型分发到对应 state
@@ -155,10 +157,10 @@ onEvent: (data) => {
 },
 onDone: (finalData) => {
   const answer = cleanAnswer(streamingAnswerRef.current);  // ref 读最新值
+  streamingAnswerRef.current = '';
   setMessages(prev => [...prev, { role:'assistant', content: answer, sql: finalData.sql, ... }]);
   setStreamingAnswer('');
-  setIntent(null);
-  setSqlResult(null);
+  // intent / sqlResult / traceSteps 不清空 —— AgentPanel 保留内容直到用户手动关闭
   setStreamSql('');
   setIsStreaming(false);
 },
@@ -259,7 +261,7 @@ streamChat() — fetch /api/chat/stream (ReadableStream)
 
 | 文件 | 变更类型 |
 |---|---|
-| `app/api/chat.py` | 修改：astream → astream_events，SSE 格式加 type 字段 |
+| `app/api/chat.py` | 修改：astream → astream_events，SSE 格式加 type 字段；sql_execute 节点增加 elapsed_ms 返回 |
 | `src/api/client.js` | 修改：streamChat 增加 onToken 回调 |
 | `src/components/agent-panel.jsx` | **新建** |
 | `src/components/chat.jsx` | 修改：新增 streaming state、布局改为 flex-row、删除 TracePanel/StreamStepBar |
