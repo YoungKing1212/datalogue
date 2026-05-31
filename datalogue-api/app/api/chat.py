@@ -27,47 +27,6 @@ _NODE_DISPLAY_NAMES = {
 }
 
 
-def _emit_node_event(node_name: str, state: dict, is_done: bool = False) -> dict:
-    """将 LangGraph 节点状态转换为前端 SSE 事件。"""
-    display_name = _NODE_DISPLAY_NAMES.get(node_name, node_name)
-
-    payload = {
-        "node": node_name,
-        "display_name": display_name,
-        "status": "done" if is_done else "running",
-    }
-
-    # 节点完成后，携带该节点的关键产出
-    if is_done:
-        if node_name == "intent_recognition":
-            payload["intent"] = state.get("intent") or ""
-            payload["entities"] = state.get("entities") or {}  # type: ignore[assignment]
-        elif node_name == "schema_recall":
-            # 不传输完整 schema，只传摘要
-            schema = state.get("schema_context", "")
-            lines = [
-                line for line in schema.split("\n") if line.strip() and not line.startswith("-")
-            ]
-            payload["schema_summary"] = lines[:3] if lines else []  # type: ignore[assignment]
-        elif node_name == "dsl_generate":
-            payload["dsl"] = state.get("dsl") or {}  # type: ignore[assignment]
-        elif node_name == "dsl_validate":
-            payload["dsl_valid"] = state.get("dsl_valid", False)
-            error_val = state.get("error")
-            if error_val:
-                payload["error"] = str(error_val)
-        elif node_name == "dsl_compiler":
-            payload["sql"] = state.get("sql") or ""
-        elif node_name == "sql_execute":
-            result = state.get("sql_result")
-            if result:
-                payload["rows"] = result.get("row_count", 0)
-                payload["columns"] = result.get("columns", [])
-        elif node_name == "report_generator":
-            payload["chart_type"] = "bar"  # MVP 固定推荐柱状图
-
-    return {"data": json.dumps(payload, ensure_ascii=False)}
-
 
 async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     """SSE 流式问数：驱动 LangGraph 工作流，逐步发送节点进度事件。"""
@@ -178,6 +137,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 if lg_node == "intent_recognition":
                     payload["intent"]   = final_state.get("intent") or ""
                     payload["entities"] = final_state.get("entities") or {}
+                elif lg_node == "dsl_generate":
+                    payload["dsl"] = final_state.get("dsl") or {}
                 elif lg_node == "schema_recall":
                     schema = final_state.get("schema_context", "") or ""
                     lines_  = [l for l in schema.split("\n") if l.strip() and not l.startswith("-")]
