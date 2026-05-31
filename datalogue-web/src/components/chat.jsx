@@ -378,7 +378,14 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
           setIsStreaming(false);
         },
         onDone: (finalData) => {
-          const answer = cleanAnswer(streamingAnswerRef.current || finalData?.answer || '已生成回答');
+          // finalData.answer 是后端完整答案（含 think 标签），始终最完整
+          // streamingAnswerRef 可能只有片段（同步节点无法正常推流）
+          // 取 clean 后较长的那个，确保最完整内容显示
+          const cleanStreamed = cleanAnswer(streamingAnswerRef.current);
+          const cleanFinal   = cleanAnswer(finalData?.answer || '');
+          const answer = cleanFinal.length >= cleanStreamed.length
+            ? (cleanFinal || '已生成回答')
+            : (cleanStreamed || '已生成回答');
           streamingAnswerRef.current = '';
           setIsStreaming(false);
           setStreamingAnswer('');
@@ -439,7 +446,7 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
               )
             ))}
 
-            {/* 流式气泡：token 到达时打字效果 */}
+            {/* 流式气泡：token 到达时打字效果，实时过滤 think 标签 */}
             {isStreaming && streamingAnswer && (
               <div className="msg-row msg-ai">
                 <div className="ai-head">
@@ -448,7 +455,7 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
                   <span className="stage"><span className="pulse" />正在生成…</span>
                 </div>
                 <div className="ans-body streaming-text">
-                  {renderAnswer(streamingAnswer)}
+                  {renderAnswer(cleanAnswer(streamingAnswer))}
                   <span className="cursor-blink">▋</span>
                 </div>
               </div>

@@ -97,15 +97,20 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
 
     try:
         logger.info("[_stream_chat] 开始 astream_events 工作流...")
+        # 去重集合：astream_events v2 中子 chain 也会触发 on_chain_start/end，
+        # 同一 langgraph_node 名称可能重复出现，只取每个节点的第一次事件
+        reported_running: set[str] = set()
+        reported_done:    set[str] = set()
+
         async for event in app_graph.astream_events(initial_state, version="v2"):
             kind: str = event["event"]
-            name: str = event.get("name", "")
             meta: dict = event.get("metadata", {})
-            # langgraph_node 元数据标识当前所属节点
-            lg_node: str = meta.get("langgraph_node", name)
+            # langgraph_node 元数据标识当前所属顶层图节点
+            lg_node: str = meta.get("langgraph_node", "")
 
-            # ── 节点开始 ────────────────────────────────────
-            if kind == "on_chain_start" and lg_node in _NODE_DISPLAY_NAMES:
+            # ── 节点开始（每节点只报一次）────────────────────
+            if kind == "on_chain_start" and lg_node in _NODE_DISPLAY_NAMES and lg_node not in reported_running:
+                reported_running.add(lg_node)
                 node_start_times[lg_node] = time.monotonic()
                 sse_payload = {
                     "type": "step",
@@ -116,8 +121,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 logger.info(f"[_stream_chat] step running: {lg_node}")
                 yield {"data": json.dumps(sse_payload, ensure_ascii=False)}
 
-            # ── 节点完成 ────────────────────────────────────
-            elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES:
+            # ── 节点完成（每节点只报一次）────────────────────
+            elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES and lg_node not in reported_done:
+                reported_done.add(lg_node)
                 elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
                 output: dict = event.get("data", {}).get("output", {}) or {}
                 # 合并节点输出到 final_state（允许 None 值传播）
@@ -153,9 +159,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
 
             # ── LLM token ───────────────────────────────────
             elif kind == "on_chat_model_stream":
-                # 仅对报告生成节点的 token 进行流式推送
-                # 意图识别、DSL 生成等节点的 LLM 输出为结构化 JSON，不应推送给前端
-                if meta.get("langgraph_node") not in (None, "report_generator"):
+                # report_generator 节点推送 token（打字效果）
+                # 其他节点输出为结构化 JSON，不推送给前端
+                # 注：同步节点在线程池中运行，token 可能无法全部回传；
+                # 前端 onDone 会用 finalData.answer 作为完整答案兜底
+                if lg_node and lg_node != "report_generator":
                     continue
                 chunk = event.get("data", {}).get("chunk")
                 token: str = getattr(chunk, "content", "") or ""

@@ -146,7 +146,7 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
         <div className="content">
           <Routes>
             <Route path="/" element={<Workspace />} />
-            <Route path="/chat" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} density={t.density} empty={true} />} />
+            <Route path="/chat" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} density={t.density} />} />
             <Route path="/chat/:id" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} density={t.density} />} />
             <Route path="/datasets" element={<DatasetsScreen />} />
             <Route path="/dashboard" element={<DashboardScreen />} />
