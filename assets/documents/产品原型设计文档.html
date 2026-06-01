@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>数语 Datalogue · 产品原型设计文档 v1.1</title>
+<style>
+/* ── Design tokens — exact match with datalogue-web/src/styles.css ── */
+:root {
+  --bg:#ffffff; --bg-2:#f4f8fc;
+  --surface:#ffffff; --surface-2:#f3f6fb; --surface-3:#e7edf5;
+  --sidebar-bg:#f6f9fd;
+  --hairline:rgba(15,23,42,.07); --hairline-strong:rgba(15,23,42,.13);
+  --text:#0f172a; --text-2:#475569; --text-3:#8593a8; --text-4:#c0cad9;
+  --accent:oklch(.55 .16 245);
+  --accent-soft:oklch(.55 .16 245/.10);
+  --accent-line:oklch(.55 .16 245/.28);
+  --pos:oklch(.55 .13 165); --pos-soft:oklch(.55 .13 165/.10);
+  --neg:oklch(.55 .20 25);  --neg-soft:oklch(.55 .20 25/.10);
+  --warn:oklch(.65 .15 60); --info:oklch(.60 .14 220);
+  --font-sans:"Geist","Geist Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --font-mono:"Geist Mono","JetBrains Mono",ui-monospace,"SF Mono",monospace;
+  --radius:10px; --radius-lg:14px; --radius-sm:6px;
+  --shadow-md:0 1px 2px rgba(15,23,42,.04),0 6px 18px rgba(15,23,42,.05);
+  --shadow-pop:0 1px 0 rgba(255,255,255,.8) inset,0 12px 40px rgba(15,23,42,.10);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);background:var(--bg-2);color:var(--text);display:flex;min-height:100vh;font-size:14px;-webkit-font-smoothing:antialiased}
+
+/* ── DOC SIDEBAR ── */
+#doc-sidebar{
+  width:228px;flex-shrink:0;background:var(--sidebar-bg);
+  border-right:1px solid var(--hairline);
+  position:sticky;top:0;height:100vh;overflow-y:auto;
+  display:flex;flex-direction:column
+}
+.dsb-brand{
+  display:flex;align-items:center;gap:9px;
+  padding:18px 16px 16px;border-bottom:1px solid var(--hairline)
+}
+.dsb-mark{
+  width:28px;height:28px;border-radius:7px;flex-shrink:0;
+  background:radial-gradient(circle at 30% 30%,oklch(.78 .12 220) 0%,oklch(.55 .17 245) 60%,oklch(.42 .17 250) 100%);
+  box-shadow:0 0 0 1px rgba(255,255,255,.08),0 4px 12px oklch(.55 .17 245/.3)
+}
+.dsb-name{font-weight:600;font-size:14px}
+.dsb-sub{font-size:11px;color:var(--text-3);font-family:var(--font-mono);letter-spacing:.04em}
+.dsb-section{font-size:10.5px;color:var(--text-3);padding:14px 12px 6px;letter-spacing:.08em;text-transform:uppercase;font-weight:500}
+.dsb-item{
+  display:flex;align-items:center;gap:8px;padding:7px 12px;
+  font-size:13px;color:var(--text-2);cursor:pointer;border-radius:6px;margin:0 6px 1px;
+  transition:background .12s,color .12s
+}
+.dsb-item:hover{background:var(--surface);color:var(--text)}
+.dsb-item.active{background:var(--surface-2);color:var(--text)}
+.dsb-item .ico{width:15px;height:15px;border-radius:4px;background:var(--surface-3);flex-shrink:0;display:grid;place-items:center;font-size:9px}
+.dsb-item.active .ico{background:var(--accent-soft);color:var(--accent)}
+.dsb-new-badge{font-size:9.5px;margin-left:auto;background:oklch(.65 .15 60/.15);color:var(--warn);padding:1px 5px;border-radius:3px;font-weight:600}
+
+/* ── DOC MAIN ── */
+#doc-main{flex:1;overflow-y:auto}
+.doc-hero{
+  background:var(--surface);border-bottom:1px solid var(--hairline);
+  padding:32px 52px 28px
+}
+.doc-hero h1{font-size:24px;font-weight:700;letter-spacing:-.02em}
+.doc-hero p{color:var(--text-3);margin-top:5px;font-size:13.5px}
+.doc-meta{display:flex;gap:24px;margin-top:16px}
+.doc-meta-item{font-size:12px;color:var(--text-3)}
+.doc-meta-item span{color:var(--text-2);font-weight:500}
+
+.page{padding:40px 52px;display:none}
+.page.active{display:block}
+.page-label{font-size:11px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-family:var(--font-mono)}
+.page-title{font-size:20px;font-weight:700;letter-spacing:-.01em;margin-bottom:6px}
+.page-desc{font-size:13.5px;color:var(--text-3);line-height:1.7;max-width:680px}
+
+/* ── PRINCIPLE CARDS ── */
+.p-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:24px}
+.p-card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow-md)}
+.p-num{font-size:11px;font-weight:600;color:var(--text-4);font-family:var(--font-mono);margin-bottom:8px}
+.p-title{font-size:13.5px;font-weight:600;color:var(--text);margin-bottom:6px}
+.p-desc{font-size:12.5px;color:var(--text-3);line-height:1.65}
+.p-from{margin-top:12px;padding-top:12px;border-top:1px solid var(--hairline);font-size:11px;color:var(--text-4)}
+.p-from .tag{display:inline-block;background:var(--surface-2);color:var(--text-3);padding:1px 7px;border-radius:4px;font-size:10.5px;margin-right:4px}
+
+/* ── IA ── */
+.ia-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:24px}
+.ia-mod{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-md)}
+.ia-head{padding:11px 14px;font-size:12.5px;font-weight:600;color:#fff}
+.ia-head.c1{background:var(--accent)}.ia-head.c2{background:oklch(.50 .15 285)}.ia-head.c3{background:oklch(.50 .14 200)}.ia-head.c4{background:var(--pos)}
+.ia-row{padding:9px 14px;font-size:12.5px;color:var(--text-2);border-bottom:1px solid var(--hairline);display:flex;align-items:center;gap:6px}
+.ia-row:last-child{border-bottom:none}
+.ia-new{margin-left:auto;font-size:9px;font-weight:600;background:oklch(.65 .15 60/.12);color:var(--warn);padding:1px 5px;border-radius:3px}
+
+/* ── FLOW ── */
+.flow-wrap{margin-top:20px;display:flex;flex-direction:column;gap:20px}
+.flow-group{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow-md)}
+.flow-group-title{font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.flow-path{display:flex;align-items:center;gap:0;flex-wrap:wrap;gap:6px}
+.fn{background:var(--surface-2);border:1px solid var(--hairline-strong);border-radius:var(--radius-sm);padding:9px 13px;text-align:center}
+.fn .fn-l{font-size:12px;font-weight:600;color:var(--text)}
+.fn .fn-s{font-size:11px;color:var(--text-3);margin-top:2px}
+.fn.hi{border-color:var(--accent-line);background:var(--accent-soft)}
+.fn.hi .fn-l{color:var(--accent)}
+.fa{color:var(--text-4);font-size:14px}
+
+/* ── SCREEN BLOCK ── */
+.screen-wrap{margin-top:32px}
+.screen-wrap+.screen-wrap{margin-top:48px;padding-top:48px;border-top:1px solid var(--hairline)}
+.screen-head{display:flex;align-items:baseline;gap:10px;margin-bottom:20px}
+.screen-id{font-size:11px;font-weight:600;color:var(--accent);background:var(--accent-soft);padding:3px 8px;border-radius:4px;font-family:var(--font-mono)}
+.screen-name{font-size:17px;font-weight:700}
+.screen-sub{font-size:13px;color:var(--text-3)}
+.screen-layout{display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start}
+
+/* ── MOCKUP FRAME ── */
+.mockup{border-radius:var(--radius-lg);overflow:hidden;border:1px solid var(--hairline-strong);box-shadow:0 2px 4px rgba(15,23,42,.06),0 20px 60px rgba(15,23,42,.10)}
+.m-titlebar{height:34px;background:#f0f2f5;display:flex;align-items:center;padding:0 12px;gap:6px;border-bottom:1px solid var(--hairline)}
+.m-dot{width:10px;height:10px;border-radius:50%}
+.m-dot.r{background:#FF5F57}.m-dot.y{background:#FEBC2E}.m-dot.g{background:#28C840}
+.m-url{flex:1;background:#e4e8ef;border-radius:4px;height:19px;margin:0 10px;display:flex;align-items:center;padding:0 10px}
+.m-url span{font-size:10.5px;color:#8593a8;font-family:var(--font-mono)}
+.m-shell{display:flex;background:var(--bg)}
+
+/* app sidebar inside mockup */
+.m-nav{
+  width:192px;flex-shrink:0;background:var(--sidebar-bg);
+  border-right:1px solid var(--hairline);padding:0;display:flex;flex-direction:column
+}
+.m-brand{display:flex;align-items:center;gap:8px;padding:14px 12px;border-bottom:1px solid var(--hairline)}
+.m-mark{
+  width:22px;height:22px;border-radius:5px;
+  background:radial-gradient(circle at 30% 30%,oklch(.78 .12 220) 0%,oklch(.55 .17 245) 60%,oklch(.42 .17 250) 100%);
+  box-shadow:0 0 0 1px rgba(255,255,255,.1),0 2px 6px oklch(.55 .17 245/.25);
+  flex-shrink:0
+}
+.m-brand-name{font-weight:600;font-size:13px;color:var(--text)}
+.m-brand-sub{font-size:10px;color:var(--text-3);font-family:var(--font-mono)}
+.m-nav-section{font-size:9.5px;color:var(--text-4);padding:12px 10px 4px;letter-spacing:.08em;text-transform:uppercase;font-weight:500}
+.m-nav-item{
+  display:flex;align-items:center;gap:7px;padding:6px 10px;font-size:12px;color:var(--text-2);
+  cursor:pointer;border-radius:5px;margin:0 5px 1px;transition:background .1s
+}
+.m-nav-item:hover{background:var(--surface);color:var(--text)}
+.m-nav-item.active{background:var(--surface-2);color:var(--text)}
+.m-ico{width:13px;height:13px;border-radius:3px;background:var(--surface-3);flex-shrink:0}
+.m-nav-item.active .m-ico{background:var(--accent-soft)}
+.m-spacer{flex:1}
+
+/* content area */
+.m-content{flex:1;min-width:0;overflow:hidden;display:flex;flex-direction:column;height:520px}
+
+/* CHAT screen */
+.m-chat-layout{display:flex;flex:1;overflow:hidden}
+.m-sessions{width:168px;background:var(--sidebar-bg);border-right:1px solid var(--hairline);padding:8px 0;flex-shrink:0}
+.m-session-title{font-size:9.5px;color:var(--text-4);padding:4px 12px 6px;text-transform:uppercase;letter-spacing:.08em}
+.m-session{padding:7px 12px;cursor:pointer;border-radius:5px;margin:0 5px 1px}
+.m-session:hover{background:var(--surface)}
+.m-session.active{background:var(--surface-2)}
+.m-session .st{font-size:11.5px;color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-session .sw{font-size:10px;color:var(--text-3);font-family:var(--font-mono);margin-top:2px}
+.m-chat-main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.m-chat-scroll{flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+
+/* messages */
+.m-msg-u{align-self:flex-end;max-width:72%}
+.m-bubble{background:var(--accent);color:#fff;padding:9px 13px;border-radius:12px 12px 3px 12px;font-size:12.5px;line-height:1.5}
+.m-msg-a{align-self:flex-start;width:100%}
+.m-ai-head{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+.m-ai-avatar{
+  width:20px;height:20px;border-radius:5px;flex-shrink:0;
+  background:radial-gradient(circle at 30% 30%,oklch(.78 .12 220) 0%,oklch(.55 .17 245) 60%,oklch(.42 .17 250) 100%);
+  box-shadow:0 0 0 1px rgba(255,255,255,.08),0 2px 6px oklch(.55 .17 245/.2)
+}
+.m-ai-label{font-size:10.5px;color:var(--text-3)}
+
+/* trace strip — exact match */
+.m-trace-strip{
+  display:flex;background:var(--surface-2);border:1px solid var(--hairline);
+  border-radius:var(--radius-sm);overflow:hidden;margin-bottom:8px
+}
+.m-trace-step{
+  display:flex;align-items:center;gap:4px;padding:6px 10px;
+  font-size:11px;color:var(--text-3);border-right:1px solid var(--hairline);flex:1
+}
+.m-trace-step:last-child{border-right:0}
+.m-trace-step.done{color:var(--pos)}
+.m-trace-step.run{color:var(--accent)}
+.m-trace-dot{width:5px;height:5px;border-radius:50%;background:var(--text-4);flex-shrink:0}
+.m-trace-step.done .m-trace-dot{background:var(--pos)}
+.m-trace-step.run .m-trace-dot{background:var(--accent)}
+.m-trace-ms{font-family:var(--font-mono);font-size:9.5px;color:var(--text-4);margin-left:auto}
+
+/* intent card */
+.m-intent{
+  background:var(--surface);border:1px solid var(--hairline);
+  border-radius:var(--radius);margin-bottom:8px;overflow:hidden
+}
+.m-intent-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:7px 12px;background:var(--surface-2);border-bottom:1px solid var(--hairline)
+}
+.m-intent-label{font-size:10.5px;font-weight:600;color:var(--accent);font-family:var(--font-mono)}
+.m-intent-edit{font-size:10.5px;color:var(--text-3);background:var(--surface-3);padding:2px 8px;border-radius:4px;cursor:pointer}
+.m-intent-edit:hover{color:var(--text)}
+.m-intent-body{padding:8px 12px;display:flex;flex-wrap:wrap;gap:5px}
+
+/* token tags — exact match */
+.tt{
+  display:inline-flex;align-items:center;gap:4px;padding:3px 9px;
+  border:1px solid var(--hairline-strong);border-radius:5px;font-size:11px;
+  font-family:var(--font-mono);cursor:pointer
+}
+.tt:hover{border-color:var(--accent-line)}
+.tt .tl{font-size:9.5px;color:var(--text-4)}
+.tt.metric{color:oklch(.48 .16 285);border-color:oklch(.55 .16 245/.35);background:oklch(.55 .16 245/.08)}
+.tt.dim2{color:oklch(.50 .14 200);border-color:oklch(.55 .14 200/.45);background:oklch(.55 .14 200/.10)}
+.tt.time{color:oklch(.60 .15 50);border-color:oklch(.60 .15 60/.40);background:oklch(.60 .15 60/.10)}
+.tt.filter{color:var(--text-2);border-color:var(--hairline-strong);background:var(--surface-2)}
+
+/* result card */
+.m-result{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius)}
+.m-result-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:7px 12px;border-bottom:1px solid var(--hairline)
+}
+.m-result-title{font-size:11.5px;font-weight:500;color:var(--text-2)}
+.m-result-actions{display:flex;gap:5px}
+.m-result-btn{font-size:10.5px;color:var(--text-3);background:var(--surface-2);padding:2px 9px;border-radius:4px;cursor:pointer;border:1px solid var(--hairline)}
+.m-result-btn:hover{color:var(--text);background:var(--surface-3)}
+.m-result-btn.accent{color:var(--accent)}
+
+/* table */
+.m-tbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.m-tbl th{background:var(--surface-2);color:var(--text-3);padding:5px 10px;text-align:left;font-weight:500;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--hairline)}
+.m-tbl td{padding:5px 10px;color:var(--text-2);border-bottom:1px solid var(--hairline)}
+.m-tbl tr:last-child td{border-bottom:none}
+.m-tbl .pos{color:var(--pos)}.m-tbl .neg{color:var(--neg)}
+
+/* chart placeholder */
+.m-chart{background:var(--surface-2);border-top:1px solid var(--hairline);padding:10px 12px;height:72px;display:flex;align-items:flex-end;gap:5px;position:relative}
+.m-bar{border-radius:3px 3px 0 0;flex:1}
+.m-bar.a{background:var(--accent);opacity:.8}
+.m-bar.b{background:oklch(.55 .14 200);opacity:.7}
+.m-chart-legend{position:absolute;top:6px;right:12px;font-size:9.5px;color:var(--text-3);font-family:var(--font-mono);display:flex;gap:8px}
+.m-chart-legend span{display:flex;align-items:center;gap:3px}
+.m-chart-legend .dot{width:6px;height:6px;border-radius:2px}
+
+/* SQL collapse */
+.m-sql-collapse{border-top:1px solid var(--hairline)}
+.m-sql-toggle{
+  display:flex;align-items:center;gap:6px;padding:6px 12px;
+  font-size:11.5px;color:var(--text-3);cursor:pointer;background:var(--surface)
+}
+.m-sql-toggle:hover{color:var(--text);background:var(--surface-2)}
+.m-sql-toggle .dot{width:5px;height:5px;border-radius:50%;background:var(--pos)}
+.m-sql-body{background:var(--bg-2);padding:8px 12px;border-top:1px solid var(--hairline)}
+.m-sql{font-family:var(--font-mono);font-size:10.5px;line-height:1.7;color:var(--text-2)}
+.m-sql .kw{color:oklch(.48 .16 285)}.m-sql .fn{color:oklch(.50 .14 200)}
+.m-sql .str{color:oklch(.74 .14 145)}.m-sql .num{color:oklch(.60 .15 50)}
+
+/* followup chips */
+.m-followups{padding:8px 12px;border-top:1px solid var(--hairline);display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.m-fu-label{font-size:10.5px;color:var(--text-4);margin-right:2px}
+.m-fu{
+  display:flex;align-items:center;gap:4px;padding:4px 10px;
+  border:1px solid var(--hairline-strong);border-radius:var(--radius-sm);
+  font-size:11px;color:var(--text-2);cursor:pointer;background:var(--surface)
+}
+.m-fu:hover{background:var(--surface-2);border-color:var(--accent-line);color:var(--accent)}
+
+/* composer */
+.m-composer{
+  padding:10px 12px;border-top:1px solid var(--hairline);background:var(--surface)
+}
+.m-composer-inner{
+  display:flex;gap:7px;align-items:center;
+  background:var(--surface);border:1px solid var(--hairline-strong);
+  border-radius:var(--radius);padding:7px 10px
+}
+.m-composer-inner:focus-within{border-color:var(--accent-line)}
+.m-input{flex:1;background:transparent;border:none;outline:none;font-size:12.5px;color:var(--text);font-family:var(--font-sans)}
+.m-send{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;font-weight:500}
+.m-suggest-row{display:flex;gap:5px;margin-bottom:7px;flex-wrap:wrap}
+.m-sug{font-size:11px;color:var(--text-3);background:var(--surface-2);padding:3px 9px;border-radius:4px;cursor:pointer;border:1px solid var(--hairline)}
+.m-sug:hover{color:var(--text);background:var(--surface-3)}
+
+/* KPI row */
+.m-kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:10px}
+.m-kpi{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:12px;position:relative}
+.m-kpi .label{font-size:10.5px;color:var(--text-3);letter-spacing:.02em}
+.m-kpi .val{font-size:20px;font-weight:500;margin-top:5px;font-family:var(--font-mono);letter-spacing:-.02em}
+.m-kpi .delta{font-size:11px;margin-top:3px;font-family:var(--font-mono);display:flex;align-items:center;gap:2px}
+.m-kpi .delta.up{color:var(--pos)}.m-kpi .delta.down{color:var(--neg)}
+
+/* insight list */
+.m-insights{padding:0 10px 10px}
+.m-insight-title{font-size:10.5px;color:var(--text-4);text-transform:uppercase;letter-spacing:.08em;padding:6px 2px;font-weight:500}
+.m-insight{
+  display:flex;gap:10px;padding:10px 12px;border:1px solid var(--hairline);
+  border-radius:var(--radius);background:var(--surface);margin-bottom:6px
+}
+.m-insight .num{
+  width:22px;height:22px;border-radius:6px;flex-shrink:0;display:grid;place-items:center;
+  font-size:10.5px;font-weight:600;font-family:var(--font-mono)
+}
+.m-insight .num.pos{background:var(--pos-soft);color:var(--pos)}
+.m-insight .num.neg{background:var(--neg-soft);color:var(--neg)}
+.m-insight .num.warn{background:oklch(.65 .15 60/.12);color:var(--warn)}
+.m-insight .body{flex:1}
+.m-insight .h{font-size:12px;font-weight:500;color:var(--text);margin-bottom:3px}
+.m-insight .p{font-size:11.5px;color:var(--text-3);line-height:1.5}
+.m-insight .stat{font-family:var(--font-mono)}
+
+/* anomaly banner */
+.m-anomaly{
+  margin:8px 10px;border:1px solid oklch(.65 .15 60/.35);background:oklch(.65 .15 60/.06);
+  border-radius:var(--radius);padding:10px 12px;display:flex;gap:10px
+}
+.m-anomaly-icon{width:22px;height:22px;border-radius:50%;background:oklch(.65 .15 60/.2);color:var(--warn);font-size:13px;display:grid;place-items:center;flex-shrink:0;margin-top:1px}
+.m-anomaly-title{font-size:12px;font-weight:600;color:var(--warn)}
+.m-anomaly-desc{font-size:11.5px;color:var(--text-3);line-height:1.5;margin-top:3px}
+.m-anomaly-cta{font-size:11px;color:var(--accent);margin-top:6px;cursor:pointer}
+
+/* semantic screen */
+.m-sem-layout{display:flex;flex:1;overflow:hidden}
+.m-sem-sidebar{width:160px;background:var(--sidebar-bg);border-right:1px solid var(--hairline);padding:8px 0}
+.m-sem-sgroup{font-size:9.5px;color:var(--text-4);padding:8px 12px 4px;text-transform:uppercase;letter-spacing:.08em}
+.m-sem-item{
+  display:flex;align-items:center;gap:6px;padding:6px 12px;
+  font-size:12px;color:var(--text-2);cursor:pointer;border-radius:5px;margin:0 5px 1px
+}
+.m-sem-item:hover{background:var(--surface);color:var(--text)}
+.m-sem-item.active{background:var(--surface-2);color:var(--text)}
+.m-sem-dot{width:6px;height:6px;border-radius:50%;background:var(--text-4)}
+.m-sem-item.active .m-sem-dot{background:oklch(.50 .15 285)}
+.m-sem-content{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.m-sem-tabs{display:flex;border-bottom:1px solid var(--hairline);padding:0 14px;background:var(--surface)}
+.m-sem-tab{padding:8px 12px;font-size:11.5px;color:var(--text-3);cursor:pointer;border-bottom:2px solid transparent}
+.m-sem-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.m-sem-table-wrap{flex:1;overflow-y:auto;padding:10px}
+.m-sem-tbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.m-sem-tbl th{background:var(--surface-2);color:var(--text-3);padding:6px 10px;text-align:left;font-weight:500;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--hairline)}
+.m-sem-tbl td{padding:7px 10px;color:var(--text-2);border-bottom:1px solid var(--hairline);vertical-align:top}
+.m-sem-tbl tr:last-child td{border-bottom:none}
+.m-formula{font-family:var(--font-mono);font-size:10.5px;color:oklch(.50 .14 200)}
+.m-badge{display:inline-block;padding:1px 7px;border-radius:3px;font-size:10px;font-weight:500;font-family:var(--font-mono)}
+.m-badge.on{background:var(--pos-soft);color:var(--pos)}
+.m-badge.metric{background:var(--accent-soft);color:var(--accent)}
+.m-ver{font-size:9.5px;color:var(--text-4);background:var(--surface-2);padding:1px 5px;border-radius:3px;font-family:var(--font-mono)}
+
+/* knowledge screen */
+.m-kb-tabs{display:flex;border-bottom:1px solid var(--hairline);padding:0 14px;background:var(--surface)}
+.m-kb-tab{padding:8px 12px;font-size:11.5px;color:var(--text-3);cursor:pointer;border-bottom:2px solid transparent;display:flex;align-items:center;gap:5px}
+.m-kb-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.m-kb-count{font-size:9.5px;background:var(--surface-2);color:var(--text-3);padding:1px 5px;border-radius:10px;font-family:var(--font-mono)}
+.m-kb-list{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:7px}
+.m-kb-card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:10px 12px}
+.m-kb-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}
+.m-kb-q{font-size:12px;font-weight:500;color:var(--text)}
+.m-kb-status{font-size:9.5px;padding:2px 7px;border-radius:3px;font-weight:600;font-family:var(--font-mono)}
+.m-kb-status.ok{background:var(--pos-soft);color:var(--pos)}
+.m-kb-status.pending{background:oklch(.65 .15 60/.12);color:var(--warn)}
+.m-kb-sql{font-family:var(--font-mono);font-size:10px;color:var(--text-2);background:var(--bg-2);padding:7px 10px;border-radius:6px;border-left:2px solid var(--pos);line-height:1.7}
+.m-kb-footer{display:flex;align-items:center;gap:8px;margin-top:7px;font-size:10.5px;color:var(--text-3)}
+.m-kb-approve{margin-left:auto;color:var(--pos);background:var(--pos-soft);padding:2px 9px;border-radius:4px;cursor:pointer;font-size:10.5px;font-weight:500}
+
+/* audit screen */
+.m-audit-list{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:7px}
+.m-audit-row{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:10px 12px;cursor:pointer}
+.m-audit-row:hover{border-color:var(--hairline-strong)}
+.m-audit-head{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.m-audit-q{flex:1;font-size:12.5px;font-weight:500;color:var(--text)}
+.m-audit-time{font-size:10px;color:var(--text-3);font-family:var(--font-mono)}
+.m-audit-st{font-size:10px;padding:2px 7px;border-radius:3px;font-weight:600;font-family:var(--font-mono)}
+.m-audit-st.ok{background:var(--pos-soft);color:var(--pos)}
+.m-audit-st.err{background:var(--neg-soft);color:var(--neg)}
+.m-audit-trace{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.m-at{font-size:10px;color:var(--text-3);background:var(--surface-2);padding:2px 8px;border-radius:3px;font-family:var(--font-mono)}
+.m-at.done{color:var(--pos);background:var(--pos-soft)}
+.m-at.err{color:var(--neg);background:var(--neg-soft)}
+.m-at-arr{color:var(--text-4);font-size:10px}
+
+/* ── ANNOTATIONS ── */
+.annotations{display:flex;flex-direction:column;gap:10px}
+.anno{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:15px;box-shadow:var(--shadow-md)}
+.anno-head{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.anno-num{
+  width:21px;height:21px;border-radius:50%;
+  background:var(--accent);color:#fff;font-size:10.5px;font-weight:700;
+  display:grid;place-items:center;flex-shrink:0
+}
+.anno-title{font-size:13px;font-weight:600;color:var(--text)}
+.anno-desc{font-size:12.5px;color:var(--text-3);line-height:1.65}
+.anno-from{margin-top:9px;padding-top:9px;border-top:1px solid var(--hairline);font-size:11px;color:var(--text-4)}
+.from-tag{display:inline-block;background:var(--surface-2);color:var(--text-3);padding:1px 6px;border-radius:3px;font-size:10.5px;margin-right:4px}
+
+/* ── DECISIONS ── */
+.decision{background:var(--surface);border:1px solid var(--hairline);border-left:3px solid var(--accent);border-radius:var(--radius);padding:18px;margin-bottom:14px;box-shadow:var(--shadow-md)}
+.decision-title{font-size:13.5px;font-weight:700;color:var(--text);margin-bottom:7px}
+.decision-desc{font-size:13px;color:var(--text-3);line-height:1.7;margin-bottom:12px}
+.decision-options{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.do{border-radius:var(--radius-sm);padding:10px 12px}
+.do.yes{background:var(--pos-soft);border:1px solid oklch(.55 .13 165/.25)}
+.do.no{background:var(--neg-soft);border:1px solid oklch(.55 .20 25/.2)}
+.do-label{font-size:11px;font-weight:700;margin-bottom:4px}
+.do.yes .do-label{color:var(--pos)}.do.no .do-label{color:var(--neg)}
+.do-text{font-size:12px;color:var(--text-3);line-height:1.55}
+.decision-ref{font-size:11px;color:var(--text-4)}
+
+/* ── COMPONENT TOKENS ── */
+.token-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:18px}
+.token-swatch{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:14px;text-align:center;box-shadow:var(--shadow-md)}
+.token-swatch .sw{width:28px;height:28px;border-radius:7px;margin:0 auto 8px}
+.token-swatch .tn{font-size:12px;font-weight:600;color:var(--text)}
+.token-swatch .tv{font-size:10px;color:var(--text-3);font-family:var(--font-mono);margin-top:2px}
+.comp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
+.comp-card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-md)}
+.comp-head{padding:10px 14px;border-bottom:1px solid var(--hairline);font-size:12px;font-weight:600;color:var(--text-2);background:var(--surface-2)}
+.comp-body{padding:14px;display:flex;flex-wrap:wrap;gap:7px;align-items:center;min-height:64px}
+
+/* divider */
+.divider{height:1px;background:var(--hairline);margin:36px 0}
+</style>
+</head>
+<body>
+
+<!-- DOC SIDEBAR -->
+<nav id="doc-sidebar">
+  <div class="dsb-brand">
+    <div class="dsb-mark"></div>
+    <div>
+      <div class="dsb-name">数语</div>
+      <div class="dsb-sub">design · v1.1</div>
+    </div>
+  </div>
+  <div class="dsb-section">概览</div>
+  <div class="dsb-item active" data-page="principles"><span class="ico">①</span>设计原则</div>
+  <div class="dsb-item" data-page="ia"><span class="ico">②</span>信息架构</div>
+  <div class="dsb-item" data-page="flow"><span class="ico">③</span>核心流程</div>
+  <div class="dsb-section">屏幕规格</div>
+  <div class="dsb-item" data-page="s01"><span class="ico">S</span>S01 · 对话问数</div>
+  <div class="dsb-item" data-page="s02"><span class="ico">S</span>S02 · 语义层管理</div>
+  <div class="dsb-item" data-page="s03"><span class="ico">S</span>S03 · 知识库管理 <span class="dsb-new-badge">NEW</span></div>
+  <div class="dsb-item" data-page="s04"><span class="ico">S</span>S04 · 监控大盘 <span class="dsb-new-badge">NEW</span></div>
+  <div class="dsb-item" data-page="s05"><span class="ico">S</span>S05 · 查询审计 <span class="dsb-new-badge">NEW</span></div>
+  <div class="dsb-item" data-page="s06"><span class="ico">S</span>S06 · 数据源管理</div>
+  <div class="dsb-section">规范</div>
+  <div class="dsb-item" data-page="components"><span class="ico">◈</span>组件规范</div>
+  <div class="dsb-item" data-page="decisions"><span class="ico">◈</span>设计决策记录</div>
+</nav>
+
+<!-- DOC MAIN -->
+<main id="doc-main">
+  <div class="doc-hero">
+    <h1>数语（Datalogue）产品原型设计文档</h1>
+    <p>AI 原生企业智能问数平台 · 全屏幕交互规格与设计决策说明</p>
+    <div class="doc-meta">
+      <div class="doc-meta-item">版本 <span>v1.1</span></div>
+      <div class="doc-meta-item">日期 <span>2026-05-28</span></div>
+      <div class="doc-meta-item">配色 <span>datalogue-web · styles.css</span></div>
+      <div class="doc-meta-item">竞品参考 <span>帆软 / SuperSonic / ThoughtSpot / Vanna.ai / Tableau Pulse / Querio</span></div>
+    </div>
+  </div>
+
+  <!-- 设计原则 -->
+  <div class="page active" id="principles">
+    <div class="page-label">Design Principles</div>
+    <div class="page-title">6 大设计原则</div>
+    <div class="page-desc">每条原则来自竞品调研的真实发现——这些是同类产品的共同弱点，也是数语的差异化机会。</div>
+    <div class="p-grid">
+      <div class="p-card"><div class="p-num">01</div><div class="p-title">AI 意图透明可干预</div><div class="p-desc">将 AI 理解的意图渲染为可点击修改的 token 标签（指标 / 维度 / 时间 / 过滤），用户不再面对黑盒输出，任意修改后立即重新执行。</div><div class="p-from"><span class="tag">帆软 FineChatBI</span></div></div>
+      <div class="p-card"><div class="p-num">02</div><div class="p-title">全链路可信追溯</div><div class="p-desc">每条 AI 回答都附带完整证据链 NL → DSL → SQL → 结果，用户和数据团队随时可展开查看原始 SQL 和数据来源。</div><div class="p-from"><span class="tag">Querio</span><span class="tag">网易数帆</span></div></div>
+      <div class="p-card"><div class="p-num">03</div><div class="p-title">语义层保证口径一致</div><div class="p-desc">"GMV""转化率"只有一种计算口径，所有查询都经过语义层的指标/维度定义约束，不因 LLM 随机而漂移。</div><div class="p-from"><span class="tag">SuperSonic</span><span class="tag">ThoughtSpot</span></div></div>
+      <div class="p-card"><div class="p-num">04</div><div class="p-title">越用越准的自学习</div><div class="p-desc">用户纠正意图或数据团队审核通过 SQL 样例，都实时更新 RAG 知识库，下次同类问题准确率自动提升。</div><div class="p-from"><span class="tag">Vanna.ai</span><span class="tag">Seek AI</span></div></div>
+      <div class="p-card"><div class="p-num">05</div><div class="p-title">主动洞察而非被动查询</div><div class="p-desc">系统主动监控关键指标异动，异常时自动触发归因分析并推送通知，将数据工作从"用户来问"变为"系统来告"。</div><div class="p-from"><span class="tag">Tableau Pulse</span></div></div>
+      <div class="p-card"><div class="p-num">06</div><div class="p-title">复杂问题自动拆解</div><div class="p-desc">LeadAgent 自动判断复杂度：Simple 直接转发，Complex 拆解为并行子查询，Ambiguous 主动澄清，不让复杂问题沉默失败。</div><div class="p-from"><span class="tag">数语原创</span><span class="tag">ThoughtSpot 多 Agent</span></div></div>
+    </div>
+  </div>
+
+  <!-- 信息架构 -->
+  <div class="page" id="ia">
+    <div class="page-label">Information Architecture</div>
+    <div class="page-title">产品信息架构</div>
+    <div class="page-desc">四个一级模块。标注 NEW 的是基于竞品调研新增的模块，在原有 DataAgent 基础上补足了企业级能力。</div>
+    <div class="ia-grid">
+      <div class="ia-mod"><div class="ia-head c1">🗨️ 问数中心</div><div class="ia-row">对话问数</div><div class="ia-row">监控大盘 <span class="ia-new">NEW</span></div><div class="ia-row">查询历史</div><div class="ia-row">我的收藏 <span class="ia-new">NEW</span></div></div>
+      <div class="ia-mod"><div class="ia-head c2">🧠 语义治理</div><div class="ia-row">数据集管理</div><div class="ia-row">指标管理</div><div class="ia-row">维度管理</div><div class="ia-row">知识库管理 <span class="ia-new">NEW</span></div><div class="ia-row">审核队列 <span class="ia-new">NEW</span></div></div>
+      <div class="ia-mod"><div class="ia-head c3">🔌 数据连接</div><div class="ia-row">数据源管理</div><div class="ia-row">连接测试</div><div class="ia-row">表结构浏览</div></div>
+      <div class="ia-mod"><div class="ia-head c4">⚙️ 系统管理</div><div class="ia-row">用户与角色</div><div class="ia-row">行级权限 <span class="ia-new">NEW</span></div><div class="ia-row">模型配置</div><div class="ia-row">审计日志 <span class="ia-new">NEW</span></div><div class="ia-row">系统设置</div></div>
+    </div>
+  </div>
+
+  <!-- 核心流程 -->
+  <div class="page" id="flow">
+    <div class="page-label">Core Flows</div>
+    <div class="page-title">核心交互流程</div>
+    <div class="page-desc">LeadAgent 调度层在所有 QueryGraph 执行之前运行，根据问题复杂度决定执行路径。</div>
+    <div class="flow-wrap">
+      <div class="flow-group">
+        <div class="flow-group-title">① Simple Path · 简单问题直接透传</div>
+        <div class="flow-path">
+          <div class="fn"><div class="fn-l">用户输入</div><div class="fn-s">自然语言</div></div><div class="fa">→</div>
+          <div class="fn hi"><div class="fn-l">LeadAgent</div><div class="fn-s">分类：Simple</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">意图识别</div><div class="fn-s">实体提取</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">Schema 召回</div><div class="fn-s">向量检索</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">DSL 生成</div><div class="fn-s">意图卡展示</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">DSL 编译</div><div class="fn-s">→ SQL</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">执行 + 报告</div><div class="fn-s">图表 + 结论</div></div>
+        </div>
+      </div>
+      <div class="flow-group">
+        <div class="flow-group-title">② Complex Path · 复杂问题并行拆解</div>
+        <div class="flow-path">
+          <div class="fn"><div class="fn-l">用户输入</div><div class="fn-s">复杂分析</div></div><div class="fa">→</div>
+          <div class="fn hi"><div class="fn-l">LeadAgent</div><div class="fn-s">分类：Complex</div></div><div class="fa">→</div>
+          <div class="fn hi"><div class="fn-l">任务拆解</div><div class="fn-s">N 个 SubTask</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">并行调度</div><div class="fn-s">QueryGraph × N</div></div><div class="fa">→</div>
+          <div class="fn hi"><div class="fn-l">结果聚合</div><div class="fn-s">综合解读</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">分析报告</div><div class="fn-s">多图 + 结论</div></div>
+        </div>
+      </div>
+      <div class="flow-group">
+        <div class="flow-group-title">③ Ambiguous Path · 模糊问题主动澄清</div>
+        <div class="flow-path">
+          <div class="fn"><div class="fn-l">用户输入</div><div class="fn-s">语义不明</div></div><div class="fa">→</div>
+          <div class="fn hi"><div class="fn-l">LeadAgent</div><div class="fn-s">分类：Ambiguous</div></div><div class="fa">→</div>
+          <div class="fn hi"><div class="fn-l">ClarifyNode</div><div class="fn-s">生成澄清问题</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">用户补充</div><div class="fn-s">选择 / 输入</div></div><div class="fa">→</div>
+          <div class="fn"><div class="fn-l">重新分类</div><div class="fn-s">进入 ① 或 ②</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S01 对话问数 -->
+  <div class="page" id="s01">
+    <div class="page-label">Screen 01</div>
+    <div class="page-title">S01 · 对话问数</div>
+    <div class="page-desc">产品核心屏幕，用户 80% 的时间在此。核心差异化：意图解析 token 标签可直接编辑，结果附带 SQL 链路，查询完成后推荐相关问题。</div>
+    <div style="height:16px"></div>
+    <div class="screen-layout">
+      <div>
+        <div class="mockup">
+          <div class="m-titlebar"><span class="m-dot r"></span><span class="m-dot y"></span><span class="m-dot g"></span><div class="m-url"><span>app.datalogue.ai / chat</span></div></div>
+          <div class="m-shell">
+            <div class="m-nav">
+              <div class="m-brand"><div class="m-mark"></div><div><div class="m-brand-name">数语</div><div class="m-brand-sub">Datalogue</div></div></div>
+              <div class="m-nav-section">问数中心</div>
+              <div class="m-nav-item active"><span class="m-ico"></span>对话问数</div>
+              <div class="m-nav-item"><span class="m-ico"></span>监控大盘</div>
+              <div class="m-nav-item"><span class="m-ico"></span>查询历史</div>
+              <div class="m-spacer"></div>
+              <div class="m-nav-section">语义治理</div>
+              <div class="m-nav-item"><span class="m-ico"></span>语义层</div>
+              <div class="m-nav-item"><span class="m-ico"></span>知识库</div>
+            </div>
+            <div class="m-content">
+              <div class="m-chat-layout">
+                <div class="m-sessions">
+                  <div class="m-session-title">会话</div>
+                  <div class="m-session active"><div class="st">分析华东区销售…</div><div class="sw">今天 14:32</div></div>
+                  <div class="m-session"><div class="st">Q1 GMV 同比</div><div class="sw">昨天</div></div>
+                  <div class="m-session"><div class="st">各渠道活跃用户</div><div class="sw">周一</div></div>
+                </div>
+                <div class="m-chat-main">
+                  <div class="m-chat-scroll">
+                    <div class="m-msg-u"><div class="m-bubble">分析华东区上个月各品类销售额，和去年同期对比</div></div>
+                    <div class="m-msg-a">
+                      <div class="m-ai-head"><div class="m-ai-avatar"></div><span class="m-ai-label">数语 · LeadAgent 已拆解为 2 个子任务</span></div>
+                      <div class="m-trace-strip">
+                        <div class="m-trace-step done"><span class="m-trace-dot"></span>意图识别<span class="m-trace-ms">12ms</span></div>
+                        <div class="m-trace-step done"><span class="m-trace-dot"></span>Schema 召回<span class="m-trace-ms">38ms</span></div>
+                        <div class="m-trace-step done"><span class="m-trace-dot"></span>DSL 生成<span class="m-trace-ms">820ms</span></div>
+                        <div class="m-trace-step done"><span class="m-trace-dot"></span>SQL 编译<span class="m-trace-ms">4ms</span></div>
+                        <div class="m-trace-step done"><span class="m-trace-dot"></span>执行<span class="m-trace-ms">312ms</span></div>
+                      </div>
+                      <div class="m-intent">
+                        <div class="m-intent-head">
+                          <span class="m-intent-label">意图解析 · 点击可编辑</span>
+                          <span class="m-intent-edit">修改 ✎</span>
+                        </div>
+                        <div class="m-intent-body">
+                          <span class="tt metric"><span class="tl">指标</span>销售额</span>
+                          <span class="tt dim2"><span class="tl">维度</span>品类</span>
+                          <span class="tt filter"><span class="tl">区域</span>华东</span>
+                          <span class="tt time"><span class="tl">时间</span>上月 vs 去年同月</span>
+                        </div>
+                      </div>
+                      <div class="m-result">
+                        <div class="m-result-head">
+                          <span class="m-result-title">查询结果 · 6 行</span>
+                          <div class="m-result-actions">
+                            <span class="m-result-btn accent">查看 SQL ↗</span>
+                            <span class="m-result-btn">导出</span>
+                          </div>
+                        </div>
+                        <div style="padding:0 0 0 0">
+                          <table class="m-tbl">
+                            <tr><th>品类</th><th>本月销售额</th><th>同期</th><th>同比</th></tr>
+                            <tr><td>服装</td><td>¥2,840,000</td><td>¥2,310,000</td><td class="pos">+22.9%</td></tr>
+                            <tr><td>电子</td><td>¥1,960,000</td><td>¥2,180,000</td><td class="neg">−10.1%</td></tr>
+                            <tr><td>食品</td><td>¥890,000</td><td>¥760,000</td><td class="pos">+17.1%</td></tr>
+                          </table>
+                        </div>
+                        <div class="m-chart">
+                          <div class="m-bar a" style="height:65%"></div><div class="m-bar b" style="height:55%"></div>
+                          <div class="m-bar a" style="height:45%"></div><div class="m-bar b" style="height:80%"></div>
+                          <div class="m-bar a" style="height:30%"></div><div class="m-bar b" style="height:28%"></div>
+                          <div class="m-chart-legend"><span><span class="dot" style="background:var(--accent)"></span>本月</span><span><span class="dot" style="background:oklch(.50 .14 200)"></span>去年同期</span></div>
+                        </div>
+                        <div class="m-sql-collapse">
+                          <div class="m-sql-toggle"><span class="dot"></span>查看 SQL 链路</div>
+                          <div class="m-sql-body">
+                            <div class="m-sql"><span class="kw">SELECT</span> category, <span class="fn">SUM</span>(amount) <span class="kw">AS</span> sales<br><span class="kw">FROM</span> orders <span class="kw">WHERE</span> region=<span class="str">'华东'</span><br><span class="kw">AND</span> month = <span class="str">'2026-04'</span> <span class="kw">GROUP BY</span> category</div>
+                          </div>
+                        </div>
+                        <div class="m-followups">
+                          <span class="m-fu-label">继续探索</span>
+                          <span class="m-fu">电子品类下滑原因？</span>
+                          <span class="m-fu">各区域对比</span>
+                          <span class="m-fu">预测下月趋势</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="m-composer">
+                    <div class="m-suggest-row">
+                      <span class="m-sug">上月 DAU 趋势</span>
+                      <span class="m-sug">华南区同比</span>
+                      <span class="m-sug">TOP 10 商品</span>
+                    </div>
+                    <div class="m-composer-inner">
+                      <input class="m-input" placeholder="继续提问，或点击意图标签直接修改条件…">
+                      <button class="m-send">发送</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="annotations">
+        <div class="anno"><div class="anno-head"><div class="anno-num">1</div><div class="anno-title">Trace Strip 执行链路</div></div><div class="anno-desc">顶部水平进度条实时展示每个节点耗时，用户清楚知道 AI 在哪个步骤，不面对白屏等待。样式直接来自前端 .trace-strip 组件。</div><div class="anno-from"><span class="from-tag">现有组件复用</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">2</div><div class="anno-title">Token 标签意图卡</div></div><div class="anno-desc">使用前端已有的 .token-tag 类（.metric / .dim2 / .time / .filter），每个标签颜色来自 styles.css 定义，点击任一标签弹出编辑 popover，修改后重新执行。</div><div class="anno-from"><span class="from-tag">帆软 · 前端已有样式</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">3</div><div class="anno-title">SQL 折叠展示</div></div><div class="anno-desc">SQL 默认折叠，点击展开后使用 .sql .kw .fn .str 关键字高亮样式，与前端已有 SQL 展示组件一致。</div><div class="anno-from"><span class="from-tag">Querio · 已有前端组件</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">4</div><div class="anno-title">Follow-up Chips</div></div><div class="anno-desc">复用 .followup-chip 组件，查询完成后自动出现 3 个相关问题，hover 时 border 变为 accent-line 色，引导深入探索。</div><div class="anno-from"><span class="from-tag">SuperSonic · 已有样式</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S02 语义层 -->
+  <div class="page" id="s02">
+    <div class="page-label">Screen 02</div>
+    <div class="page-title">S02 · 语义层管理</div>
+    <div class="page-desc">数据团队维护指标/维度定义和口径的核心后台。指标同义词、版本管理和行级权限是保证问数准确率和合规性的关键配置。</div>
+    <div style="height:16px"></div>
+    <div class="screen-layout">
+      <div>
+        <div class="mockup">
+          <div class="m-titlebar"><span class="m-dot r"></span><span class="m-dot y"></span><span class="m-dot g"></span><div class="m-url"><span>app.datalogue.ai / semantic</span></div></div>
+          <div class="m-shell">
+            <div class="m-nav">
+              <div class="m-brand"><div class="m-mark"></div><div><div class="m-brand-name">数语</div><div class="m-brand-sub">Datalogue</div></div></div>
+              <div class="m-nav-section">语义治理</div>
+              <div class="m-nav-item active"><span class="m-ico"></span>语义层</div>
+              <div class="m-nav-item"><span class="m-ico"></span>知识库</div>
+              <div class="m-spacer"></div>
+            </div>
+            <div class="m-content">
+              <div class="m-sem-layout">
+                <div class="m-sem-sidebar">
+                  <div class="m-sem-sgroup">数据集</div>
+                  <div class="m-sem-item active"><span class="m-sem-dot"></span>交易数据集</div>
+                  <div class="m-sem-item"><span class="m-sem-dot"></span>用户行为集</div>
+                  <div class="m-sem-item"><span class="m-sem-dot"></span>供应链数据集</div>
+                  <div style="padding:8px 10px;margin-top:4px"><div style="font-size:11px;color:var(--accent);background:var(--accent-soft);padding:6px;border-radius:5px;text-align:center;cursor:pointer">+ 新建数据集</div></div>
+                </div>
+                <div class="m-sem-content">
+                  <div class="m-sem-tabs">
+                    <div class="m-sem-tab active">指标 <span style="font-size:10px;color:var(--text-3);margin-left:3px;font-family:var(--font-mono)">12</span></div>
+                    <div class="m-sem-tab">维度 <span style="font-size:10px;color:var(--text-3);margin-left:3px;font-family:var(--font-mono)">8</span></div>
+                    <div class="m-sem-tab">权限</div>
+                    <div class="m-sem-tab">版本历史</div>
+                  </div>
+                  <div class="m-sem-table-wrap">
+                    <div style="display:flex;justify-content:flex-end;margin-bottom:8px"><div style="font-size:11.5px;color:var(--accent);background:var(--accent-soft);padding:5px 12px;border-radius:5px;cursor:pointer">+ 新增指标</div></div>
+                    <table class="m-sem-tbl">
+                      <tr><th>指标名</th><th>计算公式</th><th>同义词</th><th>状态</th><th>版本</th></tr>
+                      <tr>
+                        <td><div style="font-weight:600;color:var(--text)">GMV</div><div style="font-size:10.5px;color:var(--text-3);margin-top:2px">成交总额</div></td>
+                        <td><span class="m-formula">SUM(order_amount)</span></td>
+                        <td><div style="font-size:11px;color:var(--text-3)">销售额、成交额</div></td>
+                        <td><span class="m-badge on">启用</span></td>
+                        <td><span class="m-ver">v3</span></td>
+                      </tr>
+                      <tr>
+                        <td><div style="font-weight:600;color:var(--text)">DAU</div><div style="font-size:10.5px;color:var(--text-3);margin-top:2px">日活用户数</div></td>
+                        <td><span class="m-formula">COUNT(DISTINCT user_id)</span></td>
+                        <td><div style="font-size:11px;color:var(--text-3)">日活、活跃用户</div></td>
+                        <td><span class="m-badge on">启用</span></td>
+                        <td><span class="m-ver">v2</span></td>
+                      </tr>
+                      <tr>
+                        <td><div style="font-weight:600;color:var(--text)">转化率</div><div style="font-size:10.5px;color:var(--text-3);margin-top:2px">支付转化率</div></td>
+                        <td><span class="m-formula">paid_orders / visits</span></td>
+                        <td><div style="font-size:11px;color:var(--text-3)">CVR、付款率</div></td>
+                        <td><span class="m-badge on">启用</span></td>
+                        <td><span class="m-ver">v1</span></td>
+                      </tr>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="annotations">
+        <div class="anno"><div class="anno-head"><div class="anno-num">1</div><div class="anno-title">指标同义词</div></div><div class="anno-desc">每个指标绑定多个同义词（"销售额""GMV""成交额"→ 同一指标），Schema Mapper 在检索时自动对齐，无论用户怎么表达都能命中正确指标。</div><div class="anno-from"><span class="from-tag">SuperSonic Schema Mapper</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">2</div><div class="anno-title">指标版本管理</div></div><div class="anno-desc">口径变更时新建版本而非直接覆盖，历史查询结果可回溯到当时的版本定义，满足财务/合规审计需求。</div><div class="anno-from"><span class="from-tag">Querio · 版本管理</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">3</div><div class="anno-title">行级权限（权限 Tab）</div></div><div class="anno-desc">维度层配置行级过滤规则，不同角色自动附加 WHERE 条件。例如：销售 A 绑定 region='华东' 角色，查询时自动过滤。</div><div class="anno-from"><span class="from-tag">SuperSonic · Vanna 2.0</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S03 知识库 -->
+  <div class="page" id="s03">
+    <div class="page-label">Screen 03 · NEW</div>
+    <div class="page-title">S03 · 知识库管理</div>
+    <div class="page-desc">RAG 驱动准确率的核心工作台。数据团队审核 AI 生成的 SQL 样例，通过后自动加入知识库，形成"越用越准"的学习闭环。</div>
+    <div style="height:16px"></div>
+    <div class="screen-layout">
+      <div>
+        <div class="mockup">
+          <div class="m-titlebar"><span class="m-dot r"></span><span class="m-dot y"></span><span class="m-dot g"></span><div class="m-url"><span>app.datalogue.ai / knowledge</span></div></div>
+          <div class="m-shell">
+            <div class="m-nav">
+              <div class="m-brand"><div class="m-mark"></div><div><div class="m-brand-name">数语</div><div class="m-brand-sub">Datalogue</div></div></div>
+              <div class="m-nav-section">语义治理</div>
+              <div class="m-nav-item"><span class="m-ico"></span>语义层</div>
+              <div class="m-nav-item active"><span class="m-ico"></span>知识库</div>
+              <div class="m-spacer"></div>
+            </div>
+            <div class="m-content">
+              <div class="m-kb-tabs">
+                <div class="m-kb-tab active">审核队列 <span class="m-kb-count">5</span></div>
+                <div class="m-kb-tab">SQL 样例库 <span class="m-kb-count">234</span></div>
+                <div class="m-kb-tab">业务规则</div>
+                <div class="m-kb-tab">DDL 管理</div>
+              </div>
+              <div class="m-kb-list">
+                <div style="font-size:11.5px;color:var(--text-3);padding:2px 0 6px">以下 SQL 由用户确认或 AI 生成，等待数据团队审核后加入知识库</div>
+                <div class="m-kb-card">
+                  <div class="m-kb-card-head"><span class="m-kb-q">上个月华东区 GMV 是多少？</span><span class="m-kb-status pending">待审核</span></div>
+                  <div class="m-kb-sql"><span style="color:oklch(.48 .16 285)">SELECT</span> <span style="color:oklch(.50 .14 200)">SUM</span>(order_amount) <span style="color:oklch(.48 .16 285)">AS</span> gmv<br><span style="color:oklch(.48 .16 285)">FROM</span> orders <span style="color:oklch(.48 .16 285)">WHERE</span> region=<span style="color:oklch(.74 .14 145)">'华东'</span> <span style="color:oklch(.48 .16 285)">AND</span> month=<span style="color:oklch(.74 .14 145)">'2026-04'</span></div>
+                  <div class="m-kb-footer"><span>来源：zhangsan · 5分钟前</span><span class="m-kb-approve">✓ 审核通过</span></div>
+                </div>
+                <div class="m-kb-card">
+                  <div class="m-kb-card-head"><span class="m-kb-q">各品类转化率排名</span><span class="m-kb-status ok">已通过</span></div>
+                  <div class="m-kb-sql"><span style="color:oklch(.48 .16 285)">SELECT</span> category, <span style="color:oklch(.50 .14 200)">COUNT</span>(paid)/<span style="color:oklch(.50 .14 200)">COUNT</span>(visits) <span style="color:oklch(.48 .16 285)">AS</span> cvr<br><span style="color:oklch(.48 .16 285)">FROM</span> funnel <span style="color:oklch(.48 .16 285)">GROUP BY</span> category <span style="color:oklch(.48 .16 285)">ORDER BY</span> cvr <span style="color:oklch(.48 .16 285)">DESC</span></div>
+                  <div class="m-kb-footer"><span>审核人：lisi · 昨天</span></div>
+                </div>
+                <div class="m-kb-card">
+                  <div class="m-kb-card-head"><span class="m-kb-q">DAU 最近 30 天趋势</span><span class="m-kb-status pending">待审核</span></div>
+                  <div class="m-kb-sql"><span style="color:oklch(.48 .16 285)">SELECT</span> date, <span style="color:oklch(.50 .14 200)">COUNT</span>(<span style="color:oklch(.48 .16 285)">DISTINCT</span> user_id) <span style="color:oklch(.48 .16 285)">AS</span> dau<br><span style="color:oklch(.48 .16 285)">FROM</span> events <span style="color:oklch(.48 .16 285)">WHERE</span> date &gt;= CURRENT_DATE - <span style="color:oklch(.60 .15 50)">30</span></div>
+                  <div class="m-kb-footer"><span>AI 自动生成 · 用户已确认</span><span class="m-kb-approve">✓ 审核通过</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="annotations">
+        <div class="anno"><div class="anno-head"><div class="anno-num">1</div><div class="anno-title">人工审核守门</div></div><div class="anno-desc">用户确认的 SQL 不会自动加入知识库，必须经过数据团队审核。一键通过操作极简，保证知识库质量，防止错误样例污染 RAG 检索。</div><div class="anno-from"><span class="from-tag">Querio · 审核工作流</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">2</div><div class="anno-title">四类知识来源</div></div><div class="anno-desc">知识库包含 DDL 建表语句、字段注释、历史 SQL 样例、业务规则文档。RAG 检索时多路召回，全面提升 Prompt 上下文质量。</div><div class="anno-from"><span class="from-tag">Vanna.ai · 多层 RAG</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">3</div><div class="anno-title">学习闭环</div></div><div class="anno-desc">用户反馈 → 审核队列 → 通过后加入 SQL 样例库 → 下次同类问题向量检索命中 → 准确率提升，形成持续改善闭环。</div><div class="anno-from"><span class="from-tag">Seek AI · 自适应学习</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S04 监控大盘 -->
+  <div class="page" id="s04">
+    <div class="page-label">Screen 04 · NEW</div>
+    <div class="page-title">S04 · 监控大盘</div>
+    <div class="page-desc">主动洞察推送。系统定时监控关键指标异动，异常时自动触发归因分析并在大盘顶部 Banner 展示，不等用户来问。</div>
+    <div style="height:16px"></div>
+    <div class="screen-layout">
+      <div>
+        <div class="mockup">
+          <div class="m-titlebar"><span class="m-dot r"></span><span class="m-dot y"></span><span class="m-dot g"></span><div class="m-url"><span>app.datalogue.ai / monitor</span></div></div>
+          <div class="m-shell">
+            <div class="m-nav">
+              <div class="m-brand"><div class="m-mark"></div><div><div class="m-brand-name">数语</div><div class="m-brand-sub">Datalogue</div></div></div>
+              <div class="m-nav-section">问数中心</div>
+              <div class="m-nav-item"><span class="m-ico"></span>对话问数</div>
+              <div class="m-nav-item active"><span class="m-ico"></span>监控大盘</div>
+              <div class="m-spacer"></div>
+            </div>
+            <div class="m-content" style="overflow-y:auto;background:var(--bg-2)">
+              <div class="m-anomaly" style="margin-top:10px">
+                <div class="m-anomaly-icon">⚠</div>
+                <div>
+                  <div class="m-anomaly-title">检测到异动：电子品类 GMV 连续 3 天下滑</div>
+                  <div class="m-anomaly-desc">电子品类本周 GMV 较上周均值下降 18.3%，显著低于正常波动区间（±5%）</div>
+                  <div class="m-anomaly-cta">→ 点击查看自动归因分析</div>
+                </div>
+              </div>
+              <div class="m-kpi-row">
+                <div class="m-kpi"><div class="label">今日 GMV</div><div class="val">¥4.2M</div><div class="delta up">↑ 12.3%</div></div>
+                <div class="m-kpi"><div class="label">今日 DAU</div><div class="val">84,291</div><div class="delta down">↓ 3.1%</div></div>
+                <div class="m-kpi"><div class="label">转化率</div><div class="val">3.84%</div><div class="delta up">↑ 0.2pp</div></div>
+              </div>
+              <div class="m-insights">
+                <div class="m-insight-title">AI 主动洞察</div>
+                <div class="m-insight"><div class="num warn">!</div><div class="body"><div class="h">华南区服装品类 GMV 同比增长 <span class="stat">+34%</span></div><div class="p">高于历史均值 2.1 个标准差，可能与本地促销活动相关。</div></div></div>
+                <div class="m-insight"><div class="num neg">↓</div><div class="body"><div class="h">iOS 端转化率较 Android 低 <span class="stat">1.2pp</span></div><div class="p">连续 5 天扩大趋势，建议排查 iOS 结算流程。</div></div></div>
+                <div class="m-insight"><div class="num pos">↑</div><div class="body"><div class="h">本周复购率达 <span class="stat">28.4%</span>，创 3 个月新高</div><div class="p">与新人礼包策略上线时间吻合，正向归因置信度较高。</div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="annotations">
+        <div class="anno"><div class="anno-head"><div class="anno-num">1</div><div class="anno-title">异动 Banner + 归因跳转</div></div><div class="anno-desc">系统每小时跑指标监控任务，检测到超出正常波动区间时，顶部出现黄色 Banner（复用 warn token 色系）。点击直接跳转到预生成的归因分析对话。</div><div class="anno-from"><span class="from-tag">Tableau Pulse</span><span class="from-tag">帆软异常检测</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">2</div><div class="anno-title">KPI 卡片复用前端组件</div></div><div class="anno-desc">直接复用 .kpi .val .delta.up/.down 组件，数值使用 font-mono + tabular-nums，视觉效果与现有 styles.css 一致，无需额外开发。</div><div class="anno-from"><span class="from-tag">现有组件复用</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">3</div><div class="anno-title">洞察列表 = Insight 组件</div></div><div class="anno-desc">复用 .insight .h .p .stat 结构，pos/neg/warn 三种色系对应不同异动性质，数据团队通过语义层为指标配置监控阈值和通知规则。</div><div class="anno-from"><span class="from-tag">现有 .insight 组件</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S05 查询审计 -->
+  <div class="page" id="s05">
+    <div class="page-label">Screen 05 · NEW</div>
+    <div class="page-title">S05 · 查询审计</div>
+    <div class="page-desc">完整记录每次查询的 NL → DSL → SQL 执行链路。失败的查询可一键标记修正，直接进入知识库审核队列，形成闭环。</div>
+    <div style="height:16px"></div>
+    <div class="screen-layout">
+      <div>
+        <div class="mockup">
+          <div class="m-titlebar"><span class="m-dot r"></span><span class="m-dot y"></span><span class="m-dot g"></span><div class="m-url"><span>app.datalogue.ai / audit</span></div></div>
+          <div class="m-shell">
+            <div class="m-nav">
+              <div class="m-brand"><div class="m-mark"></div><div><div class="m-brand-name">数语</div><div class="m-brand-sub">Datalogue</div></div></div>
+              <div class="m-nav-section">问数中心</div>
+              <div class="m-nav-item"><span class="m-ico"></span>对话问数</div>
+              <div class="m-nav-item active"><span class="m-ico"></span>查询历史</div>
+              <div class="m-spacer"></div>
+            </div>
+            <div class="m-content">
+              <div style="padding:8px 10px;border-bottom:1px solid var(--hairline);background:var(--surface);display:flex;align-items:center;gap:7px">
+                <div style="flex:1;background:var(--surface-2);border:1px solid var(--hairline);border-radius:6px;padding:5px 10px;font-size:12px;color:var(--text-3)">搜索用户、问题、SQL 关键词…</div>
+                <div style="font-size:11px;color:var(--text-2);background:var(--surface-2);padding:5px 10px;border-radius:5px;border:1px solid var(--hairline);cursor:pointer">今天</div>
+              </div>
+              <div class="m-audit-list">
+                <div class="m-audit-row">
+                  <div class="m-audit-head"><span class="m-audit-q">分析华东区上月各品类销售额同比</span><span class="m-audit-time">14:32</span><span class="m-audit-st ok">成功</span></div>
+                  <div class="m-audit-trace">
+                    <span class="m-at done">NL输入</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">LeadAgent</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">DSL生成</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">DSL校验✓</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">SQL编译</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">执行 312ms</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">报告</span>
+                  </div>
+                </div>
+                <div class="m-audit-row">
+                  <div class="m-audit-head"><span class="m-audit-q">最近 30 天 DAU 折线图</span><span class="m-audit-time">13:18</span><span class="m-audit-st ok">成功</span></div>
+                  <div class="m-audit-trace">
+                    <span class="m-at done">NL输入</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">LeadAgent</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">DSL生成</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">DSL校验✓</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">SQL编译</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">执行 891ms</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">报告</span>
+                  </div>
+                </div>
+                <div class="m-audit-row">
+                  <div class="m-audit-head"><span class="m-audit-q">明天库存不足的 SKU</span><span class="m-audit-time">11:04</span><span class="m-audit-st err">失败</span></div>
+                  <div class="m-audit-trace">
+                    <span class="m-at done">NL输入</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">LeadAgent</span><span class="m-at-arr">→</span>
+                    <span class="m-at done">DSL生成</span><span class="m-at-arr">→</span>
+                    <span class="m-at err">DSL校验✗</span><span class="m-at-arr">→</span>
+                    <span class="m-at" style="color:var(--text-4)">重试×3</span><span class="m-at-arr">→</span>
+                    <span class="m-at err">终止</span>
+                    <span style="margin-left:auto;font-size:10.5px;color:var(--accent);cursor:pointer">标记修正 →</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="annotations">
+        <div class="anno"><div class="anno-head"><div class="anno-num">1</div><div class="anno-title">节点级链路追踪</div></div><div class="anno-desc">每条查询展示完整节点执行状态和耗时，失败节点用 neg 色系标红。数据团队一眼定位是 DSL 生成出错还是 SQL 编译失败，快速排查。</div><div class="anno-from"><span class="from-tag">Querio · 网易数帆</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">2</div><div class="anno-title">失败→修正闭环</div></div><div class="anno-desc">失败记录右侧有"标记修正"入口，数据团队写出正确 SQL 后提交，自动进入知识库审核队列，下次同类问题不再失败。</div><div class="anno-from"><span class="from-tag">Vanna.ai · 学习闭环</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">3</div><div class="anno-title">合规审计</div></div><div class="anno-desc">完整的用户-时间-数据集-SQL 记录，满足金融/政务客户数据合规审计要求，每条查询均可溯源到原始 SQL 和执行结果。</div><div class="anno-from"><span class="from-tag">企业级合规需求</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S06 数据源 -->
+  <div class="page" id="s06">
+    <div class="page-label">Screen 06</div>
+    <div class="page-title">S06 · 数据源管理</div>
+    <div class="page-desc">连接配置和表结构浏览。数据源连接成功后自动扫描 DDL 写入知识库，作为 RAG 检索的基础语料。</div>
+    <div style="height:16px"></div>
+    <div class="screen-layout">
+      <div>
+        <div class="mockup">
+          <div class="m-titlebar"><span class="m-dot r"></span><span class="m-dot y"></span><span class="m-dot g"></span><div class="m-url"><span>app.datalogue.ai / datasource</span></div></div>
+          <div class="m-shell">
+            <div class="m-nav">
+              <div class="m-brand"><div class="m-mark"></div><div><div class="m-brand-name">数语</div><div class="m-brand-sub">Datalogue</div></div></div>
+              <div class="m-nav-section">数据连接</div>
+              <div class="m-nav-item active"><span class="m-ico"></span>数据源</div>
+              <div class="m-spacer"></div>
+            </div>
+            <div class="m-content" style="padding:14px;overflow-y:auto;background:var(--bg-2)">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <div style="font-size:14px;font-weight:600;color:var(--text)">已连接数据源</div>
+                <div style="font-size:12px;color:var(--accent);background:var(--accent-soft);padding:6px 13px;border-radius:6px;cursor:pointer;font-weight:500">+ 添加数据源</div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+                <div style="background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:14px;box-shadow:var(--shadow-md)">
+                  <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+                    <div style="width:28px;height:28px;border-radius:7px;background:var(--surface-2);display:grid;place-items:center;font-size:14px">🐬</div>
+                    <div><div style="font-size:13px;font-weight:600;color:var(--text)">business_db</div><div style="font-size:11px;color:var(--text-3);font-family:var(--font-mono)">MySQL 8.0</div></div>
+                  </div>
+                  <div style="display:flex;gap:6px">
+                    <span style="font-size:10px;background:var(--pos-soft);color:var(--pos);padding:2px 7px;border-radius:3px;font-weight:600;font-family:var(--font-mono)">● 连接正常</span>
+                    <span style="font-size:10px;color:var(--text-3);background:var(--surface-2);padding:2px 7px;border-radius:3px;font-family:var(--font-mono)">23 张表</span>
+                  </div>
+                </div>
+                <div style="background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius);padding:14px;box-shadow:var(--shadow-md)">
+                  <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+                    <div style="width:28px;height:28px;border-radius:7px;background:var(--surface-2);display:grid;place-items:center;font-size:14px">🐘</div>
+                    <div><div style="font-size:13px;font-weight:600;color:var(--text)">dw_postgres</div><div style="font-size:11px;color:var(--text-3);font-family:var(--font-mono)">PostgreSQL 15</div></div>
+                  </div>
+                  <div style="display:flex;gap:6px">
+                    <span style="font-size:10px;background:var(--pos-soft);color:var(--pos);padding:2px 7px;border-radius:3px;font-weight:600;font-family:var(--font-mono)">● 连接正常</span>
+                    <span style="font-size:10px;color:var(--text-3);background:var(--surface-2);padding:2px 7px;border-radius:3px;font-family:var(--font-mono)">67 张表</span>
+                  </div>
+                </div>
+              </div>
+              <div style="background:var(--surface);border:1px dashed var(--hairline-strong);border-radius:var(--radius);padding:16px">
+                <div style="font-size:13px;font-weight:600;color:var(--text-2);margin-bottom:12px">新增数据源</div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+                  <div style="padding:6px 11px;border:1.5px solid var(--accent-line);border-radius:6px;font-size:11.5px;color:var(--accent);cursor:pointer;background:var(--accent-soft)">MySQL</div>
+                  <div style="padding:6px 11px;border:1px solid var(--hairline-strong);border-radius:6px;font-size:11.5px;color:var(--text-2);cursor:pointer">PostgreSQL</div>
+                  <div style="padding:6px 11px;border:1px solid var(--hairline-strong);border-radius:6px;font-size:11.5px;color:var(--text-2);cursor:pointer">Hive</div>
+                  <div style="padding:6px 11px;border:1px solid var(--hairline-strong);border-radius:6px;font-size:11.5px;color:var(--text-2);cursor:pointer">ClickHouse</div>
+                  <div style="padding:6px 11px;border:1px solid var(--hairline-strong);border-radius:6px;font-size:11.5px;color:var(--text-2);cursor:pointer">Oracle</div>
+                  <div style="padding:6px 11px;border:1px solid var(--hairline-strong);border-radius:6px;font-size:11.5px;color:var(--text-2);cursor:pointer">Doris</div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px">
+                  <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:5px;padding:7px 10px;font-size:12px;color:var(--text-3)">Host / IP</div>
+                  <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:5px;padding:7px 10px;font-size:12px;color:var(--text-3)">端口</div>
+                  <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:5px;padding:7px 10px;font-size:12px;color:var(--text-3)">数据库名</div>
+                  <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:5px;padding:7px 10px;font-size:12px;color:var(--text-3)">用户名</div>
+                </div>
+                <div style="display:flex;gap:7px">
+                  <div style="flex:1;background:var(--surface-2);border:1px solid var(--hairline);border-radius:6px;padding:7px 12px;font-size:12px;color:var(--text-2);text-align:center;cursor:pointer">测试连接</div>
+                  <div style="flex:1;background:var(--accent);border-radius:6px;padding:7px 12px;font-size:12px;color:#fff;text-align:center;cursor:pointer;font-weight:500">保存</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="annotations">
+        <div class="anno"><div class="anno-head"><div class="anno-num">1</div><div class="anno-title">连接后自动扫描 DDL</div></div><div class="anno-desc">连接成功后系统自动爬取所有表的 CREATE TABLE 语句和字段注释，写入知识库 DDL 管理模块，作为 RAG 检索基础语料，无需数据团队手动录入。</div><div class="anno-from"><span class="from-tag">Vanna.ai · DDL 向量化</span></div></div>
+        <div class="anno"><div class="anno-head"><div class="anno-num">2</div><div class="anno-title">多方言无缝适配</div></div><div class="anno-desc">DslCompiler 根据数据源类型自动生成对应方言的 SQL，用户提问时无感知。支持 MySQL / PG / Hive / ClickHouse / Oracle / Doris。</div><div class="anno-from"><span class="from-tag">Chat2DB · 多方言</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 组件规范 -->
+  <div class="page" id="components">
+    <div class="page-label">Component Spec</div>
+    <div class="page-title">组件规范 · 与 styles.css 对齐</div>
+    <div class="page-desc">所有新增屏幕最大化复用现有组件，减少前端额外开发量。以下是核心 Design Token 和关键组件的视觉规范。</div>
+    <div class="token-grid">
+      <div class="token-swatch"><div class="sw" style="background:var(--accent)"></div><div class="tn">Accent</div><div class="tv">oklch(.55 .16 245)</div></div>
+      <div class="token-swatch"><div class="sw" style="background:var(--pos)"></div><div class="tn">Positive</div><div class="tv">oklch(.55 .13 165)</div></div>
+      <div class="token-swatch"><div class="sw" style="background:var(--neg)"></div><div class="tn">Negative</div><div class="tv">oklch(.55 .20 25)</div></div>
+      <div class="token-swatch"><div class="sw" style="background:var(--warn)"></div><div class="tn">Warning</div><div class="tv">oklch(.65 .15 60)</div></div>
+      <div class="token-swatch"><div class="sw" style="background:var(--info)"></div><div class="tn">Info</div><div class="tv">oklch(.60 .14 220)</div></div>
+    </div>
+    <div class="comp-grid" style="margin-top:16px">
+      <div class="comp-card"><div class="comp-head">Token Tags · 意图标签</div><div class="comp-body" style="background:var(--bg-2)"><span class="tt metric"><span class="tl">指标</span>GMV</span><span class="tt dim2"><span class="tl">维度</span>品类</span><span class="tt time"><span class="tl">时间</span>上个月</span><span class="tt filter"><span class="tl">区域</span>华东</span></div></div>
+      <div class="comp-card"><div class="comp-head">Status Badges · 状态徽章</div><div class="comp-body" style="background:var(--bg-2)"><span class="m-badge on">启用</span><span class="m-badge metric">指标</span><span class="m-kb-status ok">已通过</span><span class="m-kb-status pending">待审核</span><span class="m-audit-st ok">成功</span><span class="m-audit-st err">失败</span></div></div>
+      <div class="comp-card"><div class="comp-head">SQL Highlight · 语法高亮</div><div class="comp-body" style="background:var(--bg-2)"><div class="m-sql" style="font-size:11px"><span class="kw">SELECT</span> <span class="fn">SUM</span>(amount) <span class="kw">AS</span> gmv<br><span class="kw">FROM</span> orders <span class="kw">WHERE</span> region=<span class="str">'华东'</span></div></div></div>
+      <div class="comp-card"><div class="comp-head">Follow-up Chips · 追问建议</div><div class="comp-body" style="background:var(--bg-2)"><span class="m-fu">电子品类下滑原因？</span><span class="m-fu">各区域对比</span></div></div>
+      <div class="comp-card"><div class="comp-head">KPI Card · 指标卡片</div><div class="comp-body" style="background:var(--bg-2)"><div class="m-kpi" style="width:120px"><div class="label">今日 GMV</div><div class="val">¥4.2M</div><div class="delta up">↑ 12.3%</div></div></div></div>
+      <div class="comp-card"><div class="comp-head">Trace Strip · 执行链路</div><div class="comp-body" style="background:var(--bg-2);padding:0 0;display:block"><div class="m-trace-strip" style="border-radius:0;border:none;border-top:1px solid var(--hairline)"><div class="m-trace-step done"><span class="m-trace-dot"></span>意图识别</div><div class="m-trace-step done"><span class="m-trace-dot"></span>DSL生成</div><div class="m-trace-step run"><span class="m-trace-dot"></span>执行中…</div></div></div></div>
+    </div>
+  </div>
+
+  <!-- 设计决策 -->
+  <div class="page" id="decisions">
+    <div class="page-label">Design Decisions</div>
+    <div class="page-title">关键设计决策记录</div>
+    <div class="page-desc">记录重要选择及其权衡，方便新成员理解和未来复盘。</div>
+    <div style="margin-top:24px">
+      <div class="decision">
+        <div class="decision-title">DD-01 · 意图卡选择 Token 标签编辑而非自然语言反问</div>
+        <div class="decision-desc">AI 解析完用户意图后，方案 A 是渲染为可点击修改的 token 标签；方案 B 是 AI 以自然语言反问"您是想查 X 指标在 Y 维度…吗？"</div>
+        <div class="decision-options">
+          <div class="do yes"><div class="do-label">✓ 选择方案 A（Token 标签）</div><div class="do-text">用户一眼看出 AI 理解了哪几个要素，精准点击修改，无需多轮对话。直接复用现有 .token-tag 组件，开发成本低。</div></div>
+          <div class="do no"><div class="do-label">✗ 放弃方案 B（反问）</div><div class="do-text">增加一轮交互延迟；自然语言描述可能产生新的歧义；用户无法知道 AI 到底理解了哪些维度。</div></div>
+        </div>
+        <div class="decision-ref">参考：帆软 FineChatBI 意图解析卡验证了此方向 · 前端已有 .token-tag 组件</div>
+      </div>
+      <div class="decision" style="border-left-color:oklch(.50 .15 285)">
+        <div class="decision-title">DD-02 · 知识库引入人工审核而非全自动入库</div>
+        <div class="decision-desc">用户确认的 SQL 是否自动加入 RAG 知识库（全自动），还是经过数据团队审核后再加入（人工审核）。</div>
+        <div class="decision-options">
+          <div class="do no"><div class="do-label">✗ 放弃全自动</div><div class="do-text">用户可能确认了错误的 SQL，污染知识库，导致系统越用越差。企业客户无法接受无人治理的知识库。</div></div>
+          <div class="do yes"><div class="do-label">✓ 选择人工审核</div><div class="do-text">数据团队作为知识库守门人，保证质量。审核操作极简（一键通过），知识库质量可追溯，合规客户也能接受。</div></div>
+        </div>
+        <div class="decision-ref">参考：Querio Data Team Review · Vanna.ai 训练机制</div>
+      </div>
+      <div class="decision" style="border-left-color:var(--pos)">
+        <div class="decision-title">DD-03 · Simple 问题对用户透明降级，不展示 LeadAgent 开销</div>
+        <div class="decision-desc">LeadAgent 对 Simple 问题是否展示"正在分析复杂度"等中间状态？</div>
+        <div class="decision-options">
+          <div class="do no"><div class="do-label">✗ 放弃展示中间状态</div><div class="do-text">Simple 问题的分析过程对用户没有价值，反而增加感知延迟，让用户觉得"多此一举"。</div></div>
+          <div class="do yes"><div class="do-label">✓ 透明降级</div><div class="do-text">Simple 问题直接进入 trace strip 展示 QueryGraph 节点；Complex 问题才展示"LeadAgent 正在拆解任务"进度，有意义才展示。</div></div>
+        </div>
+        <div class="decision-ref">权衡：架构复杂度对用户体验透明，保持简单问题的流畅感</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+const items = document.querySelectorAll('.dsb-item[data-page]');
+items.forEach(item => {
+  item.addEventListener('click', () => {
+    const pageId = item.dataset.page;
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.dsb-item').forEach(i => i.classList.remove('active'));
+    document.getElementById(pageId).classList.add('active');
+    item.classList.add('active');
+    document.getElementById('doc-main').scrollTo({top:0,behavior:'smooth'});
+  });
+});
+</script>
+</body>
+</html>

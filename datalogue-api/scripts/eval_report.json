@@ -1,0 +1,250 @@
+{
+  "total_cases": 8,
+  "intent_accuracy": 1.0,
+  "dsl_validity": 0.625,
+  "sql_executability": 0.0,
+  "sql_correctness": 0.875,
+  "overall_score": 0.625,
+  "avg_latency_ms": 17429.350793361664,
+  "case_results": [
+    {
+      "case_id": "case_001",
+      "question": "最近30天的GMV是多少？",
+      "description": "单指标聚合查询",
+      "intent_correct": true,
+      "schema_recall_correct": false,
+      "dsl_valid": true,
+      "sql_executable": false,
+      "sql_correct": true,
+      "actual_intent": "query",
+      "actual_dsl": {
+        "metrics": [
+          "gmv"
+        ],
+        "dimensions": [],
+        "filters": [],
+        "time_range": {
+          "field": "created_at",
+          "start": "2024-12-28",
+          "end": "2025-01-27"
+        },
+        "order_by": [],
+        "limit": 100
+      },
+      "actual_sql": "SELECT SUM(o.amount) 同义词=销售额, 成交金额, 交易总额, 营收 过滤=o.status != '已取消' AS gmv FROM 电商订单分析\nWHERE created_at >= '2024-12-28' AND created_at <= '2025-01-27'\nLIMIT 100",
+      "actual_error": "",
+      "execution_time_ms": 18202.929973602295
+    },
+    {
+      "case_id": "case_002",
+      "question": "各地区的订单数对比",
+      "description": "单指标 + 单维度分组",
+      "intent_correct": true,
+      "schema_recall_correct": false,
+      "dsl_valid": false,
+      "sql_executable": false,
+      "sql_correct": true,
+      "actual_intent": "query",
+      "actual_dsl": {
+        "metrics": [
+          "指标英文名，必须在语义层列表中"
+        ],
+        "dimensions": [
+          "维度英文名，可选"
+        ],
+        "filters": [
+          {
+            "field": "字段名",
+            "op": "eq|in|gt|lt|between",
+            "values": []
+          }
+        ],
+        "time_range": {
+          "field": "时间字段",
+          "start": "YYYY-MM-DD",
+          "end": "YYYY-MM-DD"
+        },
+        "order_by": [
+          {
+            "field": "字段",
+            "direction": "ASC|DESC"
+          }
+        ],
+        "limit": 100
+      },
+      "actual_sql": "SELECT COUNT(o.id) 同义词=订单量, 下单数, 笔数 AS order_count, region FROM 电商订单分析\nGROUP BY region\nLIMIT 100",
+      "actual_error": "",
+      "execution_time_ms": 19028.552055358887
+    },
+    {
+      "case_id": "case_003",
+      "question": "华东区手机和电脑的GMV分别是多少？",
+      "description": "指标 + 多维度 + 过滤",
+      "intent_correct": true,
+      "schema_recall_correct": false,
+      "dsl_valid": true,
+      "sql_executable": false,
+      "sql_correct": true,
+      "actual_intent": "query",
+      "actual_dsl": {
+        "metrics": [
+          "gmv"
+        ],
+        "dimensions": [
+          "region",
+          "category"
+        ],
+        "filters": [
+          {
+            "field": "region",
+            "op": "eq",
+            "values": [
+              "华东"
+            ]
+          },
+          {
+            "field": "category",
+            "op": "in",
+            "values": [
+              "手机",
+              "电脑"
+            ]
+          }
+        ],
+        "time_range": {
+          "field": "created_at",
+          "start": "2024-12-08",
+          "end": "2025-01-07"
+        },
+        "order_by": [],
+        "limit": 100
+      },
+      "actual_sql": "SELECT SUM(o.amount) 同义词=销售额, 成交金额, 交易总额, 营收 过滤=o.status != '已取消' AS gmv, region, category FROM 电商订单分析\nWHERE region = '华东' AND category IN ('手机', '电脑') AND created_at >= '2024-12-08' AND created_at <= '2025-01-07'\nGROUP BY region, category\nLIMIT 100",
+      "actual_error": "",
+      "execution_time_ms": 24718.09411048889
+    },
+    {
+      "case_id": "case_004",
+      "question": "你好",
+      "description": "闲聊意图",
+      "intent_correct": true,
+      "schema_recall_correct": false,
+      "dsl_valid": false,
+      "sql_executable": false,
+      "sql_correct": false,
+      "actual_intent": "chitchat",
+      "actual_dsl": {},
+      "actual_sql": null,
+      "actual_error": "",
+      "execution_time_ms": 2237.316131591797
+    },
+    {
+      "case_id": "case_005",
+      "question": "客单价最高的5个品类",
+      "description": "排序 + LIMIT",
+      "intent_correct": true,
+      "schema_recall_correct": false,
+      "dsl_valid": true,
+      "sql_executable": false,
+      "sql_correct": true,
+      "actual_intent": "query",
+      "actual_dsl": {
+        "metrics": [
+          "avg_order_value"
+        ],
+        "dimensions": [
+          "category"
+        ],
+        "filters": [],
+        "time_range": {
+          "field": "created_at",
+          "start": "2024-12-07",
+          "end": "2025-01-06"
+        },
+        "order_by": [
+          {
+            "field": "avg_order_value",
+            "direction": "DESC"
+          }
+        ],
+        "limit": 5
+      },
+      "actual_sql": "SELECT AVG(o.amount) 同义词=平均订单金额, 人均消费, ARPU 过滤=o.status != '已取消' AS avg_order_value, category FROM 电商订单分析\nWHERE created_at >= '2024-12-07' AND created_at <= '2025-01-06'\nGROUP BY category\nORDER BY avg_order_value DESC\nLIMIT 5",
+      "actual_error": "",
+      "execution_time_ms": 14539.124011993408
+    },
+    {
+      "case_id": "case_006",
+      "question": "已取消订单占比多少？",
+      "description": "复杂指标（CASE表达式）",
+      "intent_correct": true,
+      "schema_recall_correct": false,
+      "dsl_valid": true,
+      "sql_executable": false,
+      "sql_correct": true,
+      "actual_intent": "query",
+      "actual_dsl": {
+        "metrics": [
+          "cancel_rate"
+        ],
+        "dimensions": [],
+        "filters": [],
+        "time_range": {
+          "field": "created_at",
+          "start": "2025-06-09",
+          "end": "2025-07-09"
+        },
+        "order_by": [],
+        "limit": 100
+      },
+      "actual_sql": "SELECT COUNT(CASE WHEN o.status = '已取消' THEN 1 END) * 1.0 / COUNT(o.id) 同义词=订单取消率, 流失率 AS cancel_rate FROM 电商订单分析\nWHERE created_at >= '2025-06-09' AND created_at <= '2025-07-09'\nLIMIT 100",
+      "actual_error": "",
+      "execution_time_ms": 22273.266077041626
+    },
+    {
+      "case_id": "case_007",
+      "question": "最近7天各地区的已完成订单数",
+      "description": "带过滤条件的指标 + 维度",
+      "intent_correct": true,
+      "schema_recall_correct": false,
+      "dsl_valid": true,
+      "sql_executable": false,
+      "sql_correct": true,
+      "actual_intent": "query",
+      "actual_dsl": {
+        "metrics": [
+          "completed_order_count"
+        ],
+        "dimensions": [
+          "region"
+        ],
+        "filters": [],
+        "time_range": {
+          "field": "created_at",
+          "start": "2025-01-22",
+          "end": "2025-01-28"
+        },
+        "order_by": [],
+        "limit": 100
+      },
+      "actual_sql": "SELECT COUNT(o.id) 同义词=成交订单, 完成单量 过滤=o.status = '已完成' AS completed_order_count, region FROM 电商订单分析\nWHERE created_at >= '2025-01-22' AND created_at <= '2025-01-28'\nGROUP BY region\nLIMIT 100",
+      "actual_error": "",
+      "execution_time_ms": 17715.28697013855
+    },
+    {
+      "case_id": "case_008",
+      "question": "销售额排名前3的品类",
+      "description": "同义词测试：销售额=GMV",
+      "intent_correct": true,
+      "schema_recall_correct": false,
+      "dsl_valid": false,
+      "sql_executable": false,
+      "sql_correct": true,
+      "actual_intent": "query",
+      "actual_dsl": {},
+      "actual_sql": "SELECT SUM(o.amount) 同义词=销售额, 成交金额, 交易总额, 营收 过滤=o.status != '已取消' AS gmv, category FROM 电商订单分析\nGROUP BY category\nORDER BY gmv DESC\nLIMIT 3",
+      "actual_error": "",
+      "execution_time_ms": 20720.237016677856
+    }
+  ]
+}

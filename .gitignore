@@ -1,2 +1,38 @@
 .superpowers/
-.superpowers/
+.claude/
+.playwright-mcp/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.env
+.env.local
+.env.*.local
+
+# Python tools
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Node
+datalogue-web/node_modules/
+datalogue-web/dist/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

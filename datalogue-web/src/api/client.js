@@ -147,9 +147,15 @@ export function testDatasource(id) {
   return post(`/api/datasource/${id}/test`);
 }
 
-/** 获取数据源 Schema */
-export function getDatasourceSchema(id) {
-  return get(`/api/datasource/${id}/schema`);
+/** 获取数据源 Schema 列表 */
+export function getDatasourceSchemas(id) {
+  return get(`/api/datasource/${id}/schemas`);
+}
+
+/** 获取数据源指定 Schema 的表 */
+export function getDatasourceSchema(id, schema) {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : '';
+  return get(`/api/datasource/${id}/schema${qs}`);
 }
 
 /** 删除数据源 */

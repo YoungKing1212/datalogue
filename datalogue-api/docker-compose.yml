@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: datalogue-db
+    environment:
+      POSTGRES_USER: datalogue
+      POSTGRES_PASSWORD: datalogue
+      POSTGRES_DB: datalogue
+    ports:
+      - "5432:5432"
+    volumes:
+      - datalogue_pgdata:/var/lib/postgresql/data
+
+volumes:
+  datalogue_pgdata:

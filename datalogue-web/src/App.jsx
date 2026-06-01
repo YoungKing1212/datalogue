@@ -146,8 +146,8 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
         <div className="content">
           <Routes>
             <Route path="/" element={<Workspace />} />
-            <Route path="/chat" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} density={t.density} />} />
-            <Route path="/chat/:id" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} density={t.density} />} />
+            <Route path="/chat" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} showSql={t.showSql} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat/:id" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} showSql={t.showSql} agentVerbosity={t.agentVerbosity} />} />
             <Route path="/datasets" element={<DatasetsScreen />} />
             <Route path="/dashboard" element={<DashboardScreen />} />
             <Route path="/apis" element={<ApisScreen />} />
@@ -191,13 +191,50 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
   );
 }
 
+// Error Boundary — 捕获子组件错误，防止整页白屏
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("[ErrorBoundary]", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <h2>页面出现错误</h2>
+          <p style={{ color: 'var(--text-3)' }}>请刷新页面重试</p>
+          <button
+            className="btn primary"
+            onClick={() => window.location.reload()}
+            style={{ marginTop: 16 }}
+          >
+            刷新页面
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [traceOpen, setTraceOpen] = useState(false);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   return (
     <BrowserRouter>
-      <AppInner traceOpen={traceOpen} setTraceOpen={setTraceOpen} t={t} setTweak={setTweak} />
+      <ErrorBoundary>
+        <AppInner traceOpen={traceOpen} setTraceOpen={setTraceOpen} t={t} setTweak={setTweak} />
+      </ErrorBoundary>
     </BrowserRouter>
   );
 }

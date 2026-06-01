@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { Icon } from './icons';
-import { LineChart, Donut, HeatStrip, GroupedBar } from './charts';
+import { LineChart, Donut, GroupedBar } from './charts';
 import { streamChat, listDatasets, listDatasources, getConversation } from '../api/client';
 import { AgentPanel } from './agent-panel';
 
@@ -137,7 +137,7 @@ const NODE_ICONS = {
 
 // ── StepCard 组件 ──────────────────────────────
 
-function StepCard({ node, display_name, status }) {
+function StepCard({ node, display_name, status, elapsed_ms }) {
   const icon = NODE_ICONS[node] || 'circle';
   const label = display_name || NODE_STEP_NAMES[node] || node;
 
@@ -153,6 +153,7 @@ function StepCard({ node, display_name, status }) {
         )}
       </div>
       <span className="step-label">{label}</span>
+      {elapsed_ms != null && <span className="step-ms">{elapsed_ms}ms</span>}
     </div>
   );
 }
@@ -206,7 +207,7 @@ function AIMessage({ msg, onCopy }) {
       )}
 
       {/* SQL 可折叠 */}
-      {msg.sql && (
+      {showSql && msg.sql && (
         <div className={'collapse ' + (msg.sqlOpen ? 'open' : '')}>
           <div className="collapse-head" onClick={() => msg.setSqlOpen?.(!msg.sqlOpen)}>
             <Icon name="sql" />生成的 SQL
@@ -254,14 +255,12 @@ function UserMessage({ msg }) {
 
 // ── ChatScreen 主组件 ──────────────────────────────
 
-function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
+function ChatScreen({ traceOpen, setTraceOpen, empty, showFollowups, showSql, agentVerbosity }) {
   const [composer, setComposer] = useState('');
   const [messages, setMessages] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamSql, setStreamSql] = useState('');
-  const [leadAgentSubs, setLeadAgentSubs] = useState([]);
   const [traceSteps, setTraceSteps] = useState([]);
-  const [isComplex, setIsComplex] = useState(false);
   const [dsList, setDsList] = useState([]);
   const [datasetList, setDatasetList] = useState([]);
   const [selectedDs, setSelectedDs] = useState(null);
@@ -317,10 +316,10 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
 
   // 快捷问题预设
   const quickChips = [
-    { label: '周度GMV走势', q: '本周各品类GMV走势' },
-    { label: '归因分析', q: '上周整体销售为什么下降了12%？' },
-    { label: 'ROI对比', q: '近30天各渠道ROI对比' },
-    { label: '新客分析', q: '本周新客转化率分析' },
+    { q: '上周整体销售为什么下降了12%？', icon: 'thunder', tag: '归因' },
+    { q: '近30天各渠道ROI对比', icon: 'chart_line', tag: '对比' },
+    { q: '本月各品类GMV占比', icon: 'chart_pie', tag: '结构' },
+    { q: '高价值用户的复购特征', icon: 'insight', tag: '洞察' },
   ];
 
   const handleSend = () => {
@@ -335,8 +334,7 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
     streamSqlRef.current = '';
     setTraceSteps([]);
     traceStepsRef.current = []; // 重置 ref 与 state 保持同步
-    setLeadAgentSubs([]);
-    setIsComplex(false);
+
     setIntent(null);
     setSqlResult(null);
     setStreamingAnswer('');
@@ -429,7 +427,7 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
 
   // 外部传 empty prop 或消息列表为空时都显示欢迎屏
   if (empty || messages.length === 0) {
-    return <ChatEmpty onSend={handleSend} composer={composer} setComposer={setComposer} isStreaming={isStreaming} quickChips={quickChips} />;
+    return <ChatEmpty onSend={handleSend} composer={composer} setComposer={setComposer} isStreaming={isStreaming} quickChips={quickChips} showFollowups={showFollowups} />;
   }
 
   return (
@@ -447,24 +445,33 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
             ))}
 
             {/* 流式气泡：token 到达时打字效果，实时过滤 think 标签 */}
-            {isStreaming && streamingAnswer && (
+            {isStreaming && (
               <div className="msg-row msg-ai">
                 <div className="ai-head">
                   <div className="ai-mark" />
                   <span className="name">数语</span>
                   <span className="stage"><span className="pulse" />正在生成…</span>
                 </div>
-                <div className="ans-body streaming-text">
-                  {renderAnswer(cleanAnswer(streamingAnswer))}
-                  <span className="cursor-blink">▋</span>
-                </div>
+                {agentVerbosity !== 'minimal' && traceSteps.length > 0 && (
+                  <div className="step-list">
+                    {traceSteps.map((step, i) => (
+                      <StepCard key={i} node={step.node} display_name={step.display_name} status={step.status} elapsed_ms={agentVerbosity === 'full' ? step.elapsed_ms : undefined} />
+                    ))}
+                  </div>
+                )}
+                {streamingAnswer && (
+                  <div className="ans-body streaming-text">
+                    {renderAnswer(cleanAnswer(streamingAnswer))}
+                    <span className="cursor-blink">▋</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
 
         {/* 快捷词条 */}
-        {!isStreaming && (
+        {showFollowups && !isStreaming && (
           <div className="quick-chips">
             {quickChips.map((chip, i) => (
               <button key={i} className="quick-chip" onClick={() => setComposer(chip.q)}>
@@ -533,7 +540,7 @@ function ChatScreen({ traceOpen, setTraceOpen, empty, density }) {
 
 // ── Empty state ──────────────────────────────
 
-function ChatEmpty({ onSend, composer, setComposer, isStreaming, quickChips = [] }) {
+function ChatEmpty({ onSend, composer, setComposer, isStreaming, quickChips = [], showFollowups = true }) {
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend?.(); }
   };
@@ -566,21 +573,24 @@ function ChatEmpty({ onSend, composer, setComposer, isStreaming, quickChips = []
         </div>
 
         {/* 快捷问题 */}
-        <div className="quick-section">
-          <div className="quick-label">试试这些</div>
-          <div className="quick-list">
-            {quickChips.map((s, i) => (
-              <button key={i} className="quick-item" onClick={() => setComposer(s.q)} disabled={isStreaming}>
-                <div className="quick-item-icon">
-                  <Icon name="lightbulb" style={{ width: 14, height: 14 }} />
-                </div>
-                <div>
-                  <div className="quick-q">{s.q}</div>
-                </div>
-              </button>
-            ))}
+        {showFollowups && (
+          <div className="quick-section">
+            <div className="quick-label">试试这些</div>
+            <div className="quick-list">
+              {quickChips.map((s, i) => (
+                <button key={i} className="quick-item" onClick={() => setComposer(s.q)} disabled={isStreaming}>
+                  <div className="quick-item-icon">
+                    <Icon name={s.icon} style={{ width: 16, height: 16 }} />
+                  </div>
+                  <div className="quick-item-body">
+                    <div className="quick-q">{s.q}</div>
+                    <div className="quick-tag">{s.tag}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
