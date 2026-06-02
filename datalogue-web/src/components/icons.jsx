@@ -91,6 +91,9 @@ const ICONS = {
   bool: <><rect x="2" y="5" width="12" height="6" rx="3" /><circle cx="11" cy="8" r="2" fill="currentColor" stroke="none" /></>,
   enum_list: <><circle cx="4" cy="4" r="1" fill="currentColor" /><circle cx="4" cy="8" r="1" fill="currentColor" /><circle cx="4" cy="12" r="1" fill="currentColor" /><path d="M7 4h6M7 8h6M7 12h6" /></>,
   eye: <><path d="M2 8s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4ZM8 8h.01" /></>,
+  edit: <><path d="M11 2.5l2.5 2.5-7 7H4v-2.5l7-7ZM3 13.5h10" /></>,
+  beaker: <><path d="M5 2.5h6M6 2.5v4l-3 6h10l-3-6v-4M4.5 10.5h7" /></>,
+  inbox: <><path d="M2 5.5l2-3h8l2 3v7.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5ZM2 8.5h4.5l1 1h2l1-1H14" /></>,
 };
 
 export { Icon, ICONS };

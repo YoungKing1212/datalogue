@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, useLocation, useNavigate, Link } from 're
 import { Icon } from './components/icons';
 import { Sidebar } from './components/sidebar';
 import { Workspace } from './components/workspace';
-import { ChatScreen } from './components/chat';
+import { ChatPage } from './components/chat-page';
 import { DatasetsScreen } from './components/datasets';
 import { DashboardScreen } from './components/dashboard';
 import { ApisScreen } from './components/apis';
@@ -74,7 +74,7 @@ function TopBar({ traceOpen, setTraceOpen, onPublish }) {
   const entry = Object.entries(CRUMBS_MAP).find(([k]) => k !== '/' && path.startsWith(k));
   const c = CRUMBS_MAP[path] || (entry ? entry[1] : null) || CRUMBS_MAP['/'];
 
-  const showTrace = path === '/chat';
+  const showTrace = path === '/chat' || path.startsWith('/chat/');
 
   return (
     <div className="topbar">
@@ -146,8 +146,8 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
         <div className="content">
           <Routes>
             <Route path="/" element={<Workspace />} />
-            <Route path="/chat" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} showSql={t.showSql} agentVerbosity={t.agentVerbosity} />} />
-            <Route path="/chat/:id" element={<ChatScreen traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} showSql={t.showSql} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} showSql={t.showSql} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat/:id" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} showSql={t.showSql} agentVerbosity={t.agentVerbosity} />} />
             <Route path="/datasets" element={<DatasetsScreen />} />
             <Route path="/dashboard" element={<DashboardScreen />} />
             <Route path="/apis" element={<ApisScreen />} />

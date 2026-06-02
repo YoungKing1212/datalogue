@@ -4,7 +4,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.database import engine, Base
+from app.core.config import get_settings
+from app.core.logging import setup_logging
 from app.api import router as api_router
+
+# 初始化带颜色的日志
+settings = get_settings()
+setup_logging(settings.LOG_LEVEL)
 
 
 @asynccontextmanager

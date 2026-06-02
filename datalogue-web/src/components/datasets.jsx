@@ -1,48 +1,193 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Icon } from './icons';
 import {
   listDatasets,
   createDataset,
+  renameDataset,
+  deleteDataset,
   listDatasetMetrics,
   createMetric,
   deleteMetric,
+  updateMetric,
   listDatasetDimensions,
   createDimension,
   deleteDimension,
+  updateDimension,
+  listDatasources,
+  syncDatasourceTables,
+  listSourceTables,
+  getSourceTableColumns,
+  annotateDatasetColumns,
+  importDatasetYaml,
+  exportDatasetYaml,
+  previewTable,
+  streamChat,
+  selectTablesForDataset,
+  deselectTableFromDataset,
+  listSelectedTables,
+  listSelectedColumns,
+  updateSourceColumn,
 } from '../api/client';
 
-// DatasetsScreen — 语义层管理：指标/维度/术语/权限/版本 5个 Tab
+// ── DatasetsScreen — 语义层配置（三栏式）────────────────────
+
+// 右键菜单项共享样式
+const ctxMenuItemStyle = {
+  display: 'flex', alignItems: 'center', gap: 8,
+  width: '100%', padding: '6px 10px', fontSize: 12,
+  background: 'transparent', border: 'none', borderRadius: 4,
+  color: 'var(--text)', cursor: 'pointer', textAlign: 'left',
+};
 
 function DatasetsScreen() {
-  const [tab, setTab] = useState('metrics');
-  const [q, setQ] = useState('');
+  // ── 数据集状态 ──
   const [datasets, setDatasets] = useState([]);
   const [activeDsId, setActiveDsId] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // 指标/维度数据
+  // ── 表结构同步状态 ──
+  const [allSourceTables, setAllSourceTables] = useState([]);      // 数据源所有表（目录）
+  const [selectedTableIds, setSelectedTableIds] = useState(new Set()); // 数据集已选表ID
+  const [selectedColumns, setSelectedColumns] = useState([]);      // 已选表的合并字段
+  const [previewTableId, setPreviewTableId] = useState(null);      // 当前预览的表
+  const [syncing, setSyncing] = useState(false);
+  const [annotating, setAnnotating] = useState(false);
+  const [tableSearch, setTableSearch] = useState('');
+
+  // 查看中的表（只读预览其字段，不加入数据集；与勾选状态相互独立）
+  const [inspectingTableId, setInspectingTableId] = useState(null);
+  const [inspectColumns, setInspectColumns] = useState([]);
+  const [inspectLoading, setInspectLoading] = useState(false);
+  const inspectSeqRef = useRef(0); // 防止旧请求覆盖新结果
+
+  // ── 字段编辑状态 ──
+  const [editingColumnId, setEditingColumnId] = useState(null);
+  const [columnEditForm, setColumnEditForm] = useState({ user_description: '', user_semantic_role: '' });
+
+  const filteredTables = useMemo(() => {
+    const q = tableSearch.trim().toLowerCase();
+    if (!q) return allSourceTables;
+    return allSourceTables.filter(t => t.table_name.toLowerCase().includes(q));
+  }, [allSourceTables, tableSearch]);
+
+  // ── 指标/维度数据 ──
   const [metrics, setMetrics] = useState([]);
   const [dimensions, setDimensions] = useState([]);
 
-  // 表单状态
+  // ── 表单状态 ──
   const [showMetricForm, setShowMetricForm] = useState(false);
   const [showDimForm, setShowDimForm] = useState(false);
-  const [metricForm, setMetricForm] = useState({ name: '', display_name: '', expr: '', filter_sql: '', synonyms: '', description: '' });
-  const [dimForm, setDimForm] = useState({ name: '', display_name: '', column_name: '', enum_values: '', synonyms: '' });
+  const [showDsForm, setShowDsForm] = useState(false);
+  const [showYamlImport, setShowYamlImport] = useState(false);
+  const [editingMetricId, setEditingMetricId] = useState(null);
+  const [editingDimId, setEditingDimId] = useState(null);
 
-  useEffect(() => {
-    loadDatasets();
-  }, []);
+  const [metricForm, setMetricForm] = useState({
+    name: '', display_name: '', expr: '', table_name: '', time_field: '',
+    granularity: '', format_str: '', filter_sql: '', synonyms: '', description: ''
+  });
+  const [dimForm, setDimForm] = useState({
+    name: '', display_name: '', column_name: '', table_name: '',
+    join_to: '', join_key: '', enum_values: '', synonyms: ''
+  });
+  const [dsForm, setDsForm] = useState({ name: '', datasource_id: '', description: '' });
+  const [datasources, setDatasources] = useState([]);
+  const [yamlText, setYamlText] = useState('');
+
+  // ── 数据预览 ──
+  const [previewData, setPreviewData] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // ── 试问验证 ──
+  const [testQuestion, setTestQuestion] = useState('');
+  const [testStreaming, setTestStreaming] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [testSql, setTestSql] = useState('');
+  const testAbortRef = useRef(null);
+
+  // ── 数据集列表：右键菜单 + 二次确认删除 ──
+  const [ctxMenu, setCtxMenu] = useState(null); // {x, y, ds} | null
+  const ctxMenuRef = useRef(null); // 菜单 DOM 引用，用于判断点击是否在菜单内
+  const [confirmDelete, setConfirmDelete] = useState(null); // 待删除的 dataset | null
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+
+  // ── 初始化 ──
+  useEffect(() => { loadDatasets(); loadDatasources(); }, []);
 
   useEffect(() => {
     if (activeDsId) {
       loadDsMeta(activeDsId);
+      loadAllSourceTables(activeDsId);
+      loadSelectedTables(activeDsId);
     }
   }, [activeDsId]);
 
+  useEffect(() => {
+    if (previewTableId) {
+      loadPreview(previewTableId);
+    }
+  }, [previewTableId]);
+
+  // 切换/选中状态变化时清理 inspect：若该表已被勾选，就交给已选字段视图展示
+  useEffect(() => {
+    if (inspectingTableId && selectedTableIds.has(inspectingTableId)) {
+      setInspectingTableId(null);
+      setInspectColumns([]);
+    }
+  }, [inspectingTableId, selectedTableIds]);
+
+  // 加载查看中表的字段（只读）
+  useEffect(() => {
+    if (!inspectingTableId) {
+      setInspectColumns([]);
+      return;
+    }
+    const seq = ++inspectSeqRef.current;
+    setInspectLoading(true);
+    getSourceTableColumns(inspectingTableId)
+      .then(cols => {
+        if (seq !== inspectSeqRef.current) return; // 旧请求忽略
+        setInspectColumns(cols || []);
+      })
+      .catch(err => {
+        console.error('[inspect] load columns failed:', err);
+        if (seq === inspectSeqRef.current) setInspectColumns([]);
+      })
+      .finally(() => {
+        if (seq === inspectSeqRef.current) setInspectLoading(false);
+      });
+  }, [inspectingTableId]);
+
+  // 点击外部 / ESC 关闭右键菜单
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onDown = (e) => {
+      // 点击落在菜单内时，由菜单本身的 onMouseDown stopPropagation 阻止关闭；
+      // 落在菜单外时关闭菜单。用 ref 判断目标是否在菜单节点内。
+      if (ctxMenuRef.current && ctxMenuRef.current.contains(e.target)) return;
+      setCtxMenu(null);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setCtxMenu(null);
+    };
+    // 冒泡阶段（不传 capture=true），让菜单内的 onMouseDown 先 stopPropagation
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [ctxMenu]);
+
+  // ── 数据加载 ──
   const loadDatasets = () => {
     setLoading(true);
     listDatasets().then(setDatasets).catch(console.error).finally(() => setLoading(false));
+  };
+
+  const loadDatasources = () => {
+    listDatasources().then(setDatasources).catch(console.error);
   };
 
   const loadDsMeta = async (dsId) => {
@@ -53,167 +198,1156 @@ function DatasetsScreen() {
     } catch (err) { console.error(err); }
   };
 
-  const activeDs = datasets.find(d => d.id === activeDsId) || datasets[0];
-  const currentDsId = activeDsId || activeDs?.id;
+  // 加载数据源所有表（目录）
+  const loadAllSourceTables = async (dsId) => {
+    const ds = datasets.find(d => d.id === dsId);
+    if (!ds) return;
+    try {
+      const tables = await listSourceTables(ds.datasource_id);
+      setAllSourceTables(tables);
+    } catch (err) {
+      console.error(err);
+      setAllSourceTables([]);
+    }
+  };
 
+  // 加载数据集已选表 + 合并字段
+  const loadSelectedTables = async (dsId) => {
+    try {
+      const [selectedTables, cols] = await Promise.all([
+        listSelectedTables(dsId),
+        listSelectedColumns(dsId),
+      ]);
+      setSelectedTableIds(new Set(selectedTables.map(t => t.id)));
+      setSelectedColumns(cols);
+      if (selectedTables.length > 0 && !previewTableId) {
+        setPreviewTableId(selectedTables[0].id);
+      }
+    } catch (err) {
+      console.error(err);
+      setSelectedTableIds(new Set());
+      setSelectedColumns([]);
+    }
+  };
+
+  const loadPreview = async (tableId) => {
+    const table = allSourceTables.find(t => t.id === tableId);
+    if (!table) return;
+    const ds = datasets.find(d => d.id === activeDsId);
+    if (!ds) return;
+    setPreviewLoading(true);
+    try {
+      const data = await previewTable(ds.datasource_id, table.schema_name, table.table_name, 5);
+      setPreviewData(data);
+    } catch (err) {
+      console.error(err);
+      setPreviewData(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  // ── 字段编辑 ──
+  const handleStartEditColumn = (col) => {
+    setEditingColumnId(col.id);
+    setColumnEditForm({
+      user_description: col.user_description || col.effective_desc || col.business_desc || '',
+      user_semantic_role: col.user_semantic_role || col.ai_semantic_role || col.semantic_role || '',
+    });
+  };
+
+  const handleSaveColumnEdit = async (colId) => {
+    try {
+      await updateSourceColumn(colId, {
+        user_description: columnEditForm.user_description || null,
+        user_semantic_role: columnEditForm.user_semantic_role || null,
+      });
+      setEditingColumnId(null);
+      // 刷新字段列表
+      if (activeDsId) {
+        const cols = await listSelectedColumns(activeDsId);
+        setSelectedColumns(cols);
+      }
+    } catch (err) {
+      console.error('保存字段标注失败:', err);
+      alert('保存失败: ' + (err.message || '未知错误'));
+    }
+  };
+
+  const handleCancelColumnEdit = () => {
+    setEditingColumnId(null);
+    setColumnEditForm({ user_description: '', user_semantic_role: '' });
+  };
+
+  // ── 同步 & 标注 ──
+  const handleSyncTables = async () => {
+    const ds = datasets.find(d => d.id === activeDsId);
+    if (!ds) { alert('请先选择数据集'); return; }
+    setSyncing(true);
+    try {
+      await syncDatasourceTables(ds.datasource_id);
+      await loadAllSourceTables(activeDsId);
+    } catch (err) {
+      alert('同步失败: ' + (err.message || '未知错误'));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleAnnotate = async () => {
+    if (!activeDsId) { alert('请先选择数据集'); return; }
+    setAnnotating(true);
+    try {
+      await annotateDatasetColumns(activeDsId);
+      await loadSelectedTables(activeDsId);
+    } catch (err) {
+      alert('标注失败: ' + (err.message || '未知错误'));
+    } finally {
+      setAnnotating(false);
+    }
+  };
+
+  // ── 勾选/取消勾选表 ──
+  const handleToggleTable = async (sourceTableId, checked) => {
+    if (!activeDsId) return;
+    try {
+      if (checked) {
+        await selectTablesForDataset(activeDsId, [sourceTableId]);
+        // 勾选后自动预览该表
+        setPreviewTableId(sourceTableId);
+      } else {
+        await deselectTableFromDataset(activeDsId, sourceTableId);
+      }
+      await loadSelectedTables(activeDsId);
+    } catch (err) {
+      alert('操作失败: ' + (err.message || '未知错误'));
+    }
+  };
+
+  // ── 查看表信息（不加入数据集）──
+  const handleInspectTable = (sourceTableId) => {
+    if (!sourceTableId) return;
+    // 点击同一行再次点 → 收起
+    if (inspectingTableId === sourceTableId) {
+      setInspectingTableId(null);
+      return;
+    }
+    setInspectingTableId(sourceTableId);
+    // 同时触发该表的数据预览
+    setPreviewTableId(sourceTableId);
+  };
+
+  const handleCloseInspect = () => {
+    setInspectingTableId(null);
+    setInspectColumns([]);
+  };
+
+  // ── 新建数据集 ──
+  const handleCreateDataset = async () => {
+    if (!dsForm.name) { alert('请输入数据集名称'); return; }
+    if (!dsForm.datasource_id) { alert('请选择数据源'); return; }
+    try {
+      await createDataset({
+        name: dsForm.name,
+        datasource_id: Number(dsForm.datasource_id),
+        description: dsForm.description || undefined,
+        tables_json: {},
+        status: 'draft',
+      });
+      setShowDsForm(false);
+      setDsForm({ name: '', datasource_id: '', description: '' });
+      loadDatasets();
+    } catch (err) { alert('创建失败: ' + (err.message || '未知错误')); }
+  };
+
+  // ── 数据集右键菜单 ──
+  const openCtxMenu = (e, ds) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // 防止菜单超出右/下边界：菜单大约宽 160、高 ~88
+    const menuW = 160, menuH = 88;
+    const x = Math.min(e.clientX, window.innerWidth - menuW - 8);
+    const y = Math.min(e.clientY, window.innerHeight - menuH - 8);
+    setCtxMenu({ x, y, ds });
+  };
+
+  const startRename = (ds) => {
+    setCtxMenu(null);
+    setRenamingId(ds.id);
+    setRenameValue(ds.name);
+  };
+
+  const commitRename = async () => {
+    if (!renamingId) return;
+    const next = renameValue.trim();
+    const orig = datasets.find(d => d.id === renamingId)?.name;
+    if (!next || next === orig) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      await renameDataset(renamingId, next);
+      setRenamingId(null);
+      await loadDatasets();
+    } catch (err) {
+      alert('重命名失败: ' + (err.message || '未知错误'));
+      setRenamingId(null);
+    }
+  };
+
+  const requestDelete = (ds) => {
+    setCtxMenu(null);
+    setConfirmDelete(ds);
+  };
+
+  const confirmDeleteDataset = async () => {
+    if (!confirmDelete) return;
+    const id = confirmDelete.id;
+    try {
+      await deleteDataset(id);
+      setConfirmDelete(null);
+      // 如果删的是当前激活的，切换到第一个
+      if (activeDsId === id) {
+        const rest = datasets.filter(d => d.id !== id);
+        setActiveDsId(rest[0]?.id ?? null);
+        setSelectedTableIds(new Set());
+        setSelectedColumns([]);
+        setPreviewTableId(null);
+        setPreviewData(null);
+        setInspectingTableId(null);
+        setInspectColumns([]);
+      }
+      await loadDatasets();
+    } catch (err) {
+      alert('删除失败: ' + (err.message || '未知错误'));
+      setConfirmDelete(null);
+    }
+  };
+
+  // ── 指标 CRUD ──
   const handleAddMetric = async () => {
     if (!metricForm.name || !metricForm.expr) { alert('请填写指标名和表达式'); return; }
-    if (!currentDsId) { alert('请先选择数据集'); return; }
+    if (!activeDsId) { alert('请先选择数据集'); return; }
     try {
-      await createMetric(currentDsId, { ...metricForm, synonyms: metricForm.synonyms ? metricForm.synonyms.split(',').map(s => s.trim()) : [] });
+      const payload = {
+        ...metricForm,
+        synonyms: metricForm.synonyms ? metricForm.synonyms.split(',').map(s => s.trim()) : [],
+      };
+      if (editingMetricId) {
+        await updateMetric(activeDsId, editingMetricId, payload);
+      } else {
+        await createMetric(activeDsId, payload);
+      }
       setShowMetricForm(false);
-      setMetricForm({ name: '', display_name: '', expr: '', filter_sql: '', synonyms: '', description: '' });
-      loadDsMeta(currentDsId);
-    } catch (err) { alert('添加失败: ' + err.message); }
+      setEditingMetricId(null);
+      setMetricForm({ name: '', display_name: '', expr: '', table_name: '', time_field: '', granularity: '', format_str: '', filter_sql: '', synonyms: '', description: '' });
+      loadDsMeta(activeDsId);
+    } catch (err) { alert('保存失败: ' + (err.message || '未知错误')); }
+  };
+
+  const handleEditMetric = (m) => {
+    setEditingMetricId(m.id);
+    setMetricForm({
+      name: m.name,
+      display_name: m.display_name || '',
+      expr: m.expr || '',
+      table_name: m.table_name || '',
+      time_field: m.time_field || '',
+      granularity: m.granularity || '',
+      format_str: m.format_str || '',
+      filter_sql: m.filter_sql || '',
+      synonyms: (m.synonyms || []).join(', '),
+      description: m.description || '',
+    });
+    setShowMetricForm(true);
   };
 
   const handleDelMetric = async (mid) => {
     if (!confirm('确定删除？')) return;
-    try { await deleteMetric(currentDsId, mid); loadDsMeta(currentDsId); } catch (err) { alert(err.message); }
+    try { await deleteMetric(activeDsId, mid); loadDsMeta(activeDsId); } catch (err) { alert(err.message); }
   };
 
+  // ── 维度 CRUD ──
   const handleAddDim = async () => {
     if (!dimForm.name || !dimForm.column_name) { alert('请填写维度名和字段名'); return; }
-    if (!currentDsId) { alert('请先选择数据集'); return; }
+    if (!activeDsId) { alert('请先选择数据集'); return; }
     try {
-      await createDimension(currentDsId, { ...dimForm, synonyms: dimForm.synonyms ? dimForm.synonyms.split(',').map(s => s.trim()) : [], enum_values: dimForm.enum_values ? dimForm.enum_values.split(',').map(s => s.trim()) : [] });
+      const payload = {
+        ...dimForm,
+        synonyms: dimForm.synonyms ? dimForm.synonyms.split(',').map(s => s.trim()) : [],
+        enum_values: dimForm.enum_values ? dimForm.enum_values.split(',').map(s => s.trim()) : [],
+      };
+      if (editingDimId) {
+        await updateDimension(activeDsId, editingDimId, payload);
+      } else {
+        await createDimension(activeDsId, payload);
+      }
       setShowDimForm(false);
-      setDimForm({ name: '', display_name: '', column_name: '', enum_values: '', synonyms: '' });
-      loadDsMeta(currentDsId);
-    } catch (err) { alert('添加失败: ' + err.message); }
+      setEditingDimId(null);
+      setDimForm({ name: '', display_name: '', column_name: '', table_name: '', join_to: '', join_key: '', enum_values: '', synonyms: '' });
+      loadDsMeta(activeDsId);
+    } catch (err) { alert('保存失败: ' + (err.message || '未知错误')); }
+  };
+
+  const handleEditDim = (d) => {
+    setEditingDimId(d.id);
+    setDimForm({
+      name: d.name,
+      display_name: d.display_name || '',
+      column_name: d.column_name || '',
+      table_name: d.table_name || '',
+      join_to: d.join_to || '',
+      join_key: d.join_key || '',
+      enum_values: (d.enum_values || []).join(', '),
+      synonyms: (d.synonyms || []).join(', '),
+    });
+    setShowDimForm(true);
   };
 
   const handleDelDim = async (did) => {
     if (!confirm('确定删除？')) return;
-    try { await deleteDimension(currentDsId, did); loadDsMeta(currentDsId); } catch (err) { alert(err.message); }
+    try { await deleteDimension(activeDsId, did); loadDsMeta(activeDsId); } catch (err) { alert(err.message); }
   };
 
-  const metricStates = ['ok', 'draft', 'conflict'];
-  const stateLabel = { ok: '已上线', draft: '草稿', conflict: '冲突' };
+  // ── 从字段快速创建指标/维度 ──
+  const handleCreateMetricFromColumn = (col) => {
+    const timeCol = selectedColumns.find(c => c.semantic_role === 'time_field');
+    setEditingMetricId(null);
+    setMetricForm({
+      name: col.business_desc || col.column_name,
+      display_name: col.business_desc || col.column_name,
+      expr: col.default_agg ? `${col.default_agg}(${col.column_name})` : `SUM(${col.column_name})`,
+      table_name: col.table_name,
+      time_field: timeCol ? timeCol.column_name : '',
+      granularity: 'daily',
+      format_str: '',
+      filter_sql: '',
+      synonyms: '',
+      description: '',
+    });
+    setShowMetricForm(true);
+  };
 
-  const tabs = [
-    { id: 'metrics',    label: '指标',     icon: 'formula', count: metrics.length },
-    { id: 'dimensions', label: '维度',     icon: 'layers',  count: dimensions.length },
-    { id: 'glossary',   label: '业务术语', icon: 'book',    count: 65 },
-    { id: 'permission', label: '行级权限', icon: 'shield',  count: 12 },
-    { id: 'versions',    label: '版本历史', icon: 'history', count: null },
-  ];
+  const handleCreateDimFromColumn = (col) => {
+    setEditingDimId(null);
+    setDimForm({
+      name: col.business_desc || col.column_name,
+      display_name: col.business_desc || col.column_name,
+      column_name: col.column_name,
+      table_name: col.table_name,
+      join_to: '',
+      join_key: '',
+      enum_values: '',
+      synonyms: '',
+    });
+    setShowDimForm(true);
+  };
 
+  // ── YAML 导入/导出 ──
+  const handleImportYaml = async () => {
+    if (!yamlText.trim()) { alert('YAML 内容不能为空'); return; }
+    if (!activeDsId) { alert('请先选择数据集'); return; }
+    try {
+      await importDatasetYaml(activeDsId, yamlText.trim());
+      setShowYamlImport(false);
+      setYamlText('');
+      loadDsMeta(activeDsId);
+      alert('导入成功');
+    } catch (err) { alert('导入失败: ' + (err.message || '未知错误')); }
+  };
+
+  const handleExportYaml = async () => {
+    if (!activeDsId) { alert('请先选择数据集'); return; }
+    try {
+      const res = await exportDatasetYaml(activeDsId);
+      const blob = new Blob([res.yaml], { type: 'text/yaml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `dataset-${activeDsId}.yaml`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) { alert('导出失败: ' + (err.message || '未知错误')); }
+  };
+
+  // ── 试问验证 ──
+  const handleTestQuery = () => {
+    if (!testQuestion.trim() || !activeDsId) return;
+    setTestStreaming(true);
+    setTestResult(null);
+    setTestSql('');
+
+    const ctrl = streamChat(
+      { question: testQuestion.trim(), dataset_id: activeDsId },
+      {
+        onToken: (tok) => {
+          setTestResult(prev => (prev || '') + tok);
+        },
+        onEvent: (ev) => {
+          if (ev.step === 'dsl_compiler' && ev.status === 'done' && ev.output?.sql) {
+            setTestSql(ev.output.sql);
+          }
+        },
+        onDone: (data) => {
+          setTestStreaming(false);
+          if (data.sql) setTestSql(data.sql);
+          if (data.answer) setTestResult(data.answer);
+        },
+        onError: (err) => {
+          setTestStreaming(false);
+          setTestResult('验证失败: ' + err.message);
+        },
+      }
+    );
+    testAbortRef.current = ctrl;
+  };
+
+  // ── 当前数据集 ──
+  const activeDs = datasets.find(d => d.id === activeDsId) || datasets[0];
+  const currentDsId = activeDsId || activeDs?.id;
+
+  // ── 渲染 ──
   return (
     <div className="ds-wrap">
-      <div style={{display: 'grid', gridTemplateColumns: '220px 1fr', gap: 28}}>
-        {/* 左侧边栏 */}
-        <aside style={{paddingTop: 10}}>
-          <div style={{fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0 8px 8px', fontWeight: 500}}>数据集</div>
+      {/* ── 顶部操作栏 ── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 2 }}>语义治理 / 数据集</div>
+          <h1 style={{ fontSize: 20, fontWeight: 500, margin: 0, letterSpacing: '-0.02em' }}>
+            {activeDs?.name || '数据集 & 指标'}
+          </h1>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="btn ghost" onClick={() => setShowYamlImport(true)}><Icon name="upload" />导入 YAML</button>
+          <button className="btn ghost" onClick={handleExportYaml}><Icon name="download" />导出 YAML</button>
+          <button className="btn ghost" onClick={handleSyncTables} disabled={syncing || !activeDsId}>
+            <Icon name="refresh" />{syncing ? '同步中…' : '同步表结构'}
+          </button>
+          <button className="btn ghost" onClick={handleAnnotate} disabled={annotating || !activeDsId}>
+            <Icon name="brain" />{annotating ? '标注中…' : 'AI 自动标注'}
+          </button>
+          <button className="btn primary" onClick={() => setShowDsForm(true)}><Icon name="plus" />新建数据集</button>
+        </div>
+      </div>
+
+      {/* ── 主体：左侧数据集 + 右侧三栏 ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 20 }}>
+        {/* 左侧：数据集列表 */}
+        <aside style={{ borderRight: '1px solid var(--hairline)', paddingRight: 12 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0 8px 8px', fontWeight: 500 }}>数据集</div>
           {datasets.map(d => (
-            <button key={d.id} onClick={() => { setActiveDsId(d.id); loadDsMeta(d.id); }}
-              style={{display:'flex', alignItems:'center', gap:10, padding:'7px 10px', fontSize:13, borderRadius:6, width:'100%', textAlign:'left', cursor:'pointer', background:activeDsId === d.id || (!activeDsId && d === activeDs) ? 'var(--surface-2)' : 'transparent', color:activeDsId === d.id || (!activeDsId && d === activeDs) ? 'var(--text)' : 'var(--text-2)', border:'none'}}>
-              <span style={{width:8, height:8, borderRadius:'50%', background:'var(--accent)', flexShrink:0}} />
-              <span style={{flex:1}}>{d.name}</span>
-              <span style={{fontSize:10.5, color:'var(--text-3)', fontFamily:'var(--font-mono)'}}>{d.id}</span>
-            </button>
+            renamingId === d.id ? (
+              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px' }}>
+                <input
+                  autoFocus
+                  value={renameValue}
+                  onChange={e => setRenameValue(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') commitRename();
+                    else if (e.key === 'Escape') { setRenamingId(null); }
+                  }}
+                  onBlur={commitRename}
+                  onClick={e => e.stopPropagation()}
+                  onMouseDown={e => e.stopPropagation()}
+                  style={{ flex: 1, padding: '4px 8px', fontSize: 13, borderRadius: 4, border: '1px solid var(--accent)', background: 'var(--surface)', color: 'var(--text)', outline: 'none' }}
+                />
+              </div>
+            ) : (
+              <button
+                key={d.id}
+                onClick={() => { setActiveDsId(d.id); setPreviewTableId(null); setSelectedColumns([]); setPreviewData(null); }}
+                onContextMenu={e => openCtxMenu(e, d)}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', fontSize: 13, borderRadius: 6, width: '100%', textAlign: 'left', cursor: 'pointer', background: activeDsId === d.id ? 'var(--surface-2)' : 'transparent', color: activeDsId === d.id ? 'var(--text)' : 'var(--text-2)', border: 'none' }}
+              >
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', flexShrink: 0 }} />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+              </button>
+            )
           ))}
           {datasets.length === 0 && !loading && (
-            <div style={{padding:'16px 8px', fontSize:12, color:'var(--text-3)'}}>暂无数据集</div>
+            <div style={{ padding: '16px 8px', fontSize: 12, color: 'var(--text-3)' }}>暂无数据集</div>
           )}
-          <button style={{display:'flex', alignItems:'center', gap:6, padding:'6px 10px', fontSize:12, color:'var(--text-3)', background:'none', border:'none', cursor:'pointer', marginTop:4}}>
-            <Icon name="plus" style={{width:12, height:12}} />新建数据集
-          </button>
-
-          <div style={{fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.08em', padding:'14px 8px 8px', fontWeight:500}}>分类</div>
-          {[{icon:'formula', label:'计算指标', count:38}, {icon:'database', label:'原子指标', count:8}].map(item => (
-            <button key={item.label} style={{display:'flex', alignItems:'center', gap:10, padding:'7px 10px', fontSize:13, borderRadius:6, width:'100%', textAlign:'left', cursor:'pointer', background:'transparent', color:'var(--text-2)', border:'none'}}>
-              <Icon name={item.icon} style={{width:14, height:14}} />
-              <span>{item.label}</span>
-              <span style={{marginLeft:'auto', fontSize:11, color:'var(--text-3)', fontFamily:'var(--font-mono)'}}>{item.count}</span>
-            </button>
-          ))}
-
-          <div style={{fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.08em', padding:'14px 8px 8px', fontWeight:500}}>状态</div>
-          {[{color:'var(--pos)', label:'已上线', count:38}, {color:'var(--warn)', label:'草稿', count:8}].map(item => (
-            <button key={item.label} style={{display:'flex', alignItems:'center', gap:10, padding:'7px 10px', fontSize:13, borderRadius:6, width:'100%', textAlign:'left', cursor:'pointer', background:'transparent', color:'var(--text-2)', border:'none'}}>
-              <span style={{width:6, height:6, borderRadius:'50%', background:item.color}} />
-              <span>{item.label}</span>
-              <span style={{marginLeft:'auto', fontSize:11, color:'var(--text-3)', fontFamily:'var(--font-mono)'}}>{item.count}</span>
-            </button>
-          ))}
         </aside>
 
-        {/* 右侧主区 */}
-        <div>
-          <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom: 22}}>
-            <div>
-              <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:4}}>
-                {activeDs && <span style={{width:8, height:8, borderRadius:'50%', background:'var(--accent)'}} />}
-                <span style={{fontSize:12, color:'var(--text-3)'}}>语义治理 / 数据集</span>
+        {/* ── 数据集右键菜单浮层 ── */}
+        {ctxMenu && (
+          <div
+            ref={ctxMenuRef}
+            style={{
+              position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 200,
+              background: 'var(--surface)', border: '1px solid var(--hairline)',
+              borderRadius: 8, padding: 4, minWidth: 160,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+            }}
+          >
+            <button
+              onClick={() => startRename(ctxMenu.ds)}
+              style={ctxMenuItemStyle}
+            >
+              <Icon name="edit" style={{ width: 14, height: 14, color: 'var(--text-3)' }} />
+              <span>重命名</span>
+            </button>
+            <div style={{ height: 1, background: 'var(--hairline)', margin: '4px 2px' }} />
+            <button
+              onClick={() => requestDelete(ctxMenu.ds)}
+              style={{ ...ctxMenuItemStyle, color: 'var(--neg)' }}
+            >
+              <Icon name="trash" style={{ width: 14, height: 14, color: 'var(--neg)' }} />
+              <span>删除</span>
+            </button>
+          </div>
+        )}
+
+        {/* 右侧：三栏布局 */}
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 320px', gap: 16, minHeight: 480 }}>
+          {/* 左栏：数据源表目录（带勾选 + 搜索） */}
+          <div style={{ borderRight: '1px solid var(--hairline)', paddingRight: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 0 8px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 500 }}>数据源表目录</div>
+            </div>
+            {/* 搜索框 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)' }}>
+              <Icon name="search" style={{ width: 12, height: 12, color: 'var(--text-3)', flexShrink: 0 }} />
+              <input
+                placeholder="搜索表名…"
+                value={tableSearch}
+                onChange={e => setTableSearch(e.target.value)}
+                style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 12, color: 'var(--text)', padding: 0 }}
+              />
+              {tableSearch && (
+                <button className="icon-btn" style={{ width: 16, height: 16 }} onClick={() => setTableSearch('')}>
+                  <Icon name="x" style={{ width: 10, height: 10 }} />
+                </button>
+              )}
+            </div>
+            {/* 全选 / 取消全选 */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              <button className="btn ghost" style={{ height: 24, fontSize: 10, padding: '0 8px', flex: 1 }} onClick={async () => {
+                const ids = filteredTables.map(t => t.id).filter(id => !selectedTableIds.has(id));
+                if (ids.length) {
+                  try { await selectTablesForDataset(activeDsId, ids); await loadSelectedTables(activeDsId); }
+                  catch (err) { alert('全选失败: ' + (err.message || '未知错误')); }
+                }
+              }}>全选</button>
+              <button className="btn ghost" style={{ height: 24, fontSize: 10, padding: '0 8px', flex: 1 }} onClick={async () => {
+                const ids = filteredTables.map(t => t.id).filter(id => selectedTableIds.has(id));
+                for (const id of ids) {
+                  try { await deselectTableFromDataset(activeDsId, id); } catch (e) { console.error(e); }
+                }
+                await loadSelectedTables(activeDsId);
+              }}>取消全选</button>
+            </div>
+            {/* 表列表 */}
+            <div style={{ maxHeight: 360, overflow: 'auto' }}>
+              {filteredTables.map(t => {
+                const checked = selectedTableIds.has(t.id);
+                const inspecting = inspectingTableId === t.id;
+                const tableSourceBadge = {
+                  db_comment: { label: '注', color: '#16a34a', bg: '#dcfce7' },
+                  ai:         { label: 'AI', color: '#2563eb', bg: '#dbeafe' },
+                  user:       { label: '用', color: '#ca8a04', bg: '#fef9c3' },
+                  fallback:   { label: '退', color: '#6b7280', bg: '#f3f4f6' },
+                  unknown:    { label: '?', color: '#9ca3af', bg: '#f3f4f6' },
+                  stale:      { label: '旧', color: '#ea580c', bg: '#ffedd5' },
+                }[t.desc_source] || { label: '?', color: '#6b7280', bg: '#f3f4f6' };
+                // 行底色：已选优先 → 蓝灰；查看中 → 浅紫；普通 → 透明
+                const rowBg = checked
+                  ? 'var(--surface-2)'
+                  : inspecting
+                  ? 'var(--accent-soft)'
+                  : 'transparent';
+                const rowBorder = inspecting
+                  ? '1px solid var(--accent)'
+                  : '1px solid transparent';
+                return (
+                  <div
+                    key={t.id}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px',
+                      fontSize: 12, borderRadius: 6, marginBottom: 2,
+                      background: rowBg, border: rowBorder,
+                    }}
+                  >
+                    {/* 勾选框 — 独立 onClick；点它只切换是否加入数据集 */}
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e => handleToggleTable(t.id, e.target.checked)}
+                      onClick={e => e.stopPropagation()}
+                      style={{ cursor: 'pointer', flexShrink: 0 }}
+                      title={checked ? '已加入数据集' : '加入数据集'}
+                    />
+                    {/* 表名可点击区域：触发"查看"模式（不切换勾选） */}
+                    <button
+                      type="button"
+                      onClick={() => handleInspectTable(t.id)}
+                      title={t.effective_desc || t.table_comment || ''}
+                      style={{
+                        flex: 1, display: 'flex', alignItems: 'center', gap: 8,
+                        background: 'transparent', border: 'none', padding: 0,
+                        cursor: 'pointer', minWidth: 0, textAlign: 'left',
+                        color: checked ? 'var(--text)' : inspecting ? 'var(--accent)' : 'var(--text-2)',
+                        fontWeight: inspecting ? 500 : 400,
+                      }}
+                    >
+                      <Icon name={inspecting ? 'eye' : 'table'} style={{ width: 14, height: 14, flexShrink: 0 }} />
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.table_name}</span>
+                    </button>
+                    <span style={{
+                      display: 'inline-block', padding: '0 4px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                      color: tableSourceBadge.color, background: tableSourceBadge.bg, flexShrink: 0,
+                    }}>{tableSourceBadge.label}</span>
+                    <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>{t.column_count}</span>
+                  </div>
+                );
+              })}
+              {filteredTables.length === 0 && (
+                <div style={{ padding: '16px 4px', fontSize: 12, color: 'var(--text-3)' }}>
+                  {allSourceTables.length === 0 ? (
+                    <><span>暂无同步的表</span><br /><span style={{ fontSize: 11, opacity: 0.7 }}>点击「同步表结构」拉取</span></>
+                  ) : '没有匹配的表'}
+                </div>
+              )}
+            </div>
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--hairline)', fontSize: 11, color: 'var(--text-3)' }}>
+              已选 {selectedTableIds.size} / {allSourceTables.length} 张表
+            </div>
+          </div>
+
+          {/* 中栏：字段列表（查看模式 / 已选模式 / 空状态 三态） */}
+          <div>
+            {(() => {
+              const inspectTable = inspectingTableId
+                ? allSourceTables.find(t => t.id === inspectingTableId)
+                : null;
+              if (inspectTable) {
+                // ── 查看模式：只读展示表元信息 + 字段（不影响数据集）
+                const sourceBadge = {
+                  db_comment: { label: '注释', color: '#16a34a', bg: '#dcfce7' },
+                  ai:         { label: 'AI',   color: '#2563eb', bg: '#dbeafe' },
+                  user:       { label: '用户', color: '#ca8a04', bg: '#fef9c3' },
+                  fallback:   { label: '回退', color: '#6b7280', bg: '#f3f4f6' },
+                  unknown:    { label: '识别中…', color: '#9ca3af', bg: '#f3f4f6' },
+                  stale:      { label: '待更新', color: '#ea580c', bg: '#ffedd5' },
+                }[inspectTable.desc_source] || { label: '?', color: '#6b7280', bg: '#f3f4f6' };
+                return (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0,
+                        fontSize: 11, color: 'var(--accent)', textTransform: 'uppercase',
+                        letterSpacing: '0.08em', fontWeight: 600,
+                      }}>
+                        <Icon name="eye" style={{ width: 12, height: 12 }} />
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          查看中 · {inspectTable.table_name}
+                        </span>
+                      </div>
+                      <button
+                        className="icon-btn"
+                        onClick={handleCloseInspect}
+                        title="关闭查看"
+                        style={{ width: 22, height: 22 }}
+                      >
+                        <Icon name="x" style={{ width: 12, height: 12, color: 'var(--text-3)' }} />
+                      </button>
+                    </div>
+                    {/* 表元信息卡片 */}
+                    <div style={{
+                      padding: '10px 12px', marginBottom: 10,
+                      background: 'var(--surface-2)', border: '1px solid var(--hairline)', borderRadius: 8,
+                      fontSize: 12,
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                        <span style={{
+                          display: 'inline-block', padding: '1px 6px', borderRadius: 4,
+                          fontSize: 10, fontWeight: 500,
+                          color: sourceBadge.color, background: sourceBadge.bg,
+                        }}>{sourceBadge.label}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>
+                          {inspectTable.schema_name ? `${inspectTable.schema_name}.` : ''}{inspectTable.table_name}
+                        </span>
+                      </div>
+                      <div style={{ color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 6 }}>
+                        {inspectTable.effective_desc || inspectTable.table_comment || <span style={{ color: 'var(--text-4)' }}>暂无描述</span>}
+                      </div>
+                      <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--text-3)' }}>
+                        <span>字段数 <strong style={{ color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>{inspectTable.column_count}</strong></span>
+                        {inspectTable.row_count_approx != null && (
+                          <span>约 <strong style={{ color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>{inspectTable.row_count_approx.toLocaleString()}</strong> 行</span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 6 }}>
+                      字段列表{inspectColumns.length > 0 && `（${inspectColumns.length}）`}
+                      {inspectLoading && <span style={{ marginLeft: 6 }}>加载中…</span>}
+                    </div>
+                    {inspectColumns.length === 0 && !inspectLoading ? (
+                      <div style={{ padding: '24px 8px', fontSize: 12, color: 'var(--text-3)', textAlign: 'center' }}>
+                        暂无字段
+                      </div>
+                    ) : (
+                      <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, overflow: 'hidden' }}>
+                        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr style={{ background: 'var(--bg-2)', fontSize: 11, color: 'var(--text-3)' }}>
+                              <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)', width: 40 }}>角色</th>
+                              <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>字段名</th>
+                              <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)', width: 80 }}>类型</th>
+                              <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>业务描述</th>
+                              <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>来源</th>
+                              <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>样例值</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {inspectColumns.map(col => {
+                              const effectiveRole = col.user_semantic_role || col.ai_semantic_role || col.semantic_role;
+                              const roleBadge = {
+                                metric_candidate:    { label: 'M', color: 'var(--accent)', bg: 'var(--accent-soft)' },
+                                dimension_candidate: { label: 'D', color: 'var(--pos)', bg: 'var(--pos-soft)' },
+                                time_field:          { label: 'T', color: 'var(--warn)', bg: 'var(--warn-soft)' },
+                                id_field:            { label: 'ID', color: 'var(--text-3)', bg: 'var(--bg-2)' },
+                                unused:              { label: '—', color: 'var(--text-4)', bg: 'var(--bg-2)' },
+                              }[effectiveRole] || { label: '?', color: 'var(--text-3)', bg: 'var(--bg-2)' };
+                              const colSrcBadge = {
+                                db_comment: { label: '注释', color: '#16a34a', bg: '#dcfce7', tip: '来自数据库注释' },
+                                ai:         { label: 'AI',   color: '#2563eb', bg: '#dbeafe', tip: 'AI 自动生成' },
+                                user:       { label: '用户', color: '#ca8a04', bg: '#fef9c3', tip: '用户手动修改' },
+                                fallback:   { label: '回退', color: '#6b7280', bg: '#f3f4f6', tip: '无描述，退回字段名' },
+                                unknown:    { label: '识别中…', color: '#9ca3af', bg: '#f3f4f6', tip: '正在识别业务语义…' },
+                                stale:      { label: '待更新', color: '#ea580c', bg: '#ffedd5', tip: '注释已变更，待重新标注' },
+                              }[col.desc_source] || { label: '?', color: '#6b7280', bg: '#f3f4f6' };
+                              return (
+                                <tr key={col.id} style={{ borderBottom: '1px solid var(--hairline)' }}>
+                                  <td style={{ padding: '7px 10px' }}>
+                                    <span style={{
+                                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                      width: 22, height: 22, borderRadius: 4, background: roleBadge.bg,
+                                      fontSize: 10, fontWeight: 600, color: roleBadge.color,
+                                    }}>{roleBadge.label}</span>
+                                  </td>
+                                  <td style={{ padding: '7px 10px', fontWeight: 500, color: 'var(--text)' }}>{col.column_name}</td>
+                                  <td style={{ padding: '7px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{col.data_type}</td>
+                                  <td style={{ padding: '7px 10px', color: 'var(--text-2)' }}>
+                                    {col.effective_desc || col.business_desc || <span style={{ color: 'var(--text-4)' }}>—</span>}
+                                  </td>
+                                  <td style={{ padding: '7px 10px' }}>
+                                    <span title={colSrcBadge.tip} style={{
+                                      display: 'inline-block', padding: '1px 6px', borderRadius: 4,
+                                      fontSize: 10, fontWeight: 500, whiteSpace: 'nowrap',
+                                      color: colSrcBadge.color, background: colSrcBadge.bg,
+                                    }}>{colSrcBadge.label}</span>
+                                  </td>
+                                  <td style={{ padding: '7px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {col.sample_values?.length > 0 ? col.sample_values.slice(0, 3).join(', ') : <span style={{ color: 'var(--text-4)' }}>—</span>}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+                      这是只读预览。如需将此表加入数据集进行编辑，请点击该行最左边的 <strong>□ 复选框</strong>。
+                    </div>
+                  </div>
+                );
+              }
+              // ── 已选模式（编辑）/ 空状态 ──
+              return (
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0 0 8px', fontWeight: 500 }}>
+                    已选表字段 {selectedColumns.length > 0 && `(${selectedColumns.length})`}
+                  </div>
+                  {selectedColumns.length === 0 ? (
+                    <div style={{ padding: '32px 8px', fontSize: 12, color: 'var(--text-3)', textAlign: 'center' }}>
+                      <Icon name="inbox" style={{ width: 24, height: 24, marginBottom: 8, opacity: 0.4 }} />
+                      <div>从左栏勾选表加入数据集</div>
+                      <div style={{ marginTop: 6, fontSize: 11, opacity: 0.85 }}>
+                        点击表名仅查看表信息，不会加入数据集
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, overflow: 'hidden' }}>
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-2)', fontSize: 11, color: 'var(--text-3)' }}>
+                      <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)', width: 40 }}>角色</th>
+                      <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>字段名</th>
+                      <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)', width: 80 }}>类型</th>
+                      <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>所属表</th>
+                      <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>业务描述</th>
+                      <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>来源</th>
+                      <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)' }}>样例值</th>
+                      <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)', width: 50 }}>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedColumns.map(col => {
+                      const effectiveRole = col.user_semantic_role || col.ai_semantic_role || col.semantic_role;
+                      const roleBadge = {
+                        metric_candidate: { label: 'M', color: 'var(--accent)', bg: 'var(--accent-soft)' },
+                        dimension_candidate: { label: 'D', color: 'var(--pos)', bg: 'var(--pos-soft)' },
+                        time_field: { label: 'T', color: 'var(--warn)', bg: 'var(--warn-soft)' },
+                        id_field: { label: 'ID', color: 'var(--text-3)', bg: 'var(--bg-2)' },
+                        unused: { label: '—', color: 'var(--text-4)', bg: 'var(--bg-2)' },
+                      }[effectiveRole] || { label: '?', color: 'var(--text-3)', bg: 'var(--bg-2)' };
+
+                      const sourceBadge = {
+                        db_comment: { label: '注释', color: '#16a34a', bg: '#dcfce7', tip: '来自数据库注释' },
+                        ai:         { label: 'AI',   color: '#2563eb', bg: '#dbeafe', tip: 'AI 自动生成' },
+                        user:       { label: '用户', color: '#ca8a04', bg: '#fef9c3', tip: '用户手动修改' },
+                        fallback:   { label: '回退', color: '#6b7280', bg: '#f3f4f6', tip: '无描述，退回字段名' },
+                        unknown:    { label: '识别中…', color: '#9ca3af', bg: '#f3f4f6', tip: '正在识别业务语义…' },
+                        stale:      { label: '待更新', color: '#ea580c', bg: '#ffedd5', tip: '注释已变更，待重新标注' },
+                      }[col.desc_source] || { label: '?', color: '#6b7280', bg: '#f3f4f6', tip: '' };
+
+                      const isEditing = editingColumnId === col.id;
+                      return (
+                        <tr key={col.id} style={{ borderBottom: '1px solid var(--hairline)', background: isEditing ? 'var(--bg-2)' : undefined }}>
+                          {isEditing ? (
+                            <>
+                              {/* 编辑模式 */}
+                              <td style={{ padding: '7px 10px' }}>
+                                <select
+                                  value={columnEditForm.user_semantic_role}
+                                  onChange={e => setColumnEditForm(prev => ({ ...prev, user_semantic_role: e.target.value }))}
+                                  style={{ padding: '3px 6px', borderRadius: 4, border: '1px solid var(--hairline)', fontSize: 11, background: 'var(--surface)', color: 'var(--text)' }}
+                                >
+                                  <option value="">自动</option>
+                                  <option value="metric_candidate">M 度量</option>
+                                  <option value="dimension_candidate">D 维度</option>
+                                  <option value="time_field">T 时间</option>
+                                  <option value="id_field">ID 标识</option>
+                                  <option value="unused">— 未用</option>
+                                </select>
+                              </td>
+                              <td style={{ padding: '7px 10px', fontWeight: 500, color: 'var(--text)' }}>{col.column_name}</td>
+                              <td style={{ padding: '7px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{col.data_type}</td>
+                              <td style={{ padding: '7px 10px', fontSize: 11, color: 'var(--text-2)' }}>{col.table_name}</td>
+                              <td style={{ padding: '7px 10px' }} colSpan={2}>
+                                <input
+                                  type="text"
+                                  value={columnEditForm.user_description}
+                                  onChange={e => setColumnEditForm(prev => ({ ...prev, user_description: e.target.value }))}
+                                  placeholder="输入业务描述…"
+                                  style={{ width: '100%', padding: '4px 8px', borderRadius: 4, border: '1px solid var(--hairline)', fontSize: 12, background: 'var(--surface)', color: 'var(--text)' }}
+                                />
+                              </td>
+                              <td style={{ padding: '7px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {col.sample_values?.length > 0 ? col.sample_values.slice(0, 3).join(', ') : <span style={{ color: 'var(--text-4)' }}>—</span>}
+                              </td>
+                              <td style={{ padding: '7px 10px', display: 'flex', gap: 4, alignItems: 'center' }}>
+                                <button className="icon-btn" title="保存" onClick={() => handleSaveColumnEdit(col.id)} style={{ width: 22, height: 22 }}>
+                                  <Icon name="check" style={{ width: 12, height: 12, color: 'var(--pos)' }} />
+                                </button>
+                                <button className="icon-btn" title="取消" onClick={handleCancelColumnEdit} style={{ width: 22, height: 22 }}>
+                                  <Icon name="x" style={{ width: 12, height: 12, color: 'var(--text-4)' }} />
+                                </button>
+                              </td>
+                            </>
+                          ) : (
+                            <>
+                              {/* 只读模式 */}
+                              <td style={{ padding: '7px 10px' }}>
+                                <span style={{
+                                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                  width: 22, height: 22, borderRadius: 4, background: roleBadge.bg,
+                                  fontSize: 10, fontWeight: 600, color: roleBadge.color,
+                                }}>{roleBadge.label}</span>
+                              </td>
+                              <td style={{ padding: '7px 10px', fontWeight: 500, color: 'var(--text)' }}>{col.column_name}</td>
+                              <td style={{ padding: '7px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{col.data_type}</td>
+                              <td style={{ padding: '7px 10px', fontSize: 11, color: 'var(--text-2)' }}>{col.table_name}</td>
+                              <td style={{ padding: '7px 10px', color: 'var(--text-2)' }}>
+                                {col.effective_desc || col.business_desc || <span style={{ color: 'var(--text-4)' }}>—</span>}
+                              </td>
+                              <td style={{ padding: '7px 10px' }}>
+                                <span title={sourceBadge.tip} style={{
+                                  display: 'inline-block',
+                                  padding: '1px 6px',
+                                  borderRadius: 4,
+                                  fontSize: 10,
+                                  fontWeight: 500,
+                                  color: sourceBadge.color,
+                                  background: sourceBadge.bg,
+                                  whiteSpace: 'nowrap',
+                                }}>{sourceBadge.label}</span>
+                              </td>
+                              <td style={{ padding: '7px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {col.sample_values?.length > 0 ? col.sample_values.slice(0, 3).join(', ') : <span style={{ color: 'var(--text-4)' }}>—</span>}
+                              </td>
+                              <td style={{ padding: '7px 10px', display: 'flex', gap: 4, alignItems: 'center' }}>
+                                {effectiveRole === 'metric_candidate' && (
+                                  <button className="icon-btn" title="新建指标" onClick={() => handleCreateMetricFromColumn(col)} style={{ width: 22, height: 22 }}>
+                                    <Icon name="plus" style={{ width: 12, height: 12, color: 'var(--accent)' }} />
+                                  </button>
+                                )}
+                                {effectiveRole === 'dimension_candidate' && (
+                                  <button className="icon-btn" title="新建维度" onClick={() => handleCreateDimFromColumn(col)} style={{ width: 22, height: 22 }}>
+                                    <Icon name="plus" style={{ width: 12, height: 12, color: 'var(--pos)' }} />
+                                  </button>
+                                )}
+                                <button className="icon-btn" title="编辑标注" onClick={() => handleStartEditColumn(col)} style={{ width: 22, height: 22 }}>
+                                  <Icon name="edit" style={{ width: 12, height: 12, color: 'var(--text-3)' }} />
+                                </button>
+                              </td>
+                            </>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-              <h1 style={{fontSize:22, fontWeight:500, margin:'0 0 4px', letterSpacing:'-0.02em'}}>{activeDs?.name || '数据集 & 指标'}</h1>
-              <p style={{color:'var(--text-3)', fontSize:13, margin:0}}>数语在生成 SQL 时会优先匹配这里的定义。同义词、版本和行级权限是保证回答口径一致与合规的关键。</p>
+              )}
             </div>
-            <div style={{display:'flex', gap:8}}>
-              <button className="btn ghost"><Icon name="upload" />导入 YAML</button>
-              <button className="btn primary" onClick={() => tab === 'metrics' ? setShowMetricForm(true) : tab === 'dimensions' ? setShowDimForm(true) : null}>
-                <Icon name="plus" />新建
-              </button>
-            </div>
+            );
+            })()}
+
+            {/* 数据预览 */}
+            {selectedTableIds.size > 0 && (
+              <div style={{ marginTop: 16, border: '1px solid var(--hairline)', borderRadius: 8, overflow: 'hidden' }}>
+                <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-3)', background: 'var(--bg-2)', borderBottom: '1px solid var(--hairline)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>数据预览</span>
+                    <select
+                      value={previewTableId || ''}
+                      onChange={e => setPreviewTableId(Number(e.target.value))}
+                      style={{ padding: '2px 6px', borderRadius: 4, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 11 }}
+                    >
+                      {allSourceTables.filter(t => selectedTableIds.has(t.id)).map(t => (
+                        <option key={t.id} value={t.id}>{t.table_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {previewLoading && <span style={{ fontSize: 10 }}>加载中…</span>}
+                </div>
+                {previewData && previewData.rows?.length > 0 ? (
+                  <div style={{ overflow: 'auto', maxHeight: 200 }}>
+                    <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ background: 'var(--bg-2)' }}>
+                          {previewData.columns.map(c => (
+                            <th key={c} style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 500, color: 'var(--text-3)', borderBottom: '1px solid var(--hairline)', whiteSpace: 'nowrap' }}>{c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewData.rows.map((row, i) => (
+                          <tr key={i}>
+                            {previewData.columns.map(c => (
+                              <td key={c} style={{ padding: '6px 10px', borderBottom: '1px solid var(--hairline)', color: 'var(--text-2)', whiteSpace: 'nowrap', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {row[c] ?? <span style={{ color: 'var(--text-4)' }}>NULL</span>}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div style={{ padding: 16, fontSize: 12, color: 'var(--text-3)' }}>暂无数据</div>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* Tabs */}
-          <div style={{display:'flex', gap:4, borderBottom:'1px solid var(--hairline)', marginBottom:18}}>
-            {tabs.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)} style={{
-                padding:'8px 12px', fontSize:13, cursor:'pointer', border:'none', background:'none',
-                color: tab === t.id ? 'var(--text)' : 'var(--text-3)',
-                borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
-                display:'flex', alignItems:'center', gap:6,
-              }}>
-                <Icon name={t.icon} />
-                {t.label}
-                {t.count !== null && <span style={{fontSize:11, color:'var(--text-4)', fontFamily:'var(--font-mono)'}}>{t.count}</span>}
-              </button>
-            ))}
-          </div>
+          {/* 右栏：指标/维度定义 */}
+          <div style={{ borderLeft: '1px solid var(--hairline)', paddingLeft: 12 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0 0 8px', fontWeight: 500 }}>已定义指标</div>
+            {metrics.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>暂无指标</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
+                {metrics.map(m => (
+                  <div key={m.id} style={{ padding: '8px 10px', background: 'var(--surface)', border: '1px solid var(--hairline)', borderRadius: 6, fontSize: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 500 }}>{m.name}</span>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button className="icon-btn" style={{ width: 20, height: 20 }} onClick={() => handleEditMetric(m)}><Icon name="edit" style={{ width: 12, height: 12 }} /></button>
+                        <button className="icon-btn" style={{ width: 20, height: 20, color: 'var(--neg)' }} onClick={() => handleDelMetric(m.id)}><Icon name="trash" style={{ width: 12, height: 12 }} /></button>
+                      </div>
+                    </div>
+                    <code style={{ fontSize: 11, color: 'var(--accent)' }}>{m.expr}</code>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="btn ghost" style={{ width: '100%', fontSize: 12, marginBottom: 16 }} onClick={() => { setEditingMetricId(null); setMetricForm({ name: '', display_name: '', expr: '', table_name: '', time_field: '', granularity: '', format_str: '', filter_sql: '', synonyms: '', description: '' }); setShowMetricForm(true); }}>
+              <Icon name="plus" />新建指标
+            </button>
 
-          {tab === 'metrics'    && <MetricsTab metrics={metrics} q={q} setQ={setQ} onDel={handleDelMetric} />}
-          {tab === 'dimensions' && <DimensionsTab dimensions={dimensions} q={q} setQ={setQ} onDel={handleDelDim} />}
-          {tab === 'glossary'   && <GlossaryTab q={q} setQ={setQ} />}
-          {tab === 'permission' && <PermissionTab />}
-          {tab === 'versions'   && <VersionsTab />}
+            <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '12px 0 8px', fontWeight: 500 }}>已定义维度</div>
+            {dimensions.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>暂无维度</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
+                {dimensions.map(d => (
+                  <div key={d.id} style={{ padding: '8px 10px', background: 'var(--surface)', border: '1px solid var(--hairline)', borderRadius: 6, fontSize: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 500 }}>{d.name}</span>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button className="icon-btn" style={{ width: 20, height: 20 }} onClick={() => handleEditDim(d)}><Icon name="edit" style={{ width: 12, height: 12 }} /></button>
+                        <button className="icon-btn" style={{ width: 20, height: 20, color: 'var(--neg)' }} onClick={() => handleDelDim(d.id)}><Icon name="trash" style={{ width: 12, height: 12 }} /></button>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{d.column_name} {d.table_name && `· ${d.table_name}`}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="btn ghost" style={{ width: '100%', fontSize: 12 }} onClick={() => { setEditingDimId(null); setDimForm({ name: '', display_name: '', column_name: '', table_name: '', join_to: '', join_key: '', enum_values: '', synonyms: '' }); setShowDimForm(true); }}>
+              <Icon name="plus" />新建维度
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* 添加指标弹窗 */}
+      {/* ── 底部：试问验证 ── */}
+      {activeDsId && (
+        <div style={{ marginTop: 24, border: '1px solid var(--hairline)', borderRadius: 10, padding: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Icon name="beaker" style={{ width: 14, height: 14, color: 'var(--accent)' }} />
+            语义层验证
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <input
+              placeholder="例如：上周各区域销售额"
+              value={testQuestion}
+              onChange={e => setTestQuestion(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleTestQuery(); }}
+              style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13, outline: 'none' }}
+            />
+            <button className="btn primary" onClick={handleTestQuery} disabled={testStreaming || !testQuestion.trim()}>
+              {testStreaming ? '验证中…' : '试问'}
+            </button>
+            {testStreaming && (
+              <button className="btn ghost" onClick={() => { testAbortRef.current?.abort(); setTestStreaming(false); }}>停止</button>
+            )}
+          </div>
+          {testSql && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>生成的 SQL</div>
+              <pre style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 6, fontSize: 12, overflow: 'auto', margin: 0, color: 'var(--accent)' }}>{testSql}</pre>
+            </div>
+          )}
+          {testResult && (
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>回答</div>
+              <div style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 6, fontSize: 13, lineHeight: 1.6 }}>{testResult}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── 弹窗：删除数据集（二次确认）── */}
+      {confirmDelete && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 201, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setConfirmDelete(null)}
+        >
+          <div
+            style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 420, border: '1px solid var(--hairline)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Icon name="warn" style={{ width: 16, height: 16, color: 'var(--neg)' }} />
+              删除数据集
+            </h3>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>
+              确认要删除 <strong style={{ color: 'var(--text)' }}>「{confirmDelete.name}」</strong> 吗？<br />
+              该数据集下所有指标和维度定义也会被一并删除，且不可恢复。
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="btn ghost" onClick={() => setConfirmDelete(null)}>取消</button>
+              <button
+                className="btn primary"
+                onClick={confirmDeleteDataset}
+                style={{ background: 'var(--neg)', borderColor: 'var(--neg)' }}
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 弹窗：新建数据集 ── */}
+      {showDsForm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowDsForm(false)}>
+          <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 480, border: '1px solid var(--hairline)' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 16px' }}>新建数据集</h3>
+            <FormField label="名称" value={dsForm.name} onChange={v => setDsForm({ ...dsForm, name: v })} placeholder="如: 零售业务数据集" />
+            <FormField label="数据源" type="select" value={dsForm.datasource_id} onChange={v => setDsForm({ ...dsForm, datasource_id: v })} options={[{ value: '', label: '请选择数据源' }, ...datasources.map(d => ({ value: String(d.id), label: d.name }))]} />
+            <FormField label="描述 (可选)" value={dsForm.description} onChange={v => setDsForm({ ...dsForm, description: v })} placeholder="数据集用途说明…" />
+            <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button className="btn ghost" onClick={() => setShowDsForm(false)}>取消</button>
+              <button className="btn primary" onClick={handleCreateDataset}>创建</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 弹窗：指标表单 ── */}
       {showMetricForm && (
-        <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', zIndex:101, display:'flex', alignItems:'center', justifyContent:'center'}} onClick={() => setShowMetricForm(false)}>
-          <div style={{background:'var(--bg)', borderRadius:12, padding:24, width:480, border:'1px solid var(--hairline)'}} onClick={e => e.stopPropagation()}>
-            <h3 style={{margin:'0 0 16px'}}>添加指标</h3>
-            <FormField label="英文名" value={metricForm.name} onChange={v => setMetricForm({...metricForm, name: v})} placeholder="如: gmv" />
-            <FormField label="显示名" value={metricForm.display_name} onChange={v => setMetricForm({...metricForm, display_name: v})} placeholder="如: 成交金额" />
-            <FormField label="表达式" value={metricForm.expr} onChange={v => setMetricForm({...metricForm, expr: v})} placeholder="如: SUM(amount)" />
-            <FormField label="过滤 SQL (可选)" value={metricForm.filter_sql} onChange={v => setMetricForm({...metricForm, filter_sql: v})} />
-            <FormField label="同义词 (逗号分隔)" value={metricForm.synonyms} onChange={v => setMetricForm({...metricForm, synonyms: v})} placeholder="销售额,GMV" />
-            <FormField label="描述 (可选)" value={metricForm.description} onChange={v => setMetricForm({...metricForm, description: v})} />
-            <div style={{display:'flex', gap:10, marginTop:16, justifyContent:'flex-end'}}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowMetricForm(false)}>
+          <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 520, border: '1px solid var(--hairline)', maxHeight: '90vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 16px' }}>{editingMetricId ? '编辑指标' : '新建指标'}</h3>
+            <FormField label="名称" value={metricForm.name} onChange={v => setMetricForm({ ...metricForm, name: v })} placeholder="如: 销售额" />
+            <FormField label="显示名" value={metricForm.display_name} onChange={v => setMetricForm({ ...metricForm, display_name: v })} placeholder="如: 销售金额" />
+            <FormField label="表达式" value={metricForm.expr} onChange={v => setMetricForm({ ...metricForm, expr: v })} placeholder="如: SUM(order_amount)" />
+            <FormField label="主表" type="select" value={metricForm.table_name} onChange={v => setMetricForm({ ...metricForm, table_name: v, time_field: '' })} options={[{ value: '', label: '请选择表' }, ...[...new Set(selectedColumns.map(c => c.table_name))].map(t => ({ value: t, label: t }))]} />
+            <FormField label="时间字段" type="select" value={metricForm.time_field} onChange={v => setMetricForm({ ...metricForm, time_field: v })} options={metricForm.table_name ? [{ value: '', label: '请选择时间字段' }, ...selectedColumns.filter(c => c.table_name === metricForm.table_name && (c.ai_semantic_role === 'time_field' || c.semantic_role === 'time_field')).map(c => ({ value: c.column_name, label: `${c.column_name} (${c.effective_desc || c.column_name})` }))] : [{ value: '', label: '请先选择主表' }]} />
+            <FormField label="粒度" type="select" value={metricForm.granularity} onChange={v => setMetricForm({ ...metricForm, granularity: v })} options={[{ value: '', label: '无' }, { value: 'daily', label: '日' }, { value: 'weekly', label: '周' }, { value: 'monthly', label: '月' }]} />
+            <FormField label="展示格式" value={metricForm.format_str} onChange={v => setMetricForm({ ...metricForm, format_str: v })} placeholder="如: ¥{value:,.0f}" />
+            <FormField label="过滤条件 (可选)" value={metricForm.filter_sql} onChange={v => setMetricForm({ ...metricForm, filter_sql: v })} placeholder="如: status != 'cancelled'" />
+            <FormField label="同义词 (逗号分隔)" value={metricForm.synonyms} onChange={v => setMetricForm({ ...metricForm, synonyms: v })} placeholder="GMV, 流水, 成交额" />
+            <FormField label="描述 (可选)" value={metricForm.description} onChange={v => setMetricForm({ ...metricForm, description: v })} />
+            <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
               <button className="btn ghost" onClick={() => setShowMetricForm(false)}>取消</button>
-              <button className="btn primary" onClick={handleAddMetric}>添加</button>
+              <button className="btn primary" onClick={handleAddMetric}>保存</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 添加维度弹窗 */}
+      {/* ── 弹窗：维度表单 ── */}
       {showDimForm && (
-        <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', zIndex:101, display:'flex', alignItems:'center', justifyContent:'center'}} onClick={() => setShowDimForm(false)}>
-          <div style={{background:'var(--bg)', borderRadius:12, padding:24, width:480, border:'1px solid var(--hairline)'}} onClick={e => e.stopPropagation()}>
-            <h3 style={{margin:'0 0 16px'}}>添加维度</h3>
-            <FormField label="英文名" value={dimForm.name} onChange={v => setDimForm({...dimForm, name: v})} placeholder="如: region" />
-            <FormField label="显示名" value={dimForm.display_name} onChange={v => setDimForm({...dimForm, display_name: v})} placeholder="如: 区域" />
-            <FormField label="字段名" value={dimForm.column_name} onChange={v => setDimForm({...dimForm, column_name: v})} placeholder="如: region_code" />
-            <FormField label="枚举值 (逗号分隔)" value={dimForm.enum_values} onChange={v => setDimForm({...dimForm, enum_values: v})} placeholder="华北,华东,华南" />
-            <FormField label="同义词 (逗号分隔)" value={dimForm.synonyms} onChange={v => setDimForm({...dimForm, synonyms: v})} placeholder="地区,省份" />
-            <div style={{display:'flex', gap:10, marginTop:16, justifyContent:'flex-end'}}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowDimForm(false)}>
+          <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 520, border: '1px solid var(--hairline)', maxHeight: '90vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 16px' }}>{editingDimId ? '编辑维度' : '新建维度'}</h3>
+            <FormField label="名称" value={dimForm.name} onChange={v => setDimForm({ ...dimForm, name: v })} placeholder="如: 区域" />
+            <FormField label="显示名" value={dimForm.display_name} onChange={v => setDimForm({ ...dimForm, display_name: v })} placeholder="如: 销售区域" />
+            <FormField label="所属表" type="select" value={dimForm.table_name} onChange={v => setDimForm({ ...dimForm, table_name: v, column_name: '' })} options={[{ value: '', label: '请选择表' }, ...[...new Set(selectedColumns.map(c => c.table_name))].map(t => ({ value: t, label: t }))]} />
+            <FormField label="字段名" type="select" value={dimForm.column_name} onChange={v => setDimForm({ ...dimForm, column_name: v })} options={dimForm.table_name ? [{ value: '', label: '请选择字段' }, ...selectedColumns.filter(c => c.table_name === dimForm.table_name).map(c => ({ value: c.column_name, label: `${c.column_name} (${c.effective_desc || c.column_name})` }))] : [{ value: '', label: '请先选择所属表' }]} />
+            <FormField label="关联事实表 (可选)" value={dimForm.join_to} onChange={v => setDimForm({ ...dimForm, join_to: v })} placeholder="如: orders" />
+            <FormField label="关联键 (可选)" value={dimForm.join_key} onChange={v => setDimForm({ ...dimForm, join_key: v })} placeholder="如: region_code" />
+            <FormField label="枚举值 (逗号分隔)" value={dimForm.enum_values} onChange={v => setDimForm({ ...dimForm, enum_values: v })} placeholder="华北,华东,华南" />
+            <FormField label="同义词 (逗号分隔)" value={dimForm.synonyms} onChange={v => setDimForm({ ...dimForm, synonyms: v })} placeholder="地区,区" />
+            <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
               <button className="btn ghost" onClick={() => setShowDimForm(false)}>取消</button>
-              <button className="btn primary" onClick={handleAddDim}>添加</button>
+              <button className="btn primary" onClick={handleAddDim}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 弹窗：YAML 导入 ── */}
+      {showYamlImport && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowYamlImport(false)}>
+          <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 640, border: '1px solid var(--hairline)', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 16px' }}>导入 YAML</h3>
+            <textarea
+              value={yamlText}
+              onChange={e => setYamlText(e.target.value)}
+              placeholder="粘贴 YAML 配置…"
+              style={{ flex: 1, minHeight: 300, padding: 12, borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--font-mono)', resize: 'vertical', outline: 'none' }}
+            />
+            <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button className="btn ghost" onClick={() => setShowYamlImport(false)}>取消</button>
+              <button className="btn primary" onClick={handleImportYaml}>导入</button>
             </div>
           </div>
         </div>
@@ -222,233 +1356,76 @@ function DatasetsScreen() {
   );
 }
 
-// ── Metrics Tab ─────────────────────────────────────────────
-function MetricsTab({ metrics, q, setQ, onDel }) {
-  const [expanded, setExpanded] = useState(null);
-
-  const mockMetrics = [
-    { id: 1, name: 'GMV', display_name: '成交金额', desc: '商品交易总额（含未支付）', formula: 'SUM(orders.gross_amount)', synonyms: ['销售额', '成交额'], owner: '王雨晴·财务', ver: 'v3.2', state: 'ok', type: 'calc', hits: 4218 },
-    { id: 2, name: '订单数', display_name: '订单数', desc: '已支付订单去重数量', formula: 'COUNT(DISTINCT order_id)', synonyms: ['单量', 'order count'], owner: '张磊·BI', ver: 'v2.1', state: 'ok', type: 'raw', hits: 3142 },
-    { id: 3, name: '客单价', display_name: '客单价', desc: 'GMV / 订单数', formula: '[GMV] / [订单数]', synonyms: ['AOV', '平均订单金额'], owner: '王雨晴·财务', ver: 'v1.4', state: 'ok', type: 'calc', hits: 2418 },
-    { id: 4, name: '复购率', display_name: '复购率', desc: '过去30天有2单及以上用户比例', formula: 'repeat_users_30d / total_users_30d', synonyms: ['回购率'], owner: '李婷·增长', ver: 'v0.9', state: 'draft', type: 'calc', hits: 218, conflict: true },
-  ];
-  const displayMetrics = metrics.length > 0 ? metrics : mockMetrics;
-  const filtered = displayMetrics.filter(m => !q || m.name.includes(q) || m.synonyms?.some(s => s.includes(q)) || m.desc?.includes(q));
-
-  return (
-    <div>
-      <div className="search-bar" style={{marginBottom:14}}>
-        <Icon name="search" />
-        <input placeholder="搜索指标名 / 同义词 / 公式…" value={q} onChange={e => setQ(e.target.value)} style={{flex:1, background:'transparent', border:'none', outline:'none', fontSize:13}} />
-        <span style={{fontSize:11, color:'var(--text-3)', fontFamily:'var(--font-mono)'}}>⌘ F</span>
-      </div>
-
-      <div style={{border:'1px solid var(--hairline)', borderRadius:8, overflow:'hidden'}}>
-        <div style={{display:'grid', gridTemplateColumns:'28px 1.4fr 0.8fr 1.2fr 100px 80px 48px', alignItems:'center', padding:'8px 12px', fontSize:11, color:'var(--text-3)', borderBottom:'1px solid var(--hairline)', background:'var(--bg-2)'}}>
-          <span></span>
-          <span>指标名称</span>
-          <span>同义词</span>
-          <span>计算公式</span>
-          <span>负责人</span>
-          <span>版本/状态</span>
-          <span></span>
-        </div>
-        {filtered.map(m => (
-          <div key={m.id || m.name}>
-            <div onClick={() => setExpanded(expanded === (m.id || m.name) ? null : (m.id || m.name))}
-              style={{display:'grid', gridTemplateColumns:'28px 1.4fr 0.8fr 1.2fr 100px 80px 48px', alignItems:'center', padding:'10px 12px', fontSize:13, cursor:'pointer', borderBottom:'1px solid var(--hairline)', background: expanded === (m.id || m.name) ? 'var(--bg-2)' : 'var(--surface)'}}>
-              <div style={{width:22, height:22, borderRadius:4, background: m.type === 'calc' ? 'var(--accent-soft)' : 'var(--bg-2)', display:'flex', alignItems:'center', justifyContent:'center'}}>
-                <Icon name={m.type === 'calc' ? 'formula' : 'database'} style={{width:12, height:12, color:'var(--accent)'}} />
-              </div>
-              <div>
-                <div style={{fontWeight:500}}>{m.name}</div>
-                <div style={{fontSize:11, color:'var(--text-3)'}}>{m.desc}</div>
-              </div>
-              <div style={{display:'flex', gap:4, flexWrap:'wrap'}}>
-                {(m.synonyms || []).slice(0, 3).map(s => <span key={s} style={{fontSize:10.5, padding:'1px 6px', borderRadius:4, background:'var(--bg-2)', color:'var(--text-2)'}}>{s}</span>)}
-              </div>
-              <div>
-                <code style={{fontSize:12, color:'var(--accent)'}}>{m.formula}</code>
-              </div>
-              <div style={{fontSize:12, color:'var(--text-2)'}}>{m.owner}</div>
-              <div style={{display:'flex', alignItems:'center', gap:6}}>
-                <span style={{fontFamily:'var(--font-mono)', fontSize:11}}>{m.ver}</span>
-                <span style={{fontSize:10, padding:'1px 6px', borderRadius:4, background: m.state === 'ok' ? 'var(--pos-soft)' : 'var(--warn-soft)', color: m.state === 'ok' ? 'var(--pos)' : 'var(--warn)'}}>
-                  {m.state === 'ok' ? '已上线' : '草稿'}
-                </span>
-              </div>
-              <button className="icon-btn" style={{color:'var(--neg)'}} onClick={(e) => { e.stopPropagation(); onDel(m.id); }}><Icon name="trash" /></button>
-            </div>
-            {expanded === (m.id || m.name) && (
-              <div style={{padding:'12px 16px', background:'var(--bg-2)', borderBottom:'1px solid var(--hairline)', fontSize:12}}>
-                <div style={{marginBottom:8}}><span style={{color:'var(--text-3)'}}>命中:</span> {m.hits} 次 · <span style={{color:'var(--text-3)'}}>冲突:</span> {m.conflict ? '是（口径不一致）' : '无'}</div>
-                <code style={{fontSize:12, color:'var(--accent)', background:'var(--surface)', padding:'4px 8px', borderRadius:4}}>{m.formula}</code>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Dimensions Tab ───────────────────────────────────────────
-function DimensionsTab({ dimensions, q, setQ, onDel }) {
-  const mockDims = [
-    { id: 1, name: 'region', display_name: '区域', column_name: 'region_code', enum_values: ['华北', '华东', '华南', '西南'], synonyms: ['地区', '省份'], owner: '王雨晴', state: 'ok' },
-    { id: 2, name: 'category', display_name: '品类', column_name: 'category_id', enum_values: ['服饰', '美妆', '家电', '食品'], synonyms: ['类目', '商品分类'], owner: '张磊', state: 'ok' },
-    { id: 3, name: 'store', display_name: '店铺', column_name: 'store_id', enum_values: null, synonyms: ['门店', '商店'], owner: '李婷', state: 'ok' },
-  ];
-  const displayDims = dimensions.length > 0 ? dimensions : mockDims;
-  const filtered = displayDims.filter(d => !q || d.name.includes(q) || d.display_name.includes(q));
-
-  return (
-    <div>
-      <div className="search-bar" style={{marginBottom:14}}>
-        <Icon name="search" />
-        <input placeholder="搜索维度名 / 字段…" value={q} onChange={e => setQ(e.target.value)} style={{flex:1, background:'transparent', border:'none', outline:'none', fontSize:13}} />
-      </div>
-      <div style={{display:'flex', flexDirection:'column', gap:8}}>
-        {filtered.map(d => (
-          <div key={d.id || d.name} style={{padding:12, background:'var(--surface)', border:'1px solid var(--hairline)', borderRadius:8, display:'flex', alignItems:'center', gap:12}}>
-            <div style={{width:28, height:28, borderRadius:6, background:'var(--accent-soft)', display:'flex', alignItems:'center', justifyContent:'center'}}>
-              <Icon name="layers" style={{width:14, height:14, color:'var(--accent)'}} />
-            </div>
-            <div style={{flex:1}}>
-              <div style={{fontWeight:500, fontSize:14}}>{d.display_name} <span style={{fontFamily:'var(--font-mono)', fontSize:12, color:'var(--text-3)'}}>({d.name})</span></div>
-              <div style={{fontSize:11, color:'var(--text-3)', marginTop:2}}>字段: <code style={{color:'var(--accent)'}}>{d.column_name}</code> · {d.owner}</div>
-            </div>
-            {d.enum_values && (
-              <div style={{display:'flex', gap:4, flexWrap:'wrap'}}>
-                {(d.enum_values).map(v => <span key={v} style={{fontSize:10.5, padding:'1px 6px', borderRadius:4, background:'var(--bg-2)', color:'var(--text-2)'}}>{v}</span>)}
-              </div>
-            )}
-            <span style={{fontSize:10, padding:'1px 6px', borderRadius:4, background: d.state === 'ok' ? 'var(--pos-soft)' : 'var(--warn-soft)', color: d.state === 'ok' ? 'var(--pos)' : 'var(--warn)'}}>
-              {d.state === 'ok' ? '已上线' : '草稿'}
-            </span>
-            <button className="icon-btn" style={{color:'var(--neg)'}} onClick={() => onDel(d.id)}><Icon name="trash" /></button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Glossary Tab ─────────────────────────────────────────────
-function GlossaryTab({ q, setQ }) {
-  const terms = [
-    { term: 'GMV', definition: '商品交易总额，指已完成支付的所有订单金额总和，含退款订单。', owner: '王雨晴', updated: '2025-11-08' },
-    { term: 'AOV', definition: '平均订单金额，GMV / 订单数。', owner: '王雨晴', updated: '2025-09-22' },
-    { term: 'CVR', definition: '转化率，完成付款用户 / 访客数。', owner: '李婷', updated: '2025-10-04' },
-    { term: 'ROAS', definition: '广告回报率，广告带来的 GMV / 广告花费。', owner: '陈昊', updated: '2025-12-15' },
-  ];
-  const filtered = terms.filter(t => !q || t.term.includes(q) || t.definition.includes(q));
-
-  return (
-    <div>
-      <div className="search-bar" style={{marginBottom:14}}>
-        <Icon name="search" />
-        <input placeholder="搜索业务术语…" value={q} onChange={e => setQ(e.target.value)} style={{flex:1, background:'transparent', border:'none', outline:'none', fontSize:13}} />
-      </div>
-      <div style={{display:'flex', flexDirection:'column', gap:10}}>
-        {filtered.map(t => (
-          <div key={t.term} style={{padding:14, background:'var(--surface)', border:'1px solid var(--hairline)', borderRadius:8}}>
-            <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:6}}>
-              <span style={{fontWeight:600, fontSize:14, fontFamily:'var(--font-mono)', color:'var(--accent)'}}>{t.term}</span>
-              <span style={{fontSize:11, color:'var(--text-3)'}}>{t.owner} · {t.updated}</span>
-            </div>
-            <p style={{fontSize:13, color:'var(--text-2)', margin:0, lineHeight:1.5}}>{t.definition}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Permission Tab ────────────────────────────────────────────
-function PermissionTab() {
-  const roles = [
-    { name: '数据分析师', desc: '可查询所有数据集，限制敏感字段', level: 'read', users: 12 },
-    { name: '区域运营', desc: '仅可看本区域（华东/华南/华北/西南）数据', level: 'row', users: 34 },
-    { name: '高管', desc: '仅可看聚合指标，屏蔽店铺级明细', level: 'aggregate', users: 5 },
-    { name: '外部合作方', desc: '仅可看脱敏后的公开指标', level: 'public', users: 8 },
-  ];
-
-  return (
-    <div>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16}}>
-        <h3 style={{margin:0, fontSize:15, fontWeight:500}}>行级权限</h3>
-        <button className="btn primary" style={{height:28, fontSize:12}}><Icon name="plus" />新建角色</button>
-      </div>
-      <div style={{display:'flex', flexDirection:'column', gap:10}}>
-        {roles.map(r => (
-          <div key={r.name} style={{display:'flex', alignItems:'center', gap:14, padding:14, background:'var(--surface)', border:'1px solid var(--hairline)', borderRadius:8}}>
-            <div style={{width:36, height:36, borderRadius:8, background:'var(--bg-2)', display:'flex', alignItems:'center', justifyContent:'center'}}>
-              <Icon name="shield" style={{width:16, height:16, color:'var(--accent)'}} />
-            </div>
-            <div style={{flex:1}}>
-              <div style={{fontWeight:500, fontSize:14}}>{r.name}</div>
-              <div style={{fontSize:12, color:'var(--text-3)', marginTop:2}}>{r.desc}</div>
-            </div>
-            <div style={{display:'flex', alignItems:'center', gap:8}}>
-              <span style={{fontSize:10, padding:'2px 8px', borderRadius:4, background:'var(--accent-soft)', color:'var(--accent)', fontFamily:'var(--font-mono)'}}>{r.level}</span>
-              <span style={{fontSize:12, color:'var(--text-3)'}}>{r.users} 人</span>
-            </div>
-            <button className="btn ghost" style={{height:28, fontSize:12}}>编辑</button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Versions Tab ─────────────────────────────────────────────
-function VersionsTab() {
-  const history = [
-    { ver: 'v3.2', when: '2025-11-08', who: '王雨晴', note: '增加退款剔除逻辑，与财务口径对齐', metric: 'GMV' },
-    { ver: 'v3.1', when: '2025-10-15', who: '张磊', note: '修正 region 映射错误，新增华南区', metric: 'GMV' },
-    { ver: 'v3.0', when: '2025-09-01', who: '王雨晴', note: '口径升级：gross_amount → net_amount', metric: 'GMV' },
-    { ver: 'v2.9', when: '2025-08-12', who: '李婷', note: '新增复购率指标定义（草稿）', metric: '复购率' },
-    { ver: 'v2.1', when: '2025-06-20', who: '张磊', note: '订单数排除取消订单', metric: '订单数' },
-  ];
-
-  return (
-    <div>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16}}>
-        <h3 style={{margin:0, fontSize:15, fontWeight:500}}>版本历史</h3>
-        <button className="btn ghost" style={{height:28, fontSize:12}}><Icon name="download" />导出</button>
-      </div>
-      <div style={{border:'1px solid var(--hairline)', borderRadius:8, overflow:'hidden'}}>
-        <div style={{display:'grid', gridTemplateColumns:'80px 100px 80px 1fr', padding:'8px 14px', fontSize:11, color:'var(--text-3)', background:'var(--bg-2)', borderBottom:'1px solid var(--hairline)'}}>
-          <span>版本</span><span>时间</span><span>操作人</span><span>变更说明</span>
-        </div>
-        {history.map(h => (
-          <div key={h.ver} style={{display:'grid', gridTemplateColumns:'80px 100px 80px 1fr', padding:'10px 14px', fontSize:13, borderBottom:'1px solid var(--hairline)', alignItems:'center'}}>
-            <span style={{fontFamily:'var(--font-mono)', color:'var(--accent)', fontSize:12}}>{h.ver}</span>
-            <span style={{fontSize:12, color:'var(--text-3)'}}>{h.when}</span>
-            <span style={{fontSize:12}}>{h.who}</span>
-            <div>
-              <span style={{fontSize:12, padding:'1px 6px', borderRadius:4, background:'var(--bg-2)', color:'var(--text-2)', marginRight:8}}>{h.metric}</span>
-              <span style={{fontSize:12, color:'var(--text-2)'}}>{h.note}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Shared ───────────────────────────────────────────────────
+// ── FormField — 通用表单字段 ────────────────────────────
 function FormField({ label, type = 'text', value, onChange, options = [], placeholder = '' }) {
   return (
-    <div style={{marginBottom:12}}>
-      <label style={{display:'block', fontSize:12, color:'var(--text-2)', marginBottom:4}}>{label}</label>
+    <div style={{ marginBottom: 12 }}>
+      <label style={{ display: 'block', fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>{label}</label>
       {type === 'select' ? (
-        <select value={value} onChange={e => onChange(e.target.value)} style={{width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--hairline)', background:'var(--surface)', color:'var(--text)', fontSize:13}}>
-          {options.map(o => <option key={o} value={o}>{o}</option>)}
-        </select>
+        <CustomSelect value={value} onChange={onChange} options={options} />
       ) : (
-        <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--hairline)', background:'var(--surface)', color:'var(--text)', fontSize:13}} />
+        <input type={type} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13 }} />
+      )}
+    </div>
+  );
+}
+
+function CustomSelect({ value, onChange, options = [] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const safeValue = value === undefined || value === null ? '' : String(value);
+  const selected = options.find(o => {
+    const v = typeof o === 'string' ? o : o.value;
+    return String(v) === safeValue;
+  });
+  const selectedLabel = typeof selected === 'string' ? selected : (selected?.label ?? '请选择');
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        style={{
+          width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)',
+          background: 'var(--surface)', color: 'var(--text)', fontSize: 13, cursor: 'pointer',
+          textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}
+      >
+        <span>{selectedLabel}</span>
+        <Icon name="chev_down" style={{ width: 12, height: 12, flexShrink: 0 }} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0,
+          background: 'var(--surface)', border: '1px solid var(--hairline)', borderRadius: 6,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 200, maxHeight: 240, overflow: 'auto',
+        }}>
+          {options.map((o, idx) => {
+            const opt = typeof o === 'string' ? { value: o, label: o } : o;
+            const isActive = String(opt.value) === safeValue;
+            return (
+              <div
+                key={opt.value ?? idx}
+                onClick={() => { onChange(opt.value ?? ''); setOpen(false); }}
+                style={{
+                  padding: '8px 10px', fontSize: 13, cursor: 'pointer',
+                  background: isActive ? 'var(--bg-2)' : 'transparent',
+                  color: isActive ? 'var(--text)' : 'var(--text-2)',
+                }}
+              >
+                {opt.label ?? opt.value}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

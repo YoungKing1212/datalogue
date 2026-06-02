@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, JSON, ForeignKey, DateTime, func
+from sqlalchemy import Boolean, Column, Integer, String, Text, JSON, ForeignKey, DateTime, func
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -12,6 +12,7 @@ class Conversation(Base):
     title = Column(String(200), nullable=False)
     thread_id = Column(String(64))
     user_id = Column(Integer, nullable=True)
+    archived = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -33,4 +34,5 @@ class Message(Base):
     sql_list = Column(JSON)
     report_html = Column(Text)
     token_usage = Column(JSON)
+    step_trace = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

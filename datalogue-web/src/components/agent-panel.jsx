@@ -2,15 +2,17 @@ import React from 'react';
 import { Icon } from './icons';
 
 // AgentPanel — 右侧 Agent 执行状态面板
-// 纯展示组件，所有数据由 ChatScreen 通过 props 注入，无内部状态。
+// 纯展示组件，所有数据由 ChatPage 通过 props 注入，无内部状态。
 //
 // Props:
-//   open       boolean             面板是否可见
-//   onClose    () => void          关闭回调
-//   steps      StepObj[]           节点进度列表
-//   intent     {intent, entities}  意图识别结果（null = 未就绪）
-//   sql        string              生成的 SQL（null = 未就绪）
-//   sqlResult  {rows, columns, elapsed_ms}  执行摘要（null = 未就绪）
+//   open             boolean             面板是否可见
+//   onClose          () => void          关闭回调
+//   steps            StepObj[]           节点进度列表
+//   intent           {intent, entities}  意图识别结果（null = 未就绪）
+//   metricResolution {metrics, dimensions, all_matched, unresolved} 指标解析结果
+//   generationMode   'semantic'|'inferred'|null  DSL 生成模式
+//   sql              string              生成的 SQL（null = 未就绪）
+//   sqlResult        {rows, columns, elapsed_ms}  执行摘要（null = 未就绪）
 
 // ── 步骤列表 ──────────────────────────────────────────────
 function StepList({ steps }) {
@@ -36,22 +38,88 @@ function StepList({ steps }) {
 }
 
 // ── 意图卡片 ──────────────────────────────────────────────
-function IntentCard({ intent }) {
+function IntentCard({ intent, metricResolution, generationMode }) {
   if (!intent) return null;
-  const tags = [
-    intent.intent && `意图: ${intent.intent}`,
-    ...(intent.entities?.metrics   || []).map(m => `指标: ${m}`),
-    ...(intent.entities?.dimensions || []).map(d => `维度: ${d}`),
-    intent.entities?.time_range && `时间: ${intent.entities.time_range}`,
-  ].filter(Boolean);
 
-  if (tags.length === 0) return null;
+  const badge = generationMode === 'semantic'
+    ? { text: '已定义指标', bg: '#e8f5e9', color: '#2e7d32', border: '#c8e6c9' }
+    : generationMode === 'inferred'
+    ? { text: 'AI 推断，建议验证', bg: '#fff8e1', color: '#f57c00', border: '#ffecb3' }
+    : null;
+
+  // 指标/维度解析详情
+  const resolvedMetrics = metricResolution?.metrics || [];
+  const resolvedDimensions = metricResolution?.dimensions || [];
+
+  const matchTypeLabel = {
+    exact: '精确匹配',
+    display_name: '显示名匹配',
+    synonym: '同义词匹配',
+  };
+
   return (
     <div>
-      <div className="agent-section-label">意图解析</div>
-      <div className="intent-tags">
-        {tags.map((t, i) => <span key={i} className="intent-tag">{t}</span>)}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <div className="agent-section-label" style={{ marginBottom: 0 }}>意图解析</div>
+        {badge && (
+          <span style={{
+            fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 10,
+            background: badge.bg, color: badge.color, border: `1px solid ${badge.border}`,
+          }}>{badge.text}</span>
+        )}
       </div>
+
+      {/* 原始意图标签 */}
+      <div className="intent-tags" style={{ marginBottom: 8 }}>
+        {intent.intent && <span className="intent-tag">意图: {intent.intent}</span>}
+        {intent.entities?.time_range && <span className="intent-tag">时间: {intent.entities.time_range}</span>}
+      </div>
+
+      {/* 指标解析结果 */}
+      {resolvedMetrics.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>指标解析</div>
+          <div className="intent-tags">
+            {resolvedMetrics.map((r, i) => (
+              <span key={i} className="intent-tag" style={{
+                background: r.status === 'matched' ? 'var(--surface)' : '#ffebee',
+                color: r.status === 'matched' ? 'var(--text)' : '#c62828',
+                borderColor: r.status === 'matched' ? 'var(--hairline)' : '#ef9a9a',
+              }}>
+                {r.entity}
+                {r.status === 'matched' ? (
+                  <> → <strong>{r.resolved}</strong> <span style={{ opacity: 0.7 }}>({matchTypeLabel[r.match_type] || r.match_type})</span></>
+                ) : (
+                  <> <span style={{ opacity: 0.7 }}>(未定义)</span></>
+                )}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 维度解析结果 */}
+      {resolvedDimensions.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>维度解析</div>
+          <div className="intent-tags">
+            {resolvedDimensions.map((r, i) => (
+              <span key={i} className="intent-tag" style={{
+                background: r.status === 'matched' ? 'var(--surface)' : '#ffebee',
+                color: r.status === 'matched' ? 'var(--text)' : '#c62828',
+                borderColor: r.status === 'matched' ? 'var(--hairline)' : '#ef9a9a',
+              }}>
+                {r.entity}
+                {r.status === 'matched' ? (
+                  <> → <strong>{r.resolved}</strong> <span style={{ opacity: 0.7 }}>({matchTypeLabel[r.match_type] || r.match_type})</span></>
+                ) : (
+                  <> <span style={{ opacity: 0.7 }}>(未定义)</span></>
+                )}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -102,7 +170,7 @@ function ResultSummary({ sqlResult }) {
 }
 
 // ── 主组件 ────────────────────────────────────────────────
-function AgentPanel({ open, onClose, steps = [], intent = null, sql = null, sqlResult = null }) {
+function AgentPanel({ open, onClose, steps = [], intent = null, metricResolution = null, generationMode = null, sql = null, sqlResult = null }) {
   if (!open) return null;
 
   return (
@@ -116,7 +184,7 @@ function AgentPanel({ open, onClose, steps = [], intent = null, sql = null, sqlR
       </div>
       <div className="agent-panel-body">
         <StepList steps={steps} />
-        <IntentCard intent={intent} />
+        <IntentCard intent={intent} metricResolution={metricResolution} generationMode={generationMode} />
         <SqlPreview sql={sql} />
         <ResultSummary sqlResult={sqlResult} />
         {steps.length === 0 && !intent && !sql && !sqlResult && (

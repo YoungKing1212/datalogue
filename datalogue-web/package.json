@@ -10,9 +10,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.14.13",
+    "@assistant-ui/react-markdown": "^0.14.1",
+    "highlight.js": "^11.11.1",
+    "katex": "^0.17.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "react-router-dom": "^7.16.0"
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.16.0",
+    "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

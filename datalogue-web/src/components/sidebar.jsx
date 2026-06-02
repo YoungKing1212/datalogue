@@ -1,9 +1,9 @@
-import React, { Fragment, useState, useEffect } from 'react';
+import React, { Fragment } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './icons';
-import { listConversations } from '../api/client';
 
 // Sidebar — restructured to match design doc IA: 4 groups.
+// "最近会话"区已迁出至 chat 页面的独立 ThreadList 左列。
 
 function Sidebar() {
   const location = useLocation();
@@ -17,19 +17,6 @@ function Sidebar() {
   };
 
   const go = (id) => navigate(id === 'home' ? '/' : '/' + id);
-
-  const [recentConvs, setRecentConvs] = useState([]);
-
-  // 拉取最近 8 条会话，监听 new-conversation 事件刷新
-  useEffect(() => {
-    const load = () =>
-      listConversations()
-        .then(data => setRecentConvs((data || []).slice(0, 8)))
-        .catch(console.error);
-    load();
-    window.addEventListener('new-conversation', load);
-    return () => window.removeEventListener('new-conversation', load);
-  }, []);
 
   const groups = [
     {
@@ -99,23 +86,6 @@ function Sidebar() {
           ))}
         </Fragment>
       ))}
-
-      <div className="nav-section">最近会话</div>
-      {recentConvs.map(r => (
-        <button
-          key={r.id}
-          className={'recent-thread' + (path === `/chat/${r.id}` ? ' active' : '')}
-          onClick={() => navigate(`/chat/${r.id}`)}
-          title={r.title}
-        >
-          {r.title}
-        </button>
-      ))}
-      {recentConvs.length === 0 && (
-        <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 16px' }}>
-          暂无会话
-        </div>
-      )}
 
       <div className="sidebar-footer">
         <div className="avatar">YL</div>

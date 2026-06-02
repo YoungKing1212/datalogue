@@ -19,11 +19,19 @@ Datalogue MVP 测试数据初始化脚本
 import os
 import sys
 import random
+import logging
 from datetime import datetime, timedelta
 
 # 将项目根目录加入路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s │ %(name)s │ %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import create_engine, text
 
@@ -115,9 +123,9 @@ def create_demo_sqlite_db():
 
         conn.commit()
 
-    print(f"✅ 演示 SQLite 数据库创建完成: {DEMO_DB_PATH}")
-    print("   - orders 表: 500 条记录")
-    print("   - users 表: 100 条记录")
+    logger.info(f"演示 SQLite 数据库创建完成: {DEMO_DB_PATH}")
+    logger.info("  - orders 表: 500 条记录")
+    logger.info("  - users 表: 100 条记录")
     return DEMO_DB_PATH
 
 
@@ -130,7 +138,7 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
     # 检查是否已有数据
     existing = db.query(models.Datasource).first()
     if existing:
-        print("⚠️  数据库中已存在数据源，跳过初始化。如需重新初始化，请先清空表。")
+        logger.warning("数据库中已存在数据源，跳过初始化。如需重新初始化，请先清空表。")
         return
 
     # ── 数据源 ──
@@ -147,7 +155,7 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
     db.add(ds)
     db.commit()
     db.refresh(ds)
-    print(f"✅ 数据源创建完成: id={ds.id}, name={ds.name}")
+    logger.info(f"数据源创建完成: id={ds.id}, name={ds.name}")
 
     # ── 数据集 ──
     dataset = models.SemanticDataset(
@@ -174,7 +182,7 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
     db.add(dataset)
     db.commit()
     db.refresh(dataset)
-    print(f"✅ 数据集创建完成: id={dataset.id}, name={dataset.name}")
+    logger.info(f"数据集创建完成: id={dataset.id}, name={dataset.name}")
 
     # ── 指标 ──
     metrics_data = [
@@ -224,7 +232,7 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
         metric = models.SemanticMetric(dataset_id=dataset.id, **m)
         db.add(metric)
     db.commit()
-    print(f"✅ 指标创建完成: {len(metrics_data)} 个")
+    logger.info(f"指标创建完成: {len(metrics_data)} 个")
 
     # ── 维度 ──
     dimensions_data = [
@@ -269,7 +277,7 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
         dim = models.SemanticDimension(dataset_id=dataset.id, **d)
         db.add(dim)
     db.commit()
-    print(f"✅ 维度创建完成: {len(dimensions_data)} 个")
+    logger.info(f"维度创建完成: {len(dimensions_data)} 个")
 
     # ── 示例对话 ──
     conv = models.Conversation(
@@ -303,16 +311,16 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
         msg = models.Message(conversation_id=conv.id, **m)
         db.add(msg)
     db.commit()
-    print(f"✅ 示例对话创建完成: id={conv.id}, {len(messages)} 条消息")
+    logger.info(f"示例对话创建完成: id={conv.id}, {len(messages)} 条消息")
 
-    print("\n🎉 所有测试数据初始化完成！")
-    print(f"   数据源 ID: {ds.id}")
-    print(f"   数据集 ID: {dataset.id}")
-    print("\n你可以通过以下 API 测试:")
-    print("   GET  /api/datasource")
-    print("   GET  /api/dataset")
-    print(
-        f'   POST /api/chat/stream  {{"question": "最近30天各品类GMV", "dataset_id": {dataset.id}}}'
+    logger.info("所有测试数据初始化完成！")
+    logger.info(f"  数据源 ID: {ds.id}")
+    logger.info(f"  数据集 ID: {dataset.id}")
+    logger.info("你可以通过以下 API 测试:")
+    logger.info("  GET  /api/datasource")
+    logger.info("  GET  /api/dataset")
+    logger.info(
+        f'  POST /api/chat/stream  {{"question": "最近30天各品类GMV", "dataset_id": {dataset.id}}}'
     )
 
 
@@ -320,12 +328,12 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
 
 
 def main():
-    print("=" * 60)
-    print("Datalogue MVP 测试数据初始化")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Datalogue MVP 测试数据初始化")
+    logger.info("=" * 60)
 
     settings = get_settings()
-    print(f"\n📡 元数据库: {settings.DATABASE_URL}")
+    logger.info(f"元数据库: {settings.DATABASE_URL}")
 
     # 创建演示 SQLite 数据库
     demo_db_path = create_demo_sqlite_db()

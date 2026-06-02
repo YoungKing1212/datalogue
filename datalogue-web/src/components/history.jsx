@@ -118,8 +118,8 @@ function HistoryScreen() {
             <div className="hp-date-label">{date}</div>
             {items.map(s => (
               <div key={s.id} className="hp-row" role="button" tabIndex={0}
-                onClick={() => navigate('/chat')}
-                onKeyDown={e => e.key === 'Enter' && navigate('/chat')}>
+                onClick={() => navigate(`/chat/${s.id}`)}
+                onKeyDown={e => e.key === 'Enter' && navigate(`/chat/${s.id}`)}>
                 <div className="hp-row-icon">
                   <Icon name={tagIcons[s.tag] || 'chat'} />
                 </div>

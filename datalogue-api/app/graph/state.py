@@ -17,6 +17,10 @@ class AgentState(TypedDict):
 
     # Schema 召回层
     schema_context: Optional[str]  # 召回的语义层描述文本
+    schema_structured: Optional[dict]  # 结构化语义层配置（供编译器使用）
+    ddl_context: Optional[str]  # 当前数据集所选表的真实 DDL
+    generation_mode: Optional[str]  # "semantic" | "inferred" — 供前端显示徽标
+    metric_resolution: Optional[dict]  # 指标/维度解析结果，供意图卡和审计
 
     # DSL 层
     dsl: Optional[dict]  # 结构化 DSL JSON

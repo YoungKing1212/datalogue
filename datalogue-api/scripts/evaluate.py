@@ -22,11 +22,19 @@ import sys
 import json
 import argparse
 import time
+import logging
 from typing import List, Dict
 from dataclasses import dataclass, asdict
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s │ %(name)s │ %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
@@ -245,22 +253,21 @@ def evaluate_all(db: Session, dataset_id: int, cases: List[Dict]) -> List[EvalRe
     """运行所有评估用例。"""
     results = []
     for case in cases:
-        print(f"  📝 {case['id']}: {case['question'][:40]}...", end=" ")
         result = run_single_case(db, case, dataset_id)
         results.append(result)
         score_pct = int(result.overall_score * 100)
         status = (
             "✅" if result.overall_score >= 0.75 else "⚠️" if result.overall_score >= 0.5 else "❌"
         )
-        print(f"{status} {score_pct}% ({result.execution_time_ms:.0f}ms)")
+        logger.info(f"  {case['id']}: {case['question'][:40]}... {status} {score_pct}% ({result.execution_time_ms:.0f}ms)")
     return results
 
 
 def print_report(results: List[EvalResult]):
     """打印评估报告摘要。"""
-    print("\n" + "=" * 70)
-    print("📊 NL2DSL2SQL 准确率评估报告")
-    print("=" * 70)
+    logger.info("=" * 70)
+    logger.info("NL2DSL2SQL 准确率评估报告")
+    logger.info("=" * 70)
 
     total = len(results)
     intent_acc = sum(1 for r in results if r.intent_correct) / total
@@ -269,35 +276,35 @@ def print_report(results: List[EvalResult]):
     sql_correct_rate = sum(1 for r in results if r.sql_correct) / total
     overall = sum(r.overall_score for r in results) / total
 
-    print(f"\n  评估用例总数: {total}")
-    print(f"  意图识别准确率:     {intent_acc * 100:.1f}%")
-    print(f"  DSL 合法率:         {dsl_valid_rate * 100:.1f}%")
-    print(f"  SQL 可执行率:       {sql_exec_rate * 100:.1f}%")
-    print(f"  SQL 正确率:         {sql_correct_rate * 100:.1f}%")
-    print("  ─────────────────────────────────")
-    print(f"  综合得分:           {overall * 100:.1f}%")
+    logger.info(f"评估用例总数: {total}")
+    logger.info(f"意图识别准确率:     {intent_acc * 100:.1f}%")
+    logger.info(f"DSL 合法率:         {dsl_valid_rate * 100:.1f}%")
+    logger.info(f"SQL 可执行率:       {sql_exec_rate * 100:.1f}%")
+    logger.info(f"SQL 正确率:         {sql_correct_rate * 100:.1f}%")
+    logger.info("─────────────────────────────────")
+    logger.info(f"综合得分:           {overall * 100:.1f}%")
 
     # 失败用例详情
     failures = [r for r in results if r.overall_score < 1.0]
     if failures:
-        print(f"\n  ❌ 失败用例详情 ({len(failures)} 个):")
+        logger.warning(f"失败用例详情 ({len(failures)} 个):")
         for r in failures:
-            print(f"\n    [{r.case_id}] {r.question}")
-            print(f"      描述: {r.description}")
-            print(
-                f"      意图: expected={BENCHMARK_CASES[int(r.case_id.split('_')[1])-1]['expected_intent']}, actual={r.actual_intent}"
+            logger.warning(f"  [{r.case_id}] {r.question}")
+            logger.warning(f"    描述: {r.description}")
+            logger.warning(
+                f"    意图: expected={BENCHMARK_CASES[int(r.case_id.split('_')[1])-1]['expected_intent']}, actual={r.actual_intent}"
             )
-            print(f"      DSL valid: {r.dsl_valid}")
-            print(f"      SQL executable: {r.sql_executable}")
-            print(f"      SQL correct: {r.sql_correct}")
+            logger.warning(f"    DSL valid: {r.dsl_valid}")
+            logger.warning(f"    SQL executable: {r.sql_executable}")
+            logger.warning(f"    SQL correct: {r.sql_correct}")
             if r.actual_sql:
-                print(f"      生成 SQL: {r.actual_sql[:100]}...")
+                logger.warning(f"    生成 SQL: {r.actual_sql[:100]}...")
             if r.actual_error:
-                print(f"      错误: {r.actual_error}")
+                logger.error(f"    错误: {r.actual_error}")
 
     avg_latency = sum(r.execution_time_ms for r in results) / total
-    print(f"\n  ⏱️  平均延迟: {avg_latency:.0f}ms")
-    print("=" * 70)
+    logger.info(f"平均延迟: {avg_latency:.0f}ms")
+    logger.info("=" * 70)
 
     return {
         "total_cases": total,
@@ -325,9 +332,9 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="输出 JSON 报告路径")
     args = parser.parse_args()
 
-    print("=" * 70)
-    print("🚀 Datalogue NL2DSL2SQL 准确率评估框架")
-    print("=" * 70)
+    logger.info("=" * 70)
+    logger.info("Datalogue NL2DSL2SQL 准确率评估框架")
+    logger.info("=" * 70)
 
     db = SessionLocal()
     try:
@@ -336,22 +343,22 @@ def main():
         if not dataset_id:
             dataset = db.query(SemanticDataset).filter(SemanticDataset.status == "active").first()
             if not dataset:
-                print("❌ 未找到 active 数据集，请先运行 seed_data.py 初始化测试数据")
+                logger.error("未找到 active 数据集，请先运行 seed_data.py 初始化测试数据")
                 return
             dataset_id = dataset.id
-            print(f"\n📦 使用数据集: {dataset.name} (id={dataset_id})")
+            logger.info(f"使用数据集: {dataset.name} (id={dataset_id})")
         else:
             dataset = db.get(SemanticDataset, dataset_id)
             if not dataset:
-                print(f"❌ 数据集 {dataset_id} 不存在")
+                logger.error(f"数据集 {dataset_id} 不存在")
                 return
-            print(f"\n📦 使用数据集: {dataset.name} (id={dataset_id})")
+            logger.info(f"使用数据集: {dataset.name} (id={dataset_id})")
 
         # 更新 benchmark 中的 dataset_id
         for case in BENCHMARK_CASES:
             case["dataset_id"] = dataset_id
 
-        print(f"\n🧪 开始评估 {len(BENCHMARK_CASES)} 个用例...\n")
+        logger.info(f"开始评估 {len(BENCHMARK_CASES)} 个用例...")
         results = evaluate_all(db, dataset_id, BENCHMARK_CASES)
         report = print_report(results)
 
@@ -359,13 +366,13 @@ def main():
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
-            print(f"\n💾 报告已保存: {args.output}")
+            logger.info(f"报告已保存: {args.output}")
 
         # 返回码：overall >= 0.6 为通过
         if report["overall_score"] >= 0.6:
-            print("\n🎉 评估通过！综合得分 >= 60%")
+            logger.info("评估通过！综合得分 >= 60%")
         else:
-            print("\n⚠️ 评估未通过，综合得分 < 60%，建议优化语义层或 Prompt")
+            logger.warning("评估未通过，综合得分 < 60%，建议优化语义层或 Prompt")
 
     finally:
         db.close()

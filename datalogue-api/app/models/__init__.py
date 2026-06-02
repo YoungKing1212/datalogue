@@ -1,5 +1,5 @@
 from .datasource import Datasource
-from .dataset import SemanticDataset, SemanticMetric, SemanticDimension
+from .dataset import SemanticDataset, SemanticMetric, SemanticDimension, SourceTable, SourceColumn, DatasetSourceTable
 from .conversation import Conversation, Message
 
 __all__ = [
@@ -7,6 +7,9 @@ __all__ = [
     "SemanticDataset",
     "SemanticMetric",
     "SemanticDimension",
+    "SourceTable",
+    "SourceColumn",
+    "DatasetSourceTable",
     "Conversation",
     "Message",
 ]

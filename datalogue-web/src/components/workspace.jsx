@@ -51,7 +51,7 @@ function Workspace() {
           readOnly
         />
         <div className="toolbar">
-          <button className="tool-chip"><Icon name="database" />全部数据集</button>
+          <button className="tool-chip" onClick={() => navigate('/chat')}><Icon name="database" />全部数据集</button>
           <button className="tool-chip"><Icon name="calendar" />近7天</button>
           <button className="tool-chip"><Icon name="filter_alt" />筛选条件</button>
           <button className="tool-chip"><Icon name="brain" />深度归因</button>
