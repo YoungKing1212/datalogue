@@ -80,7 +80,7 @@ def test_connection(ds: Datasource) -> Dict[str, Any]:
 
 def sync_source_tables(ds: Datasource) -> Dict[str, Any]:
     """连接数据源，拉取所有表和字段信息，返回结构化数据供 API 层写入 source_table / source_column。
-    
+
     返回 {"tables": [{table_name, schema_name, table_comment, row_count_approx, columns: [...]}]}
     """
     logger.info(f"同步表结构: ds_id={ds.id}, type={ds.db_type}")
@@ -102,19 +102,26 @@ def sync_source_tables(ds: Datasource) -> Dict[str, Any]:
 
                 for schema_name, table_name in table_rows:
                     # Row count
-                    row_count = conn.execute(text(
-                        "SELECT reltuples::bigint FROM pg_class WHERE relname = :t AND relkind = 'r'"
-                    ), {"t": table_name}).scalar()
+                    row_count = conn.execute(
+                        text(
+                            "SELECT reltuples::bigint FROM pg_class WHERE relname = :t AND relkind = 'r'"
+                        ),
+                        {"t": table_name},
+                    ).scalar()
 
                     # Table comment
-                    table_comment = conn.execute(text("""
+                    table_comment = conn.execute(
+                        text("""
                         SELECT obj_description(
                             (quote_ident(:s) || '.' || quote_ident(:t))::regclass
                         )
-                    """), {"s": schema_name, "t": table_name}).scalar()
+                    """),
+                        {"s": schema_name, "t": table_name},
+                    ).scalar()
 
                     # Columns
-                    col_rows = conn.execute(text("""
+                    col_rows = conn.execute(
+                        text("""
                         SELECT 
                             c.column_name, c.data_type, c.is_nullable, c.column_default,
                             c.ordinal_position,
@@ -130,29 +137,39 @@ def sync_source_tables(ds: Datasource) -> Dict[str, Any]:
                             )
                         WHERE c.table_schema = :s AND c.table_name = :t
                         ORDER BY c.ordinal_position
-                    """), {"s": schema_name, "t": table_name}).fetchall()
+                    """),
+                        {"s": schema_name, "t": table_name},
+                    ).fetchall()
 
                     columns = []
                     for col in col_rows:
-                        col_name, data_type, is_nullable, col_default, ordinal_pos, col_comment = col
-                        sample_vals = _sample_column_values(conn, schema_name, table_name, col_name, db_type)
-                        columns.append({
-                            "column_name": col_name,
-                            "data_type": data_type,
-                            "column_comment": col_comment,
-                            "is_nullable": is_nullable,
-                            "column_default": col_default,
-                            "ordinal_position": ordinal_pos,
-                            "sample_values": sample_vals,
-                        })
+                        col_name, data_type, is_nullable, col_default, ordinal_pos, col_comment = (
+                            col
+                        )
+                        sample_vals = _sample_column_values(
+                            conn, schema_name, table_name, col_name, db_type
+                        )
+                        columns.append(
+                            {
+                                "column_name": col_name,
+                                "data_type": data_type,
+                                "column_comment": col_comment,
+                                "is_nullable": is_nullable,
+                                "column_default": col_default,
+                                "ordinal_position": ordinal_pos,
+                                "sample_values": sample_vals,
+                            }
+                        )
 
-                    result_tables.append({
-                        "table_name": table_name,
-                        "schema_name": schema_name,
-                        "table_comment": table_comment,
-                        "row_count_approx": row_count,
-                        "columns": columns,
-                    })
+                    result_tables.append(
+                        {
+                            "table_name": table_name,
+                            "schema_name": schema_name,
+                            "table_comment": table_comment,
+                            "row_count_approx": row_count,
+                            "columns": columns,
+                        }
+                    )
 
             elif db_type == "mysql":
                 # MySQL: get all tables in the current database
@@ -169,42 +186,56 @@ def sync_source_tables(ds: Datasource) -> Dict[str, Any]:
                     row_count = conn.execute(text(f"SELECT COUNT(*) FROM `{table_name}`")).scalar()
 
                     # Table comment
-                    table_comment_row = conn.execute(text("""
+                    table_comment_row = conn.execute(
+                        text("""
                         SELECT table_comment FROM information_schema.tables 
                         WHERE table_schema = DATABASE() AND table_name = :t
-                    """), {"t": table_name}).fetchone()
+                    """),
+                        {"t": table_name},
+                    ).fetchone()
                     table_comment = table_comment_row[0] if table_comment_row else None
 
                     # Columns
-                    col_rows = conn.execute(text("""
+                    col_rows = conn.execute(
+                        text("""
                         SELECT column_name, data_type, is_nullable, column_default,
                                ordinal_position, column_comment
                         FROM information_schema.columns
                         WHERE table_schema = DATABASE() AND table_name = :t
                         ORDER BY ordinal_position
-                    """), {"t": table_name}).fetchall()
+                    """),
+                        {"t": table_name},
+                    ).fetchall()
 
                     columns = []
                     for col in col_rows:
-                        col_name, data_type, is_nullable, col_default, ordinal_pos, col_comment = col
-                        sample_vals = _sample_column_values(conn, None, table_name, col_name, db_type)
-                        columns.append({
-                            "column_name": col_name,
-                            "data_type": data_type,
-                            "column_comment": col_comment,
-                            "is_nullable": is_nullable,
-                            "column_default": col_default,
-                            "ordinal_position": ordinal_pos,
-                            "sample_values": sample_vals,
-                        })
+                        col_name, data_type, is_nullable, col_default, ordinal_pos, col_comment = (
+                            col
+                        )
+                        sample_vals = _sample_column_values(
+                            conn, None, table_name, col_name, db_type
+                        )
+                        columns.append(
+                            {
+                                "column_name": col_name,
+                                "data_type": data_type,
+                                "column_comment": col_comment,
+                                "is_nullable": is_nullable,
+                                "column_default": col_default,
+                                "ordinal_position": ordinal_pos,
+                                "sample_values": sample_vals,
+                            }
+                        )
 
-                    result_tables.append({
-                        "table_name": table_name,
-                        "schema_name": ds.database_name,
-                        "table_comment": table_comment,
-                        "row_count_approx": row_count,
-                        "columns": columns,
-                    })
+                    result_tables.append(
+                        {
+                            "table_name": table_name,
+                            "schema_name": ds.database_name,
+                            "table_comment": table_comment,
+                            "row_count_approx": row_count,
+                            "columns": columns,
+                        }
+                    )
 
             elif db_type == "sqlite":
                 # SQLite: get all tables
@@ -224,24 +255,30 @@ def sync_source_tables(ds: Datasource) -> Dict[str, Any]:
                     for col in col_rows:
                         # PRAGMA table_info returns: (cid, name, type, notnull, dflt_value, pk)
                         _, col_name, data_type, notnull, col_default, _ = col
-                        sample_vals = _sample_column_values(conn, None, table_name, col_name, db_type)
-                        columns.append({
-                            "column_name": col_name,
-                            "data_type": data_type,
-                            "column_comment": None,
-                            "is_nullable": "NO" if notnull else "YES",
-                            "column_default": col_default,
-                            "ordinal_position": None,
-                            "sample_values": sample_vals,
-                        })
+                        sample_vals = _sample_column_values(
+                            conn, None, table_name, col_name, db_type
+                        )
+                        columns.append(
+                            {
+                                "column_name": col_name,
+                                "data_type": data_type,
+                                "column_comment": None,
+                                "is_nullable": "NO" if notnull else "YES",
+                                "column_default": col_default,
+                                "ordinal_position": None,
+                                "sample_values": sample_vals,
+                            }
+                        )
 
-                    result_tables.append({
-                        "table_name": table_name,
-                        "schema_name": "main",
-                        "table_comment": None,
-                        "row_count_approx": row_count,
-                        "columns": columns,
-                    })
+                    result_tables.append(
+                        {
+                            "table_name": table_name,
+                            "schema_name": "main",
+                            "table_comment": None,
+                            "row_count_approx": row_count,
+                            "columns": columns,
+                        }
+                    )
 
     finally:
         engine.dispose()
@@ -250,16 +287,24 @@ def sync_source_tables(ds: Datasource) -> Dict[str, Any]:
     return {"tables": result_tables, "synced_at": datetime.utcnow().isoformat()}
 
 
-def _sample_column_values(conn, schema: Optional[str], table: str, column: str, db_type: str, limit: int = 5) -> List[str]:
+def _sample_column_values(
+    conn, schema: Optional[str], table: str, column: str, db_type: str, limit: int = 5
+) -> List[str]:
     """从表中抽样获取某字段的非空唯一值。"""
     logger.debug(f"抽样字段: {table}.{column}")
     try:
         if db_type in ("postgres", "postgresql"):
-            q = text(f'SELECT DISTINCT "{column}" FROM "{schema}"."{table}" WHERE "{column}" IS NOT NULL LIMIT :limit')
+            q = text(
+                f'SELECT DISTINCT "{column}" FROM "{schema}"."{table}" WHERE "{column}" IS NOT NULL LIMIT :limit'
+            )
         elif db_type == "mysql":
-            q = text(f"SELECT DISTINCT `{column}` FROM `{table}` WHERE `{column}` IS NOT NULL LIMIT :limit")
+            q = text(
+                f"SELECT DISTINCT `{column}` FROM `{table}` WHERE `{column}` IS NOT NULL LIMIT :limit"
+            )
         elif db_type == "sqlite":
-            q = text(f'SELECT DISTINCT "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL LIMIT :limit')
+            q = text(
+                f'SELECT DISTINCT "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL LIMIT :limit'
+            )
         else:
             return []
         rows = conn.execute(q, {"limit": limit}).fetchall()
@@ -277,7 +322,14 @@ def get_schemas(ds: Datasource) -> List[str]:
         inspector = inspect(engine)
         schemas = inspector.get_schema_names()
         # 过滤掉系统 schema
-        system_schemas = {'information_schema', 'mysql', 'performance_schema', 'sys', 'pg_catalog', 'pg_toast'}
+        system_schemas = {
+            "information_schema",
+            "mysql",
+            "performance_schema",
+            "sys",
+            "pg_catalog",
+            "pg_toast",
+        }
         result = [s for s in schemas if s not in system_schemas]
         logger.info(f"返回 {len(result)} 个schema")
         return result

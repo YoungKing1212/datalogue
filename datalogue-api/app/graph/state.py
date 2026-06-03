@@ -21,6 +21,9 @@ class AgentState(TypedDict):
     ddl_context: Optional[str]  # 当前数据集所选表的真实 DDL
     generation_mode: Optional[str]  # "semantic" | "inferred" — 供前端显示徽标
     metric_resolution: Optional[dict]  # 指标/维度解析结果，供意图卡和审计
+    # 数据集级 LLM 约束（硬性要求）— schema_recall_node 写入，report_generator 等
+    # 不读 schema_context 的节点直接从这里取
+    dataset_prompt_instructions: Optional[str]
 
     # DSL 层
     dsl: Optional[dict]  # 结构化 DSL JSON
@@ -38,6 +41,12 @@ class AgentState(TypedDict):
     error: Optional[str]  # 错误信息（用于重试）
     retry_count: int  # 当前重试次数
     should_retry: bool  # 是否触发重试
+
+    # SQL 审计（sql_audit_node 写入）：区分 fixable（可重试） / architectural（需用户改数据集）
+    # 注意：节点名是 "sql_audit"，state 字段必须用不同名（LangGraph 禁止同名）
+    sql_audit_result: Optional[
+        dict
+    ]  # {"root_cause": str, "wrong_field": str, "suggested_fix": str, "severity": "fixable"|"architectural"}
 
     # 可观测性
     token_usage: Optional[

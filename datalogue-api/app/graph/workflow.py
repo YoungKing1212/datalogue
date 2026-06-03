@@ -17,6 +17,7 @@ from app.graph.nodes import (
     dsl_validate_node,
     dsl_compiler_node,
     sql_execute_node,
+    sql_audit_node,
     report_generator_node,
 )
 
@@ -43,16 +44,34 @@ def _dsl_validation_router(state: AgentState) -> str:
 
 
 def _sql_execution_router(state: AgentState) -> str:
-    """SQL 执行成功则生成报告，失败则重试或结束。
-    若节点已标记 should_retry=False 且无 sql_result，直接结束（避免 report_generator 收到空结果）。"""
+    """SQL 执行成功则生成报告；失败时路由到 sql_audit（Agent 智能审计）。
+    审计后再决定是重试还是直接结束。
+
+    - 无 sql_result 且 should_retry=False → END（避免 report 收到空结果）
+    - 有 sql_result → report
+    - 失败（should_retry=True）→ audit
+    """
     if not state.get("should_retry"):
         if state.get("sql_result") is None:
             return "end"
         return "report"
+    # SQL 失败 → 进 sql_audit（不再直接 increment_retry，让 audit 决定）
+    return "audit"
+
+
+def _sql_audit_router(state: AgentState) -> str:
+    """SQL 审计后路由。
+    - architectural：数据集配置错误，LLM 无法修复 → END
+    - retry_count 已用尽（>= 3） → END
+    - 其他（fixable） → increment_retry → dsl_generate
+    """
+    audit = state.get("sql_audit_result") or {}
+    if audit.get("severity") == "architectural":
+        return "end"
     retry = state.get("retry_count", 0)
-    if retry < 3:
-        return "retry"
-    return "end"
+    if retry >= 3:
+        return "end"
+    return "retry"
 
 
 def _increment_retry(state: AgentState) -> dict:
@@ -74,8 +93,10 @@ def build_workflow(db: Session) -> Any:
     workflow.add_node("metric_resolution_node", metric_resolution_node)
     workflow.add_node("dsl_generate", dsl_generate_node)
     workflow.add_node("dsl_validate", dsl_validate_node)
-    workflow.add_node("dsl_compiler", dsl_compiler_node)
+    # dsl_compiler 现在是工厂函数（接 db 以查 Datasource.db_type 推断方言）
+    workflow.add_node("dsl_compiler", dsl_compiler_node(db))
     workflow.add_node("sql_execute", sql_execute_node(db))
+    workflow.add_node("sql_audit", sql_audit_node(db))
     workflow.add_node("report_generator", report_generator_node)
     workflow.add_node("increment_retry", _increment_retry)
     logger.info("工作流节点注册完成")
@@ -123,6 +144,16 @@ def build_workflow(db: Session) -> Any:
         _sql_execution_router,
         {
             "report": "report_generator",
+            "audit": "sql_audit",
+            "end": END,
+        },
+    )
+
+    # SQL 审计分支：architectural 走 END，fixable 走 increment_retry
+    workflow.add_conditional_edges(
+        "sql_audit",
+        _sql_audit_router,
+        {
             "retry": "increment_retry",
             "end": END,
         },

@@ -1,5 +1,12 @@
 from .datasource import Datasource
-from .dataset import SemanticDataset, SemanticMetric, SemanticDimension, SourceTable, SourceColumn, DatasetSourceTable
+from .dataset import (
+    SemanticDataset,
+    SemanticMetric,
+    SemanticDimension,
+    SourceTable,
+    SourceColumn,
+    DatasetSourceTable,
+)
 from .conversation import Conversation, Message
 
 __all__ = [

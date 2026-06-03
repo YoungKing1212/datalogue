@@ -1,16 +1,17 @@
 # 统一日志配置 — 带 ANSI 颜色，支持 app.* 命名空间
 import logging
+import os
 import sys
 
 # ── 颜色定义 ─────────────────────────────────────────
 _COLORS = {
-    "DEBUG": "\033[36m",      # 青色
-    "INFO": "\033[32m",       # 绿色
-    "WARNING": "\033[33m",    # 黄色
-    "ERROR": "\033[31m",      # 红色
-    "CRITICAL": "\033[1;31m", # 亮红
+    "DEBUG": "\033[36m",  # 青色
+    "INFO": "\033[32m",  # 绿色
+    "WARNING": "\033[33m",  # 黄色
+    "ERROR": "\033[31m",  # 红色
+    "CRITICAL": "\033[1;31m",  # 亮红
     "RESET": "\033[0m",
-    "DIM": "\033[90m",        # 灰色（时间、模块名）
+    "DIM": "\033[90m",  # 灰色（时间、模块名）
     "BOLD": "\033[1m",
 }
 
@@ -48,16 +49,18 @@ def setup_logging(level: str = "INFO") -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.DEBUG)
 
-    fmt = (
-        "%(asctime_dim)s %(levelname_colored)s"
-        " │ %(name_dim)s │ %(message)s"
-    )
+    fmt = "%(asctime_dim)s %(levelname_colored)s" " │ %(name_dim)s │ %(message)s"
     formatter = ColoredFormatter(fmt, datefmt="%H:%M:%S")
     handler.setFormatter(formatter)
     app_root.addHandler(handler)
 
-    # SQLAlchemy 引擎日志（SQL 语句、参数、执行时间）
-    sqlalchemy_level = logging.DEBUG if level.upper() == "DEBUG" else logging.INFO
+    # SQLAlchemy 引擎日志（SQL 语句、参数、执行时间）。
+    # 默认 WARNING（关闭），需要看 SQL 时设环境变量 SQL_LOG_LEVEL=INFO 或 DEBUG。
+    sqlalchemy_level = getattr(
+        logging,
+        os.getenv("SQL_LOG_LEVEL", "WARNING").upper(),
+        logging.WARNING,
+    )
     for sa_name in ("sqlalchemy.engine", "sqlalchemy.pool", "sqlalchemy.dialects"):
         sa_log = logging.getLogger(sa_name)
         sa_log.setLevel(sqlalchemy_level)
@@ -71,7 +74,9 @@ def setup_logging(level: str = "INFO") -> None:
         if lg.handlers:
             for h in lg.handlers:
                 if isinstance(h, logging.StreamHandler):
-                    h.setFormatter(ColoredFormatter(
-                        f"%(asctime_dim)s %(levelname_colored)s │ {_COLORS['DIM']}%(name)s{_COLORS['RESET']} │ %(message)s",
-                        datefmt="%H:%M:%S",
-                    ))
+                    h.setFormatter(
+                        ColoredFormatter(
+                            f"%(asctime_dim)s %(levelname_colored)s │ {_COLORS['DIM']}%(name)s{_COLORS['RESET']} │ %(message)s",
+                            datefmt="%H:%M:%S",
+                        )
+                    )

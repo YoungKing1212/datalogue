@@ -14,6 +14,9 @@ class SemanticDataset(Base, TimestampMixin):
     datasource_id = Column(Integer, ForeignKey("datasource.id"), nullable=False)
     tables_json = Column(JSON, default=dict)
     description = Column(Text)
+    # 数据集级 LLM 约束（硬性要求）。由用户在前端编辑，问数时由
+    # build_schema_prompt / report_generator 注入到 prompt。
+    prompt_instructions = Column(Text, nullable=True)
     status = Column(String(20), default="draft")
 
     datasource = relationship("Datasource", backref="datasets")
@@ -21,7 +24,9 @@ class SemanticDataset(Base, TimestampMixin):
     dimensions = relationship("SemanticDimension", backref="dataset", cascade="all, delete-orphan")
     # 显式覆盖 DatasetSourceTable.dataset 的 backref，启用 ORM 级联删除，
     # 否则 SQLAlchemy 默认 SET NULL，会与 NOT NULL 约束冲突。
-    selected_tables = relationship("DatasetSourceTable", back_populates="dataset", cascade="all, delete-orphan")
+    selected_tables = relationship(
+        "DatasetSourceTable", back_populates="dataset", cascade="all, delete-orphan"
+    )
 
 
 class SemanticMetric(Base):
@@ -59,7 +64,9 @@ class SemanticDimension(Base):
 
 class SourceTable(Base, TimestampMixin):
     __tablename__ = "source_table"
-    __table_args__ = (UniqueConstraint("datasource_id", "schema_name", "table_name", name="uix_source_table"),)
+    __table_args__ = (
+        UniqueConstraint("datasource_id", "schema_name", "table_name", name="uix_source_table"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     datasource_id = Column(Integer, ForeignKey("datasource.id"), nullable=False)
@@ -77,7 +84,12 @@ class SourceTable(Base, TimestampMixin):
     synced_at = Column(DateTime, default=datetime.utcnow)
 
     datasource = relationship("Datasource", backref="source_tables")
-    columns = relationship("SourceColumn", backref="table", cascade="all, delete-orphan", order_by="SourceColumn.ordinal_position")
+    columns = relationship(
+        "SourceColumn",
+        backref="table",
+        cascade="all, delete-orphan",
+        order_by="SourceColumn.ordinal_position",
+    )
 
 
 class SourceColumn(Base):
@@ -102,17 +114,23 @@ class SourceColumn(Base):
     column_default = Column(Text)
     ordinal_position = Column(Integer)
     semantic_role = Column(String(30))  # 旧字段，保留兼容
-    default_agg = Column(String(20))    # 旧字段，保留兼容
+    default_agg = Column(String(20))  # 旧字段，保留兼容
     sample_values = Column(JSON)
 
 
 class DatasetSourceTable(Base):
     __tablename__ = "dataset_source_table"
-    __table_args__ = (UniqueConstraint("dataset_id", "source_table_id", name="uix_dataset_source_table"),)
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "source_table_id", name="uix_dataset_source_table"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id", ondelete="CASCADE"), nullable=False)
-    source_table_id = Column(Integer, ForeignKey("source_table.id", ondelete="CASCADE"), nullable=False)
+    dataset_id = Column(
+        Integer, ForeignKey("semantic_dataset.id", ondelete="CASCADE"), nullable=False
+    )
+    source_table_id = Column(
+        Integer, ForeignKey("source_table.id", ondelete="CASCADE"), nullable=False
+    )
     created_at = Column(DateTime, default=datetime.utcnow)
 
     dataset = relationship("SemanticDataset", back_populates="selected_tables")

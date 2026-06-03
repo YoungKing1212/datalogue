@@ -28,6 +28,49 @@ class TestDatasetAPI:
         assert data["datasource_id"] == sample_datasource.id
         assert data["status"] == "active"
 
+    def test_create_dataset_with_prompt_instructions(self, client, sample_datasource):
+        """新建数据集时可填 prompt_instructions，后续 GET 能取回。"""
+        payload = {
+            "name": "约束测试数据集",
+            "datasource_id": sample_datasource.id,
+            "prompt_instructions": "金额保留两位小数；用户说'杨凯'时翻译为 person_name='杨凯'",
+        }
+        resp = client.post("/api/dataset", json=payload)
+        assert resp.status_code == 200
+        ds_id = resp.json()["id"]
+        # GET 应能取回
+        get_resp = client.get(f"/api/dataset/{ds_id}")
+        assert get_resp.status_code == 200
+        assert "金额保留两位小数" in get_resp.json()["prompt_instructions"]
+
+    def test_update_dataset_prompt_instructions(self, client, sample_dataset):
+        """PUT 部分更新能修改 prompt_instructions 字段。"""
+        # 先确认初值
+        assert sample_dataset.prompt_instructions in (None, "")
+        # 部分更新：只发 prompt_instructions，其他字段不变
+        resp = client.put(
+            f"/api/dataset/{sample_dataset.id}",
+            json={"prompt_instructions": "订单状态: 1=待支付, 2=已支付"},
+        )
+        assert resp.status_code == 200
+        # 再 GET 验证
+        get_resp = client.get(f"/api/dataset/{sample_dataset.id}")
+        assert "订单状态" in get_resp.json()["prompt_instructions"]
+
+    def test_update_dataset_other_fields_unchanged(self, client, sample_dataset):
+        """PUT 时只发一个字段，其他字段不能被清空。"""
+        original_name = sample_dataset.name
+        original_desc = sample_dataset.description
+        client.put(
+            f"/api/dataset/{sample_dataset.id}",
+            json={"prompt_instructions": "新约束"},
+        )
+        get_resp = client.get(f"/api/dataset/{sample_dataset.id}")
+        data = get_resp.json()
+        assert data["name"] == original_name
+        assert data["description"] == original_desc
+        assert data["prompt_instructions"] == "新约束"
+
     def test_add_metric(self, client, sample_dataset):
         """向数据集添加指标"""
         payload = {

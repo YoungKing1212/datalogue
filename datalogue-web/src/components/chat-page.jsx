@@ -238,6 +238,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
           setSqlResult({
             rows: ev.rows,
             columns: ev.columns,
+            column_labels: ev.column_labels || {},
             elapsed_ms: ev.elapsed_ms,
           });
         }
@@ -247,6 +248,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
           setSqlResult({
             rows: ev.sql_result.rows,
             columns: ev.sql_result.columns,
+            column_labels: ev.sql_result.column_labels || {},
             elapsed_ms: ev.sql_result.elapsed_ms,
           });
         }

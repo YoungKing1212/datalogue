@@ -205,9 +205,14 @@ export function AIMessage({ showSql = true }) {
             <table className="sql-result-table">
               <thead>
                 <tr>
-                  {(sqlResult.columns || []).map((col, i) => (
-                    <th key={i}>{col}</th>
-                  ))}
+                  {(sqlResult.columns || []).map((col, i) => {
+                    const label = sqlResult.column_labels?.[col] || col;
+                    return (
+                      <th key={i} title={label !== col ? col : undefined}>
+                        {label}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>

@@ -159,11 +159,15 @@ def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
 
     for tdata in tables_data:
         # 查找或创建 SourceTable
-        existing = db.query(models.SourceTable).filter_by(
-            datasource_id=ds_id,
-            schema_name=tdata["schema_name"],
-            table_name=tdata["table_name"],
-        ).first()
+        existing = (
+            db.query(models.SourceTable)
+            .filter_by(
+                datasource_id=ds_id,
+                schema_name=tdata["schema_name"],
+                table_name=tdata["table_name"],
+            )
+            .first()
+        )
 
         if existing:
             existing.table_comment = tdata.get("table_comment")
@@ -172,6 +176,7 @@ def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
             existing.status = "active"
             # 表注释变了 → 重新解析生效值
             from app.services.annotation import resolve_table_description
+
             existing.effective_desc, existing.desc_source = resolve_table_description(existing)
             table_obj = existing
             updated_count += 1
@@ -184,14 +189,13 @@ def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
                 row_count_approx=tdata.get("row_count_approx"),
                 synced_at=synced_at,
                 status="active",
-                desc_source='unknown',
+                desc_source="unknown",
             )
             db.add(table_obj)
             db.flush()
             created_count += 1
 
         # ── 增量合并字段：保留已有标注，只更新 DDL 元数据 ──
-        from app.services.annotation import resolve_description
 
         # 1. 获取现有字段映射
         existing_cols = {
@@ -220,8 +224,8 @@ def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
                 if old_comment != new_comment:
                     col.column_comment = db_comment
                     # 如果当前生效值来自 DB 注释，标记为 stale 以待重新标注
-                    if col.desc_source in ('db_comment', 'unknown'):
-                        col.desc_source = 'stale'
+                    if col.desc_source in ("db_comment", "unknown"):
+                        col.desc_source = "stale"
             else:
                 # 新字段
                 col = models.SourceColumn(
@@ -233,19 +237,24 @@ def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
                     column_default=cdata.get("column_default"),
                     ordinal_position=cdata.get("ordinal_position"),
                     sample_values=cdata.get("sample_values"),
-                    desc_source='unknown',
+                    desc_source="unknown",
                 )
                 db.add(col)
 
         # 2. 删除数据库中已不存在的字段
-        stale_cols = db.query(models.SourceColumn).filter_by(table_id=table_obj.id).filter(
-            ~models.SourceColumn.column_name.in_(fresh_col_names)
-        ).all()
+        stale_cols = (
+            db.query(models.SourceColumn)
+            .filter_by(table_id=table_obj.id)
+            .filter(~models.SourceColumn.column_name.in_(fresh_col_names))
+            .all()
+        )
         for stale in stale_cols:
             db.delete(stale)
 
     db.commit()
-    logger.info(f"同步完成: created={created_count}, updated={updated_count}, total={len(tables_data)}")
+    logger.info(
+        f"同步完成: created={created_count}, updated={updated_count}, total={len(tables_data)}"
+    )
     return {
         "ok": True,
         "created": created_count,
@@ -270,21 +279,25 @@ def list_datasource_source_tables(ds_id: int, schema: str = None, db: Session = 
     # 计算每个表的字段数
     result = []
     for t in tables:
-        result.append({
-            "id": t.id,
-            "datasource_id": t.datasource_id,
-            "schema_name": t.schema_name,
-            "table_name": t.table_name,
-            "table_comment": t.table_comment,
-            "business_desc": t.business_desc,
-            "effective_desc": t.effective_desc,
-            "desc_source": t.desc_source,
-            "annotated_at": t.annotated_at,
-            "row_count_approx": t.row_count_approx,
-            "status": t.status,
-            "synced_at": t.synced_at,
-            "column_count": len(t.columns),
-        })
+        result.append(
+            {
+                "id": t.id,
+                "datasource_id": t.datasource_id,
+                "schema_name": t.schema_name,
+                "table_name": t.table_name,
+                "table_comment": t.table_comment,
+                "business_desc": t.business_desc,
+                "ai_description": t.ai_description,
+                "user_description": t.user_description,
+                "effective_desc": t.effective_desc,
+                "desc_source": t.desc_source,
+                "annotated_at": t.annotated_at,
+                "row_count_approx": t.row_count_approx,
+                "status": t.status,
+                "synced_at": t.synced_at,
+                "column_count": len(t.columns),
+            }
+        )
     logger.info(f"返回 {len(result)} 张表")
     return result
 
@@ -303,7 +316,9 @@ def list_source_table_columns(table_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/source-column/{column_id}")
-def update_source_column(column_id: int, payload: schemas.SourceColumnUpdate, db: Session = Depends(get_db)):
+def update_source_column(
+    column_id: int, payload: schemas.SourceColumnUpdate, db: Session = Depends(get_db)
+):
     """更新单个 source_column 的用户标注。"""
     logger.info(f"更新字段标注: column_id={column_id}")
     col = db.get(models.SourceColumn, column_id)
@@ -325,7 +340,9 @@ def update_source_column(column_id: int, payload: schemas.SourceColumnUpdate, db
 
 
 @router.post("/source-table/{table_id}/annotate")
-def trigger_source_table_annotation(table_id: int, force: bool = False, db: Session = Depends(get_db)):
+def trigger_source_table_annotation(
+    table_id: int, force: bool = False, db: Session = Depends(get_db)
+):
     """手动触发单张表的 AI 标注。幂等：已标注字段默认跳过，force=true 强制重标。"""
     logger.info(f"手动触发标注: table_id={table_id}, force={force}")
     table = db.get(models.SourceTable, table_id)
@@ -333,6 +350,7 @@ def trigger_source_table_annotation(table_id: int, force: bool = False, db: Sess
         raise HTTPException(status_code=404, detail="表不存在")
 
     from app.services.annotation import annotate_table_columns
+
     result = annotate_table_columns(db, table_id, force=force)
     if result["failed"] and result.get("error"):
         raise HTTPException(status_code=500, detail=result["error"])

@@ -11,7 +11,7 @@ import json
 import re
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── 生效值解析 ──────────────────────────────────────
 
-JUNK_COMMENTS = {'', '无', '字段', '列', '名称', '编号', 'id', 'date', 'time', 'name'}
+JUNK_COMMENTS = {"", "无", "字段", "列", "名称", "编号", "id", "date", "time", "name"}
 
 
 def is_meaningful_comment(comment: str) -> bool:
@@ -35,10 +35,10 @@ def is_meaningful_comment(comment: str) -> bool:
     if lowered in JUNK_COMMENTS:
         return False
     # 纯字段名重复（如 comment == "order_amount"）
-    if re.match(r'^[a-z_][a-z0-9_]*$', lowered):
+    if re.match(r"^[a-z_][a-z0-9_]*$", lowered):
         return False
     # 形如 "字段1", "col_123", "field_xxx"
-    if re.match(r'^(字段|列|col|field)[_\-\d]*$', comment.strip(), re.I):
+    if re.match(r"^(字段|列|col|field)[_\-\d]*$", comment.strip(), re.I):
         return False
     return True
 
@@ -47,29 +47,29 @@ def resolve_description(col: SourceColumn) -> Tuple[str, str]:
     """返回 (effective_desc, desc_source)。优先级从高到低：用户 > DB注释 > AI > 回退。"""
     # 1. 用户手动修改 → 永远用用户的
     if col.user_description and len(col.user_description.strip()) >= 2:
-        return col.user_description.strip(), 'user'
+        return col.user_description.strip(), "user"
 
     # 2. 数据库注释有意义 → 用注释
     if col.column_comment and is_meaningful_comment(col.column_comment):
-        return col.column_comment.strip(), 'db_comment'
+        return col.column_comment.strip(), "db_comment"
 
     # 3. AI 标注过 → 用 AI 的
     if col.ai_description and len(col.ai_description.strip()) >= 2:
-        return col.ai_description.strip(), 'ai'
+        return col.ai_description.strip(), "ai"
 
     # 4. 什么都没有 → 退回字段名
-    return col.column_name, 'fallback'
+    return col.column_name, "fallback"
 
 
 def resolve_table_description(table: SourceTable) -> Tuple[str, str]:
     """返回 (effective_desc, desc_source)。优先级：用户 > DB注释 > AI > 回退。"""
     if table.user_description and len(table.user_description.strip()) >= 2:
-        return table.user_description.strip(), 'user'
+        return table.user_description.strip(), "user"
     if table.table_comment and is_meaningful_comment(table.table_comment):
-        return table.table_comment.strip(), 'db_comment'
+        return table.table_comment.strip(), "db_comment"
     if table.ai_description and len(table.ai_description.strip()) >= 2:
-        return table.ai_description.strip(), 'ai'
-    return table.table_name, 'fallback'
+        return table.ai_description.strip(), "ai"
+    return table.table_name, "fallback"
 
 
 def refresh_effective_desc(col: SourceColumn) -> None:
@@ -121,11 +121,11 @@ def _safe_json_parse(content: str) -> List[Dict[str, Any]]:
     text = content.strip()
 
     # 去掉 <think> 标签
-    if '<think>' in text:
-        if '</think>' in text:
-            text = text.split('</think>')[-1].strip()
+    if "<think>" in text:
+        if "</think>" in text:
+            text = text.split("</think>")[-1].strip()
         else:
-            text = text.split('<think>')[0].strip()
+            text = text.split("<think>")[0].strip()
 
     # 去掉可能的 markdown code block
     if text.startswith("```"):
@@ -152,7 +152,7 @@ def _safe_json_parse(content: str) -> List[Dict[str, Any]]:
     end = text.rfind("]")
     if start != -1 and end != -1 and end > start:
         try:
-            parsed = json.loads(text[start:end + 1])
+            parsed = json.loads(text[start : end + 1])
             return parsed if isinstance(parsed, list) else [parsed]
         except json.JSONDecodeError:
             pass
@@ -162,7 +162,7 @@ def _safe_json_parse(content: str) -> List[Dict[str, Any]]:
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
         try:
-            parsed = json.loads(text[start:end + 1])
+            parsed = json.loads(text[start : end + 1])
             return [parsed] if isinstance(parsed, dict) else []
         except json.JSONDecodeError:
             pass
@@ -181,33 +181,37 @@ TABLE_ANNOTATION_PROMPT = """你是一个资深数据分析师。根据表名、
 """
 
 
-def _annotate_table_description(db: Session, table: SourceTable, columns: List[SourceColumn], force: bool = False) -> bool:
+def _annotate_table_description(
+    db: Session, table: SourceTable, columns: List[SourceColumn], force: bool = False
+) -> bool:
     """为 SourceTable 生成 AI 业务描述。返回是否成功标注。"""
     # 判断是否需要标注
-    needs_annotation = force or table.desc_source in ('unknown', 'stale', 'fallback')
+    needs_annotation = force or table.desc_source in ("unknown", "stale", "fallback")
     if not needs_annotation:
         return False
 
     lines = [f"表名: {table.table_name}", f"已有注释: {table.table_comment or '无'}"]
     # 取前 10 个字段作为上下文
     for c in columns[:10]:
-        comment = c.column_comment or ''
+        comment = c.column_comment or ""
         lines.append(f"字段: {c.column_name} | 类型: {c.data_type} | 注释: {comment}")
 
     try:
         llm = get_llm(temperature=0.2)
-        response = llm.invoke([
-            SystemMessage(content=TABLE_ANNOTATION_PROMPT),
-            HumanMessage(content="\n".join(lines)),
-        ])
+        response = llm.invoke(
+            [
+                SystemMessage(content=TABLE_ANNOTATION_PROMPT),
+                HumanMessage(content="\n".join(lines)),
+            ]
+        )
         raw = str(response.content).strip()
         logger.info(f"[AI表级标注] table={table.table_name} raw_response={raw[:500]!r}")
         # 过滤 <think> 标签（支持未闭合的情况）
-        if '<think>' in raw:
-            if '</think>' in raw:
-                raw = raw.split('</think>')[-1].strip()
+        if "<think>" in raw:
+            if "</think>" in raw:
+                raw = raw.split("</think>")[-1].strip()
             else:
-                raw = raw.split('<think>')[0].strip()
+                raw = raw.split("<think>")[0].strip()
         desc = raw.strip('"').strip("'")
         if desc and len(desc) >= 3 and desc != table.table_name:
             table.ai_description = desc
@@ -219,7 +223,9 @@ def _annotate_table_description(db: Session, table: SourceTable, columns: List[S
     return False
 
 
-def annotate_table_columns(db: Session, source_table_id: int, force: bool = False) -> Dict[str, Any]:
+def annotate_table_columns(
+    db: Session, source_table_id: int, force: bool = False
+) -> Dict[str, Any]:
     """为单张 source_table 生成表级描述 + 所有字段批量生成 AI 标注。
 
     Args:
@@ -232,15 +238,27 @@ def annotate_table_columns(db: Session, source_table_id: int, force: bool = Fals
     """
     table = db.get(SourceTable, source_table_id)
     if not table:
-        return {"annotated": 0, "skipped": 0, "table_annotated": False, "failed": True, "error": "表不存在"}
+        return {
+            "annotated": 0,
+            "skipped": 0,
+            "table_annotated": False,
+            "failed": True,
+            "error": "表不存在",
+        }
 
     columns = db.query(SourceColumn).filter_by(table_id=source_table_id).all()
     if not columns:
-        return {"annotated": 0, "skipped": 0, "table_annotated": False, "failed": False, "error": None}
+        return {
+            "annotated": 0,
+            "skipped": 0,
+            "table_annotated": False,
+            "failed": False,
+            "error": None,
+        }
 
     # ── 表级标注 ──
     table_annotated = False
-    if force or table.desc_source in ('unknown', 'stale', 'fallback'):
+    if force or table.desc_source in ("unknown", "stale", "fallback"):
         table_annotated = _annotate_table_description(db, table, columns, force=force)
         if table_annotated:
             logger.info(f"表级标注完成: {table.table_name} -> {table.effective_desc}")
@@ -249,16 +267,26 @@ def annotate_table_columns(db: Session, source_table_id: int, force: bool = Fals
     if force:
         columns_to_annotate = columns
     else:
-        columns_to_annotate = [c for c in columns if c.desc_source in ('unknown', 'stale', 'fallback')]
+        columns_to_annotate = [
+            c for c in columns if c.desc_source in ("unknown", "stale", "fallback")
+        ]
 
     skipped = len(columns) - len(columns_to_annotate)
 
     if not columns_to_annotate:
         db.commit()
         logger.info(f"标注跳过: table={table.table_name}, 所有字段已标注")
-        return {"annotated": 0, "skipped": skipped, "table_annotated": table_annotated, "failed": False, "error": None}
+        return {
+            "annotated": 0,
+            "skipped": skipped,
+            "table_annotated": table_annotated,
+            "failed": False,
+            "error": None,
+        }
 
-    logger.info(f"开始字段标注: table={table.table_name}, fields={len(columns_to_annotate)}, skipped={skipped}")
+    logger.info(
+        f"开始字段标注: table={table.table_name}, fields={len(columns_to_annotate)}, skipped={skipped}"
+    )
 
     # 构建 prompt
     lines = [
@@ -267,22 +295,32 @@ def annotate_table_columns(db: Session, source_table_id: int, force: bool = Fals
         "",
     ]
     for c in columns_to_annotate:
-        desc_hint = c.column_comment or ''
-        sample = ', '.join(str(v) for v in (c.sample_values or [])[:3]) if c.sample_values else ''
-        lines.append(f"字段: {c.column_name} | 类型: {c.data_type} | 注释: {desc_hint} | 样例值: {sample}")
+        desc_hint = c.column_comment or ""
+        sample = ", ".join(str(v) for v in (c.sample_values or [])[:3]) if c.sample_values else ""
+        lines.append(
+            f"字段: {c.column_name} | 类型: {c.data_type} | 注释: {desc_hint} | 样例值: {sample}"
+        )
 
     try:
         llm = get_llm(temperature=0.2)
-        response = llm.invoke([
-            SystemMessage(content=ANNOTATION_SYSTEM_PROMPT),
-            HumanMessage(content="\n".join(lines)),
-        ])
+        response = llm.invoke(
+            [
+                SystemMessage(content=ANNOTATION_SYSTEM_PROMPT),
+                HumanMessage(content="\n".join(lines)),
+            ]
+        )
         raw_content = str(response.content)
         logger.info(f"[AI字段标注] table={table.table_name} raw_response={raw_content[:2000]!r}")
         results = _safe_json_parse(raw_content)
     except Exception as e:
         logger.error(f"标注表 {table.table_name} LLM 调用失败: {e}")
-        return {"annotated": 0, "skipped": skipped, "table_annotated": table_annotated, "failed": True, "error": str(e)}
+        return {
+            "annotated": 0,
+            "skipped": skipped,
+            "table_annotated": table_annotated,
+            "failed": True,
+            "error": str(e),
+        }
 
     # 回写结果
     col_map = {c.column_name: c for c in columns_to_annotate}
@@ -306,8 +344,16 @@ def annotate_table_columns(db: Session, source_table_id: int, force: bool = Fals
         annotated_count += 1
 
     db.commit()
-    logger.info(f"标注完成: table={table.table_name}, annotated={annotated_count}, skipped={skipped}, table_annotated={table_annotated}")
-    return {"annotated": annotated_count, "skipped": skipped, "table_annotated": table_annotated, "failed": False, "error": None}
+    logger.info(
+        f"标注完成: table={table.table_name}, annotated={annotated_count}, skipped={skipped}, table_annotated={table_annotated}"
+    )
+    return {
+        "annotated": annotated_count,
+        "skipped": skipped,
+        "table_annotated": table_annotated,
+        "failed": False,
+        "error": None,
+    }
 
 
 def annotate_all_tables_for_datasource(db: Session, datasource_id: int) -> Dict[str, Any]:

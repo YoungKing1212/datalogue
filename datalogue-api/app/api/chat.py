@@ -29,7 +29,6 @@ _NODE_DISPLAY_NAMES = {
 }
 
 
-
 async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     """SSE 流式问数：驱动 LangGraph 工作流，逐步发送节点进度事件。"""
     logger.info(f"[_stream_chat] 开始处理问题: {payload.question[:50]}")
@@ -42,9 +41,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             raise HTTPException(status_code=404, detail="对话不存在")
         # 已存在对话的首条消息：自动用首句作为标题（避免「新对话」/空标题占位）
         existing_msg_count = (
-            db.query(models.Message)
-            .filter(models.Message.conversation_id == conv_id)
-            .count()
+            db.query(models.Message).filter(models.Message.conversation_id == conv_id).count()
         )
         if existing_msg_count == 0 and (not conv.title or conv.title in ("新对话", "")):
             conv.title = payload.question[:40]
@@ -113,7 +110,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         # 去重集合：astream_events v2 中子 chain 也会触发 on_chain_start/end，
         # 同一 langgraph_node 名称可能重复出现，只取每个节点的第一次事件
         reported_running: set[str] = set()
-        reported_done:    set[str] = set()
+        reported_done: set[str] = set()
         step_traces: list[dict] = []  # 收集推理步骤供历史加载时恢复思维链
 
         async for event in app_graph.astream_events(initial_state, version="v2"):
@@ -123,7 +120,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             lg_node: str = meta.get("langgraph_node", "")
 
             # ── 节点开始（每节点只报一次）────────────────────
-            if kind == "on_chain_start" and lg_node in _NODE_DISPLAY_NAMES and lg_node not in reported_running:
+            if (
+                kind == "on_chain_start"
+                and lg_node in _NODE_DISPLAY_NAMES
+                and lg_node not in reported_running
+            ):
                 reported_running.add(lg_node)
                 node_start_times[lg_node] = time.monotonic()
                 sse_payload = {
@@ -136,7 +137,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 yield {"data": json.dumps(sse_payload, ensure_ascii=False)}
 
             # ── 节点完成（每节点只报一次）────────────────────
-            elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES and lg_node not in reported_done:
+            elif (
+                kind == "on_chain_end"
+                and lg_node in _NODE_DISPLAY_NAMES
+                and lg_node not in reported_done
+            ):
                 reported_done.add(lg_node)
                 elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
                 output: dict = event.get("data", {}).get("output", {}) or {}
@@ -153,7 +158,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 }
                 # 节点特定数据
                 if lg_node == "intent_recognition":
-                    sse_payload["intent"]   = final_state.get("intent") or ""
+                    sse_payload["intent"] = final_state.get("intent") or ""
                     sse_payload["entities"] = final_state.get("entities") or {}
                 elif lg_node == "metric_resolution_node":
                     sse_payload["metric_resolution"] = final_state.get("metric_resolution") or {}
@@ -162,14 +167,15 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
                 elif lg_node == "schema_recall":
                     schema = final_state.get("schema_context", "") or ""
-                    lines_  = [l for l in schema.split("\n") if l.strip() and not l.startswith("-")]
+                    lines_ = [l for l in schema.split("\n") if l.strip() and not l.startswith("-")]
                     sse_payload["schema_summary"] = lines_[:3]
                 elif lg_node == "dsl_compiler":
                     sse_payload["sql"] = final_state.get("sql") or ""
                 elif lg_node == "sql_execute":
                     result = final_state.get("sql_result") or {}
-                    sse_payload["rows"]       = result.get("row_count", 0)
-                    sse_payload["columns"]    = result.get("columns", [])
+                    sse_payload["rows"] = result.get("row_count", 0)
+                    sse_payload["columns"] = result.get("columns", [])
+                    sse_payload["column_labels"] = result.get("column_labels") or {}
                     sse_payload["elapsed_ms"] = elapsed_ms
                 step_traces.append(sse_payload)
                 logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
@@ -186,20 +192,32 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 chunk = event.get("data", {}).get("chunk")
                 token: str = getattr(chunk, "content", "") or ""
                 if token:
-                    yield {"data": json.dumps({"type": "token", "content": token}, ensure_ascii=False)}
+                    yield {
+                        "data": json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                    }
 
         logger.info("[_stream_chat] astream_events 完成")
 
     except Exception as e:
         logger.exception(f"[_stream_chat] 工作流异常: {e}")
-        yield {"data": json.dumps({"type": "step", "node": "error", "display_name": "错误", "status": "done"}, ensure_ascii=False)}
-        yield {"data": json.dumps({"type": "final", "sql": None, "sql_list": [], "answer": f"处理出错：{e}"}, ensure_ascii=False)}
+        yield {
+            "data": json.dumps(
+                {"type": "step", "node": "error", "display_name": "错误", "status": "done"},
+                ensure_ascii=False,
+            )
+        }
+        yield {
+            "data": json.dumps(
+                {"type": "final", "sql": None, "sql_list": [], "answer": f"处理出错：{e}"},
+                ensure_ascii=False,
+            )
+        }
         return
 
     # ── 保存助手消息并发送 final 事件 ────────────────
     # 智能兜底：根据失败原因给出具体提示，而非生硬的"抱歉"
     raw_answer = final_state.get("answer")
-    error      = final_state.get("error")
+    error = final_state.get("error")
     generation_mode = final_state.get("generation_mode")
     retry_count = final_state.get("retry_count", 0)
 
@@ -218,8 +236,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     else:
         answer = "抱歉，暂时无法回答这个问题。请尝试选择数据集后提问，或检查语义层配置。"
 
-    sql       = final_state.get("sql")
-    sql_list  = final_state.get("sql_list") or []
+    sql = final_state.get("sql")
+    sql_list = final_state.get("sql_list") or []
 
     final_payload = {
         "type": "final",
@@ -232,18 +250,22 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "conversation_id": conv_id,
         "title": conv.title,
     }
-    logger.info(f"[_stream_chat] final: answer_len={len(answer)}, sql={sql}, error={error}, mode={generation_mode}")
+    logger.info(
+        f"[_stream_chat] final: answer_len={len(answer)}, sql={sql}, error={error}, mode={generation_mode}"
+    )
     yield {"data": json.dumps(final_payload, ensure_ascii=False)}
 
     token_usage = final_state.get("token_usage")
-    db.add(models.Message(
-        conversation_id=conv_id,
-        role="assistant",
-        content=answer,
-        sql_list=sql_list,
-        token_usage=token_usage,
-        step_trace=step_traces,
-    ))
+    db.add(
+        models.Message(
+            conversation_id=conv_id,
+            role="assistant",
+            content=answer,
+            sql_list=sql_list,
+            token_usage=token_usage,
+            step_trace=step_traces,
+        )
+    )
     db.commit()
 
 

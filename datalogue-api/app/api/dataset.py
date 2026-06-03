@@ -75,7 +75,9 @@ def delete_dataset(ds_id: int, db: Session = Depends(get_db)):
     # 显式级联删除关联记录，避免 ORM 默认 SET NULL 与 NOT NULL 冲突
     db.query(models.SemanticMetric).filter(models.SemanticMetric.dataset_id == ds_id).delete()
     db.query(models.SemanticDimension).filter(models.SemanticDimension.dataset_id == ds_id).delete()
-    db.query(models.DatasetSourceTable).filter(models.DatasetSourceTable.dataset_id == ds_id).delete()
+    db.query(models.DatasetSourceTable).filter(
+        models.DatasetSourceTable.dataset_id == ds_id
+    ).delete()
     db.delete(ds)
     db.commit()
     logger.info(f"数据集删除成功: ds_id={ds_id}")
@@ -83,6 +85,7 @@ def delete_dataset(ds_id: int, db: Session = Depends(get_db)):
 
 
 # ── Metrics ──────────────────────────────────────────
+
 
 @router.post("/{ds_id}/metric", response_model=schemas.MetricOut)
 def add_metric(ds_id: int, payload: schemas.MetricCreate, db: Session = Depends(get_db)):
@@ -100,7 +103,9 @@ def add_metric(ds_id: int, payload: schemas.MetricCreate, db: Session = Depends(
 
 
 @router.put("/{ds_id}/metric/{mid}", response_model=schemas.MetricOut)
-def update_metric(ds_id: int, mid: int, payload: schemas.MetricCreate, db: Session = Depends(get_db)):
+def update_metric(
+    ds_id: int, mid: int, payload: schemas.MetricCreate, db: Session = Depends(get_db)
+):
     """更新指标。"""
     logger.info(f"更新指标: ds_id={ds_id}, mid={mid}")
     m = db.get(models.SemanticMetric, mid)
@@ -137,6 +142,7 @@ def delete_metric(ds_id: int, mid: int, db: Session = Depends(get_db)):
 
 # ── Dimensions ───────────────────────────────────────
 
+
 @router.post("/{ds_id}/dimension", response_model=schemas.DimensionOut)
 def add_dimension(ds_id: int, payload: schemas.DimensionCreate, db: Session = Depends(get_db)):
     logger.info(f"添加维度: ds_id={ds_id}, name={payload.name}")
@@ -153,7 +159,9 @@ def add_dimension(ds_id: int, payload: schemas.DimensionCreate, db: Session = De
 
 
 @router.put("/{ds_id}/dimension/{did}", response_model=schemas.DimensionOut)
-def update_dimension(ds_id: int, did: int, payload: schemas.DimensionCreate, db: Session = Depends(get_db)):
+def update_dimension(
+    ds_id: int, did: int, payload: schemas.DimensionCreate, db: Session = Depends(get_db)
+):
     """更新维度。"""
     logger.info(f"更新维度: ds_id={ds_id}, did={did}")
     d = db.get(models.SemanticDimension, did)
@@ -194,102 +202,89 @@ def delete_dimension(ds_id: int, did: int, db: Session = Depends(get_db)):
 
 # ── LLM Auto Annotation ──────────────────────────────
 
+
 @router.post("/{ds_id}/annotate-columns")
 def annotate_dataset_columns(ds_id: int, db: Session = Depends(get_db)):
-    """调用 LLM 自动标注数据集关联数据源下的所有 source_column。"""
+    """调用 LLM 自动标注 **当前数据集已选中的表**（非数据源下全量表）。
+
+    委托给 app.services.annotation.annotate_table_columns（统一服务），
+    同时标注 **表级**（ai_description / table_comment 增强）和 **列级**
+    （ai_description / ai_semantic_role / ai_suggested_agg），并刷新 effective_desc。
+    """
     logger.info(f"自动标注字段: ds_id={ds_id}")
     ds = db.get(models.SemanticDataset, ds_id)
     if not ds:
         logger.warning(f"数据集不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据集不存在")
 
-    # 获取该数据集关联数据源下的所有 source_table
-    tables = db.query(models.SourceTable).filter_by(datasource_id=ds.datasource_id).all()
-    if not tables:
-        raise HTTPException(status_code=400, detail="该数据源下没有同步的表，请先同步表结构")
+    # 只标注「当前数据集已选中的表」：避免对数据源下未选中的表烧 token
+    selected_links = (
+        db.query(models.DatasetSourceTable).filter_by(dataset_id=ds_id).all()
+    )
+    selected_table_ids = [link.source_table_id for link in selected_links]
+    if not selected_table_ids:
+        raise HTTPException(status_code=400, detail="该数据集尚未选择任何表，请先在「数据源表」中勾选要纳入数据集的表")
 
-    llm = get_llm(temperature=0.2)
+    tables = (
+        db.query(models.SourceTable)
+        .filter(models.SourceTable.id.in_(selected_table_ids))
+        .all()
+    )
+
+    # 委托给统一标注服务（同时跑表级 + 列级，写 ai_description / effective_desc）
+    from app.services.annotation import annotate_table_columns as svc_annotate
+
+    total_annotated = 0
+    total_skipped = 0
+    total_table_annotated = 0
+    failed_tables: list[dict] = []
     total_metrics = 0
     total_dims = 0
     total_times = 0
 
     for table in tables:
-        # 构建 prompt
-        columns_text = []
-        for c in table.columns:
-            sample = ", ".join(c.sample_values[:3]) if c.sample_values else "无"
-            columns_text.append(
-                f"- {c.column_name} ({c.data_type}) 注释：{c.column_comment or '无'} 样例值：{sample}"
-            )
-
-        prompt = f"""你是一个数据仓库专家。以下是一张数据库表的结构信息：
-
-表名：{table.table_name}
-已有注释：{table.table_comment or '无'}
-字段列表：
-{chr(10).join(columns_text)}
-
-请为每个字段生成：
-1. 中文业务含义（一句话，写入 business_desc）
-2. semantic_role: metric_candidate（可聚合的度量值）/ dimension_candidate（可分组的类别）/ time_field（时间字段）/ id_field（主键或外键）/ unused（辅助字段）
-3. 如果是 metric_candidate，建议 default_agg: SUM/COUNT/AVG/MAX/MIN
-
-以 JSON 数组输出，每个元素包含：{{"column_name", "business_desc", "semantic_role", "default_agg"}}。
-只输出 JSON 数组，不要其他解释。"""
-
         try:
-            response = llm.invoke(prompt)
-            content = response.content if hasattr(response, "content") else str(response)
-            logger.info(f"[AI旧版标注] table={table.table_name} raw_response={content[:2000]!r}")
-            # 过滤 <think> 标签
-            if '<think>' in content:
-                if '</think>' in content:
-                    content = content.split('</think>')[-1].strip()
-                else:
-                    content = content.split('<think>')[0].strip()
-            # 尝试解析 JSON
-            try:
-                annotations = json.loads(content)
-            except json.JSONDecodeError:
-                # 有时 LLM 会用 markdown code block 包裹
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0].strip()
-                annotations = json.loads(content)
-
-            # 写回数据库
-            col_map = {c.column_name: c for c in table.columns}
-            for ann in annotations:
-                col_name = ann.get("column_name")
-                if col_name in col_map:
-                    col = col_map[col_name]
-                    col.business_desc = ann.get("business_desc")
-                    col.semantic_role = ann.get("semantic_role")
-                    col.default_agg = ann.get("default_agg")
-                    if col.semantic_role == "metric_candidate":
-                        total_metrics += 1
-                    elif col.semantic_role == "dimension_candidate":
-                        total_dims += 1
-                    elif col.semantic_role == "time_field":
-                        total_times += 1
+            result = svc_annotate(db, table.id, force=False)
         except Exception as e:
-            # 单张表标注失败不影响其他表
             logger.error(f"标注表 {table.table_name} 失败: {e}")
+            failed_tables.append({"table": table.table_name, "error": str(e)})
             continue
+        total_annotated += result.get("annotated", 0)
+        total_skipped += result.get("skipped", 0)
+        if result.get("table_annotated"):
+            total_table_annotated += 1
+        # 统计角色分布（基于本张表的最新结果）
+        for c in table.columns:
+            role = c.ai_semantic_role
+            if role == "metric_candidate":
+                total_metrics += 1
+            elif role == "dimension_candidate":
+                total_dims += 1
+            elif role == "time_field":
+                total_times += 1
 
-    db.commit()
-    logger.info(f"自动标注完成: metrics={total_metrics}, dims={total_dims}, times={total_times}")
+    logger.info(
+        f"自动标注完成: ds_id={ds_id}, tables={len(tables)} (已选), "
+        f"annotated={total_annotated}, skipped={total_skipped}, "
+        f"table_annotated={total_table_annotated}, "
+        f"metrics={total_metrics}, dims={total_dims}, times={total_times}, "
+        f"failed={len(failed_tables)}"
+    )
     return {
         "ok": True,
         "metric_candidates": total_metrics,
         "dimension_candidates": total_dims,
         "time_fields": total_times,
         "tables_processed": len(tables),
+        "table_annotated": total_table_annotated,
+        "annotated": total_annotated,
+        "skipped": total_skipped,
+        "failed_tables": failed_tables,
     }
 
 
 # ── YAML Import / Export ─────────────────────────────
+
 
 @router.post("/{ds_id}/import-yaml")
 def import_dataset_yaml(ds_id: int, payload: dict, db: Session = Depends(get_db)):
@@ -325,7 +320,9 @@ def import_dataset_yaml(ds_id: int, payload: dict, db: Session = Depends(get_db)
     if "metrics" in data:
         for mdata in data["metrics"]:
             name = mdata.get("name")
-            existing = db.query(models.SemanticMetric).filter_by(dataset_id=ds_id, name=name).first()
+            existing = (
+                db.query(models.SemanticMetric).filter_by(dataset_id=ds_id, name=name).first()
+            )
             metric_payload = {
                 "name": name,
                 "display_name": mdata.get("display_name", name),
@@ -334,7 +331,8 @@ def import_dataset_yaml(ds_id: int, payload: dict, db: Session = Depends(get_db)
                 "time_field": mdata.get("time_field"),
                 "granularity": mdata.get("granularity"),
                 "format_str": mdata.get("format") or mdata.get("format_str"),
-                "filter_sql": mdata.get("filter_sql") or (mdata.get("filters", [""])[0] if mdata.get("filters") else None),
+                "filter_sql": mdata.get("filter_sql")
+                or (mdata.get("filters", [""])[0] if mdata.get("filters") else None),
                 "synonyms": mdata.get("synonyms", []),
                 "description": mdata.get("description"),
             }
@@ -350,7 +348,9 @@ def import_dataset_yaml(ds_id: int, payload: dict, db: Session = Depends(get_db)
     if "dimensions" in data:
         for ddata in data["dimensions"]:
             name = ddata.get("name")
-            existing = db.query(models.SemanticDimension).filter_by(dataset_id=ds_id, name=name).first()
+            existing = (
+                db.query(models.SemanticDimension).filter_by(dataset_id=ds_id, name=name).first()
+            )
             dim_payload = {
                 "name": name,
                 "display_name": ddata.get("display_name", name),
@@ -406,31 +406,35 @@ def export_dataset_yaml(ds_id: int, db: Session = Depends(get_db)):
     }
 
     for m in metrics:
-        data["metrics"].append({
-            "name": m.name,
-            "display_name": m.display_name,
-            "expression": m.expr,
-            "table_name": m.table_name,
-            "time_field": m.time_field,
-            "filter_sql": m.filter_sql,
-            "granularity": m.granularity,
-            "format_str": m.format_str,
-            "synonyms": m.synonyms or [],
-            "description": m.description,
-        })
+        data["metrics"].append(
+            {
+                "name": m.name,
+                "display_name": m.display_name,
+                "expression": m.expr,
+                "table_name": m.table_name,
+                "time_field": m.time_field,
+                "filter_sql": m.filter_sql,
+                "granularity": m.granularity,
+                "format_str": m.format_str,
+                "synonyms": m.synonyms or [],
+                "description": m.description,
+            }
+        )
 
     for d in dimensions:
-        data["dimensions"].append({
-            "name": d.name,
-            "display_name": d.display_name,
-            "column_name": d.column_name,
-            "table_name": d.table_name,
-            "join_to": d.join_to,
-            "join_key": d.join_key,
-            "hierarchy": d.hierarchy,
-            "enum_values": d.enum_values or [],
-            "synonyms": d.synonyms or [],
-        })
+        data["dimensions"].append(
+            {
+                "name": d.name,
+                "display_name": d.display_name,
+                "column_name": d.column_name,
+                "table_name": d.table_name,
+                "join_to": d.join_to,
+                "join_key": d.join_key,
+                "hierarchy": d.hierarchy,
+                "enum_values": d.enum_values or [],
+                "synonyms": d.synonyms or [],
+            }
+        )
 
     yaml_text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
     logger.info(f"YAML导出成功: ds_id={ds_id}")
@@ -461,9 +465,11 @@ def select_tables_for_dataset(
         if not st:
             continue
         # 检查是否已存在
-        existing = db.query(models.DatasetSourceTable).filter_by(
-            dataset_id=ds_id, source_table_id=st_id
-        ).first()
+        existing = (
+            db.query(models.DatasetSourceTable)
+            .filter_by(dataset_id=ds_id, source_table_id=st_id)
+            .first()
+        )
         if not existing:
             db.add(models.DatasetSourceTable(dataset_id=ds_id, source_table_id=st_id))
             added += 1
@@ -474,6 +480,7 @@ def select_tables_for_dataset(
     # 异步触发 AI 标注（只对新加入的表）
     if added_table_ids:
         from app.services.annotation import annotate_table_columns
+
         for st_id in added_table_ids:
             background_tasks.add_task(annotate_table_columns, db, st_id)
         logger.info(f"异步触发标注: tables={len(added_table_ids)}")
@@ -491,9 +498,11 @@ def deselect_table_from_dataset(ds_id: int, source_table_id: int, db: Session = 
         logger.warning(f"数据集不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据集不存在")
 
-    link = db.query(models.DatasetSourceTable).filter_by(
-        dataset_id=ds_id, source_table_id=source_table_id
-    ).first()
+    link = (
+        db.query(models.DatasetSourceTable)
+        .filter_by(dataset_id=ds_id, source_table_id=source_table_id)
+        .first()
+    )
     if link:
         db.delete(link)
         db.commit()
@@ -514,18 +523,22 @@ def list_selected_tables(ds_id: int, db: Session = Depends(get_db)):
     result = []
     for link in links:
         st = link.source_table
-        result.append({
-            "id": st.id,
-            "dataset_link_id": link.id,
-            "schema_name": st.schema_name,
-            "table_name": st.table_name,
-            "table_comment": st.table_comment,
-            "effective_desc": st.effective_desc,
-            "desc_source": st.desc_source,
-            "annotated_at": st.annotated_at,
-            "row_count_approx": st.row_count_approx,
-            "column_count": len(st.columns),
-        })
+        result.append(
+            {
+                "id": st.id,
+                "dataset_link_id": link.id,
+                "schema_name": st.schema_name,
+                "table_name": st.table_name,
+                "table_comment": st.table_comment,
+                "ai_description": st.ai_description,
+                "user_description": st.user_description,
+                "effective_desc": st.effective_desc,
+                "desc_source": st.desc_source,
+                "annotated_at": st.annotated_at,
+                "row_count_approx": st.row_count_approx,
+                "column_count": len(st.columns),
+            }
+        )
     logger.info(f"返回 {len(result)} 个已选表")
     return result
 
@@ -544,30 +557,32 @@ def list_selected_columns(ds_id: int, db: Session = Depends(get_db)):
     for link in links:
         st = link.source_table
         for col in st.columns:
-            result.append({
-                "id": col.id,
-                "source_table_id": st.id,
-                "table_name": st.table_name,
-                "schema_name": st.schema_name,
-                "column_name": col.column_name,
-                "data_type": col.data_type,
-                "column_comment": col.column_comment,
-                "business_desc": col.business_desc,
-                "ai_description": col.ai_description,
-                "ai_semantic_role": col.ai_semantic_role,
-                "ai_suggested_agg": col.ai_suggested_agg,
-                "user_description": col.user_description,
-                "user_semantic_role": col.user_semantic_role,
-                "effective_desc": col.effective_desc,
-                "desc_source": col.desc_source,
-                "annotated_at": col.annotated_at,
-                "is_nullable": col.is_nullable,
-                "column_default": col.column_default,
-                "ordinal_position": col.ordinal_position,
-                "semantic_role": col.semantic_role,
-                "default_agg": col.default_agg,
-                "sample_values": col.sample_values,
-            })
+            result.append(
+                {
+                    "id": col.id,
+                    "source_table_id": st.id,
+                    "table_name": st.table_name,
+                    "schema_name": st.schema_name,
+                    "column_name": col.column_name,
+                    "data_type": col.data_type,
+                    "column_comment": col.column_comment,
+                    "business_desc": col.business_desc,
+                    "ai_description": col.ai_description,
+                    "ai_semantic_role": col.ai_semantic_role,
+                    "ai_suggested_agg": col.ai_suggested_agg,
+                    "user_description": col.user_description,
+                    "user_semantic_role": col.user_semantic_role,
+                    "effective_desc": col.effective_desc,
+                    "desc_source": col.desc_source,
+                    "annotated_at": col.annotated_at,
+                    "is_nullable": col.is_nullable,
+                    "column_default": col.column_default,
+                    "ordinal_position": col.ordinal_position,
+                    "semantic_role": col.semantic_role,
+                    "default_agg": col.default_agg,
+                    "sample_values": col.sample_values,
+                }
+            )
     # 按表名、字段位置排序
     result.sort(key=lambda c: (c["table_name"], c["ordinal_position"] or 0))
     logger.info(f"返回 {len(result)} 个字段")

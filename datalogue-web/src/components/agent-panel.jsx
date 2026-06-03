@@ -162,7 +162,7 @@ function ResultSummary({ sqlResult }) {
       </div>
       {sqlResult.columns && sqlResult.columns.length > 0 && (
         <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
-          字段：{sqlResult.columns.join(' · ')}
+          字段：{(sqlResult.columns || []).map(c => sqlResult.column_labels?.[c] || c).join(' · ')}
         </div>
       )}
     </div>

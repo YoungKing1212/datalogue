@@ -3,6 +3,7 @@ import { Icon } from './icons';
 import {
   listDatasets,
   createDataset,
+  updateDataset,
   renameDataset,
   deleteDataset,
   listDatasetMetrics,
@@ -90,7 +91,9 @@ function DatasetsScreen() {
     name: '', display_name: '', column_name: '', table_name: '',
     join_to: '', join_key: '', enum_values: '', synonyms: ''
   });
-  const [dsForm, setDsForm] = useState({ name: '', datasource_id: '', description: '' });
+  const [dsForm, setDsForm] = useState({ name: '', datasource_id: '', description: '', prompt_instructions: '' });
+  const [showPromptForm, setShowPromptForm] = useState(false);
+  const [promptFormDs, setPromptFormDs] = useState(null);
   const [datasources, setDatasources] = useState([]);
   const [yamlText, setYamlText] = useState('');
 
@@ -299,7 +302,13 @@ function DatasetsScreen() {
     setAnnotating(true);
     try {
       await annotateDatasetColumns(activeDsId);
-      await loadSelectedTables(activeDsId);
+      // 标注会更新 effective_desc / ai_description：必须 reload 两个列表
+      // - loadAllSourceTables：刷新左侧"所有表"目录的表名注释
+      // - loadSelectedTables：刷新已选表 + 字段的描述
+      await Promise.all([
+        loadAllSourceTables(activeDsId),
+        loadSelectedTables(activeDsId),
+      ]);
     } catch (err) {
       alert('标注失败: ' + (err.message || '未知错误'));
     } finally {
@@ -351,11 +360,12 @@ function DatasetsScreen() {
         name: dsForm.name,
         datasource_id: Number(dsForm.datasource_id),
         description: dsForm.description || undefined,
+        prompt_instructions: dsForm.prompt_instructions || undefined,
         tables_json: {},
         status: 'draft',
       });
       setShowDsForm(false);
-      setDsForm({ name: '', datasource_id: '', description: '' });
+      setDsForm({ name: '', datasource_id: '', description: '', prompt_instructions: '' });
       loadDatasets();
     } catch (err) { alert('创建失败: ' + (err.message || '未知错误')); }
   };
@@ -687,6 +697,13 @@ function DatasetsScreen() {
               <Icon name="edit" style={{ width: 14, height: 14, color: 'var(--text-3)' }} />
               <span>重命名</span>
             </button>
+            <button
+              onClick={() => { setPromptFormDs({ ...ctxMenu.ds }); setShowPromptForm(true); setCtxMenu(null); }}
+              style={ctxMenuItemStyle}
+            >
+              <Icon name="bookmark" style={{ width: 14, height: 14, color: 'var(--text-3)' }} />
+              <span>编辑约束</span>
+            </button>
             <div style={{ height: 1, background: 'var(--hairline)', margin: '4px 2px' }} />
             <button
               onClick={() => requestDelete(ctxMenu.ds)}
@@ -781,17 +798,26 @@ function DatasetsScreen() {
                     <button
                       type="button"
                       onClick={() => handleInspectTable(t.id)}
-                      title={t.effective_desc || t.table_comment || ''}
+                      title={t.effective_desc || t.table_comment || t.table_name || ''}
                       style={{
-                        flex: 1, display: 'flex', alignItems: 'center', gap: 8,
+                        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
                         background: 'transparent', border: 'none', padding: 0,
                         cursor: 'pointer', minWidth: 0, textAlign: 'left',
                         color: checked ? 'var(--text)' : inspecting ? 'var(--accent)' : 'var(--text-2)',
                         fontWeight: inspecting ? 500 : 400,
                       }}
                     >
-                      <Icon name={inspecting ? 'eye' : 'table'} style={{ width: 14, height: 14, flexShrink: 0 }} />
-                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.table_name}</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+                        <Icon name={inspecting ? 'eye' : 'table'} style={{ width: 14, height: 14, flexShrink: 0 }} />
+                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.table_name}</span>
+                      </span>
+                      {t.effective_desc && (
+                        <span style={{
+                          fontSize: 10, color: 'var(--text-3)', lineHeight: 1.3,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          maxWidth: '100%', paddingLeft: 20,
+                        }}>{t.effective_desc}</span>
+                      )}
                     </button>
                     <span style={{
                       display: 'inline-block', padding: '0 4px', borderRadius: 3, fontSize: 9, fontWeight: 600,
@@ -1282,9 +1308,52 @@ function DatasetsScreen() {
             <FormField label="名称" value={dsForm.name} onChange={v => setDsForm({ ...dsForm, name: v })} placeholder="如: 零售业务数据集" />
             <FormField label="数据源" type="select" value={dsForm.datasource_id} onChange={v => setDsForm({ ...dsForm, datasource_id: v })} options={[{ value: '', label: '请选择数据源' }, ...datasources.map(d => ({ value: String(d.id), label: d.name }))]} />
             <FormField label="描述 (可选)" value={dsForm.description} onChange={v => setDsForm({ ...dsForm, description: v })} placeholder="数据集用途说明…" />
+            <FormField
+              label="LLM 约束 (可选)"
+              type="textarea"
+              rows={5}
+              value={dsForm.prompt_instructions}
+              onChange={v => setDsForm({ ...dsForm, prompt_instructions: v })}
+              placeholder="例：金额统一保留两位小数；用户说'杨凯'时翻译为 person_name='杨凯'；订单状态枚举：1=待支付, 2=已支付, 4=已退款"
+            />
             <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
               <button className="btn ghost" onClick={() => setShowDsForm(false)}>取消</button>
               <button className="btn primary" onClick={handleCreateDataset}>创建</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 弹窗：编辑数据集级 LLM 约束（右键菜单触发）── */}
+      {showPromptForm && promptFormDs && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowPromptForm(false)}>
+          <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 560, border: '1px solid var(--hairline)' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 6px' }}>编辑 LLM 约束 — {promptFormDs.name}</h3>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 14, lineHeight: 1.5 }}>
+              问数时会作为「硬性要求」注入到 LLM 提示词中，覆盖 DSL 生成 / SQL 审计 / 报告生成全链路。
+            </div>
+            <FormField
+              label="数据集级 LLM 约束"
+              type="textarea"
+              rows={10}
+              value={promptFormDs.prompt_instructions || ''}
+              onChange={v => setPromptFormDs({ ...promptFormDs, prompt_instructions: v })}
+              placeholder="例：金额统一保留两位小数；用户说'杨凯'时翻译为 person_name='杨凯'；订单状态枚举：1=待支付, 2=已支付, 4=已退款"
+            />
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="btn ghost" onClick={() => setShowPromptForm(false)}>取消</button>
+              <button
+                className="btn primary"
+                onClick={async () => {
+                  try {
+                    await updateDataset(promptFormDs.id, { prompt_instructions: promptFormDs.prompt_instructions || '' });
+                    setShowPromptForm(false);
+                    await loadDatasets();
+                  } catch (err) {
+                    alert('保存失败: ' + (err.message || '未知错误'));
+                  }
+                }}
+              >保存</button>
             </div>
           </div>
         </div>
@@ -1357,12 +1426,25 @@ function DatasetsScreen() {
 }
 
 // ── FormField — 通用表单字段 ────────────────────────────
-function FormField({ label, type = 'text', value, onChange, options = [], placeholder = '' }) {
+function FormField({ label, type = 'text', value, onChange, options = [], placeholder = '', rows = 5 }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <label style={{ display: 'block', fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>{label}</label>
       {type === 'select' ? (
         <CustomSelect value={value} onChange={onChange} options={options} />
+      ) : type === 'textarea' ? (
+        <textarea
+          value={value ?? ''}
+          onChange={e => onChange(e.target.value)}
+          placeholder={placeholder}
+          rows={rows}
+          style={{
+            width: '100%', padding: '8px 10px', borderRadius: 6,
+            border: '1px solid var(--hairline)', background: 'var(--surface)',
+            color: 'var(--text)', fontSize: 12, lineHeight: 1.5,
+            resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box',
+          }}
+        />
       ) : (
         <input type={type} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13 }} />
       )}

@@ -9,13 +9,16 @@ class DatasetCreate(BaseModel):
     datasource_id: int
     tables_json: Dict[str, Any] = {}
     description: Optional[str] = None
+    prompt_instructions: Optional[str] = None
     status: str = "draft"
 
 
 class DatasetUpdate(BaseModel):
     """数据集部分更新 — 重命名等场景。"""
+
     name: Optional[str] = None
     description: Optional[str] = None
+    prompt_instructions: Optional[str] = None
     status: Optional[str] = None
     tables_json: Optional[Dict[str, Any]] = None
 
@@ -26,6 +29,7 @@ class DatasetOut(BaseModel):
     datasource_id: int
     tables_json: Dict[str, Any]
     description: Optional[str] = None
+    prompt_instructions: Optional[str] = None
     status: str
     created_at: Optional[datetime] = None
 
