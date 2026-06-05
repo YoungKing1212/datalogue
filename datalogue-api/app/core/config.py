@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : config.py
+# Description:
+#   应用配置定义。
+#
+# Responsibilities:
+#   - 从环境变量读取服务配置。
+#   - 为 API 和图工作流模块提供缓存后的配置对象。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from functools import lru_cache
 from typing import Optional
 

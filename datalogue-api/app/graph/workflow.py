@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : workflow.py
+# Description:
+#   NL2SQL 图工作流装配模块。
+#
+# Responsibilities:
+#   - 连接图节点和条件跳转。
+#   - 暴露编译后的工作流执行入口。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # LangGraph 工作流组装 — NL2DSL2SQL 状态图
 
 from sqlalchemy.orm import Session

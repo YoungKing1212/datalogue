@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : json_utils.py
+# Description:
+#   JSON 提取和规范化工具。
+#
+# Responsibilities:
+#   - 从模型混合输出中解析 JSON 片段。
+#   - 为图节点提供宽容 JSON 处理能力。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # LLM 输出 JSON 解析工具 — 容错处理 markdown code block + 裸 JSON
 
 import json

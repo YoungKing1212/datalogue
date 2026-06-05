@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : datasource.py
+# Description:
+#   数据源 API 的 Pydantic Schema。
+#
+# Responsibilities:
+#   - 校验数据源连接请求。
+#   - 序列化数据源、表和字段元数据。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from datetime import datetime
 from typing import Optional
 

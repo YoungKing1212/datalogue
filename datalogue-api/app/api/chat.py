@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : chat.py
+# Description:
+#   聊天问数 API 端点。
+#
+# Responsibilities:
+#   - 流式输出 NL2SQL 工作流事件和最终回答。
+#   - 持久化聊天消息、SQL 和执行轨迹元数据。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # 问数对话路由 — SSE 流式输出 + LangGraph Agent 工作流
 
 import json

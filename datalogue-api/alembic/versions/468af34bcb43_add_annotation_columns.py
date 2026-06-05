@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : 468af34bcb43_add_annotation_columns.py
+# Description:
+#   为源表和源字段增加 AI/人工标注字段。
+#
+# Responsibilities:
+#   - 扩展源表与源字段的业务描述信息。
+#   - 支持标注字段的迁移回滚。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """add_annotation_columns
 
 Revision ID: 468af34bcb43

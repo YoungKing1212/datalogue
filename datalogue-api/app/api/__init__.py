@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : __init__.py
+# Description:
+#   聚合 API 路由。
+#
+# Responsibilities:
+#   - 注册聊天、数据集、数据源和会话路由。
+#   - 向 FastAPI 应用暴露统一 router。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from fastapi import APIRouter
 
 from app.api import datasource, dataset, conversation, chat

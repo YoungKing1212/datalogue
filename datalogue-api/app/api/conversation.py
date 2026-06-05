@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : conversation.py
+# Description:
+#   会话管理 API 端点。
+#
+# Responsibilities:
+#   - 创建、列出、重命名、归档和删除会话。
+#   - 为 assistant-ui 线程提供持久化消息历史。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query

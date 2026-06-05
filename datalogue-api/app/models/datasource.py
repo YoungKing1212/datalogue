@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : datasource.py
+# Description:
+#   数据源持久化模型。
+#
+# Responsibilities:
+#   - 存储数据源连接元数据。
+#   - 表示外部数据库连接配置。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from sqlalchemy import Column, Integer, String, Text
 
 from app.core.database import Base

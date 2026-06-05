@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : dataset.py
+# Description:
+#   语义数据集 API 的 Pydantic Schema。
+#
+# Responsibilities:
+#   - 校验数据集、指标、维度、术语和蓝图请求。
+#   - 为前端序列化语义治理资源。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 

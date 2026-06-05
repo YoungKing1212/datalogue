@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : a4d9e8f1c230_add_business_terms.py
+# Description:
+#   增加业务术语治理相关表。
+#
+# Responsibilities:
+#   - 创建业务术语、资产关联和变更日志表。
+#   - 支持术语治理存储的迁移回滚。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """add_business_terms
 
 Revision ID: a4d9e8f1c230

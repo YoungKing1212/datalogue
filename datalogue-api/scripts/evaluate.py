@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+# ============================================================
+# File Name   : evaluate.py
+# Description:
+#   运行 NL2SQL 工作流评估用例的脚本。
+#
+# Responsibilities:
+#   - 将基准问题送入图工作流执行。
+#   - 输出评估结果，便于检查问数准确率。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """
 Datalogue NL2DSL2SQL 准确率评估框架
 

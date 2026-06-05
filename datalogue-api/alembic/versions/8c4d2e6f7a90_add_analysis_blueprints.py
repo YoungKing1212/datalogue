@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : 8c4d2e6f7a90_add_analysis_blueprints.py
+# Description:
+#   增加分析蓝图相关持久化表。
+#
+# Responsibilities:
+#   - 创建蓝图、版本和执行日志表。
+#   - 支持分析蓝图治理表结构回滚。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """add_analysis_blueprints
 
 Revision ID: 8c4d2e6f7a90

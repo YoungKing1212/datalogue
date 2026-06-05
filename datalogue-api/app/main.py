@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : main.py
+# Description:
+#   Datalogue API 的 FastAPI 应用入口。
+#
+# Responsibilities:
+#   - 配置应用生命周期、跨域和日志。
+#   - 挂载 API 路由和健康检查端点。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI

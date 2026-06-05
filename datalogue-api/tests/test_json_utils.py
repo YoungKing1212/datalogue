@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : test_json_utils.py
+# Description:
+#   宽容 JSON 工具函数测试。
+#
+# Responsibilities:
+#   - 验证从混合模型输出中提取 JSON。
+#   - 覆盖异常和边界输入场景。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """safe_json_parse 容错解析测试。"""
 
 import pytest

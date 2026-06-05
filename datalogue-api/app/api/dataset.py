@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : dataset.py
+# Description:
+#   语义数据集治理 API 端点。
+#
+# Responsibilities:
+#   - 管理数据集、指标、维度、业务术语和分析蓝图。
+#   - 处理选表、字段审核、语义验证和 YAML 导入导出。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from datetime import datetime
 from typing import Any, List
 import json

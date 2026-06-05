@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : ab6832e0a3dd_add_source_tables_and_extend_metric_dim.py
+# Description:
+#   增加物理表元数据并扩展语义资产字段。
+#
+# Responsibilities:
+#   - 创建源表和源字段目录表。
+#   - 扩展指标、维度的表名、同义词和关联信息。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """add_source_tables_and_extend_metric_dim
 
 Revision ID: ab6832e0a3dd

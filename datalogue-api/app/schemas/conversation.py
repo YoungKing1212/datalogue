@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : conversation.py
+# Description:
+#   会话 API 的 Pydantic Schema。
+#
+# Responsibilities:
+#   - 校验会话创建和更新请求。
+#   - 序列化会话信息和消息历史。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from datetime import datetime
 from typing import Optional, List
 

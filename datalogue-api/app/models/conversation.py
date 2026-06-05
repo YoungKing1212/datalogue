@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : conversation.py
+# Description:
+#   会话和消息持久化模型。
+#
+# Responsibilities:
+#   - 存储聊天会话、消息、SQL 和执行轨迹。
+#   - 表示 assistant-ui 线程历史数据。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from sqlalchemy import Boolean, Column, Integer, String, Text, JSON, ForeignKey, DateTime, func
 from sqlalchemy.orm import relationship
 

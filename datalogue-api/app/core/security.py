@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : security.py
+# Description:
+#   SQL 和请求处理安全辅助函数。
+#
+# Responsibilities:
+#   - 在执行前校验 SQL 安全性。
+#   - 集中维护轻量级安全检查逻辑。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 import base64
 import hashlib
 import os

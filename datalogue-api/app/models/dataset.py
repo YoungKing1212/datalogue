@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : dataset.py
+# Description:
+#   语义数据集治理持久化模型。
+#
+# Responsibilities:
+#   - 存储数据集、指标、维度、源元数据、术语和蓝图。
+#   - 定义语义资产和审核工作流之间的关系。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from datetime import datetime
 from sqlalchemy import (
     Boolean,

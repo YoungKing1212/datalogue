@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : 2bc2a6cac055_add_dataset_source_table.py
+# Description:
+#   增加数据集已选物理表绑定关系。
+#
+# Responsibilities:
+#   - 创建数据集与源表的关联存储。
+#   - 维护升级和降级时的表结构变更。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """add_dataset_source_table
 
 Revision ID: 2bc2a6cac055

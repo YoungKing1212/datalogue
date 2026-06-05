@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : __init__.py
+# Description:
+#   导出 Pydantic Schema 类。
+#
+# Responsibilities:
+#   - 集中导入请求和响应 DTO。
+#   - 为 API 模块提供稳定的 Schema 访问入口。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from .datasource import DatasourceCreate, DatasourceUpdate, DatasourceOut
 from .dataset import (
     DatasetCreate,

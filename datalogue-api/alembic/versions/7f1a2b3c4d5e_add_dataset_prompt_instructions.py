@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : 7f1a2b3c4d5e_add_dataset_prompt_instructions.py
+# Description:
+#   为数据集增加自定义提示词约束字段。
+#
+# Responsibilities:
+#   - 持久化数据集级 LLM 指令文本。
+#   - 在降级时移除提示词约束存储。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """add_dataset_prompt_instructions
 
 Revision ID: 7f1a2b3c4d5e

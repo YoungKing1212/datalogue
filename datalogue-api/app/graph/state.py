@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : state.py
+# Description:
+#   图工作流执行状态类型定义。
+#
+# Responsibilities:
+#   - 定义节点之间传递的共享状态字段。
+#   - 说明 NL2SQL 处理链路携带的数据。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # AgentState — LangGraph 工作流全局状态定义
 
 from typing import TypedDict, Optional, List

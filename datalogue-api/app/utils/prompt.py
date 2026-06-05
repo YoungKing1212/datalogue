@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : prompt.py
+# Description:
+#   语义层提示词构建工具。
+#
+# Responsibilities:
+#   - 将数据集、指标和维度渲染为 LLM 上下文。
+#   - 构建 NL2SQL 生成所需的结构化 Schema 文本。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # 语义层 prompt 构建 — 把 SemanticDataset / Metric / Dimension 渲染成 LLM 可读的 schema 文本
 
 import json as _json

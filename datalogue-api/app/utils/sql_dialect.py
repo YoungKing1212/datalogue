@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : sql_dialect.py
+# Description:
+#   SQL 方言规范化工具。
+#
+# Responsibilities:
+#   - 按数据源方言调整生成的 SQL。
+#   - 提供方言感知的 SQL 格式处理。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # 跨方言 SQL 工具 — 引号转义、null sanitize、方言推断
 
 import logging

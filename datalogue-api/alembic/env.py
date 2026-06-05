@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : env.py
+# Description:
+#   配置 API 服务的 Alembic 数据库迁移环境。
+#
+# Responsibilities:
+#   - 加载 SQLAlchemy 元数据和应用配置。
+#   - 支持在线和离线模式执行数据库迁移。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 import sys
 import os
 

@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : nodes.py
+# Description:
+#   NL2DSL2SQL 流程的 LangGraph 节点实现。
+#
+# Responsibilities:
+#   - 执行意图识别、Schema 召回、DSL/SQL 生成和查询执行。
+#   - 审核 SQL 失败原因并生成面向用户的回答。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # LangGraph 工作流节点实现 — NL2DSL2SQL 核心链路
 
 import json

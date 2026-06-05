@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : token.py
+# Description:
+#   Token 估算和上下文裁剪工具。
+#
+# Responsibilities:
+#   - 估算提示词 Token 使用量。
+#   - 在调用 LLM 前裁剪过大的上下文。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # LLM Token 用量提取与合并工具
 
 from typing import Optional

@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : test_dataset_prompt_instructions.py
+# Description:
+#   数据集提示词约束功能测试。
+#
+# Responsibilities:
+#   - 验证提示词约束的持久化。
+#   - 确保自定义指令进入语义上下文。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """数据集级 LLM 约束（prompt_instructions）注入测试。"""
 
 import pytest

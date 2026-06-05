@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : 20260530_0001_add_ds_status.py
+# Description:
+#   为语义数据集增加生命周期状态字段。
+#
+# Responsibilities:
+#   - 新增带默认值的数据集状态列。
+#   - 在降级时移除状态列。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """add status column to datasource
 
 Revision ID: add_ds_status

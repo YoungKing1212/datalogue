@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+# ============================================================
+# File Name   : send_feishu_message.py
+# Description:
+#   发送飞书自定义机器人文本通知的命令行脚本。
+#
+# Responsibilities:
+#   - 解析 webhook、签名密钥和消息内容参数。
+#   - 构造并发送带签名的飞书消息请求。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """Send a text message to a Feishu custom bot webhook."""
 
 from __future__ import annotations

@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : database.py
+# Description:
+#   数据库引擎和会话管理。
+#
+# Responsibilities:
+#   - 创建 SQLAlchemy engine、session factory 和声明式基类。
+#   - 提供请求级数据库会话依赖。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 

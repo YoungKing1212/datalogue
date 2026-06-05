@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : test_column_labels.py
+# Description:
+#   查询结果列名展示映射测试。
+#
+# Responsibilities:
+#   - 验证指标、维度和字段的语义化展示名。
+#   - 覆盖未知列的兜底展示逻辑。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """build_column_labels 单元测试 — 用内存 SQLite 验证维度/指标/字段标注映射规则。"""
 
 import pytest

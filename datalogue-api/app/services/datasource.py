@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : datasource.py
+# Description:
+#   数据源连接和结构探查服务。
+#
+# Responsibilities:
+#   - 测试不同数据库方言的数据源连通性。
+#   - 读取物理表、字段和样例数据。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # 数据源连接服务 — 根据 db_type 创建真实数据库连接，支持连接测试和 Schema 提取
 
 from typing import List, Dict, Any, Optional

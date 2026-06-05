@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : datasource.py
+# Description:
+#   数据源管理 API 端点。
+#
+# Responsibilities:
+#   - 创建和测试数据源连接。
+#   - 同步物理表结构并暴露表元数据。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 # 数据源管理路由 — CRUD + 连接测试 + Schema 自动提取
 
 from typing import List

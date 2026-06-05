@@ -1,3 +1,16 @@
+# ============================================================
+# File Name   : 9b7c1d2e3f40_add_column_review_conversion.py
+# Description:
+#   增加字段审核和资产转化追踪字段。
+#
+# Responsibilities:
+#   - 记录 AI 置信度、审核状态和转化目标。
+#   - 创建已转化资产的索引和外键约束。
+#
+# Author      : yangkai
+# Created On  : 2026-06-05
+# ============================================================
+
 """add_column_review_conversion
 
 Revision ID: 9b7c1d2e3f40
