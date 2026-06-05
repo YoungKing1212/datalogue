@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 960" font-family="-apple-system, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#374151"/>
+    </marker>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arr-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d97706"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+    </marker>
+  </defs>
+
+  <!-- ===== Title ===== -->
+  <text x="460" y="32" text-anchor="middle" font-size="21" font-weight="600" fill="#0f172a">LeadAgent ↔ SubAgent 架构与数据流</text>
+  <text x="460" y="54" text-anchor="middle" font-size="12.5" fill="#64748b">蓝图本体在 SubAgent · L0 索引在 LeadAgent · 三路执行</text>
+
+  <!-- ===== User Input ===== -->
+  <rect x="320" y="72" width="280" height="38" rx="19" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="460" y="96" text-anchor="middle" font-size="13" font-weight="500" fill="#334155">用户问题："今天华东区日产油报表"</text>
+  <line x1="460" y1="110" x2="460" y2="138" stroke="#374151" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== LEAD AGENT SECTION ===== -->
+  <rect x="60" y="140" width="800" height="210" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <rect x="60" y="140" width="800" height="32" rx="12" fill="#2563eb"/>
+  <rect x="60" y="158" width="800" height="14" fill="#2563eb"/>
+  <text x="460" y="162" text-anchor="middle" font-size="15" font-weight="600" fill="white">LeadAgent · 领域无关 · 路由与编排</text>
+
+  <!-- Lead: 问题类型识别 -->
+  <rect x="85" y="188" width="200" height="60" rx="8" fill="white" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="185" y="212" text-anchor="middle" font-size="13" font-weight="600" fill="#1e40af">问题类型识别</text>
+  <text x="185" y="231" text-anchor="middle" font-size="10.5" fill="#64748b">查数 / 对比 / 归因 / 报表</text>
+
+  <!-- Lead: 蓝图路由索引 -->
+  <rect x="310" y="188" width="220" height="60" rx="8" fill="#fefce8" stroke="#fcd34d" stroke-width="1.5"/>
+  <text x="420" y="212" text-anchor="middle" font-size="13" font-weight="600" fill="#92400e">蓝图路由索引（L0 摘要）</text>
+  <text x="420" y="231" text-anchor="middle" font-size="10.5" fill="#a16207">每蓝图 ~150 tokens · 名称+触发词</text>
+
+  <!-- Lead: 领域路由 -->
+  <rect x="555" y="188" width="170" height="60" rx="8" fill="white" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="640" y="212" text-anchor="middle" font-size="13" font-weight="600" fill="#1e40af">领域路由 / 澄清</text>
+  <text x="640" y="231" text-anchor="middle" font-size="10.5" fill="#64748b">选择 SubAgent · 反问</text>
+
+  <!-- Lead: 跨域编排 -->
+  <rect x="750" y="188" width="95" height="60" rx="8" fill="white" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="798" y="212" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">跨域</text>
+  <text x="798" y="231" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">编排</text>
+
+  <!-- Lead: 内部flow arrows -->
+  <line x1="285" y1="218" x2="308" y2="218" stroke="#93c5fd" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <line x1="530" y1="218" x2="553" y2="218" stroke="#93c5fd" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+
+  <!-- Lead: 路由结果 -->
+  <text x="185" y="275" text-anchor="middle" font-size="12" font-weight="500" fill="#1e40af">→ 问题类型 = 固定报表</text>
+  <text x="420" y="275" text-anchor="middle" font-size="12" font-weight="500" fill="#92400e">→ 命中蓝图: daily_oil_report</text>
+  <text x="640" y="275" text-anchor="middle" font-size="12" font-weight="500" fill="#1e40af">→ 路由到: 油田生产 SubAgent</text>
+
+  <!-- Lead: 输出说明 -->
+  <rect x="170" y="295" width="580" height="28" rx="6" fill="#dbeafe"/>
+  <text x="460" y="314" text-anchor="middle" font-size="12" font-weight="500" fill="#1e3a8a">派发任务: { blueprint: "daily_oil_report", param_hints: { date: "today", region: "华东" } }</text>
+
+  <!-- Arrow from Lead to SubAgents row -->
+  <line x1="460" y1="350" x2="460" y2="380" stroke="#374151" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="475" y="370" font-size="10.5" fill="#64748b">派发</text>
+
+  <!-- ===== SUB AGENT ROW (3 instances) ===== -->
+  <!-- SubAgent A: 销售 (collapsed) -->
+  <rect x="60" y="385" width="195" height="50" rx="8" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5" opacity="0.6"/>
+  <text x="158" y="407" text-anchor="middle" font-size="13" font-weight="600" fill="#166534" opacity="0.6">销售分析 SubAgent</text>
+  <text x="158" y="424" text-anchor="middle" font-size="10" fill="#6b7280" opacity="0.6">指标 12 · 蓝图 5 · 场景 3</text>
+
+  <!-- SubAgent B: 油田 (active, highlighted) -->
+  <rect x="280" y="385" width="280" height="50" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2.5"/>
+  <text x="420" y="407" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">油田生产 SubAgent ✦</text>
+  <text x="420" y="424" text-anchor="middle" font-size="10.5" fill="#166534">指标 18 · 蓝图 8 · 场景 4</text>
+
+  <!-- SubAgent C: 财务 (collapsed) -->
+  <rect x="585" y="385" width="195" height="50" rx="8" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5" opacity="0.6"/>
+  <text x="683" y="407" text-anchor="middle" font-size="13" font-weight="600" fill="#166534" opacity="0.6">财务分析 SubAgent</text>
+  <text x="683" y="424" text-anchor="middle" font-size="10" fill="#6b7280" opacity="0.6">指标 15 · 蓝图 6 · 场景 2</text>
+
+  <!-- ===== SYNC ARROW: SubAgent → LeadAgent 索引 ===== -->
+  <path d="M 780 405 Q 860 405 860 300 Q 860 218 750 218" fill="none" stroke="#d97706" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arr-amber)"/>
+  <text x="875" y="290" font-size="11" font-weight="600" fill="#d97706" transform="rotate(-90 875 290)" text-anchor="middle">L0 自动同步</text>
+  <text x="870" y="355" font-size="9.5" fill="#92400e">蓝图增删改时</text>
+  <text x="870" y="367" font-size="9.5" fill="#92400e">索引自动更新</text>
+
+  <!-- Arrow down to expanded SubAgent -->
+  <line x1="420" y1="435" x2="420" y2="465" stroke="#16a34a" stroke-width="1.8" marker-end="url(#arr-green)"/>
+
+  <!-- ===== EXPANDED SUB AGENT (油田生产) ===== -->
+  <rect x="60" y="468" width="800" height="420" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+  <rect x="60" y="468" width="800" height="32" rx="12" fill="#16a34a"/>
+  <rect x="60" y="486" width="800" height="14" fill="#16a34a"/>
+  <text x="460" y="490" text-anchor="middle" font-size="14" font-weight="600" fill="white">油田生产 SubAgent 内部 · 领域专家 · 三路执行</text>
+
+  <!-- Asset Layer -->
+  <text x="85" y="524" font-size="12" font-weight="600" fill="#166534">资产层（用户 / 数据团队维护）</text>
+
+  <!-- Semantic Layer box -->
+  <rect x="85" y="533" width="215" height="85" rx="8" fill="white" stroke="#bbf7d0" stroke-width="1.5"/>
+  <text x="193" y="553" text-anchor="middle" font-size="12.5" font-weight="600" fill="#166534">语义层</text>
+  <text x="193" y="571" text-anchor="middle" font-size="10.5" fill="#475569">指标 · 维度 · 字典 · 关联</text>
+  <text x="193" y="587" text-anchor="middle" font-size="10.5" fill="#475569">业务术语 · 同义词</text>
+  <text x="193" y="605" text-anchor="middle" font-size="10" fill="#94a3b8">→ ad-hoc 查询 + 场景分析共用</text>
+
+  <!-- Blueprint box (highlighted) -->
+  <rect x="320" y="533" width="280" height="85" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
+  <text x="460" y="553" text-anchor="middle" font-size="12.5" font-weight="700" fill="#92400e">分析蓝图（本体）</text>
+  <text x="460" y="571" text-anchor="middle" font-size="10.5" fill="#78350f">L1 调用规格 · 参数 · 输出列语义</text>
+  <text x="460" y="587" text-anchor="middle" font-size="10.5" fill="#78350f">L2 业务步骤摘要（业务语言）</text>
+  <text x="460" y="605" text-anchor="middle" font-size="10" fill="#a16207">L3 原始 SQL/SP（仅人类可见）</text>
+
+  <!-- Analysis Scenario box -->
+  <rect x="620" y="533" width="220" height="85" rx="8" fill="white" stroke="#bbf7d0" stroke-width="1.5"/>
+  <text x="730" y="553" text-anchor="middle" font-size="12.5" font-weight="600" fill="#166534">分析场景</text>
+  <text x="730" y="571" text-anchor="middle" font-size="10.5" fill="#475569">下降归因 · 趋势分析</text>
+  <text x="730" y="587" text-anchor="middle" font-size="10.5" fill="#475569">默认维度优先级 · 输出要求</text>
+  <text x="730" y="605" text-anchor="middle" font-size="10" fill="#94a3b8">→ 探索分析场景使用</text>
+
+  <!-- Second-level routing -->
+  <text x="85" y="645" font-size="12" font-weight="600" fill="#166534">二级路由（SubAgent 自主决策）</text>
+
+  <!-- Three paths -->
+  <!-- Path 1: Blueprint (highlighted) -->
+  <rect x="85" y="655" width="245" height="92" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="208" y="675" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">路径 A · 蓝图执行</text>
+  <text x="208" y="693" text-anchor="middle" font-size="10.5" fill="#78350f">命中已注册蓝图</text>
+  <text x="208" y="708" text-anchor="middle" font-size="10.5" fill="#78350f">→ LLM 精确抽参</text>
+  <text x="208" y="723" text-anchor="middle" font-size="10.5" fill="#78350f">→ 执行预定义查询/SP</text>
+  <text x="208" y="738" text-anchor="middle" font-size="10.5" fill="#78350f">→ L2 辅助解读结果</text>
+
+  <!-- Path 2: Analysis Scenario -->
+  <rect x="350" y="655" width="245" height="92" rx="8" fill="white" stroke="#86efac" stroke-width="1.5"/>
+  <text x="473" y="675" text-anchor="middle" font-size="12" font-weight="600" fill="#166534">路径 B · 场景分析</text>
+  <text x="473" y="693" text-anchor="middle" font-size="10.5" fill="#475569">命中分析场景模板</text>
+  <text x="473" y="708" text-anchor="middle" font-size="10.5" fill="#475569">→ 按模板拆解多步查询</text>
+  <text x="473" y="723" text-anchor="middle" font-size="10.5" fill="#475569">→ 每步走 NL→DSL→SQL</text>
+  <text x="473" y="738" text-anchor="middle" font-size="10.5" fill="#475569">→ 聚合归因 + 生成报告</text>
+
+  <!-- Path 3: Ad-hoc -->
+  <rect x="615" y="655" width="225" height="92" rx="8" fill="white" stroke="#86efac" stroke-width="1.5"/>
+  <text x="728" y="675" text-anchor="middle" font-size="12" font-weight="600" fill="#166534">路径 C · Ad-hoc 查询</text>
+  <text x="728" y="693" text-anchor="middle" font-size="10.5" fill="#475569">未命中蓝图或场景</text>
+  <text x="728" y="708" text-anchor="middle" font-size="10.5" fill="#475569">→ 标准 NL→DSL→SQL</text>
+  <text x="728" y="723" text-anchor="middle" font-size="10.5" fill="#475569">→ 单次查询 + 解释</text>
+  <text x="728" y="738" text-anchor="middle" font-size="10.5" fill="#475569">→ 当前已有能力</text>
+
+  <!-- 当前问题走蓝图路径标注 -->
+  <rect x="88" y="753" width="239" height="20" rx="4" fill="#f59e0b"/>
+  <text x="208" y="768" text-anchor="middle" font-size="10.5" font-weight="600" fill="white">← 当前问题走这条路径</text>
+
+  <!-- Result convergence -->
+  <line x1="208" y1="778" x2="420" y2="820" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <line x1="473" y1="778" x2="420" y2="820" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <line x1="728" y1="778" x2="420" y2="820" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- SubAgent output -->
+  <rect x="300" y="823" width="240" height="30" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="420" y="843" text-anchor="middle" font-size="12" font-weight="500" fill="#14532d">SubAgent 返回结果 + 解读</text>
+
+  <!-- Arrow back to user -->
+  <line x1="420" y1="858" x2="420" y2="885" stroke="#374151" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Final output -->
+  <rect x="260" y="888" width="400" height="36" rx="18" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="460" y="911" text-anchor="middle" font-size="12.5" font-weight="500" fill="#334155">LeadAgent 聚合（单 SubAgent 时直接转交）→ 用户</text>
+
+  <!-- ===== Legend ===== -->
+  <text x="85" y="950" font-size="10" fill="#94a3b8">
+    实线 = 主数据流 · 虚线 = 备选路径 · 橙色虚线 = L0 索引自动同步 · 蓝图本体只在 SubAgent,LeadAgent 仅持有 L0 摘要
+  </text>
+</svg>

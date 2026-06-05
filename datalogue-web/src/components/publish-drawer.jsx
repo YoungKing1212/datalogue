@@ -351,4 +351,16 @@ function PdField({ label, hint, children }) {
   );
 }
 
+function SectionCard({ title, icon, children }) {
+  return (
+    <div className="api-card">
+      <div className="api-card-head">
+        <Icon name={icon} />
+        <span>{title}</span>
+      </div>
+      <div className="api-card-body">{children}</div>
+    </div>
+  );
+}
+
 export { PublishDrawer };

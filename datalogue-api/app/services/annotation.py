@@ -94,6 +94,10 @@ ANNOTATION_SYSTEM_PROMPT = """你是一个资深数据分析师，负责为数�
    - id_field: 主键或外键（如订单ID、用户ID）
    - unused: 辅助字段或技术字段（如版本号、更新时间戳、软删除标记）
 3. default_agg: 默认聚合方式（仅 metric_candidate 需要），只能是 SUM / COUNT / AVG / MAX / MIN / COUNT_DISTINCT / NONE
+4. confidence: 0-1 的置信度
+5. reason: 一句话说明判断依据
+6. synonyms: 业务同义词数组，可以为空
+7. enum_values: 枚举值数组，仅维度候选字段需要；可以基于样例值提取
 
 推理规则：
 - 如果字段已有数据库注释，优先基于注释推断，不要凭空编造
@@ -106,7 +110,7 @@ ANNOTATION_SYSTEM_PROMPT = """你是一个资深数据分析师，负责为数�
 
 输出格式:
 [
-  {"column_name": "order_amount", "business_desc": "订单实付金额", "semantic_role": "metric_candidate", "default_agg": "SUM"},
+  {"column_name": "order_amount", "business_desc": "订单实付金额", "semantic_role": "metric_candidate", "default_agg": "SUM", "confidence": 0.86, "reason": "金额字段适合求和", "synonyms": ["销售额"], "enum_values": []},
   ...
 ]
 """
@@ -337,6 +341,16 @@ def annotate_table_columns(
             col.ai_description = desc.strip()
         col.ai_semantic_role = r.get("semantic_role")
         col.ai_suggested_agg = r.get("default_agg")
+        try:
+            col.ai_confidence = float(r.get("confidence")) if r.get("confidence") is not None else None
+        except (TypeError, ValueError):
+            col.ai_confidence = None
+        col.ai_reason = r.get("reason")
+        synonyms = r.get("synonyms")
+        enum_values = r.get("enum_values")
+        col.suggested_synonyms = synonyms if isinstance(synonyms, list) else []
+        col.suggested_enum_values = enum_values if isinstance(enum_values, list) else []
+        col.review_status = "pending_review"
         col.annotated_at = datetime.utcnow()
 
         # 重新解析生效值

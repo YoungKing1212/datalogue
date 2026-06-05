@@ -2,6 +2,7 @@
 
 from typing import List
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -333,6 +334,9 @@ def update_source_column(
 
     # 重新解析生效值
     col.effective_desc, col.desc_source = resolve_description(col)
+    if "user_description" in data or "user_semantic_role" in data:
+        col.review_status = "confirmed"
+        col.reviewed_at = datetime.utcnow()
     db.commit()
     db.refresh(col)
     logger.info(f"字段标注更新成功: column_id={column_id}, desc_source={col.desc_source}")

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Icon } from './icons';
+import { AnalysisBlueprintsPanel } from './analysis-blueprints';
 import {
   listDatasets,
   createDataset,
@@ -28,6 +29,16 @@ import {
   listSelectedTables,
   listSelectedColumns,
   updateSourceColumn,
+  convertColumnToMetric,
+  convertColumnToDimension,
+  updateColumnReviewStatus,
+  listBusinessTerms,
+  createBusinessTerm,
+  updateBusinessTerm,
+  deleteBusinessTerm,
+  linkBusinessTermAssets,
+  discoverBusinessTerms,
+  checkBusinessTermConflicts,
 } from '../api/client';
 
 // ── DatasetsScreen — 语义层配置（三栏式）────────────────────
@@ -40,6 +51,24 @@ const ctxMenuItemStyle = {
   color: 'var(--text)', cursor: 'pointer', textAlign: 'left',
 };
 
+const TERM_TYPE_OPTIONS = [
+  { value: 'business_object', label: '业务对象' },
+  { value: 'metric_concept', label: '指标口径' },
+  { value: 'dimension_enum', label: '维度枚举' },
+  { value: 'status_enum', label: '状态枚举' },
+  { value: 'business_process', label: '业务流程' },
+  { value: 'org_scope', label: '组织口径' },
+];
+
+const TERM_STATUS_OPTIONS = [
+  { value: 'draft', label: '草稿' },
+  { value: 'active', label: '已启用' },
+  { value: 'deprecated', label: '已废弃' },
+];
+
+const termTypeLabel = (type) => TERM_TYPE_OPTIONS.find(item => item.value === type)?.label || type || '未分类';
+const termStatusLabel = (status) => TERM_STATUS_OPTIONS.find(item => item.value === status)?.label || status || '未知';
+
 function DatasetsScreen() {
   // ── 数据集状态 ──
   const [datasets, setDatasets] = useState([]);
@@ -51,15 +80,22 @@ function DatasetsScreen() {
   const [selectedTableIds, setSelectedTableIds] = useState(new Set()); // 数据集已选表ID
   const [selectedColumns, setSelectedColumns] = useState([]);      // 已选表的合并字段
   const [previewTableId, setPreviewTableId] = useState(null);      // 当前预览的表
+  const [focusedTableId, setFocusedTableId] = useState(null);      // 当前聚焦的已选表（字段/预览联动）
   const [syncing, setSyncing] = useState(false);
   const [annotating, setAnnotating] = useState(false);
   const [tableSearch, setTableSearch] = useState('');
+  const [fieldSearch, setFieldSearch] = useState('');
+  const [fieldTableFilter, setFieldTableFilter] = useState('');
+  const [fieldRoleFilter, setFieldRoleFilter] = useState('');
+  const [fieldSourceFilter, setFieldSourceFilter] = useState('');
+  const [convertingColumnId, setConvertingColumnId] = useState(null);
 
   // 查看中的表（只读预览其字段，不加入数据集；与勾选状态相互独立）
   const [inspectingTableId, setInspectingTableId] = useState(null);
   const [inspectColumns, setInspectColumns] = useState([]);
   const [inspectLoading, setInspectLoading] = useState(false);
   const inspectSeqRef = useRef(0); // 防止旧请求覆盖新结果
+  const previewSeqRef = useRef(0); // 防止旧预览请求覆盖新结果
 
   // ── 字段编辑状态 ──
   const [editingColumnId, setEditingColumnId] = useState(null);
@@ -67,13 +103,52 @@ function DatasetsScreen() {
 
   const filteredTables = useMemo(() => {
     const q = tableSearch.trim().toLowerCase();
-    if (!q) return allSourceTables;
-    return allSourceTables.filter(t => t.table_name.toLowerCase().includes(q));
-  }, [allSourceTables, tableSearch]);
+    const base = q
+      ? allSourceTables.filter(t => t.table_name.toLowerCase().includes(q))
+      : allSourceTables;
+    return [...base].sort((a, b) => {
+      const aSelected = selectedTableIds.has(a.id);
+      const bSelected = selectedTableIds.has(b.id);
+      if (aSelected !== bSelected) return aSelected ? -1 : 1;
+      return String(a.table_name || '').localeCompare(String(b.table_name || ''));
+    });
+  }, [allSourceTables, selectedTableIds, tableSearch]);
+
+  const tableListItems = useMemo(() => {
+    const selected = filteredTables.filter(t => selectedTableIds.has(t.id));
+    const unselected = filteredTables.filter(t => !selectedTableIds.has(t.id));
+    const items = [];
+    if (selected.length) {
+      items.push({ type: 'group', id: 'selected', label: '已选择', count: selected.length });
+      selected.forEach(table => items.push({ type: 'table', table }));
+    }
+    if (unselected.length) {
+      items.push({ type: 'group', id: 'unselected', label: '未选择', count: unselected.length });
+      unselected.forEach(table => items.push({ type: 'table', table }));
+    }
+    return items;
+  }, [filteredTables, selectedTableIds]);
 
   // ── 指标/维度数据 ──
   const [metrics, setMetrics] = useState([]);
   const [dimensions, setDimensions] = useState([]);
+  const [businessTerms, setBusinessTerms] = useState([]);
+  const [termSearch, setTermSearch] = useState('');
+  const [termTypeFilter, setTermTypeFilter] = useState('');
+  const [termStatusFilter, setTermStatusFilter] = useState('');
+  const [selectedTermId, setSelectedTermId] = useState(null);
+  const [showTermForm, setShowTermForm] = useState(false);
+  const [editingTermId, setEditingTermId] = useState(null);
+  const [termCandidates, setTermCandidates] = useState([]);
+  const [termConflicts, setTermConflicts] = useState([]);
+  const [termBusy, setTermBusy] = useState(false);
+  const [activeCapabilityTab, setActiveCapabilityTab] = useState(() => {
+    try {
+      return localStorage.getItem('datalogue.dataset.capabilityTab.v2') || 'blueprints';
+    } catch {
+      return 'blueprints';
+    }
+  });
 
   // ── 表单状态 ──
   const [showMetricForm, setShowMetricForm] = useState(false);
@@ -82,6 +157,8 @@ function DatasetsScreen() {
   const [showYamlImport, setShowYamlImport] = useState(false);
   const [editingMetricId, setEditingMetricId] = useState(null);
   const [editingDimId, setEditingDimId] = useState(null);
+  const [metricSourceColumnId, setMetricSourceColumnId] = useState(null);
+  const [dimSourceColumnId, setDimSourceColumnId] = useState(null);
 
   const [metricForm, setMetricForm] = useState({
     name: '', display_name: '', expr: '', table_name: '', time_field: '',
@@ -90,6 +167,17 @@ function DatasetsScreen() {
   const [dimForm, setDimForm] = useState({
     name: '', display_name: '', column_name: '', table_name: '',
     join_to: '', join_key: '', enum_values: '', synonyms: ''
+  });
+  const [termForm, setTermForm] = useState({
+    name: '',
+    display_name: '',
+    term_type: 'business_object',
+    definition: '',
+    aliases: '',
+    forbidden_aliases: '',
+    examples: '',
+    owner: '',
+    status: 'draft',
   });
   const [dsForm, setDsForm] = useState({ name: '', datasource_id: '', description: '', prompt_instructions: '' });
   const [showPromptForm, setShowPromptForm] = useState(false);
@@ -119,6 +207,14 @@ function DatasetsScreen() {
   useEffect(() => { loadDatasets(); loadDatasources(); }, []);
 
   useEffect(() => {
+    try {
+      localStorage.setItem('datalogue.dataset.capabilityTab.v2', activeCapabilityTab);
+    } catch {
+      // localStorage may be unavailable in embedded previews.
+    }
+  }, [activeCapabilityTab]);
+
+  useEffect(() => {
     if (activeDsId) {
       loadDsMeta(activeDsId);
       loadAllSourceTables(activeDsId);
@@ -127,10 +223,10 @@ function DatasetsScreen() {
   }, [activeDsId]);
 
   useEffect(() => {
-    if (previewTableId) {
+    if (previewTableId && allSourceTables.length > 0 && activeDsId) {
       loadPreview(previewTableId);
     }
-  }, [previewTableId]);
+  }, [previewTableId, allSourceTables, activeDsId]);
 
   // 切换/选中状态变化时清理 inspect：若该表已被勾选，就交给已选字段视图展示
   useEffect(() => {
@@ -195,9 +291,15 @@ function DatasetsScreen() {
 
   const loadDsMeta = async (dsId) => {
     try {
-      const [ms, ds] = await Promise.all([listDatasetMetrics(dsId), listDatasetDimensions(dsId)]);
+      const [ms, ds, terms] = await Promise.all([
+        listDatasetMetrics(dsId),
+        listDatasetDimensions(dsId),
+        listBusinessTerms(dsId),
+      ]);
       setMetrics(ms);
       setDimensions(ds);
+      setBusinessTerms(terms);
+      setSelectedTermId(prev => (prev && terms.some(t => t.id === prev) ? prev : terms[0]?.id ?? null));
     } catch (err) { console.error(err); }
   };
 
@@ -221,32 +323,56 @@ function DatasetsScreen() {
         listSelectedTables(dsId),
         listSelectedColumns(dsId),
       ]);
-      setSelectedTableIds(new Set(selectedTables.map(t => t.id)));
+      const nextSelectedIds = new Set(selectedTables.map(t => t.id));
+      setSelectedTableIds(nextSelectedIds);
       setSelectedColumns(cols);
-      if (selectedTables.length > 0 && !previewTableId) {
-        setPreviewTableId(selectedTables[0].id);
+      if (selectedTables.length > 0) {
+        const nextFocus = focusedTableId && nextSelectedIds.has(focusedTableId)
+          ? focusedTableId
+          : selectedTables[0].id;
+        setFocusedTableId(nextFocus);
+        if (!previewTableId || !nextSelectedIds.has(previewTableId)) {
+          setPreviewTableId(nextFocus);
+        }
+      } else {
+        setFocusedTableId(null);
+        setPreviewTableId(null);
+        setPreviewData(null);
       }
     } catch (err) {
       console.error(err);
       setSelectedTableIds(new Set());
       setSelectedColumns([]);
+      setFocusedTableId(null);
+      setPreviewTableId(null);
+      setPreviewData(null);
     }
   };
 
   const loadPreview = async (tableId) => {
+    const seq = ++previewSeqRef.current;
     const table = allSourceTables.find(t => t.id === tableId);
-    if (!table) return;
+    if (!table) {
+      setPreviewData(null);
+      setPreviewLoading(false);
+      return;
+    }
     const ds = datasets.find(d => d.id === activeDsId);
-    if (!ds) return;
+    if (!ds) {
+      setPreviewData(null);
+      setPreviewLoading(false);
+      return;
+    }
     setPreviewLoading(true);
     try {
       const data = await previewTable(ds.datasource_id, table.schema_name, table.table_name, 5);
+      if (seq !== previewSeqRef.current) return;
       setPreviewData(data);
     } catch (err) {
       console.error(err);
-      setPreviewData(null);
+      if (seq === previewSeqRef.current) setPreviewData(null);
     } finally {
-      setPreviewLoading(false);
+      if (seq === previewSeqRef.current) setPreviewLoading(false);
     }
   };
 
@@ -268,12 +394,32 @@ function DatasetsScreen() {
       setEditingColumnId(null);
       // 刷新字段列表
       if (activeDsId) {
-        const cols = await listSelectedColumns(activeDsId);
-        setSelectedColumns(cols);
+        await refreshSelectedColumns(activeDsId);
       }
     } catch (err) {
       console.error('保存字段标注失败:', err);
       alert('保存失败: ' + (err.message || '未知错误'));
+    }
+  };
+
+  const refreshSelectedColumns = async (dsId = activeDsId) => {
+    if (!dsId) return;
+    const cols = await listSelectedColumns(dsId);
+    setSelectedColumns(cols);
+  };
+
+  const applyColumnUpdate = (column) => {
+    if (!column?.id) return;
+    setSelectedColumns(prev => prev.map(c => (c.id === column.id ? { ...c, ...column } : c)));
+  };
+
+  const handleColumnReviewStatus = async (col, status) => {
+    if (!activeDsId) return;
+    try {
+      const result = await updateColumnReviewStatus(activeDsId, col.id, status);
+      applyColumnUpdate(result.column);
+    } catch (err) {
+      alert('状态更新失败: ' + (err.message || '未知错误'));
     }
   };
 
@@ -323,9 +469,12 @@ function DatasetsScreen() {
       if (checked) {
         await selectTablesForDataset(activeDsId, [sourceTableId]);
         // 勾选后自动预览该表
+        setFocusedTableId(sourceTableId);
         setPreviewTableId(sourceTableId);
       } else {
         await deselectTableFromDataset(activeDsId, sourceTableId);
+        if (focusedTableId === sourceTableId) setFocusedTableId(null);
+        if (previewTableId === sourceTableId) setPreviewTableId(null);
       }
       await loadSelectedTables(activeDsId);
     } catch (err) {
@@ -336,11 +485,19 @@ function DatasetsScreen() {
   // ── 查看表信息（不加入数据集）──
   const handleInspectTable = (sourceTableId) => {
     if (!sourceTableId) return;
+    if (selectedTableIds.has(sourceTableId)) {
+      setInspectingTableId(null);
+      setInspectColumns([]);
+      setFocusedTableId(sourceTableId);
+      setPreviewTableId(sourceTableId);
+      return;
+    }
     // 点击同一行再次点 → 收起
     if (inspectingTableId === sourceTableId) {
       setInspectingTableId(null);
       return;
     }
+    setFocusedTableId(null);
     setInspectingTableId(sourceTableId);
     // 同时触发该表的数据预览
     setPreviewTableId(sourceTableId);
@@ -422,6 +579,7 @@ function DatasetsScreen() {
         setActiveDsId(rest[0]?.id ?? null);
         setSelectedTableIds(new Set());
         setSelectedColumns([]);
+        setFocusedTableId(null);
         setPreviewTableId(null);
         setPreviewData(null);
         setInspectingTableId(null);
@@ -445,18 +603,29 @@ function DatasetsScreen() {
       };
       if (editingMetricId) {
         await updateMetric(activeDsId, editingMetricId, payload);
+      } else if (metricSourceColumnId) {
+        setConvertingColumnId(metricSourceColumnId);
+        const result = await convertColumnToMetric(activeDsId, metricSourceColumnId, payload);
+        applyColumnUpdate(result.column);
+        alert(result.existing ? '指标已存在，已关联到该字段' : '指标创建成功');
       } else {
         await createMetric(activeDsId, payload);
       }
       setShowMetricForm(false);
       setEditingMetricId(null);
+      setMetricSourceColumnId(null);
       setMetricForm({ name: '', display_name: '', expr: '', table_name: '', time_field: '', granularity: '', format_str: '', filter_sql: '', synonyms: '', description: '' });
-      loadDsMeta(activeDsId);
-    } catch (err) { alert('保存失败: ' + (err.message || '未知错误')); }
+      await loadDsMeta(activeDsId);
+    } catch (err) {
+      alert('保存失败: ' + (err.message || '未知错误'));
+    } finally {
+      setConvertingColumnId(null);
+    }
   };
 
   const handleEditMetric = (m) => {
     setEditingMetricId(m.id);
+    setMetricSourceColumnId(null);
     setMetricForm({
       name: m.name,
       display_name: m.display_name || '',
@@ -489,18 +658,29 @@ function DatasetsScreen() {
       };
       if (editingDimId) {
         await updateDimension(activeDsId, editingDimId, payload);
+      } else if (dimSourceColumnId) {
+        setConvertingColumnId(dimSourceColumnId);
+        const result = await convertColumnToDimension(activeDsId, dimSourceColumnId, payload);
+        applyColumnUpdate(result.column);
+        alert(result.existing ? '维度已存在，已关联到该字段' : '维度创建成功');
       } else {
         await createDimension(activeDsId, payload);
       }
       setShowDimForm(false);
       setEditingDimId(null);
+      setDimSourceColumnId(null);
       setDimForm({ name: '', display_name: '', column_name: '', table_name: '', join_to: '', join_key: '', enum_values: '', synonyms: '' });
-      loadDsMeta(activeDsId);
-    } catch (err) { alert('保存失败: ' + (err.message || '未知错误')); }
+      await loadDsMeta(activeDsId);
+    } catch (err) {
+      alert('保存失败: ' + (err.message || '未知错误'));
+    } finally {
+      setConvertingColumnId(null);
+    }
   };
 
   const handleEditDim = (d) => {
     setEditingDimId(d.id);
+    setDimSourceColumnId(null);
     setDimForm({
       name: d.name,
       display_name: d.display_name || '',
@@ -519,36 +699,178 @@ function DatasetsScreen() {
     try { await deleteDimension(activeDsId, did); loadDsMeta(activeDsId); } catch (err) { alert(err.message); }
   };
 
+  // ── 业务术语 CRUD / 发现 / 冲突 ──
+  const resetTermForm = () => {
+    setEditingTermId(null);
+    setTermForm({
+      name: '',
+      display_name: '',
+      term_type: 'business_object',
+      definition: '',
+      aliases: '',
+      forbidden_aliases: '',
+      examples: '',
+      owner: '',
+      status: 'draft',
+    });
+    setShowTermForm(true);
+  };
+
+  const handleEditTerm = (term) => {
+    setEditingTermId(term.id);
+    setTermForm({
+      name: term.name || '',
+      display_name: term.display_name || '',
+      term_type: term.term_type || 'business_object',
+      definition: term.definition || '',
+      aliases: (term.aliases || []).join(', '),
+      forbidden_aliases: (term.forbidden_aliases || []).join(', '),
+      examples: (term.examples || []).join(', '),
+      owner: term.owner || '',
+      status: term.status || 'draft',
+    });
+    setShowTermForm(true);
+  };
+
+  const termFormPayload = () => ({
+    name: termForm.name.trim(),
+    display_name: termForm.display_name.trim() || termForm.name.trim(),
+    term_type: termForm.term_type,
+    definition: termForm.definition.trim() || null,
+    aliases: termForm.aliases ? termForm.aliases.split(',').map(s => s.trim()).filter(Boolean) : [],
+    forbidden_aliases: termForm.forbidden_aliases ? termForm.forbidden_aliases.split(',').map(s => s.trim()).filter(Boolean) : [],
+    examples: termForm.examples ? termForm.examples.split(',').map(s => s.trim()).filter(Boolean) : [],
+    owner: termForm.owner.trim() || null,
+    status: termForm.status,
+  });
+
+  const handleSaveTerm = async () => {
+    if (!activeDsId) { alert('请先选择数据集'); return; }
+    if (!termForm.name.trim()) { alert('请填写术语名称'); return; }
+    setTermBusy(true);
+    try {
+      const payload = termFormPayload();
+      const saved = editingTermId
+        ? await updateBusinessTerm(activeDsId, editingTermId, payload)
+        : await createBusinessTerm(activeDsId, payload);
+      setShowTermForm(false);
+      setEditingTermId(null);
+      setSelectedTermId(saved.id);
+      await loadDsMeta(activeDsId);
+    } catch (err) {
+      alert('保存术语失败: ' + (err.message || '未知错误'));
+    } finally {
+      setTermBusy(false);
+    }
+  };
+
+  const handleDeleteTerm = async (termId) => {
+    if (!activeDsId || !confirm('确定删除该业务术语？')) return;
+    setTermBusy(true);
+    try {
+      await deleteBusinessTerm(activeDsId, termId);
+      if (selectedTermId === termId) setSelectedTermId(null);
+      await loadDsMeta(activeDsId);
+    } catch (err) {
+      alert('删除术语失败: ' + (err.message || '未知错误'));
+    } finally {
+      setTermBusy(false);
+    }
+  };
+
+  const handleDiscoverTerms = async () => {
+    if (!activeDsId) return;
+    setTermBusy(true);
+    try {
+      const result = await discoverBusinessTerms(activeDsId);
+      setTermCandidates(result.candidates || []);
+    } catch (err) {
+      alert('AI 发现术语失败: ' + (err.message || '未知错误'));
+    } finally {
+      setTermBusy(false);
+    }
+  };
+
+  const handleAcceptTermCandidate = async (candidate) => {
+    if (!activeDsId) return;
+    setTermBusy(true);
+    try {
+      const saved = await createBusinessTerm(activeDsId, {
+        name: candidate.name,
+        display_name: candidate.display_name || candidate.name,
+        term_type: candidate.term_type || 'business_object',
+        definition: candidate.definition || '',
+        aliases: candidate.aliases || [],
+        examples: candidate.examples || [],
+        status: 'draft',
+        source: 'ai',
+        confidence: candidate.confidence,
+        extra_metadata: { discovered_from: candidate.source || 'unknown' },
+      });
+      if (candidate.asset_links?.length) {
+        await linkBusinessTermAssets(activeDsId, saved.id, candidate.asset_links);
+      }
+      setTermCandidates(prev => prev.filter(item => item.name !== candidate.name));
+      setSelectedTermId(saved.id);
+      await loadDsMeta(activeDsId);
+    } catch (err) {
+      alert('纳入术语失败: ' + (err.message || '未知错误'));
+    } finally {
+      setTermBusy(false);
+    }
+  };
+
+  const handleCheckTermConflicts = async () => {
+    if (!activeDsId) return;
+    setTermBusy(true);
+    try {
+      const result = await checkBusinessTermConflicts(activeDsId);
+      setTermConflicts(result.conflicts || []);
+    } catch (err) {
+      alert('冲突检测失败: ' + (err.message || '未知错误'));
+    } finally {
+      setTermBusy(false);
+    }
+  };
+
   // ── 从字段快速创建指标/维度 ──
   const handleCreateMetricFromColumn = (col) => {
-    const timeCol = selectedColumns.find(c => c.semantic_role === 'time_field');
+    if (!activeDsId) { alert('请先选择数据集'); return; }
+    const displayName = col.user_description || col.ai_description || col.business_desc || col.effective_desc || col.column_comment || col.column_name;
+    const agg = (col.ai_suggested_agg || col.default_agg || 'SUM').toUpperCase();
+    const timeCol = selectedColumns.find(c => c.source_table_id === col.source_table_id && getColumnRole(c) === 'time_field');
     setEditingMetricId(null);
+    setMetricSourceColumnId(col.id);
     setMetricForm({
-      name: col.business_desc || col.column_name,
-      display_name: col.business_desc || col.column_name,
-      expr: col.default_agg ? `${col.default_agg}(${col.column_name})` : `SUM(${col.column_name})`,
-      table_name: col.table_name,
+      name: displayName || col.column_name,
+      display_name: displayName || col.column_name,
+      expr: `${agg === 'NONE' ? 'SUM' : agg}(${col.column_name})`,
+      table_name: col.table_name || '',
       time_field: timeCol ? timeCol.column_name : '',
       granularity: 'daily',
       format_str: '',
       filter_sql: '',
-      synonyms: '',
-      description: '',
+      synonyms: (col.suggested_synonyms || []).join(', '),
+      description: col.ai_reason || col.ai_description || col.effective_desc || '',
     });
     setShowMetricForm(true);
   };
 
   const handleCreateDimFromColumn = (col) => {
+    if (!activeDsId) { alert('请先选择数据集'); return; }
+    const displayName = col.user_description || col.ai_description || col.business_desc || col.effective_desc || col.column_comment || col.column_name;
+    const enumValues = (col.suggested_enum_values?.length ? col.suggested_enum_values : col.sample_values || []).slice(0, 20);
     setEditingDimId(null);
+    setDimSourceColumnId(col.id);
     setDimForm({
-      name: col.business_desc || col.column_name,
-      display_name: col.business_desc || col.column_name,
+      name: displayName || col.column_name,
+      display_name: displayName || col.column_name,
       column_name: col.column_name,
-      table_name: col.table_name,
+      table_name: col.table_name || '',
       join_to: '',
       join_key: '',
-      enum_values: '',
-      synonyms: '',
+      enum_values: enumValues.join(', '),
+      synonyms: (col.suggested_synonyms || []).join(', '),
     });
     setShowDimForm(true);
   };
@@ -615,6 +937,671 @@ function DatasetsScreen() {
   // ── 当前数据集 ──
   const activeDs = datasets.find(d => d.id === activeDsId) || datasets[0];
   const currentDsId = activeDsId || activeDs?.id;
+  const capabilityTabs = [
+    { id: 'tables', label: '数据表', count: allSourceTables.length, icon: 'table', stage: '资产', desc: '同步表结构并选择进入语义层的物理表。' },
+    { id: 'fields', label: '字段标注', count: selectedColumns.length, icon: 'string', stage: '标注', desc: '审核字段语义、描述和时间/枚举等角色。' },
+    { id: 'metrics', label: '指标', count: metrics.length, icon: 'formula', stage: '口径', desc: '维护可复用指标口径和聚合规则。' },
+    { id: 'dimensions', label: '维度', count: dimensions.length, icon: 'layers', stage: '口径', desc: '维护分析维度、枚举和值域解释。' },
+    { id: 'terms', label: '业务术语', count: businessTerms.length, icon: 'book', stage: '知识', desc: '沉淀业务别名、同义词和解释入口。' },
+    { id: 'blueprints', label: '分析蓝图', count: null, icon: 'branch', stage: '路径', desc: '把复杂 SQL 和业务步骤固化为可触发的分析能力。' },
+    { id: 'scenarios', label: '分析场景', count: 0, icon: 'insight', stage: '场景', desc: '组织高频问数场景和运营分析任务。' },
+    { id: 'validation', label: '语义验证', count: null, icon: 'beaker', stage: '验收', desc: '用真实问法验证语义层召回和 SQL 生成效果。' },
+    { id: 'permissions', label: '权限', count: null, icon: 'shield', stage: '治理', desc: '控制数据集、指标和蓝图的可见范围。' },
+    { id: 'versions', label: '版本历史', count: null, icon: 'history', stage: '治理', desc: '追踪语义资产变更和发布记录。' },
+  ];
+  const activeCapability = capabilityTabs.find(t => t.id === activeCapabilityTab) || capabilityTabs[0];
+  const selectedTableNames = [...new Set(selectedColumns.map(c => c.table_name).filter(Boolean))];
+  const selectedPreviewTables = allSourceTables.filter(t => selectedTableIds.has(t.id));
+  const activePreviewTable = previewTableId
+    ? allSourceTables.find(t => t.id === previewTableId)
+    : selectedPreviewTables[0];
+  const focusedSelectedTable = focusedTableId
+    ? allSourceTables.find(t => t.id === focusedTableId)
+    : null;
+  const selectedColumnsForFocusedTable = focusedTableId
+    ? selectedColumns.filter(c => c.source_table_id === focusedTableId)
+    : selectedColumns;
+  const getColumnRole = (col) => col.user_semantic_role || col.ai_semantic_role || col.semantic_role || 'unknown';
+  const isColumnConverted = (col) => Boolean(col.converted_metric_id || col.converted_dimension_id || String(col.review_status || '').startsWith('converted_to_'));
+  const isColumnIgnored = (col) => col.review_status === 'ignored';
+  const metricCandidateColumns = selectedColumns.filter(c => getColumnRole(c) === 'metric_candidate');
+  const dimensionCandidateColumns = selectedColumns.filter(c => ['dimension_candidate', 'time_field', 'id_field'].includes(getColumnRole(c)));
+  const convertedColumnsCount = selectedColumns.filter(isColumnConverted).length;
+  const ignoredColumnsCount = selectedColumns.filter(isColumnIgnored).length;
+  const annotatedColumnsCount = selectedColumns.filter(c => c.effective_desc || c.business_desc || c.user_description || c.user_semantic_role || c.ai_semantic_role).length;
+  const userAnnotatedColumnsCount = selectedColumns.filter(c => c.user_description || c.user_semantic_role).length;
+  const aiAnnotatedColumnsCount = selectedColumns.filter(c => c.desc_source === 'ai' || c.ai_description || c.ai_semantic_role).length;
+  const pendingReviewColumnsCount = selectedColumns.filter(c => {
+    const role = getColumnRole(c);
+    if (isColumnConverted(c) || isColumnIgnored(c) || c.review_status === 'confirmed') return false;
+    return !role || !c.effective_desc || ['unknown', 'fallback', 'stale'].includes(c.desc_source);
+  }).length;
+  const filteredAnnotationColumns = useMemo(() => {
+    const q = fieldSearch.trim().toLowerCase();
+    return selectedColumns.filter(col => {
+      const role = getColumnRole(col);
+      const source = col.desc_source || 'unknown';
+      const converted = isColumnConverted(col);
+      const ignored = isColumnIgnored(col);
+      const hay = [
+        col.column_name,
+        col.table_name,
+        col.data_type,
+        col.effective_desc,
+        col.business_desc,
+        col.ai_description,
+        col.user_description,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (q && !hay.includes(q)) return false;
+      if (fieldTableFilter && col.table_name !== fieldTableFilter) return false;
+      if (fieldRoleFilter && role !== fieldRoleFilter) return false;
+      if (fieldSourceFilter === 'manual' && !(col.user_description || col.user_semantic_role)) return false;
+      if (fieldSourceFilter === 'ai' && !(source === 'ai' || col.ai_description || col.ai_semantic_role)) return false;
+      if (fieldSourceFilter === 'pending' && (converted || ignored || col.review_status === 'confirmed' || (role && col.effective_desc && !['unknown', 'fallback', 'stale'].includes(source)))) return false;
+      if (fieldSourceFilter === 'convert_metric' && (role !== 'metric_candidate' || converted || ignored)) return false;
+      if (fieldSourceFilter === 'convert_dimension' && (!['dimension_candidate', 'time_field', 'id_field'].includes(role) || converted || ignored)) return false;
+      if (fieldSourceFilter === 'converted' && !converted) return false;
+      if (fieldSourceFilter === 'ignored' && !ignored) return false;
+      if (fieldSourceFilter && !['manual', 'ai', 'pending', 'convert_metric', 'convert_dimension', 'converted', 'ignored'].includes(fieldSourceFilter) && source !== fieldSourceFilter) return false;
+      return true;
+    });
+  }, [fieldRoleFilter, fieldSearch, fieldSourceFilter, fieldTableFilter, selectedColumns]);
+  const annotationTableGroups = useMemo(() => {
+    const groups = new Map();
+    filteredAnnotationColumns.forEach(col => {
+      const key = col.source_table_id || col.table_name || 'unknown';
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          tableName: col.table_name || '未知表',
+          schemaName: col.schema_name || '',
+          columns: [],
+        });
+      }
+      groups.get(key).columns.push(col);
+    });
+    return Array.from(groups.values())
+      .map(group => {
+        const metricCount = group.columns.filter(col => getColumnRole(col) === 'metric_candidate' && !isColumnConverted(col) && !isColumnIgnored(col)).length;
+        const dimensionCount = group.columns.filter(col => ['dimension_candidate', 'time_field', 'id_field'].includes(getColumnRole(col)) && !isColumnConverted(col) && !isColumnIgnored(col)).length;
+        const convertedCount = group.columns.filter(isColumnConverted).length;
+        const ignoredCount = group.columns.filter(isColumnIgnored).length;
+        const pendingCount = group.columns.filter(col => {
+          const role = getColumnRole(col);
+          return !isColumnConverted(col)
+            && !isColumnIgnored(col)
+            && col.review_status !== 'confirmed'
+            && (!role || !col.effective_desc || ['unknown', 'fallback', 'stale'].includes(col.desc_source));
+        }).length;
+        return { ...group, metricCount, dimensionCount, convertedCount, ignoredCount, pendingCount };
+      })
+      .sort((a, b) => String(a.tableName).localeCompare(String(b.tableName)));
+  }, [filteredAnnotationColumns]);
+  const filteredBusinessTerms = useMemo(() => {
+    const q = termSearch.trim().toLowerCase();
+    return businessTerms.filter(term => {
+      const hay = [
+        term.name,
+        term.display_name,
+        term.definition,
+        ...(term.aliases || []),
+        ...(term.asset_links || []).map(link => link.asset_name),
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (q && !hay.includes(q)) return false;
+      if (termTypeFilter && term.term_type !== termTypeFilter) return false;
+      if (termStatusFilter && term.status !== termStatusFilter) return false;
+      return true;
+    });
+  }, [businessTerms, termSearch, termStatusFilter, termTypeFilter]);
+  const selectedTerm = businessTerms.find(term => term.id === selectedTermId) || filteredBusinessTerms[0] || null;
+  const activeTermsCount = businessTerms.filter(term => term.status === 'active').length;
+  const aliasedTermsCount = businessTerms.filter(term => (term.aliases || []).length > 0).length;
+  const linkedTermsCount = businessTerms.filter(term => (term.asset_links || []).length > 0).length;
+
+  const resetMetricForm = () => {
+    setEditingMetricId(null);
+    setMetricSourceColumnId(null);
+    setMetricForm({ name: '', display_name: '', expr: '', table_name: '', time_field: '', granularity: '', format_str: '', filter_sql: '', synonyms: '', description: '' });
+    setShowMetricForm(true);
+  };
+
+  const resetDimForm = () => {
+    setEditingDimId(null);
+    setDimSourceColumnId(null);
+    setDimForm({ name: '', display_name: '', column_name: '', table_name: '', join_to: '', join_key: '', enum_values: '', synonyms: '' });
+    setShowDimForm(true);
+  };
+
+  const handlePreviewTableChange = (nextId) => {
+    if (!nextId) return;
+    setPreviewTableId(nextId);
+    if (selectedTableIds.has(nextId)) setFocusedTableId(nextId);
+  };
+
+  const getColumnRoleBadge = (col) => {
+    const effectiveRole = col.user_semantic_role || col.ai_semantic_role || col.semantic_role;
+    return {
+      metric_candidate: { label: 'M', text: '度量候选', color: 'var(--accent)', bg: 'var(--accent-soft)' },
+      dimension_candidate: { label: 'D', text: '维度候选', color: 'var(--pos)', bg: 'var(--pos-soft)' },
+      time_field: { label: 'T', text: '时间字段', color: 'var(--warn)', bg: 'var(--warn-soft)' },
+      id_field: { label: 'ID', text: '标识字段', color: 'var(--text-3)', bg: 'var(--bg-2)' },
+      unused: { label: '—', text: '未使用', color: 'var(--text-4)', bg: 'var(--bg-2)' },
+    }[effectiveRole] || { label: '?', text: '待确认', color: 'var(--text-3)', bg: 'var(--bg-2)' };
+  };
+
+  const renderFieldAnnotationPanel = () => (
+    <div className="semantic-tab-panel">
+      <div className="tab-panel-head">
+        <div>
+          <div className="tab-panel-kicker"><Icon name="string" />字段标注工作台</div>
+          <h3>审核字段语义，快速沉淀指标和维度</h3>
+          <p>已选表字段在这里集中审核。字段角色、业务描述、AI 标注来源都可见，候选字段可一键进入指标/维度创建流程。</p>
+        </div>
+        <div className="tab-panel-actions">
+          <button className="btn ghost" onClick={() => setActiveCapabilityTab('tables')}><Icon name="table" />选择数据表</button>
+          <button className="btn primary" onClick={handleAnnotate} disabled={annotating || !activeDsId}>
+            <Icon name="brain" />{annotating ? '标注中…' : 'AI 自动标注'}
+          </button>
+        </div>
+      </div>
+      <div className="semantic-stats">
+        <StatCard label="已选表" value={selectedTableIds.size} hint={`可用表 ${allSourceTables.length}`} />
+        <StatCard label="AI 标注" value={aiAnnotatedColumnsCount} hint={`覆盖 ${selectedColumns.length} 个字段`} />
+        <StatCard label="人工确认" value={userAnnotatedColumnsCount} hint={`已标注 ${annotatedColumnsCount}`} />
+        <StatCard label="已转化" value={convertedColumnsCount} hint={`忽略 ${ignoredColumnsCount} 个`} />
+      </div>
+      <div className="annotation-command-center">
+        <div className="annotation-flow">
+          {[
+            ['1', 'AI 初标', `${aiAnnotatedColumnsCount} 个字段已有 AI 建议`],
+            ['2', '人工审核', `${pendingReviewColumnsCount} 个待确认 / ${userAnnotatedColumnsCount} 个已确认`],
+            ['3', '资产沉淀', `${metricCandidateColumns.length} 个度量 / ${dimensionCandidateColumns.length} 个维度候选`],
+          ].map(([step, title, desc]) => (
+            <div key={step} className="annotation-flow-step">
+              <strong>{step}</strong>
+              <span>{title}</span>
+              <small>{desc}</small>
+            </div>
+          ))}
+        </div>
+        <div className="annotation-filters">
+          <div className="annotation-search">
+            <Icon name="search" />
+            <input
+              value={fieldSearch}
+              onChange={e => setFieldSearch(e.target.value)}
+              placeholder="搜索字段、表名、描述..."
+            />
+            {fieldSearch && (
+              <button className="icon-btn" onClick={() => setFieldSearch('')}><Icon name="x" /></button>
+            )}
+          </div>
+          <select value={fieldTableFilter} onChange={e => setFieldTableFilter(e.target.value)}>
+            <option value="">全部表</option>
+            {selectedTableNames.map(name => <option key={name} value={name}>{name}</option>)}
+          </select>
+          <select value={fieldRoleFilter} onChange={e => setFieldRoleFilter(e.target.value)}>
+            <option value="">全部角色</option>
+            <option value="metric_candidate">度量候选</option>
+            <option value="dimension_candidate">维度候选</option>
+            <option value="time_field">时间字段</option>
+            <option value="id_field">标识字段</option>
+            <option value="unused">未使用</option>
+          </select>
+          <select value={fieldSourceFilter} onChange={e => setFieldSourceFilter(e.target.value)}>
+            <option value="">全部来源</option>
+            <option value="pending">待确认</option>
+            <option value="convert_metric">可建指标</option>
+            <option value="convert_dimension">可建维度</option>
+            <option value="converted">已转化</option>
+            <option value="ignored">已忽略</option>
+            <option value="manual">人工确认</option>
+            <option value="ai">AI 标注</option>
+            <option value="db_comment">数据库注释</option>
+            <option value="fallback">回退字段名</option>
+            <option value="stale">待更新</option>
+          </select>
+          {(fieldSearch || fieldTableFilter || fieldRoleFilter || fieldSourceFilter) && (
+            <button
+              className="btn ghost"
+              onClick={() => {
+                setFieldSearch('');
+                setFieldTableFilter('');
+                setFieldRoleFilter('');
+                setFieldSourceFilter('');
+              }}
+            >
+              重置
+            </button>
+          )}
+        </div>
+      </div>
+      {selectedColumns.length === 0 ? (
+        <GuidedEmpty
+          icon="inbox"
+          title="还没有可标注字段"
+          desc="先到数据表 Tab 勾选进入语义层的表，然后回到这里审核字段标注。"
+          actionLabel="去选择数据表"
+          onAction={() => setActiveCapabilityTab('tables')}
+        />
+      ) : (
+        <>
+        <div className="annotation-review-head">
+          <div>
+            <span>审核队列</span>
+            <strong>{filteredAnnotationColumns.length}</strong>
+          </div>
+          <div>
+            <button className="btn ghost" onClick={() => setFieldSourceFilter('pending')}>只看待确认</button>
+            <button className="btn ghost" onClick={() => setFieldSourceFilter('convert_metric')}>可建指标</button>
+            <button className="btn ghost" onClick={() => setFieldSourceFilter('convert_dimension')}>可建维度</button>
+            <button className="btn ghost" onClick={() => setFieldSourceFilter('converted')}>已转化</button>
+          </div>
+        </div>
+
+        {filteredAnnotationColumns.length === 0 ? (
+          <GuidedEmpty
+            icon="search"
+            title="没有匹配的字段"
+            desc="调整表、角色、来源或搜索关键词后重试。"
+            actionLabel="清空筛选"
+            onAction={() => {
+              setFieldSearch('');
+              setFieldTableFilter('');
+              setFieldRoleFilter('');
+              setFieldSourceFilter('');
+            }}
+          />
+        ) : (
+        <div className="annotation-table-groups">
+          {annotationTableGroups.map((group, groupIndex) => (
+            <details
+              key={group.key}
+              className="annotation-table-group"
+              open={Boolean(fieldTableFilter) || annotationTableGroups.length <= 1 || groupIndex === 0}
+            >
+              <summary className="annotation-table-summary">
+                <div className="annotation-table-title">
+                  <Icon name="table" />
+                  <strong>{group.tableName}</strong>
+                  {group.schemaName && <code>{group.schemaName}</code>}
+                </div>
+                <div className="annotation-table-counters">
+                  <span>{group.columns.length} 字段</span>
+                  {group.pendingCount > 0 && <em className="warn">{group.pendingCount} 待确认</em>}
+                  {group.metricCount > 0 && <em>{group.metricCount} 可建指标</em>}
+                  {group.dimensionCount > 0 && <em>{group.dimensionCount} 可建维度</em>}
+                  {group.convertedCount > 0 && <em className="converted">{group.convertedCount} 已转化</em>}
+                  {group.ignoredCount > 0 && <em className="muted">{group.ignoredCount} 已忽略</em>}
+                </div>
+              </summary>
+              <div className="field-worklist annotation-worklist">
+                {group.columns.map(col => {
+                  const roleBadge = getColumnRoleBadge(col);
+                  const isEditing = editingColumnId === col.id;
+                  const sourceLabel = col.converted_metric_id
+                    ? '已建指标'
+                    : col.converted_dimension_id
+                    ? '已建维度'
+                    : col.review_status === 'ignored'
+                    ? '已忽略'
+                    : col.review_status === 'confirmed'
+                    ? '人工确认'
+                    : col.user_description || col.user_semantic_role
+                    ? '人工确认'
+                    : col.desc_source === 'ai' || col.ai_description || col.ai_semantic_role
+                    ? 'AI 建议'
+                    : col.desc_source === 'db_comment'
+                    ? '数据库注释'
+                    : col.desc_source === 'stale'
+                    ? '待更新'
+                    : '待确认';
+                  return (
+                    <div key={col.id} className={'field-card ' + (isEditing ? 'editing' : '')}>
+                      <div className="field-role" style={{ background: roleBadge.bg, color: roleBadge.color }}>{roleBadge.label}</div>
+                      <div className="field-main">
+                        <div className="field-title-row">
+                          <strong>{col.column_name}</strong>
+                          <code>{col.data_type}</code>
+                          <em className={'field-source-chip ' + (sourceLabel === '待确认' || sourceLabel === '待更新' ? 'warn' : sourceLabel === '人工确认' ? 'manual' : sourceLabel.startsWith('已建') ? 'converted' : sourceLabel === '已忽略' ? 'ignored' : '')}>{sourceLabel}</em>
+                        </div>
+                        {isEditing ? (
+                          <div className="field-edit-row">
+                            <select
+                              value={columnEditForm.user_semantic_role}
+                              onChange={e => setColumnEditForm(prev => ({ ...prev, user_semantic_role: e.target.value }))}
+                            >
+                              <option value="">自动</option>
+                              <option value="metric_candidate">M 度量</option>
+                              <option value="dimension_candidate">D 维度</option>
+                              <option value="time_field">T 时间</option>
+                              <option value="id_field">ID 标识</option>
+                              <option value="unused">— 未用</option>
+                            </select>
+                            <input
+                              value={columnEditForm.user_description}
+                              onChange={e => setColumnEditForm(prev => ({ ...prev, user_description: e.target.value }))}
+                              placeholder="输入业务描述…"
+                            />
+                          </div>
+                        ) : (
+                          <p>{col.effective_desc || col.business_desc || '暂无业务描述'}</p>
+                        )}
+                        {(col.ai_description || col.ai_semantic_role) && !isEditing && (
+                          <div className="field-ai-hint">
+                            <Icon name="brain" />
+                            <span>
+                              AI 建议: {col.ai_description || '暂无描述建议'}
+                              {col.ai_semantic_role ? ` · ${getColumnRoleBadge({ ...col, user_semantic_role: '', semantic_role: col.ai_semantic_role }).text}` : ''}
+                              {col.ai_confidence ? ` · 置信度 ${Math.round(col.ai_confidence * 100)}%` : ''}
+                              {col.ai_reason ? ` · ${col.ai_reason}` : ''}
+                            </span>
+                          </div>
+                        )}
+                        <div className="field-meta">
+                          <span>{roleBadge.text}</span>
+                          <span>来源: {col.desc_source || 'unknown'}</span>
+                          {col.suggested_synonyms?.length > 0 && <span>同义词: {col.suggested_synonyms.slice(0, 3).join(', ')}</span>}
+                          {col.suggested_enum_values?.length > 0 && <span>推荐枚举: {col.suggested_enum_values.slice(0, 3).join(', ')}</span>}
+                          <span>样例: {col.sample_values?.length > 0 ? col.sample_values.slice(0, 3).join(', ') : '—'}</span>
+                        </div>
+                      </div>
+                      <div className="field-actions">
+                        {isEditing ? (
+                          <>
+                            <button className="icon-btn" title="保存" onClick={() => handleSaveColumnEdit(col.id)}><Icon name="check" /></button>
+                            <button className="icon-btn" title="取消" onClick={handleCancelColumnEdit}><Icon name="x" /></button>
+                          </>
+                        ) : (
+                          <>
+                            {getColumnRole(col) === 'metric_candidate' && !col.converted_metric_id && col.review_status !== 'ignored' && (
+                              <button className="icon-btn" title="创建指标" onClick={() => handleCreateMetricFromColumn(col)} disabled={convertingColumnId === col.id}><Icon name="formula" /></button>
+                            )}
+                            {['dimension_candidate', 'time_field', 'id_field'].includes(getColumnRole(col)) && !col.converted_dimension_id && col.review_status !== 'ignored' && (
+                              <button className="icon-btn" title="创建维度" onClick={() => handleCreateDimFromColumn(col)} disabled={convertingColumnId === col.id}><Icon name="layers" /></button>
+                            )}
+                            {col.review_status !== 'confirmed' && !isColumnConverted(col) && col.review_status !== 'ignored' && (
+                              <button className="icon-btn" title="标记已确认" onClick={() => handleColumnReviewStatus(col, 'confirmed')}><Icon name="check" /></button>
+                            )}
+                            {col.review_status !== 'ignored' && !isColumnConverted(col) && (
+                              <button className="icon-btn" title="忽略字段" onClick={() => handleColumnReviewStatus(col, 'ignored')}><Icon name="x" /></button>
+                            )}
+                            <button className="icon-btn" title="编辑标注" onClick={() => handleStartEditColumn(col)}><Icon name="edit" /></button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </details>
+          ))}
+        </div>
+        )}
+        </>
+      )}
+    </div>
+  );
+
+  const renderMetricsPanel = () => (
+    <div className="semantic-tab-panel">
+      <div className="tab-panel-head">
+        <div>
+          <div className="tab-panel-kicker"><Icon name="formula" />指标管理</div>
+          <h3>管理可复用指标口径</h3>
+          <p>指标定义、表达式、主表、时间字段和同义词集中维护，供问数、蓝图和语义验证共同使用。</p>
+        </div>
+        <div className="tab-panel-actions">
+          <button className="btn ghost" onClick={() => setActiveCapabilityTab('fields')}><Icon name="string" />从字段选择</button>
+          <button className="btn primary" onClick={resetMetricForm}><Icon name="plus" />新建指标</button>
+        </div>
+      </div>
+      <div className="semantic-stats">
+        <StatCard label="指标总数" value={metrics.length} hint="当前数据集" />
+        <StatCard label="候选字段" value={metricCandidateColumns.length} hint="字段标注推荐" />
+        <StatCard label="关联表" value={new Set(metrics.map(m => m.table_name).filter(Boolean)).size} hint={`${selectedTableNames.length} 张已选表`} />
+        <StatCard label="有同义词" value={metrics.filter(m => (m.synonyms || []).length).length} hint="提升问法召回" />
+      </div>
+      <div className="semantic-two-col">
+        <div className="asset-list-panel">
+          {metrics.length === 0 ? (
+            <GuidedEmpty icon="formula" title="暂无指标" desc="可以手动新建，也可以在字段标注里从度量候选字段快速创建。" actionLabel="新建指标" onAction={resetMetricForm} />
+          ) : metrics.map(m => (
+            <div key={m.id} className="semantic-asset-row">
+              <div className="asset-icon metric"><Icon name="formula" /></div>
+              <div className="asset-main">
+                <div className="asset-title"><strong>{m.display_name || m.name}</strong><code>{m.name}</code></div>
+                <div className="asset-desc">{m.description || m.expr || '暂无描述'}</div>
+                <div className="asset-meta">
+                  <span>表达式: {m.expr || '—'}</span>
+                  <span>主表: {m.table_name || '—'}</span>
+                  <span>时间字段: {m.time_field || '—'}</span>
+                </div>
+              </div>
+              <div className="asset-actions">
+                <button className="icon-btn" title="编辑" onClick={() => handleEditMetric(m)}><Icon name="edit" /></button>
+                <button className="icon-btn danger" title="删除" onClick={() => handleDelMetric(m.id)}><Icon name="trash" /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <CandidateRail
+          title="度量候选字段"
+          empty="暂无度量候选字段"
+          items={metricCandidateColumns}
+          onPick={handleCreateMetricFromColumn}
+          icon="formula"
+          actionLabel="建指标"
+        />
+      </div>
+    </div>
+  );
+
+  const renderDimensionsPanel = () => (
+    <div className="semantic-tab-panel">
+      <div className="tab-panel-head">
+        <div>
+          <div className="tab-panel-kicker"><Icon name="layers" />维度管理</div>
+          <h3>管理分析维度和值域解释</h3>
+          <p>维度定义关联字段、枚举值、同义词和关联键，帮助问数理解“区域、产品、渠道、状态”等业务切片。</p>
+        </div>
+        <div className="tab-panel-actions">
+          <button className="btn ghost" onClick={() => setActiveCapabilityTab('fields')}><Icon name="string" />从字段选择</button>
+          <button className="btn primary" onClick={resetDimForm}><Icon name="plus" />新建维度</button>
+        </div>
+      </div>
+      <div className="semantic-stats">
+        <StatCard label="维度总数" value={dimensions.length} hint="当前数据集" />
+        <StatCard label="候选字段" value={dimensionCandidateColumns.length} hint="字段标注推荐" />
+        <StatCard label="有关联键" value={dimensions.filter(d => d.join_key).length} hint="支持跨表分析" />
+        <StatCard label="有枚举值" value={dimensions.filter(d => (d.enum_values || []).length).length} hint="提升解释质量" />
+      </div>
+      <div className="semantic-two-col">
+        <div className="asset-list-panel">
+          {dimensions.length === 0 ? (
+            <GuidedEmpty icon="layers" title="暂无维度" desc="可以手动新建，也可以在字段标注里从维度候选字段快速创建。" actionLabel="新建维度" onAction={resetDimForm} />
+          ) : dimensions.map(d => (
+            <div key={d.id} className="semantic-asset-row">
+              <div className="asset-icon dimension"><Icon name="layers" /></div>
+              <div className="asset-main">
+                <div className="asset-title"><strong>{d.display_name || d.name}</strong><code>{d.name}</code></div>
+                <div className="asset-desc">{d.column_name || '暂无字段'} {d.table_name ? `· ${d.table_name}` : ''}</div>
+                <div className="asset-meta">
+                  <span>关联事实表: {d.join_to || '—'}</span>
+                  <span>关联键: {d.join_key || '—'}</span>
+                  <span>枚举: {(d.enum_values || []).slice(0, 3).join(', ') || '—'}</span>
+                </div>
+              </div>
+              <div className="asset-actions">
+                <button className="icon-btn" title="编辑" onClick={() => handleEditDim(d)}><Icon name="edit" /></button>
+                <button className="icon-btn danger" title="删除" onClick={() => handleDelDim(d.id)}><Icon name="trash" /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <CandidateRail
+          title="维度候选字段"
+          empty="暂无维度候选字段"
+          items={dimensionCandidateColumns}
+          onPick={handleCreateDimFromColumn}
+          icon="layers"
+          actionLabel="建维度"
+        />
+      </div>
+    </div>
+  );
+
+  const renderTermsPanel = () => (
+    <div className="semantic-tab-panel">
+      <div className="tab-panel-head">
+        <div>
+          <div className="tab-panel-kicker"><Icon name="book" />业务术语</div>
+          <h3>沉淀业务词表、别名和口径解释</h3>
+          <p>统一维护业务词、同义词、定义和关联语义资产，减少同名不同义、同义不同口径造成的问数误解。</p>
+        </div>
+        <div className="tab-panel-actions">
+          <button className="btn ghost" onClick={handleCheckTermConflicts} disabled={termBusy || !activeDsId}><Icon name="warn" />冲突检测</button>
+          <button className="btn ghost" onClick={handleDiscoverTerms} disabled={termBusy || !activeDsId}><Icon name="brain" />AI 发现术语</button>
+          <button className="btn primary" onClick={resetTermForm} disabled={!activeDsId}><Icon name="plus" />新建术语</button>
+        </div>
+      </div>
+      <div className="semantic-stats">
+        <StatCard label="术语总数" value={businessTerms.length} hint="当前数据集" />
+        <StatCard label="已启用" value={activeTermsCount} hint="可用于问数解释" />
+        <StatCard label="有同义词" value={aliasedTermsCount} hint="支持别名召回" />
+        <StatCard label="有关联资产" value={linkedTermsCount} hint="字段/指标/维度/蓝图" />
+      </div>
+      <div className="term-workbench">
+        <section className="term-list-panel">
+          <div className="term-toolbar">
+            <div className="annotation-search">
+              <Icon name="search" />
+              <input
+                value={termSearch}
+                onChange={e => setTermSearch(e.target.value)}
+                placeholder="搜索术语、同义词、定义..."
+              />
+            </div>
+            <select value={termTypeFilter} onChange={e => setTermTypeFilter(e.target.value)}>
+              <option value="">全部类型</option>
+              {TERM_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            <select value={termStatusFilter} onChange={e => setTermStatusFilter(e.target.value)}>
+              <option value="">全部状态</option>
+              {TERM_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </div>
+          <div className="term-list">
+            {filteredBusinessTerms.length === 0 ? (
+              <GuidedEmpty
+                icon="book"
+                title="暂无业务术语"
+                desc="可以手动新建，也可以从现有指标、维度和字段标注中发现候选术语。"
+                actionLabel="AI 发现术语"
+                onAction={handleDiscoverTerms}
+              />
+            ) : filteredBusinessTerms.map(term => (
+              <button
+                key={term.id}
+                className={'term-row ' + (selectedTerm?.id === term.id ? 'active' : '')}
+                onClick={() => setSelectedTermId(term.id)}
+              >
+                <span className="term-row-head">
+                  <strong>{term.display_name || term.name}</strong>
+                  <em className={'term-status ' + term.status}>{termStatusLabel(term.status)}</em>
+                </span>
+                <span className="term-row-meta">
+                  <span>{termTypeLabel(term.term_type)}</span>
+                  <span>{(term.aliases || []).length} 同义词</span>
+                  <span>{(term.asset_links || []).length} 关联</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+        <section className="term-detail-panel">
+          {selectedTerm ? (
+            <>
+              <div className="term-detail-head">
+                <div>
+                  <div className="tab-panel-kicker"><Icon name="book" />{termTypeLabel(selectedTerm.term_type)}</div>
+                  <h3>{selectedTerm.display_name || selectedTerm.name}</h3>
+                  <code>{selectedTerm.name}</code>
+                </div>
+                <div className="asset-actions">
+                  <button className="icon-btn" title="编辑" onClick={() => handleEditTerm(selectedTerm)}><Icon name="edit" /></button>
+                  <button className="icon-btn danger" title="删除" onClick={() => handleDeleteTerm(selectedTerm.id)}><Icon name="trash" /></button>
+                </div>
+              </div>
+              <p className="term-definition">{selectedTerm.definition || '暂无定义说明'}</p>
+              <div className="term-chip-section">
+                <span>同义词</span>
+                <div>
+                  {(selectedTerm.aliases || []).length
+                    ? selectedTerm.aliases.map(alias => <em key={alias}>{alias}</em>)
+                    : <small>暂无</small>}
+                </div>
+              </div>
+              <div className="term-chip-section">
+                <span>禁用词</span>
+                <div>
+                  {(selectedTerm.forbidden_aliases || []).length
+                    ? selectedTerm.forbidden_aliases.map(alias => <em key={alias} className="muted">{alias}</em>)
+                    : <small>暂无</small>}
+                </div>
+              </div>
+              <div className="term-asset-links">
+                <div className="term-section-title">关联语义资产</div>
+                {(selectedTerm.asset_links || []).length === 0 ? (
+                  <div className="term-muted-box">暂无关联资产。AI 候选纳入时会自动带入来源资产。</div>
+                ) : selectedTerm.asset_links.map(link => (
+                  <div key={link.id || `${link.asset_type}-${link.asset_id}`} className="term-asset-link">
+                    <span>{link.asset_type}</span>
+                    <strong>{link.asset_name || `#${link.asset_id}`}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="term-examples">
+                <div className="term-section-title">示例问法 / 枚举</div>
+                {(selectedTerm.examples || []).length
+                  ? selectedTerm.examples.map(item => <span key={item}>{item}</span>)
+                  : <small>暂无</small>}
+              </div>
+            </>
+          ) : (
+            <GuidedEmpty icon="book" title="选择一个术语查看详情" desc="术语详情会展示定义、同义词、关联资产和示例问法。" />
+          )}
+        </section>
+        <aside className="term-side-panel">
+          <div className="term-side-block">
+            <div className="term-section-title">AI 候选术语</div>
+            {termCandidates.length === 0 ? (
+              <div className="term-muted-box">点击“AI 发现术语”后，会从指标、维度和字段标注中提取候选。</div>
+            ) : termCandidates.slice(0, 8).map(candidate => (
+              <div key={`${candidate.source}-${candidate.name}`} className="term-candidate">
+                <div>
+                  <strong>{candidate.display_name || candidate.name}</strong>
+                  <span>{termTypeLabel(candidate.term_type)} · {Math.round((candidate.confidence || 0) * 100)}%</span>
+                </div>
+                <button className="btn ghost" onClick={() => handleAcceptTermCandidate(candidate)} disabled={termBusy}>纳入</button>
+              </div>
+            ))}
+          </div>
+          <div className="term-side-block">
+            <div className="term-section-title">冲突检测</div>
+            {termConflicts.length === 0 ? (
+              <div className="term-muted-box">暂无冲突结果。点击“冲突检测”可检查同义词重叠和禁用词冲突。</div>
+            ) : termConflicts.map((conflict, idx) => (
+              <div key={`${conflict.type}-${conflict.token}-${idx}`} className={'term-conflict ' + conflict.severity}>
+                <strong>{conflict.token}</strong>
+                <span>{conflict.message}</span>
+              </div>
+            ))}
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
 
   // ── 渲染 ──
   return (
@@ -665,7 +1652,7 @@ function DatasetsScreen() {
             ) : (
               <button
                 key={d.id}
-                onClick={() => { setActiveDsId(d.id); setPreviewTableId(null); setSelectedColumns([]); setPreviewData(null); }}
+                onClick={() => { setActiveDsId(d.id); setFocusedTableId(null); setPreviewTableId(null); setSelectedColumns([]); setPreviewData(null); }}
                 onContextMenu={e => openCtxMenu(e, d)}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', fontSize: 13, borderRadius: 6, width: '100%', textAlign: 'left', cursor: 'pointer', background: activeDsId === d.id ? 'var(--surface-2)' : 'transparent', color: activeDsId === d.id ? 'var(--text)' : 'var(--text-2)', border: 'none' }}
               >
@@ -715,7 +1702,55 @@ function DatasetsScreen() {
           </div>
         )}
 
-        {/* 右侧：三栏布局 */}
+        {/* 右侧：能力工作区 */}
+        <div style={{ minWidth: 0 }}>
+          <div className="capability-workbench">
+            <div className="capability-workbench-head">
+              <div>
+                <div className="capability-eyebrow">语义能力工作区</div>
+                <div className="capability-title-row">
+                  <span className="capability-stage">{activeCapability.stage}</span>
+                  <h2>{activeCapability.label}</h2>
+                </div>
+                <p>{activeCapability.desc}</p>
+              </div>
+              <div className="capability-route">
+                <span>表资产</span>
+                <Icon name="chev" />
+                <span>语义口径</span>
+                <Icon name="chev" />
+                <strong>分析能力</strong>
+              </div>
+            </div>
+          <div className="ds-tabs capability-tabs">
+            {capabilityTabs.map(tab => (
+              <button
+                key={tab.id}
+                className={'ds-tab ' + (activeCapabilityTab === tab.id ? 'active' : '')}
+                onClick={() => setActiveCapabilityTab(tab.id)}
+              >
+                <span className="tab-icon"><Icon name={tab.icon} /></span>
+                <span className="tab-copy">
+                  <span className="tab-label">{tab.label}</span>
+                  <span className="tab-stage">{tab.stage}</span>
+                </span>
+                {tab.count != null && <span className="count">{tab.count}</span>}
+              </button>
+            ))}
+          </div>
+          </div>
+
+          {activeCapabilityTab === 'blueprints' && currentDsId ? (
+            <AnalysisBlueprintsPanel datasetId={currentDsId} />
+          ) : activeCapabilityTab === 'fields' ? (
+            renderFieldAnnotationPanel()
+          ) : activeCapabilityTab === 'metrics' ? (
+            renderMetricsPanel()
+          ) : activeCapabilityTab === 'dimensions' ? (
+            renderDimensionsPanel()
+          ) : activeCapabilityTab === 'terms' ? (
+            renderTermsPanel()
+          ) : activeCapabilityTab === 'tables' ? (
         <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 320px', gap: 16, minHeight: 480 }}>
           {/* 左栏：数据源表目录（带勾选 + 搜索） */}
           <div style={{ borderRight: '1px solid var(--hairline)', paddingRight: 12 }}>
@@ -742,7 +1777,12 @@ function DatasetsScreen() {
               <button className="btn ghost" style={{ height: 24, fontSize: 10, padding: '0 8px', flex: 1 }} onClick={async () => {
                 const ids = filteredTables.map(t => t.id).filter(id => !selectedTableIds.has(id));
                 if (ids.length) {
-                  try { await selectTablesForDataset(activeDsId, ids); await loadSelectedTables(activeDsId); }
+                  try {
+                    await selectTablesForDataset(activeDsId, ids);
+                    setFocusedTableId(ids[0]);
+                    setPreviewTableId(ids[0]);
+                    await loadSelectedTables(activeDsId);
+                  }
                   catch (err) { alert('全选失败: ' + (err.message || '未知错误')); }
                 }
               }}>全选</button>
@@ -751,14 +1791,45 @@ function DatasetsScreen() {
                 for (const id of ids) {
                   try { await deselectTableFromDataset(activeDsId, id); } catch (e) { console.error(e); }
                 }
+                setFocusedTableId(null);
+                setPreviewTableId(null);
+                setPreviewData(null);
                 await loadSelectedTables(activeDsId);
               }}>取消全选</button>
             </div>
             {/* 表列表 */}
             <div style={{ maxHeight: 360, overflow: 'auto' }}>
-              {filteredTables.map(t => {
+              {tableListItems.map(item => {
+                if (item.type === 'group') {
+                  return (
+                    <div
+                      key={item.id}
+                      style={{
+                        position: 'sticky',
+                        top: 0,
+                        zIndex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '6px 4px 4px',
+                        marginTop: item.id === 'selected' ? 0 : 6,
+                        background: 'var(--bg)',
+                        color: item.id === 'selected' ? 'var(--accent)' : 'var(--text-3)',
+                        fontSize: 10,
+                        fontWeight: 700,
+                        letterSpacing: '0.08em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      <span>{item.label}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', letterSpacing: 0 }}>{item.count}</span>
+                    </div>
+                  );
+                }
+                const t = item.table;
                 const checked = selectedTableIds.has(t.id);
                 const inspecting = inspectingTableId === t.id;
+                const focused = focusedTableId === t.id;
                 const tableSourceBadge = {
                   db_comment: { label: '注', color: '#16a34a', bg: '#dcfce7' },
                   ai:         { label: 'AI', color: '#2563eb', bg: '#dbeafe' },
@@ -769,11 +1840,13 @@ function DatasetsScreen() {
                 }[t.desc_source] || { label: '?', color: '#6b7280', bg: '#f3f4f6' };
                 // 行底色：已选优先 → 蓝灰；查看中 → 浅紫；普通 → 透明
                 const rowBg = checked
-                  ? 'var(--surface-2)'
+                  ? focused
+                    ? 'var(--accent-soft)'
+                    : 'var(--surface-2)'
                   : inspecting
                   ? 'var(--accent-soft)'
                   : 'transparent';
-                const rowBorder = inspecting
+                const rowBorder = focused || inspecting
                   ? '1px solid var(--accent)'
                   : '1px solid transparent';
                 return (
@@ -803,12 +1876,12 @@ function DatasetsScreen() {
                         flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
                         background: 'transparent', border: 'none', padding: 0,
                         cursor: 'pointer', minWidth: 0, textAlign: 'left',
-                        color: checked ? 'var(--text)' : inspecting ? 'var(--accent)' : 'var(--text-2)',
-                        fontWeight: inspecting ? 500 : 400,
+                        color: focused || inspecting ? 'var(--accent)' : checked ? 'var(--text)' : 'var(--text-2)',
+                        fontWeight: focused || inspecting ? 600 : 400,
                       }}
                     >
                       <span style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
-                        <Icon name={inspecting ? 'eye' : 'table'} style={{ width: 14, height: 14, flexShrink: 0 }} />
+                        <Icon name={inspecting ? 'eye' : focused ? 'pin' : 'table'} style={{ width: 14, height: 14, flexShrink: 0 }} />
                         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.table_name}</span>
                       </span>
                       {t.effective_desc && (
@@ -823,6 +1896,23 @@ function DatasetsScreen() {
                       display: 'inline-block', padding: '0 4px', borderRadius: 3, fontSize: 9, fontWeight: 600,
                       color: tableSourceBadge.color, background: tableSourceBadge.bg, flexShrink: 0,
                     }}>{tableSourceBadge.label}</span>
+                    {checked && (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 2,
+                        padding: '0 4px',
+                        borderRadius: 3,
+                        fontSize: 9,
+                        fontWeight: 700,
+                        color: 'var(--accent)',
+                        background: 'var(--accent-soft)',
+                        flexShrink: 0,
+                      }}>
+                        <Icon name="check" style={{ width: 9, height: 9 }} />
+                        已选
+                      </span>
+                    )}
                     <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>{t.column_count}</span>
                   </div>
                 );
@@ -913,8 +2003,16 @@ function DatasetsScreen() {
                         暂无字段
                       </div>
                     ) : (
-                      <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, overflow: 'hidden' }}>
-                        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                      <div className="dataset-field-table-wrap">
+                        <table className="dataset-field-table inspect">
+                          <colgroup>
+                            <col className="col-role" />
+                            <col className="col-name" />
+                            <col className="col-type" />
+                            <col className="col-desc" />
+                            <col className="col-source" />
+                            <col className="col-sample" />
+                          </colgroup>
                           <thead>
                             <tr style={{ background: 'var(--bg-2)', fontSize: 11, color: 'var(--text-3)' }}>
                               <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)', width: 40 }}>角色</th>
@@ -984,9 +2082,19 @@ function DatasetsScreen() {
               return (
                 <div>
                   <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0 0 8px', fontWeight: 500 }}>
-                    已选表字段 {selectedColumns.length > 0 && `(${selectedColumns.length})`}
+                    {focusedSelectedTable ? `当前表字段 · ${focusedSelectedTable.table_name}` : '已选表字段'}
+                    {selectedColumnsForFocusedTable.length > 0 && ` (${selectedColumnsForFocusedTable.length})`}
+                    {focusedSelectedTable && selectedColumns.length !== selectedColumnsForFocusedTable.length && (
+                      <button
+                        className="btn ghost"
+                        style={{ height: 22, fontSize: 10, padding: '0 7px', marginLeft: 8 }}
+                        onClick={() => setFocusedTableId(null)}
+                      >
+                        查看全部已选字段
+                      </button>
+                    )}
                   </div>
-                  {selectedColumns.length === 0 ? (
+                  {selectedColumnsForFocusedTable.length === 0 ? (
                     <div style={{ padding: '32px 8px', fontSize: 12, color: 'var(--text-3)', textAlign: 'center' }}>
                       <Icon name="inbox" style={{ width: 24, height: 24, marginBottom: 8, opacity: 0.4 }} />
                       <div>从左栏勾选表加入数据集</div>
@@ -995,8 +2103,18 @@ function DatasetsScreen() {
                       </div>
                     </div>
                   ) : (
-                    <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, overflow: 'hidden' }}>
-                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                    <div className="dataset-field-table-wrap">
+                <table className="dataset-field-table selected">
+                  <colgroup>
+                    <col className="col-role" />
+                    <col className="col-name" />
+                    <col className="col-type" />
+                    <col className="col-table" />
+                    <col className="col-desc" />
+                    <col className="col-source" />
+                    <col className="col-sample" />
+                    <col className="col-actions" />
+                  </colgroup>
                   <thead>
                     <tr style={{ background: 'var(--bg-2)', fontSize: 11, color: 'var(--text-3)' }}>
                       <th style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid var(--hairline)', width: 40 }}>角色</th>
@@ -1010,7 +2128,7 @@ function DatasetsScreen() {
                     </tr>
                   </thead>
                   <tbody>
-                    {selectedColumns.map(col => {
+                    {selectedColumnsForFocusedTable.map(col => {
                       const effectiveRole = col.user_semantic_role || col.ai_semantic_role || col.semantic_role;
                       const roleBadge = {
                         metric_candidate: { label: 'M', color: 'var(--accent)', bg: 'var(--accent-soft)' },
@@ -1134,49 +2252,18 @@ function DatasetsScreen() {
 
             {/* 数据预览 */}
             {selectedTableIds.size > 0 && (
-              <div style={{ marginTop: 16, border: '1px solid var(--hairline)', borderRadius: 8, overflow: 'hidden' }}>
-                <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-3)', background: 'var(--bg-2)', borderBottom: '1px solid var(--hairline)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span>数据预览</span>
-                    <select
-                      value={previewTableId || ''}
-                      onChange={e => setPreviewTableId(Number(e.target.value))}
-                      style={{ padding: '2px 6px', borderRadius: 4, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 11 }}
-                    >
-                      {allSourceTables.filter(t => selectedTableIds.has(t.id)).map(t => (
-                        <option key={t.id} value={t.id}>{t.table_name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  {previewLoading && <span style={{ fontSize: 10 }}>加载中…</span>}
-                </div>
-                {previewData && previewData.rows?.length > 0 ? (
-                  <div style={{ overflow: 'auto', maxHeight: 200 }}>
-                    <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                      <thead>
-                        <tr style={{ background: 'var(--bg-2)' }}>
-                          {previewData.columns.map(c => (
-                            <th key={c} style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 500, color: 'var(--text-3)', borderBottom: '1px solid var(--hairline)', whiteSpace: 'nowrap' }}>{c}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {previewData.rows.map((row, i) => (
-                          <tr key={i}>
-                            {previewData.columns.map(c => (
-                              <td key={c} style={{ padding: '6px 10px', borderBottom: '1px solid var(--hairline)', color: 'var(--text-2)', whiteSpace: 'nowrap', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                {row[c] ?? <span style={{ color: 'var(--text-4)' }}>NULL</span>}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div style={{ padding: 16, fontSize: 12, color: 'var(--text-3)' }}>暂无数据</div>
-                )}
-              </div>
+              <DataPreviewPanel
+                tables={selectedPreviewTables}
+                previewTableId={previewTableId}
+                previewTable={activePreviewTable}
+                previewData={previewData}
+                loading={previewLoading}
+                onSelectTable={handlePreviewTableChange}
+                onRefresh={() => {
+                  const nextId = previewTableId || activePreviewTable?.id;
+                  if (nextId) loadPreview(nextId);
+                }}
+              />
             )}
           </div>
 
@@ -1229,10 +2316,15 @@ function DatasetsScreen() {
             </button>
           </div>
         </div>
+          ) : activeCapabilityTab === 'validation' ? null : (
+            <CapabilityEmptyPane tab={capabilityTabs.find(t => t.id === activeCapabilityTab)} />
+          )}
+
+        </div>
       </div>
 
       {/* ── 底部：试问验证 ── */}
-      {activeDsId && (
+      {activeDsId && activeCapabilityTab === 'validation' && (
         <div style={{ marginTop: 24, border: '1px solid var(--hairline)', borderRadius: 10, padding: 16 }}>
           <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
             <Icon name="beaker" style={{ width: 14, height: 14, color: 'var(--accent)' }} />
@@ -1359,6 +2451,28 @@ function DatasetsScreen() {
         </div>
       )}
 
+      {/* ── 弹窗：业务术语表单 ── */}
+      {showTermForm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowTermForm(false)}>
+          <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 560, border: '1px solid var(--hairline)', maxHeight: '90vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 16px' }}>{editingTermId ? '编辑业务术语' : '新建业务术语'}</h3>
+            <FormField label="标准名称" value={termForm.name} onChange={v => setTermForm({ ...termForm, name: v })} placeholder="如: gmv" />
+            <FormField label="显示名称" value={termForm.display_name} onChange={v => setTermForm({ ...termForm, display_name: v })} placeholder="如: 商品交易总额" />
+            <FormField label="术语类型" type="select" value={termForm.term_type} onChange={v => setTermForm({ ...termForm, term_type: v })} options={TERM_TYPE_OPTIONS} />
+            <FormField label="状态" type="select" value={termForm.status} onChange={v => setTermForm({ ...termForm, status: v })} options={TERM_STATUS_OPTIONS} />
+            <FormField label="定义说明" type="textarea" rows={4} value={termForm.definition} onChange={v => setTermForm({ ...termForm, definition: v })} placeholder="说明业务含义、统计边界或适用场景…" />
+            <FormField label="同义词 (逗号分隔)" value={termForm.aliases} onChange={v => setTermForm({ ...termForm, aliases: v })} placeholder="销售额, 成交额, 流水" />
+            <FormField label="禁用词 (逗号分隔)" value={termForm.forbidden_aliases} onChange={v => setTermForm({ ...termForm, forbidden_aliases: v })} placeholder="容易混淆或禁止召回的词" />
+            <FormField label="示例问法 / 枚举 (逗号分隔)" value={termForm.examples} onChange={v => setTermForm({ ...termForm, examples: v })} placeholder="查看本月GMV, 华东, 已支付" />
+            <FormField label="负责人" value={termForm.owner} onChange={v => setTermForm({ ...termForm, owner: v })} placeholder="如: 数据治理负责人" />
+            <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button className="btn ghost" onClick={() => setShowTermForm(false)}>取消</button>
+              <button className="btn primary" onClick={handleSaveTerm} disabled={termBusy}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── 弹窗：指标表单 ── */}
       {showMetricForm && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowMetricForm(false)}>
@@ -1422,6 +2536,187 @@ function DatasetsScreen() {
         </div>
       )}
     </div>
+  );
+}
+
+function DataPreviewPanel({ tables, previewTableId, previewTable, previewData, loading, onSelectTable, onRefresh }) {
+  const columns = previewData?.columns || [];
+  const rows = previewData?.rows || [];
+  const selectedValue = previewTableId || previewTable?.id || '';
+  const columnCount = columns.length || previewTable?.column_count || 0;
+  const tableLabel = previewTable
+    ? [previewTable.schema_name, previewTable.table_name].filter(Boolean).join('.')
+    : '未选择数据表';
+  const hasRows = rows.length > 0;
+
+  return (
+    <section className="data-preview-card">
+      <div className="data-preview-head">
+        <div className="data-preview-title">
+          <span className="data-preview-icon"><Icon name="table" /></span>
+          <div>
+            <h3>数据预览</h3>
+            <p>{tableLabel}</p>
+          </div>
+        </div>
+        <div className="data-preview-actions">
+          <div className="data-preview-stats" aria-label="预览摘要">
+            <span><strong>{columnCount}</strong> 字段</span>
+            <span><strong>{rows.length}</strong> 样例行</span>
+          </div>
+          <select
+            className="data-preview-select"
+            value={selectedValue}
+            onChange={e => onSelectTable(Number(e.target.value))}
+          >
+            {tables.map(t => (
+              <option key={t.id} value={t.id}>
+                {[t.schema_name, t.table_name].filter(Boolean).join('.')}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="icon-btn data-preview-refresh"
+            title="刷新预览"
+            onClick={onRefresh}
+            disabled={!selectedValue || loading}
+          >
+            <Icon name="refresh" />
+          </button>
+        </div>
+      </div>
+
+      {loading && !hasRows ? (
+        <div className="data-preview-empty">
+          <Icon name="refresh" />
+          <span>正在读取样例数据…</span>
+        </div>
+      ) : hasRows ? (
+        <div className="data-preview-table-wrap">
+          {loading && <div className="data-preview-loading">刷新中…</div>}
+          <table className="data-preview-table">
+            <thead>
+              <tr>
+                {columns.map((c, idx) => (
+                  <th key={`${c}-${idx}`} title={c}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIdx) => (
+                <tr key={rowIdx}>
+                  {columns.map((c, colIdx) => (
+                    <td key={`${c}-${colIdx}`}>
+                      <PreviewCellValue value={row[c]} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="data-preview-empty">
+          <Icon name="inbox" />
+          <span>暂无样例数据</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PreviewCellValue({ value }) {
+  if (value === null || value === undefined) {
+    return <span className="data-preview-null">NULL</span>;
+  }
+
+  let text;
+  if (typeof value === 'object') {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  } else if (typeof value === 'boolean') {
+    text = value ? 'true' : 'false';
+  } else {
+    text = String(value);
+  }
+
+  return <span className="data-preview-value" title={text}>{text}</span>;
+}
+
+function CapabilityEmptyPane({ tab }) {
+  return (
+    <div style={{
+      minHeight: 360,
+      border: '1px dashed var(--hairline-strong)',
+      borderRadius: 10,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      textAlign: 'center',
+      color: 'var(--text-3)',
+      background: 'var(--surface)',
+      padding: 32,
+    }}>
+      <div>
+        <Icon name="inbox" style={{ width: 28, height: 28, opacity: 0.45, marginBottom: 10 }} />
+        <div style={{ fontSize: 14, color: 'var(--text-2)', marginBottom: 4 }}>{tab?.label || '能力'} 暂未配置</div>
+        <div style={{ fontSize: 12 }}>入口已保留，后续可在不重构数据集页面的前提下继续扩展。</div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, hint }) {
+  return (
+    <div className="semantic-stat-card">
+      <div>{label}</div>
+      <strong>{value}</strong>
+      {hint && <span>{hint}</span>}
+    </div>
+  );
+}
+
+function GuidedEmpty({ icon, title, desc, actionLabel, onAction }) {
+  return (
+    <div className="guided-empty">
+      <div className="guided-empty-icon"><Icon name={icon} /></div>
+      <h3>{title}</h3>
+      <p>{desc}</p>
+      {actionLabel && onAction && (
+        <button className="btn primary" onClick={onAction}><Icon name="plus" />{actionLabel}</button>
+      )}
+    </div>
+  );
+}
+
+function CandidateRail({ title, empty, items, onPick, icon, actionLabel }) {
+  return (
+    <aside className="candidate-rail">
+      <div className="candidate-rail-head">
+        <span>{title}</span>
+        <strong>{items.length}</strong>
+      </div>
+      {items.length === 0 ? (
+        <div className="candidate-empty">{empty}</div>
+      ) : (
+        <div className="candidate-list">
+          {items.map(col => (
+            <button key={col.id} className="candidate-item" onClick={() => onPick(col)}>
+              <span className="candidate-icon"><Icon name={icon} /></span>
+              <span className="candidate-copy">
+                <strong>{col.effective_desc || col.business_desc || col.column_name}</strong>
+                <small>{col.table_name}.{col.column_name}</small>
+              </span>
+              <span className="candidate-action">{actionLabel}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </aside>
   );
 }
 

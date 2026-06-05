@@ -1,6 +1,7 @@
 import React, { useState, Fragment } from 'react';
 import { Icon } from './icons';
 import { Sparkline } from './workspace';
+import { PublishDrawer } from './publish-drawer';
 
 // APIs — list and detail view of "published as API" sessions.
 // This is the headline feature: turn a shaped data-agent question into a stable endpoint.
@@ -307,6 +308,34 @@ function StatusPill({ status }) {
     <span className="api-status-pill" style={{color: m.c, background: m.soft, borderColor: m.c}}>
       <span className="dot" style={{background: m.c}} />
       {m.label}
+    </span>
+  );
+}
+
+function Toggle({ value }) {
+  return (
+    <span
+      style={{
+        width: 34,
+        height: 18,
+        borderRadius: 999,
+        background: value ? 'var(--accent)' : 'var(--surface-3)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: 2,
+        verticalAlign: 'middle',
+      }}
+    >
+      <span
+        style={{
+          width: 14,
+          height: 14,
+          borderRadius: '50%',
+          background: '#fff',
+          transform: value ? 'translateX(16px)' : 'translateX(0)',
+          transition: 'transform 0.12s',
+        }}
+      />
     </span>
   );
 }

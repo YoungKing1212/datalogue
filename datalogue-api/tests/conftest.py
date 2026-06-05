@@ -5,6 +5,7 @@ Pytest 全局配置与共享 fixtures
 import os
 import sys
 import pytest
+from contextlib import asynccontextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
@@ -15,6 +16,14 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from app.core.database import Base, get_db
 from app.main import app
+
+
+@asynccontextmanager
+async def _test_lifespan(_app):
+    yield
+
+
+app.router.lifespan_context = _test_lifespan
 
 # ── 使用 SQLite 内存数据库作为测试数据库 ─────────────────
 TEST_DATABASE_URL = "sqlite:///:memory:"

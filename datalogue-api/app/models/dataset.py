@@ -1,5 +1,16 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, JSON, ForeignKey, DateTime, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -22,6 +33,10 @@ class SemanticDataset(Base, TimestampMixin):
     datasource = relationship("Datasource", backref="datasets")
     metrics = relationship("SemanticMetric", backref="dataset", cascade="all, delete-orphan")
     dimensions = relationship("SemanticDimension", backref="dataset", cascade="all, delete-orphan")
+    terms = relationship("BusinessTerm", back_populates="dataset", cascade="all, delete-orphan")
+    blueprints = relationship(
+        "AnalysisBlueprint", back_populates="dataset", cascade="all, delete-orphan"
+    )
     # 显式覆盖 DatasetSourceTable.dataset 的 backref，启用 ORM 级联删除，
     # 否则 SQLAlchemy 默认 SET NULL，会与 NOT NULL 约束冲突。
     selected_tables = relationship(
@@ -105,11 +120,23 @@ class SourceColumn(Base):
     ai_description = Column(Text)
     ai_semantic_role = Column(String(30))
     ai_suggested_agg = Column(String(20))
+    ai_confidence = Column(Float)
+    ai_reason = Column(Text)
+    suggested_synonyms = Column(JSON)
+    suggested_enum_values = Column(JSON)
     user_description = Column(Text)
     user_semantic_role = Column(String(30))
     effective_desc = Column(Text)
     desc_source = Column(String(20), default="unknown")
     annotated_at = Column(DateTime)
+    review_status = Column(String(30), default="pending_review")
+    converted_metric_id = Column(
+        Integer, ForeignKey("semantic_metric.id", ondelete="SET NULL"), nullable=True
+    )
+    converted_dimension_id = Column(
+        Integer, ForeignKey("semantic_dimension.id", ondelete="SET NULL"), nullable=True
+    )
+    reviewed_at = Column(DateTime)
     is_nullable = Column(String(10))
     column_default = Column(Text)
     ordinal_position = Column(Integer)
@@ -135,3 +162,165 @@ class DatasetSourceTable(Base):
 
     dataset = relationship("SemanticDataset", back_populates="selected_tables")
     source_table = relationship("SourceTable", backref="dataset_links")
+
+
+class BusinessTerm(Base, TimestampMixin):
+    __tablename__ = "business_term"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "name", name="uix_business_term_dataset_name"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(
+        Integer, ForeignKey("semantic_dataset.id", ondelete="CASCADE"), nullable=False
+    )
+    name = Column(String(100), nullable=False)
+    display_name = Column(String(100), nullable=False)
+    term_type = Column(String(30), default="business_object", nullable=False)
+    definition = Column(Text)
+    aliases = Column(JSON, default=list)
+    forbidden_aliases = Column(JSON, default=list)
+    examples = Column(JSON, default=list)
+    owner = Column(String(50))
+    status = Column(String(20), default="draft", nullable=False)
+    source = Column(String(20), default="manual", nullable=False)
+    confidence = Column(Float)
+    extra_metadata = Column(JSON, default=dict)
+
+    dataset = relationship("SemanticDataset", back_populates="terms")
+    asset_links = relationship(
+        "BusinessTermAssetLink", back_populates="term", cascade="all, delete-orphan"
+    )
+    change_logs = relationship(
+        "BusinessTermChangeLog", back_populates="term", cascade="all, delete-orphan"
+    )
+
+
+class BusinessTermAssetLink(Base):
+    __tablename__ = "business_term_asset_link"
+    __table_args__ = (
+        UniqueConstraint(
+            "term_id", "asset_type", "asset_id", name="uix_business_term_asset_link"
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    term_id = Column(Integer, ForeignKey("business_term.id", ondelete="CASCADE"), nullable=False)
+    asset_type = Column(String(30), nullable=False)
+    asset_id = Column(Integer, nullable=False)
+    asset_name = Column(String(150))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    term = relationship("BusinessTerm", back_populates="asset_links")
+
+
+class BusinessTermRelation(Base):
+    __tablename__ = "business_term_relation"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(
+        Integer, ForeignKey("semantic_dataset.id", ondelete="CASCADE"), nullable=False
+    )
+    source_term_id = Column(
+        Integer, ForeignKey("business_term.id", ondelete="CASCADE"), nullable=False
+    )
+    target_term_id = Column(
+        Integer, ForeignKey("business_term.id", ondelete="CASCADE"), nullable=False
+    )
+    relation_type = Column(String(30), nullable=False)
+    note = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BusinessTermChangeLog(Base):
+    __tablename__ = "business_term_change_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    term_id = Column(Integer, ForeignKey("business_term.id", ondelete="CASCADE"), nullable=False)
+    action = Column(String(30), nullable=False)
+    before_snapshot = Column(JSON)
+    after_snapshot = Column(JSON)
+    actor = Column(String(50))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    term = relationship("BusinessTerm", back_populates="change_logs")
+
+
+class AnalysisBlueprint(Base, TimestampMixin):
+    __tablename__ = "analysis_blueprint"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(
+        Integer, ForeignKey("semantic_dataset.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # L0 路由层
+    name = Column(String(100), nullable=False)
+    description = Column(Text)
+    trigger_keywords = Column(JSON, default=list)
+    trigger_examples = Column(JSON, default=list)
+    when_to_use = Column(Text)
+
+    # L1 调用层
+    parameters = Column(JSON, default=list)
+    implementation_type = Column(String(30), default="stored_procedure")
+    call_template = Column(Text)
+    output_schema = Column(JSON, default=list)
+    timeout_seconds = Column(Integer, default=30)
+
+    # L2 业务逻辑层
+    steps = Column(JSON, default=list)
+    attribution_hints = Column(Text)
+
+    # L3 原始代码
+    raw_sql = Column(Text)
+
+    status = Column(String(20), default="draft", nullable=False)
+    version = Column(Integer, default=0, nullable=False)
+    ai_confidence = Column(Float)
+    owner = Column(String(50))
+    last_validated_at = Column(DateTime)
+    usage_count = Column(Integer, default=0, nullable=False)
+    last_test_result = Column(JSON)
+
+    dataset = relationship("SemanticDataset", back_populates="blueprints")
+    versions = relationship(
+        "BlueprintVersion", back_populates="blueprint", cascade="all, delete-orphan"
+    )
+    usage_logs = relationship(
+        "BlueprintUsageLog", back_populates="blueprint", cascade="all, delete-orphan"
+    )
+
+
+class BlueprintVersion(Base):
+    __tablename__ = "blueprint_version"
+
+    id = Column(Integer, primary_key=True, index=True)
+    blueprint_id = Column(
+        Integer, ForeignKey("analysis_blueprint.id", ondelete="CASCADE"), nullable=False
+    )
+    version = Column(Integer, nullable=False)
+    snapshot = Column(JSON, nullable=False)
+    change_summary = Column(Text)
+    published_by = Column(String(50))
+    published_at = Column(DateTime, default=datetime.utcnow)
+
+    blueprint = relationship("AnalysisBlueprint", back_populates="versions")
+
+
+class BlueprintUsageLog(Base):
+    __tablename__ = "blueprint_usage_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    blueprint_id = Column(
+        Integer, ForeignKey("analysis_blueprint.id", ondelete="CASCADE"), nullable=False
+    )
+    question = Column(Text)
+    extracted_params = Column(JSON, default=dict)
+    execution_success = Column(Boolean)
+    execution_time_ms = Column(Integer)
+    user_feedback = Column(String(10))
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    blueprint = relationship("AnalysisBlueprint", back_populates="usage_logs")

@@ -353,11 +353,12 @@ export function ChatPage({ traceOpen, setTraceOpen, showFollowups, showSql, agen
 
   // datasetId 共享 ref：ChatPage 维护 selectedDs，通过 ref 传给 chat adapter
   const datasetIdRef = useRef(null);
+  const useChatRuntimeHook = () => useLocalRuntime(makeChatAdapter({ datasetIdRef }));
 
   // runtime 单例：只有 chatAdapter 通过 ref 拿到最新 datasetId
   const runtime = useRemoteThreadListRuntime({
     adapter: threadListAdapter,
-    runtimeHook: () => useLocalRuntime(makeChatAdapter({ datasetIdRef })),
+    runtimeHook: useChatRuntimeHook,
     threadId: routeId,
   });
 

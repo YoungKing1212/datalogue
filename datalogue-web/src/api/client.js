@@ -362,7 +362,123 @@ export function updateSourceColumn(columnId, data) {
   return put(`/api/datasource/source-column/${columnId}`, data);
 }
 
+/** 将字段转换为指标，并回写字段状态 */
+export function convertColumnToMetric(datasetId, columnId, data) {
+  return post(`/api/dataset/${datasetId}/columns/${columnId}/convert-metric`, data);
+}
+
+/** 将字段转换为维度，并回写字段状态 */
+export function convertColumnToDimension(datasetId, columnId, data) {
+  return post(`/api/dataset/${datasetId}/columns/${columnId}/convert-dimension`, data);
+}
+
+/** 更新字段审核状态 */
+export function updateColumnReviewStatus(datasetId, columnId, reviewStatus) {
+  return patch(`/api/dataset/${datasetId}/columns/${columnId}/review-status`, {
+    review_status: reviewStatus,
+  });
+}
+
+/** 获取业务术语列表 */
+export function listBusinessTerms(datasetId, filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.q) params.set('q', filters.q);
+  if (filters.term_type) params.set('term_type', filters.term_type);
+  if (filters.status) params.set('status', filters.status);
+  if (filters.has_conflict !== undefined && filters.has_conflict !== '') {
+    params.set('has_conflict', String(filters.has_conflict));
+  }
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return get(`/api/dataset/${datasetId}/terms${qs}`);
+}
+
+/** 创建业务术语 */
+export function createBusinessTerm(datasetId, data) {
+  return post(`/api/dataset/${datasetId}/terms`, data);
+}
+
+/** 更新业务术语 */
+export function updateBusinessTerm(datasetId, termId, data) {
+  return put(`/api/dataset/${datasetId}/terms/${termId}`, data);
+}
+
+/** 删除业务术语 */
+export function deleteBusinessTerm(datasetId, termId) {
+  return del(`/api/dataset/${datasetId}/terms/${termId}`);
+}
+
+/** 更新术语关联资产 */
+export function linkBusinessTermAssets(datasetId, termId, links) {
+  return post(`/api/dataset/${datasetId}/terms/${termId}/link-assets`, { links });
+}
+
+/** AI/规则发现候选业务术语 */
+export function discoverBusinessTerms(datasetId) {
+  return post(`/api/dataset/${datasetId}/terms/discover`);
+}
+
+/** 检查业务术语冲突 */
+export function checkBusinessTermConflicts(datasetId) {
+  return post(`/api/dataset/${datasetId}/terms/conflicts/check`);
+}
+
 /** 手动触发单张表的 AI 标注 */
 export function annotateSourceTable(tableId) {
   return post(`/api/datasource/source-table/${tableId}/annotate`);
+}
+
+/** 获取数据集分析蓝图列表 */
+export function listAnalysisBlueprints(datasetId, status) {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+  return get(`/api/dataset/${datasetId}/blueprints${qs}`);
+}
+
+/** 创建分析蓝图 */
+export function createAnalysisBlueprint(datasetId, data) {
+  return post(`/api/dataset/${datasetId}/blueprints`, data);
+}
+
+/** 更新分析蓝图 */
+export function updateAnalysisBlueprint(datasetId, blueprintId, data) {
+  return put(`/api/dataset/${datasetId}/blueprints/${blueprintId}`, data);
+}
+
+/** 变更分析蓝图状态 */
+export function updateAnalysisBlueprintStatus(datasetId, blueprintId, data) {
+  return patch(`/api/dataset/${datasetId}/blueprints/${blueprintId}/status`, data);
+}
+
+/** 发起 SQL 分析任务 */
+export function analyzeBlueprintSql(datasetId, sql) {
+  return post(`/api/dataset/${datasetId}/blueprints/analyze-sql`, { sql });
+}
+
+/** 查询 SQL 分析任务 */
+export function getBlueprintAnalyzeTask(datasetId, taskId) {
+  return get(`/api/dataset/${datasetId}/blueprints/analyze-sql/${taskId}`);
+}
+
+/** 测试运行分析蓝图 */
+export function testAnalysisBlueprint(datasetId, blueprintId, params = {}, question = '') {
+  return post(`/api/dataset/${datasetId}/blueprints/${blueprintId}/test`, { params, question });
+}
+
+/** 获取蓝图版本 */
+export function listAnalysisBlueprintVersions(datasetId, blueprintId) {
+  return get(`/api/dataset/${datasetId}/blueprints/${blueprintId}/versions`);
+}
+
+/** 回滚蓝图版本 */
+export function rollbackAnalysisBlueprint(datasetId, blueprintId, version) {
+  return post(`/api/dataset/${datasetId}/blueprints/${blueprintId}/rollback`, { version });
+}
+
+/** 获取蓝图使用统计 */
+export function getAnalysisBlueprintUsageStats(datasetId, blueprintId) {
+  return get(`/api/dataset/${datasetId}/blueprints/${blueprintId}/usage-stats`);
+}
+
+/** 获取蓝图使用日志 */
+export function listAnalysisBlueprintUsageLogs(datasetId, blueprintId) {
+  return get(`/api/dataset/${datasetId}/blueprints/${blueprintId}/usage-logs`);
 }
