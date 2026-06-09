@@ -1775,14 +1775,19 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
 
     errors = []
     metrics = _dsl_item_names(dsl.get("metrics", []))
-    if not metrics:
-        errors.append("metrics 不能为空")
+    dsl_fields_names = _dsl_item_names(dsl.get("fields", []))
+    dsl_dim_names = _dsl_item_names(dsl.get("dimensions", []))
+    if not metrics and not dsl_fields_names and not dsl_dim_names:
+        errors.append("查询条件不足：metrics/dimensions/fields 至少需要一项")
     for m in metrics:
         if m not in valid_names:
             errors.append(f"指标 '{m}' 不在语义层定义中")
-    for d in _dsl_item_names(dsl.get("dimensions", [])):
+    for d in dsl_dim_names:
         if d not in valid_names:
             errors.append(f"维度 '{d}' 不在语义层定义中")
+    for f_name in dsl_fields_names:
+        if f_name not in valid_names:
+            errors.append(f"字段 '{f_name}' 不在语义层定义中")
     for f in dsl.get("filters", []):
         field = _dsl_field_name(f.get("field"))
         if field and field not in valid_names:
@@ -1876,6 +1881,7 @@ def dsl_compiler_node(db: Session):
         if structured:
             metric_map = {m["name"]: m for m in structured.get("metrics", [])}
             dim_map = {d["name"]: d for d in structured.get("dimensions", [])}
+            field_map = {f["name"]: f for f in structured.get("fields", [])}
             tables_json = structured.get("tables_json") or {}
         else:
             # fallback: 从文本正则解析（兼容旧逻辑）
@@ -1887,6 +1893,7 @@ def dsl_compiler_node(db: Session):
                 if m:
                     metric_map[m.group(1)] = {"expr": m.group(2).strip()}
             dim_map = {}
+            field_map = {}
             tables_json_match = re.search(r"tables_json[:=]\s*(\{.*\})", schema, re.DOTALL)
             tables_json = json.loads(tables_json_match.group(1)) if tables_json_match else {}
 
@@ -1894,33 +1901,84 @@ def dsl_compiler_node(db: Session):
         selects = []
         used_tables = {}  # alias -> table_name
 
-        for m_name in _dsl_item_names(dsl.get("metrics", [])):
+        # 明细查询标志：无 metrics 但有 dimensions/fields，不做聚合、不加 GROUP BY
+        _dsl_metric_names = _dsl_item_names(dsl.get("metrics", []))
+        _dsl_field_names = _dsl_item_names(dsl.get("fields", []))
+        _dsl_dim_names = _dsl_item_names(dsl.get("dimensions", []))
+        is_detail_query = (not _dsl_metric_names) and bool(_dsl_field_names or _dsl_dim_names)
+
+        for m_name in _dsl_metric_names:
             m = metric_map.get(m_name)
             if m:
                 expr = m.get("expr", m_name)
                 selects.append(f"{expr} AS {m_name}")
-                # 记录指标使用的表
                 tbl = m.get("table_name")
                 if tbl:
                     used_tables[tbl] = tbl
             else:
-                selects.append(f"{m_name} AS {m_name}")
+                # fallback：查 field_map，利用 default_agg 自动聚合
+                fld = field_map.get(m_name)
+                if fld:
+                    col = fld.get("column_name", m_name)
+                    tbl = fld.get("table_name")
+                    agg = (fld.get("default_agg") or "").upper()
+                    if tbl:
+                        used_tables[tbl] = tbl
+                    col_expr = (
+                        f"{_quote_ident(tbl, dialect)}.{_quote_ident(col, dialect)}"
+                        if tbl
+                        else (_quote_ident(col, dialect) or col)
+                    )
+                    if agg and agg != "NONE":
+                        selects.append(f"{agg}({col_expr}) AS {m_name}")
+                    else:
+                        selects.append(f"{col_expr} AS {m_name}")
+                else:
+                    selects.append(f"{m_name} AS {m_name}")
 
-        for d_name in _dsl_item_names(dsl.get("dimensions", [])):
+        for d_name in _dsl_dim_names:
             d = dim_map.get(d_name)
             if d:
                 col = d.get("column_name", d_name)
                 tbl = d.get("table_name")
                 if tbl:
                     used_tables[tbl] = tbl
-                    # 方言感知：table/column 分别 quote
                     selects.append(
                         f"{_quote_ident(tbl, dialect)}.{_quote_ident(col, dialect)} AS {d_name}"
                     )
                 else:
                     selects.append(f"{_quote_ident(col, dialect)} AS {d_name}")
             else:
-                selects.append(d_name)
+                # fallback：查 field_map 获取 table 限定符
+                fld = field_map.get(d_name)
+                if fld:
+                    col = fld.get("column_name", d_name)
+                    tbl = fld.get("table_name")
+                    if tbl:
+                        used_tables[tbl] = tbl
+                        selects.append(
+                            f"{_quote_ident(tbl, dialect)}.{_quote_ident(col, dialect)} AS {d_name}"
+                        )
+                    else:
+                        selects.append(f"{_quote_ident(col, dialect)} AS {d_name}")
+                else:
+                    selects.append(d_name)
+
+        # fields 列表（明细查询场景：不聚合，直接取原始列值）
+        for f_name in _dsl_field_names:
+            fld = field_map.get(f_name)
+            if fld:
+                col = fld.get("column_name", f_name)
+                tbl = fld.get("table_name")
+                if tbl:
+                    used_tables[tbl] = tbl
+                    selects.append(
+                        f"{_quote_ident(tbl, dialect)}.{_quote_ident(col, dialect)} AS {f_name}"
+                    )
+                else:
+                    selects.append(f"{_quote_ident(col, dialect)} AS {f_name}")
+            else:
+                selects.append(f_name)
 
         # ── 构建 FROM + JOIN ──
         tables_def = tables_json.get("tables", [])
@@ -1964,7 +2022,11 @@ def dsl_compiler_node(db: Session):
             join_type = j.get("type", "LEFT JOIN")
             alias = j.get("alias") or right
             # 只有当右侧表被使用时才 JOIN
-            if right in used_tables or any(d.get("table_name") == right for d in dim_map.values()):
+            if (
+                right in used_tables
+                or any(d.get("table_name") == right for d in dim_map.values())
+                or any(f.get("table_name") == right for f in field_map.values())
+            ):
                 if alias not in joined_tables:
                     from_parts.append(
                         f"{join_type} {_quote_ident(right, dialect)} AS {_quote_ident(alias, dialect)} "
@@ -1991,7 +2053,11 @@ def dsl_compiler_node(db: Session):
             if dim and dim.get("table_name"):
                 field = f"{_quote_ident(dim['table_name'], dialect)}.{_quote_ident(dim['column_name'], dialect)}"
             else:
-                field = _quote_ident(field, dialect) or field
+                fld = field_map.get(field)
+                if fld and fld.get("table_name"):
+                    field = f"{_quote_ident(fld['table_name'], dialect)}.{_quote_ident(fld['column_name'], dialect)}"
+                else:
+                    field = _quote_ident(field, dialect) or field
             if op == "in" and vals:
                 in_list = ", ".join(["'" + str(v) + "'" for v in vals])
                 wheres.append(f"{field} IN ({in_list})")
@@ -2056,7 +2122,7 @@ def dsl_compiler_node(db: Session):
             sql_parts.append("WHERE " + " AND ".join(wheres))
 
         dims = _dsl_item_names(dsl.get("dimensions", []))
-        if dims:
+        if dims and not is_detail_query:
             group_cols = []
             for d_name in dims:
                 d = dim_map.get(d_name)
@@ -2065,7 +2131,13 @@ def dsl_compiler_node(db: Session):
                         f"{_quote_ident(d['table_name'], dialect)}.{_quote_ident(d['column_name'], dialect)}"
                     )
                 else:
-                    group_cols.append(_quote_ident(d_name, dialect) or d_name)
+                    fld = field_map.get(d_name)
+                    if fld and fld.get("table_name"):
+                        group_cols.append(
+                            f"{_quote_ident(fld['table_name'], dialect)}.{_quote_ident(fld['column_name'], dialect)}"
+                        )
+                    else:
+                        group_cols.append(_quote_ident(d_name, dialect) or d_name)
             sql_parts.append(f"GROUP BY {', '.join(group_cols)}")
 
         ob = dsl.get("order_by", [])

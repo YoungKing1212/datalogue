@@ -901,6 +901,213 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         assert result["sql"] is None
         assert "drop" in result["error"].lower()
 
+    # ── T-018：语义层 fields 资产接入测试 ────────────────────────────────
+
+    _FIELDS_STRUCTURED = {
+        "tables_json": {
+            "tables": [{"name": "eas_personofile", "alias": "p"}],
+            "joins": [],
+        },
+        "metrics": [],
+        "dimensions": [],
+        "fields": [
+            {
+                "id": 1,
+                "name": "person_name",
+                "column_name": "person_name",
+                "table_name": "eas_personofile",
+                "data_type": "varchar",
+                "semantic_role": "dimension_candidate",
+                "default_agg": None,
+            },
+            {
+                "id": 2,
+                "name": "person_money",
+                "column_name": "person_money",
+                "table_name": "eas_personofile",
+                "data_type": "decimal",
+                "semantic_role": "metric_candidate",
+                "default_agg": "SUM",
+            },
+            {
+                "id": 3,
+                "name": "dept_name",
+                "column_name": "dept_name",
+                "table_name": "eas_personofile",
+                "data_type": "varchar",
+                "semantic_role": "dimension_candidate",
+                "default_agg": None,
+            },
+        ],
+    }
+
+    def test_field_as_filter_with_table_qualifier(self, db_session):
+        """T-018：filter 字段引用 field 时带表限定符"""
+        from app.graph.nodes import dsl_compiler_node
+
+        state = {
+            "dsl": {
+                "metrics": ["person_money"],
+                "filters": [{"field": "person_name", "op": "eq", "values": ["张三"]}],
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": self._FIELDS_STRUCTURED,
+        }
+        result = dsl_compiler_node(db_session)(state)
+        assert result["error"] is None
+        sql = result["sql"]
+        assert "eas_personofile" in sql
+        assert "person_name" in sql
+        assert "'张三'" in sql
+
+    def test_field_as_metric_with_default_agg(self, db_session):
+        """T-018：metrics 引用 field 时利用 default_agg 自动生成聚合表达式"""
+        from app.graph.nodes import dsl_compiler_node
+
+        state = {
+            "dsl": {
+                "metrics": [{"name": "person_money", "asset_type": "field", "asset_id": 2}],
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": self._FIELDS_STRUCTURED,
+        }
+        result = dsl_compiler_node(db_session)(state)
+        assert result["error"] is None
+        sql = result["sql"]
+        assert "SUM" in sql
+        assert "person_money" in sql
+
+    def test_field_as_dimension_table_qualifier_group_by(self, db_session):
+        """T-018：dimensions 引用 field 时带表限定符，且正确参与 GROUP BY"""
+        from app.graph.nodes import dsl_compiler_node
+
+        structured = {
+            **self._FIELDS_STRUCTURED,
+            "metrics": [
+                {
+                    "id": 10,
+                    "name": "total_money",
+                    "expr": "SUM(p.person_money)",
+                    "table_name": "eas_personofile",
+                    "time_field": None,
+                    "filter_sql": None,
+                    "display_name": "总金额",
+                    "synonyms": [],
+                }
+            ],
+        }
+        state = {
+            "dsl": {
+                "metrics": ["total_money"],
+                "dimensions": [{"name": "dept_name", "asset_type": "field", "asset_id": 3}],
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": structured,
+        }
+        result = dsl_compiler_node(db_session)(state)
+        assert result["error"] is None
+        sql = result["sql"]
+        assert "GROUP BY" in sql
+        assert "eas_personofile" in sql
+        assert "dept_name" in sql
+
+    def test_detail_query_no_group_by_no_agg(self, db_session):
+        """T-018：明细查询（无 metrics）不生成 GROUP BY 也不生成聚合"""
+        from app.graph.nodes import dsl_compiler_node
+
+        state = {
+            "dsl": {
+                "metrics": [],
+                "fields": [
+                    {"name": "person_name", "asset_type": "field", "asset_id": 1},
+                    {"name": "person_money", "asset_type": "field", "asset_id": 2},
+                ],
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": self._FIELDS_STRUCTURED,
+        }
+        result = dsl_compiler_node(db_session)(state)
+        assert result["error"] is None
+        sql = result["sql"]
+        assert "GROUP BY" not in sql
+        assert "SUM(" not in sql
+        assert "person_name" in sql
+        assert "person_money" in sql
+
+    def test_validate_allows_empty_metrics_with_fields(self):
+        """T-018：validate 节点允许 metrics 为空但 fields 非空的 DSL 通过"""
+        from app.graph.nodes import dsl_validate_node
+
+        state = {
+            "dsl": {
+                "metrics": [],
+                "fields": [{"name": "person_name", "asset_type": "field"}],
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": self._FIELDS_STRUCTURED,
+        }
+        result = dsl_validate_node(state)
+        assert result["dsl_valid"] is True
+        assert result["error"] is None
+
+    def test_topn_with_field_metrics(self, db_session):
+        """T-018：field 作为 metrics + 排序 + LIMIT（TopN 场景）"""
+        from app.graph.nodes import dsl_compiler_node
+
+        state = {
+            "dsl": {
+                "metrics": [{"name": "person_money", "asset_type": "field", "asset_id": 2}],
+                "dimensions": [{"name": "dept_name", "asset_type": "field", "asset_id": 3}],
+                "order_by": [{"field": "person_money", "direction": "DESC"}],
+                "limit": 10,
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": self._FIELDS_STRUCTURED,
+        }
+        result = dsl_compiler_node(db_session)(state)
+        assert result["error"] is None
+        sql = result["sql"]
+        assert "SUM" in sql
+        assert "GROUP BY" in sql
+        assert "ORDER BY" in sql
+        assert "LIMIT 10" in sql
+
+    def test_filter_field_only_in_field_map(self, db_session):
+        """T-018：filter 字段只在 field_map（不在 dim_map）时正确带表限定符"""
+        from app.graph.nodes import dsl_compiler_node
+
+        structured = {
+            **self._FIELDS_STRUCTURED,
+            "metrics": [
+                {
+                    "id": 10,
+                    "name": "total_money",
+                    "expr": "SUM(p.person_money)",
+                    "table_name": "eas_personofile",
+                    "time_field": None,
+                    "filter_sql": None,
+                    "display_name": "总金额",
+                    "synonyms": [],
+                }
+            ],
+        }
+        state = {
+            "dsl": {
+                "metrics": ["total_money"],
+                "filters": [
+                    {"field": "person_name", "op": "in", "values": ["李四", "王五"]}
+                ],
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": structured,
+        }
+        result = dsl_compiler_node(db_session)(state)
+        assert result["error"] is None
+        sql = result["sql"]
+        assert "eas_personofile" in sql
+        assert "person_name" in sql
+        assert "IN" in sql.upper()
+
     def test_report_generator_with_result(self):
         """报告生成：有 SQL 结果时生成回答"""
         from app.graph.nodes import report_generator_node
