@@ -21,6 +21,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.graph.llm import get_llm
 from app.utils import safe_json_parse
+from app.prompts.blueprint_analyzer import BLUEPRINT_SQL_ANALYSIS_SYSTEM, BLUEPRINT_DESCRIPTION_SYSTEM
 
 
 logger = logging.getLogger(__name__)
@@ -610,13 +611,7 @@ def _compact_reference(reference: dict[str, Any]) -> str:
 
 def _analysis_prompt(sql: str, reference: dict[str, Any]) -> list:
     """构建分析蓝图 AI 提示词。"""
-    system = SystemMessage(
-        content=(
-            "你是数语 Datalogue 的资深数据产品架构师和 SQL 分析专家。"
-            "你的任务是把用户提供的 SQL 草稿分析成可审核、可发布的分析蓝图。"
-            "必须输出严格 JSON，不要 Markdown，不要解释文字。"
-        )
-    )
+    system = SystemMessage(content=BLUEPRINT_SQL_ANALYSIS_SYSTEM)
     human = HumanMessage(
         content=(
             "请基于 SQL 的真实业务逻辑生成分析蓝图草案。\n\n"
@@ -669,13 +664,7 @@ def _description_analysis_prompt(
     dataset_context: dict[str, Any] | None = None,
 ) -> list:
     """构建业务场景创建蓝图的 AI 提示词。"""
-    system = SystemMessage(
-        content=(
-            "你是数语 Datalogue 的资深数据产品经理和智能问数设计专家。"
-            "你的任务是把业务人员提交的场景描述转换成可审核的分析蓝图草案。"
-            "必须输出严格 JSON，不要 Markdown，不要解释文字。"
-        )
-    )
+    system = SystemMessage(content=BLUEPRINT_DESCRIPTION_SYSTEM)
     context_text = json.dumps(dataset_context or {}, ensure_ascii=False, separators=(",", ":"))
     payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     human = HumanMessage(

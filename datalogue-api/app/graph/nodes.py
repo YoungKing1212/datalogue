@@ -25,6 +25,15 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.graph.llm import get_llm
 from app.graph.state import AgentState
 from app.schemas.dsl import get_dsl_item_name, normalize_dsl
+from app.prompts.intent_router import INTENT_RECOGNITION_SYSTEM
+from app.prompts.dsl_generate import (
+    build_real_schema_system,
+    build_inferred_system,
+    build_semantic_system,
+    build_no_schema_system,
+)
+from app.prompts.sql_audit import SQL_AUDIT_SYSTEM
+from app.prompts.report_generate import build_report_system
 from app.models.dataset import (
     AnalysisBlueprint,
     BusinessTerm,
@@ -433,19 +442,7 @@ def intent_recognition_node(state: AgentState) -> Dict[str, Any]:
     history = state.get("history", [])
     llm = get_llm(temperature=0.0)
 
-    system = SystemMessage(
-        content=(
-            "你是一个意图识别助手。请分析用户输入，输出 JSON：\n"
-            '{"intent": "query|chitchat|function", '
-            '"entities": {"metrics": [], "dimensions": [], "time_range": null}, '
-            '"direct_answer": null}\n'
-            "规则：\n"
-            "- query: 涉及数据查询、统计、对比、趋势等\n"
-            "- chitchat: 问候、闲聊、无关问题\n"
-            "- function: 保存、发布、导出等操作指令\n"
-            "- 如果是 chitchat，direct_answer 中填入礼貌回复\n"
-        )
-    )
+    system = SystemMessage(content=INTENT_RECOGNITION_SYSTEM)
 
     human_text = question
     if history and len(history) > 1:
@@ -1606,17 +1603,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
             if query_constraints_text
             else ""
         )
-        system = SystemMessage(
-            content=(
-                "你是一个 SQL 生成专家。根据用户问题和你提供的真实表结构，"
-                "生成可执行的 SELECT 语句（仅输出 JSON，不要其他说明）：\n\n"
-                '  {"sql": "SELECT ... FROM ... WHERE ... GROUP BY ... ORDER BY ... LIMIT ..."}\n\n'
-                "规则：\n"
-                "1. 只生成 SELECT，禁止 INSERT/UPDATE/DELETE/DROP/TRUNCATE 等操作\n"
-                "2. 严格使用真实表结构中的表名和列名\n"
-                f"{query_rules}"
-            )
-        )
+        system = SystemMessage(content=build_real_schema_system(query_rules))
         human_text = f"用户问题: {question}\n\n真实表结构:\n{schema}"
         if error:
             human_text += f"\n\n上一轮错误: {error}"
@@ -1687,18 +1674,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
                 if query_constraints_text
                 else ""
             )
-            system = SystemMessage(
-                content=(
-                    "你是一个 SQL 生成专家。用户的问题中涉及的数据指标未在语义层中定义，"
-                    "请根据用户问题和以下表结构自由推断合适的字段和聚合方式，"
-                    "生成可执行的 SELECT 语句（仅输出 JSON，不要其他说明）：\n\n"
-                    '  {"sql": "SELECT ... FROM ... WHERE ... GROUP BY ... ORDER BY ... LIMIT ..."}\n\n'
-                    "规则：\n"
-                    "1. 只生成 SELECT，禁止 INSERT/UPDATE/DELETE/DROP/TRUNCATE 等操作\n"
-                    "2. 严格使用表结构中的表名和列名\n"
-                    f"{query_rules}"
-                )
-            )
+            system = SystemMessage(content=build_inferred_system(query_rules))
             human_text = f"用户问题: {question}\n\n表结构:\n{ddl_context}"
             if entities:
                 human_text += f"\n\n已识别实体: {json.dumps(entities, ensure_ascii=False)}"
@@ -1802,32 +1778,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
             resolution_text = "\n".join(res_lines)
 
         system = SystemMessage(
-            content=(
-                "你是一个数据查询 DSL 生成专家。根据用户问题和提供的语义层信息，"
-                "生成符合 NL2DSL v2 JSON Schema 的 DSL 对象（仅输出 JSON，不要其他说明）：\n\n"
-                "{\n"
-                '  "version": "2.0",\n'
-                '  "metrics": [{"name": "指标英文名，必须在语义层列表中", "asset_type": "metric", "asset_id": 1, "confidence": 0.0}],\n'
-                '  "dimensions": [{"name": "维度英文名，可选", "asset_type": "dimension", "asset_id": 1, "confidence": 0.0}],\n'
-                '  "terms": [{"name": "业务术语英文名，可选", "asset_type": "term", "asset_id": 1, "confidence": 0.0}],\n'
-                '  "blueprints": [{"name": "分析蓝图名称，可选", "asset_type": "blueprint", "asset_id": 1, "confidence": 0.0}],\n'
-                '  "filters": [{"field": {"name": "字段或维度名", "asset_type": "dimension|field|column", "asset_id": 1, "confidence": 0.0}, "op": "eq|in|gt|gte|lt|lte|neq|between", "values": []}],\n'
-                '  "time_range": {"field": "时间字段", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},\n'
-                '  "order_by": [{"field": {"name": "指标或维度名", "asset_type": "metric|dimension|field", "asset_id": 1}, "direction": "ASC|DESC"}],\n'
-                f'  "limit": {dsl_limit_example},\n'
-                '  "confidence": 0.0,\n'
-                '  "ambiguities": [{"text": "原始歧义词", "reason": "歧义原因", "candidates": [{"name": "候选资产", "asset_type": "metric", "asset_id": 1, "confidence": 0.0}], "resolution_hint": "需要用户确认的问题"}]\n'
-                "}\n\n"
-                "规则：\n"
-                "1. metrics 和 dimensions 的值必须严格来自语义层定义的 name\n"
-                "2. 已识别实体解析和可引用语义资产中给出了用户词到语义层 name / asset_id 的映射，请严格使用解析后的名称和 ID\n"
-                f"{semantic_time_rule}"
-                "4. 若用户要求排序，加入 order_by\n"
-                f"{semantic_limit_rule}"
-                "6. time_range.field 必须使用所选指标在语义层中声明的 time_field，不要从 DDL 自由发挥\n"
-                "7. asset_id 必须来自可引用语义资产；找不到 ID 时填 null，不要编造\n"
-                "8. 如果一个词可能对应多个资产，把候选写入 ambiguities，不要丢失歧义\n"
-            )
+            content=build_semantic_system(dsl_limit_example, semantic_time_rule, semantic_limit_rule)
         )
         human_text = f"用户问题: {question}\n\n语义层信息:\n{schema}"
         if asset_catalog:
@@ -1879,15 +1830,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
     query_rules = (
         f"2. 请遵守以下查询约束：\n{query_constraints_text}\n" if query_constraints_text else ""
     )
-    system = SystemMessage(
-        content=(
-            "你是一个 SQL 生成专家。根据用户问题，生成可执行的 SELECT 语句（仅输出 JSON，不要其他说明）：\n\n"
-            '  {"sql": "SELECT ..."}\n\n'
-            "规则：\n"
-            "1. 只生成 SELECT，禁止 INSERT/UPDATE/DELETE/DROP 等\n"
-            f"{query_rules}"
-        )
-    )
+    system = SystemMessage(content=build_no_schema_system(query_rules))
     human_text = f"用户问题: {question}"
     if error:
         human_text += f"\n\n上一轮错误: {error}"
@@ -2404,62 +2347,6 @@ def sql_execute_node(db: Session):
 # - fixable: 改写 error 字段，走原重试链
 # - architectural: 直接 END（建议用户修数据集，不再烧 token）
 
-_SQL_AUDIT_SYSTEM_PROMPT = """你是 Datalogue 的 SQL 审计 Agent。当 SQL 执行失败时，
-你需要结合业务语义层、表结构、样例数据，给出结构化诊断。
-
-输出 JSON（仅输出 JSON，不要其他说明）：
-{
-  "root_cause": "根因短句（中文，20 字内）",
-  "wrong_field": "错填的字段名或 null",
-  "suggested_fix": "建议的修正方向（中文自然语言）",
-  "severity": "fixable" | "architectural"
-}
-
-severity 判定：
-- fixable：下次重试能改对（字段名拼错、operator 错用、表名错、列引用错）
-- architectural：LLM 无法修复（数据集没选表、指标引用的列在 DDL 里根本不存在、JOIN 关系缺失）
-
-## Few-shot 案例
-
-【案例 1】time_range.field 错填 DDL 列名
-- DSL: { metrics: ["退款金额"], time_range: { field: "create_date", ... } }
-- SQL: SELECT SUM(refund_amt) FROM t_refund WHERE `create_date` >= '2025-01-01'
-- 错误: Unknown column 'create_date' in 'where clause'
-- 指标 "退款金额" 在语义层中 time_field=apply_time
-- 输出:
-  {
-    "root_cause": "time_range.field 错填 DDL 列名",
-    "wrong_field": "create_date",
-    "suggested_fix": "time_range.field 应改为指标 退款金额 在语义层声明的 time_field 'apply_time'",
-    "severity": "fixable"
-  }
-
-【案例 2】filter_sql 用了 Python 风格 null 比较
-- 指标 filter_sql: "finish_time != null"
-- SQL: WHERE (finish_time != null) AND ...
-- 错误: You have an error in your SQL syntax near '!= null'
-- 输出:
-  {
-    "root_cause": "filter_sql 用了非标 null 比较",
-    "wrong_field": "finish_time != null",
-    "suggested_fix": "把 'finish_time != null' 改成 'finish_time IS NOT NULL'（IS NULL / IS NOT NULL 是标准 SQL）",
-    "severity": "fixable"
-  }
-
-【案例 3】指标引用的列在 DDL 里不存在
-- 指标 expr: "SUM(refund_amt)", table_name: "t_refund"
-- DDL: t_refund (id, refund_apply_amt, apply_time, ...)  ← 没有 refund_amt
-- 错误: Unknown column 'refund_amt' in 'field list'
-- 输出:
-  {
-    "root_cause": "指标 expr 引用了 DDL 中不存在的列",
-    "wrong_field": "refund_amt",
-    "suggested_fix": "在数据集语义层把 退款金额 指标的 expr 改为 SUM(refund_apply_amt)，或在数据源侧为 t_refund 补充 refund_amt 列",
-    "severity": "architectural"
-  }
-"""
-
-
 def _collect_audit_table_names(dsl: dict, structured: dict | None, sql: str | None) -> list[str]:
     """收集 SQL 审计需要的表名列表。
 
@@ -2546,7 +2433,7 @@ def sql_audit_node(db: Session):
 
         # 调 LLM（审计是确定性判断，temperature=0）
         llm = get_llm(temperature=0.0)
-        system = SystemMessage(content=_SQL_AUDIT_SYSTEM_PROMPT)
+        system = SystemMessage(content=SQL_AUDIT_SYSTEM)
 
         human_lines = [
             "【当前任务】",
@@ -2668,22 +2555,8 @@ async def report_generator_node(state: AgentState) -> Dict[str, Any]:
     result_text = "\n".join(summary_lines)
 
     llm = get_llm(temperature=0.3)
-    system_content = (
-        "你是一个数据分析师。请根据用户问题和 SQL 查询结果，"
-        "用中文总结数据洞察，直接回答用户问题。"
-        "回复格式要求：\n"
-        "1. 使用 **加粗** 强调关键数字和结论（必须用 Markdown 的 ** 语法）\n"
-        "2. 使用列表或分段呈现多维度分析\n"
-        "3. 不要解释 SQL，只需给出业务结论\n"
-        "示例：本周 GMV 为 **123万元**，环比增长 **15%**，其中华南地区贡献最大。"
-    )
-    # 数据集级 LLM 约束（数字格式、单位、翻译等需要贯穿到最终回答）
     dataset_prompt = state.get("dataset_prompt_instructions") or ""
-    if dataset_prompt.strip():
-        system_content += (
-            "\n\n【数据集级 LLM 约束（硬性要求）】\n" + dataset_prompt.strip()
-        )
-    system = SystemMessage(content=system_content)
+    system = SystemMessage(content=build_report_system(dataset_prompt))
     human = HumanMessage(content=f"用户问题: {question}\n\n查询结果:\n{result_text}")
 
     full_content = ""
