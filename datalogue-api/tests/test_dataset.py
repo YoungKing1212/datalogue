@@ -97,6 +97,9 @@ class TestDatasetAPI:
         assert data["name"] == "销售分析数据集"
         assert data["datasource_id"] == sample_datasource.id
         assert data["status"] == "active"
+        assert data["query_constraints"]["enabled"] is True
+        assert data["query_constraints"]["default_time_range_days"] == 30
+        assert data["query_constraints"]["default_limit"] == 100
 
     def test_create_dataset_with_prompt_instructions(self, client, sample_datasource):
         """新建数据集时可填 prompt_instructions，后续 GET 能取回。"""
@@ -112,6 +115,45 @@ class TestDatasetAPI:
         get_resp = client.get(f"/api/dataset/{ds_id}")
         assert get_resp.status_code == 200
         assert "金额保留两位小数" in get_resp.json()["prompt_instructions"]
+
+    def test_update_dataset_query_constraints(self, client, sample_dataset):
+        """PUT 部分更新能修改 SQL 生成查询约束。"""
+        resp = client.put(
+            f"/api/dataset/{sample_dataset.id}",
+            json={
+                "query_constraints": {
+                    "enabled": True,
+                    "default_time_range_days": 14,
+                    "default_limit": 50,
+                    "max_limit": 500,
+                }
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["query_constraints"]["enabled"] is True
+        assert data["query_constraints"]["default_time_range_days"] == 14
+        assert data["query_constraints"]["default_limit"] == 50
+        assert data["query_constraints"]["max_limit"] == 500
+
+    def test_update_dataset_query_constraints_clamps_limit(self, client, sample_dataset):
+        """查询约束保存时会裁剪到安全范围。"""
+        resp = client.put(
+            f"/api/dataset/{sample_dataset.id}",
+            json={
+                "query_constraints": {
+                    "enabled": True,
+                    "default_time_range_days": 0,
+                    "default_limit": 5000,
+                    "max_limit": 200,
+                }
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()["query_constraints"]
+        assert data["default_time_range_days"] == 1
+        assert data["default_limit"] == 200
+        assert data["max_limit"] == 200
 
     def test_update_dataset_prompt_instructions(self, client, sample_dataset):
         """PUT 部分更新能修改 prompt_instructions 字段。"""

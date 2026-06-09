@@ -22,7 +22,9 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_BASE_URL: Optional[str] = "https://api.minimaxi.com/v1"
+    OPENAI_PROXY_URL: Optional[str] = None
     LLM_MODEL: str = "MiniMax-M2.7"
+    LLM_TIMEOUT_SECONDS: float = 60.0
 
     SECRET_KEY: str = "change-me"
     AES_KEY: str = "your-32-byte-aes-key-here!!"

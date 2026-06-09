@@ -13,7 +13,7 @@
 
 # AgentState — LangGraph 工作流全局状态定义
 
-from typing import TypedDict, Optional, List
+from typing import Any, TypedDict, Optional, List
 
 
 class AgentState(TypedDict):
@@ -27,11 +27,25 @@ class AgentState(TypedDict):
     # 意图识别层
     intent: Optional[str]  # query | chitchat | function
     entities: Optional[dict]  # {"metrics": [], "dimensions": [], "time_range": {}}
+    entry_intent: Optional[
+        str
+    ]  # metric_query | detail_query | analysis_blueprint | knowledge_qa | clarification | rejection
+    entry_route: Optional[
+        str
+    ]  # query_graph | analysis_blueprint | knowledge_qa | clarify | reject | direct_answer
+    entry_reason: Optional[str]  # 入口分类理由，供审计和前端展示
+    blueprint_id: Optional[int]  # 命中的分析蓝图 ID
+    blueprint_match: Optional[dict]  # 蓝图匹配详情 {"name": str, "score": int, ...}
+    blueprint_context: Optional[str]  # 手动语义蓝图注入 QueryGraph 的业务计划上下文
+    knowledge_term_id: Optional[int]  # 命中的知识库业务术语 ID
+    # 非 QueryGraph 路由需要返回给前端的结构化数据
+    route_payload: Optional[dict[str, Any]]
 
     # Schema 召回层
     schema_context: Optional[str]  # 召回的语义层描述文本
     schema_structured: Optional[dict]  # 结构化语义层配置（供编译器使用）
     ddl_context: Optional[str]  # 当前数据集所选表的真实 DDL
+    query_constraints: Optional[dict]  # SQL 生成默认时间范围和默认 LIMIT 等结构化约束
     generation_mode: Optional[str]  # "semantic" | "inferred" — 供前端显示徽标
     metric_resolution: Optional[dict]  # 指标/维度解析结果，供意图卡和审计
     # 数据集级 LLM 约束（硬性要求）— schema_recall_node 写入，report_generator 等

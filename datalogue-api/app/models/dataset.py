@@ -41,6 +41,8 @@ class SemanticDataset(Base, TimestampMixin):
     # 数据集级 LLM 约束（硬性要求）。由用户在前端编辑，问数时由
     # build_schema_prompt / report_generator 注入到 prompt。
     prompt_instructions = Column(Text, nullable=True)
+    # 数据集级 SQL 生成约束。默认启用：无时间范围时查近 30 天，无条数时 LIMIT 100。
+    query_constraints = Column(JSON, default=dict)
     status = Column(String(20), default="draft")
 
     datasource = relationship("Datasource", backref="datasets")

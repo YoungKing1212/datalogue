@@ -41,7 +41,7 @@ def db():
         engine.dispose()
 
 
-def _make_dataset(db, prompt_instructions=None) -> SemanticDataset:
+def _make_dataset(db, prompt_instructions=None, query_constraints=None) -> SemanticDataset:
     """最小数据集（含 1 指标 1 维度）。"""
     ds_src = Datasource(name="t", db_type="mysql", host="x", port=3306,
                         database_name="testdb", username="u", password_enc="x")
@@ -52,6 +52,7 @@ def _make_dataset(db, prompt_instructions=None) -> SemanticDataset:
         description="业务描述",
         datasource_id=ds_src.id,
         prompt_instructions=prompt_instructions,
+        query_constraints=query_constraints,
     )
     db.add(ds)
     db.flush()
@@ -114,6 +115,36 @@ class TestBuildSchemaPromptInstructions:
         out = build_schema_prompt(ds, ds.metrics, ds.dimensions)
         assert "第一行\n第二行\n第三行" in out
 
+    def test_query_constraints_default_injected(self, db):
+        """查询约束默认开启，并注入 SQL 生成规则。"""
+        ds = _make_dataset(db, query_constraints=None)
+        out = build_schema_prompt(ds, ds.metrics, ds.dimensions)
+        assert "【SQL 生成查询约束（硬性要求）】" in out
+        assert "默认查询最近 30 天" in out
+        assert "默认 LIMIT 100" in out
+
+    def test_query_constraints_can_be_customized(self, db):
+        """查询约束支持数据集级自定义。"""
+        ds = _make_dataset(
+            db,
+            query_constraints={
+                "enabled": True,
+                "default_time_range_days": 14,
+                "default_limit": 50,
+                "max_limit": 500,
+            },
+        )
+        out = build_schema_prompt(ds, ds.metrics, ds.dimensions)
+        assert "默认查询最近 14 天" in out
+        assert "默认 LIMIT 50" in out
+        assert "最大不能超过 500" in out
+
+    def test_query_constraints_can_be_disabled(self, db):
+        """禁用查询约束后不再注入默认时间范围和 LIMIT。"""
+        ds = _make_dataset(db, query_constraints={"enabled": False})
+        out = build_schema_prompt(ds, ds.metrics, ds.dimensions)
+        assert "【SQL 生成查询约束" not in out
+
 
 # ── 回归：推断路径 (ddl_context 走 ddl，schema_context 不参与) 必须也能注入约束 ──
 
@@ -151,6 +182,12 @@ def test_dsl_generate_inferred_path_includes_constraint(monkeypatch):
             "dimensions": [],
         },
         "dataset_prompt_instructions": "用户说'杨凯'时翻译为 person_name='杨凯'",
+        "query_constraints": {
+            "enabled": True,
+            "default_time_range_days": 14,
+            "default_limit": 50,
+            "max_limit": 500,
+        },
         "retry_count": 0,
         "error": None,
     }
@@ -163,6 +200,9 @@ def test_dsl_generate_inferred_path_includes_constraint(monkeypatch):
     human_msg = fake.last_messages[1]  # [system, human]
     assert "【数据集级 LLM 约束（硬性要求）】" in human_msg.content
     assert "person_name='杨凯'" in human_msg.content
+    system_msg = fake.last_messages[0]
+    assert "默认查询最近 14 天" in system_msg.content
+    assert "默认 LIMIT 50" in system_msg.content
 
 
 def test_dsl_generate_inferred_path_omits_constraint_when_empty(monkeypatch):
@@ -184,6 +224,7 @@ def test_dsl_generate_inferred_path_omits_constraint_when_empty(monkeypatch):
             "dimensions": [],
         },
         "dataset_prompt_instructions": None,
+        "query_constraints": {"enabled": False},
         "retry_count": 0,
         "error": None,
     }
@@ -192,3 +233,64 @@ def test_dsl_generate_inferred_path_omits_constraint_when_empty(monkeypatch):
     human_msg = fake.last_messages[1]
     assert "【数据集级 LLM 约束" not in human_msg.content
     assert "硬性要求" not in human_msg.content
+    system_msg = fake.last_messages[0]
+    assert "默认查询最近" not in system_msg.content
+    assert "默认 LIMIT" not in system_msg.content
+
+
+def test_dsl_compiler_uses_dataset_default_limit(monkeypatch):
+    """DSL 没有 limit 时，编译器使用数据集查询约束的默认 LIMIT。"""
+    from app.graph import nodes as nodes_module
+
+    monkeypatch.setattr(nodes_module, "_resolve_dialect", lambda db, dataset_id: "mysql")
+    result = nodes_module.dsl_compiler_node(db=None)(
+        {
+            "dataset_id": 1,
+            "dsl": {"metrics": ["gmv"]},
+            "schema_structured": {
+                "tables_json": {"tables": [{"name": "t_order", "alias": "o"}]},
+                "metrics": [
+                    {
+                        "name": "gmv",
+                        "expr": "SUM(o.amt)",
+                        "table_name": "t_order",
+                        "time_field": None,
+                        "filter_sql": None,
+                    }
+                ],
+                "dimensions": [],
+            },
+            "schema_context": "【语义层】",
+            "query_constraints": {"enabled": True, "default_limit": 20, "max_limit": 200},
+        }
+    )
+    assert "LIMIT 20" in result["sql"]
+
+
+def test_dsl_compiler_clamps_limit(monkeypatch):
+    """DSL limit 超过上限时，编译器按数据集 max_limit 截断。"""
+    from app.graph import nodes as nodes_module
+
+    monkeypatch.setattr(nodes_module, "_resolve_dialect", lambda db, dataset_id: "mysql")
+    result = nodes_module.dsl_compiler_node(db=None)(
+        {
+            "dataset_id": 1,
+            "dsl": {"metrics": ["gmv"], "limit": 9999},
+            "schema_structured": {
+                "tables_json": {"tables": [{"name": "t_order", "alias": "o"}]},
+                "metrics": [
+                    {
+                        "name": "gmv",
+                        "expr": "SUM(o.amt)",
+                        "table_name": "t_order",
+                        "time_field": None,
+                        "filter_sql": None,
+                    }
+                ],
+                "dimensions": [],
+            },
+            "schema_context": "【语义层】",
+            "query_constraints": {"enabled": True, "default_limit": 20, "max_limit": 200},
+        }
+    )
+    assert "LIMIT 200" in result["sql"]

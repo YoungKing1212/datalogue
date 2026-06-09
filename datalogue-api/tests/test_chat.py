@@ -18,6 +18,8 @@
 import asyncio
 import json
 import pytest
+from datetime import datetime
+from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
 
@@ -116,6 +118,304 @@ class TestLangGraphNodes:
             assert result["intent"] == "query"
             assert result["entities"]["metrics"] == ["gmv"]
             assert result["answer"] is None
+
+    def test_entry_intent_metric_query(self, db_session, sample_dataset):
+        """入口分类：指标查询继续 QueryGraph。"""
+        from app.graph.nodes import entry_intent_classification_node
+
+        state = {
+            "question": "最近30天GMV是多少",
+            "dataset_id": sample_dataset.id,
+            "intent": "query",
+            "entities": {"metrics": ["gmv"], "dimensions": []},
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] == "metric_query"
+        assert result["entry_route"] == "query_graph"
+
+    def test_entry_intent_detail_query(self, db_session, sample_dataset):
+        """入口分类：明细查询继续 QueryGraph。"""
+        from app.graph.nodes import entry_intent_classification_node
+
+        state = {
+            "question": "列出华东订单明细",
+            "dataset_id": sample_dataset.id,
+            "intent": "query",
+            "entities": {"metrics": [], "dimensions": ["region"]},
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] == "detail_query"
+        assert result["entry_route"] == "query_graph"
+
+    def test_entry_intent_blueprint_hit(self, db_session, sample_dataset):
+        """入口分类：命中已发布分析蓝图时返回 blueprint_id。"""
+        from app.graph.nodes import entry_intent_classification_node
+        from app.models.dataset import AnalysisBlueprint
+
+        bp = AnalysisBlueprint(
+            dataset_id=sample_dataset.id,
+            name="毛利归因分析",
+            trigger_keywords=["毛利", "归因"],
+            trigger_examples=["为什么本月毛利下降"],
+            when_to_use="当用户询问毛利变化原因时使用。",
+            status="active",
+        )
+        db_session.add(bp)
+        db_session.commit()
+        db_session.refresh(bp)
+
+        state = {
+            "question": "为什么本月毛利下降",
+            "dataset_id": sample_dataset.id,
+            "intent": "query",
+            "entities": {"metrics": [], "dimensions": []},
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] == "analysis_blueprint"
+        assert result["entry_route"] == "analysis_blueprint"
+        assert result["blueprint_id"] == bp.id
+        assert result["route_payload"]["blueprint_id"] == bp.id
+
+    def test_analysis_blueprint_execute_success(self, db_session, sample_dataset):
+        """蓝图执行：执行只读 SQL 模板并写入结果。"""
+        from app.graph.nodes import analysis_blueprint_execute_node
+        from app.models.dataset import AnalysisBlueprint, BlueprintUsageLog
+
+        bp = AnalysisBlueprint(
+            dataset_id=sample_dataset.id,
+            name="毛利归因分析",
+            trigger_keywords=["毛利"],
+            parameters=[
+                {
+                    "name": "start_date",
+                    "type": "date",
+                    "required": True,
+                    "default_expr": "MONTH_START",
+                },
+                {
+                    "name": "end_date",
+                    "type": "date",
+                    "required": True,
+                    "default_expr": "TODAY",
+                },
+            ],
+            call_template=(
+                "SELECT :start_date AS start_date, :end_date AS end_date, "
+                "'电子' AS category, 0.31 AS margin_rate"
+            ),
+            output_schema=[
+                {"column": "category", "semantic": "品类"},
+                {"column": "margin_rate", "semantic": "毛利率"},
+            ],
+            status="active",
+        )
+        db_session.add(bp)
+        db_session.commit()
+        db_session.refresh(bp)
+
+        state = {
+            "question": "为什么本月毛利下降",
+            "dataset_id": sample_dataset.id,
+            "blueprint_id": bp.id,
+        }
+        result = analysis_blueprint_execute_node(db_session)(state)
+
+        assert result["generation_mode"] == "analysis_blueprint"
+        assert result["sql_result"]["row_count"] == 1
+        assert result["sql_result"]["rows"][0]["category"] == "电子"
+        assert result["route_payload"]["blueprint_id"] == bp.id
+        db_session.refresh(bp)
+        assert bp.usage_count == 1
+        assert db_session.query(BlueprintUsageLog).filter_by(blueprint_id=bp.id).count() == 1
+
+    def test_analysis_blueprint_semantic_plan_enters_query_graph(
+        self, db_session, sample_dataset
+    ):
+        """手动语义蓝图：不要求 SQL，转为 QueryGraph 业务上下文。"""
+        from app.graph.nodes import analysis_blueprint_execute_node
+        from app.models.dataset import AnalysisBlueprint
+
+        bp = AnalysisBlueprint(
+            dataset_id=sample_dataset.id,
+            name="个人计划任务日报查询",
+            description="按人员姓名和时间范围查询个人计划任务日报明细。",
+            trigger_keywords=["日报", "计划任务"],
+            trigger_examples=["查询杨凯 2024 年的日报"],
+            when_to_use="用户询问某个人在指定时间内的任务日报时使用。",
+            parameters=[
+                {"name": "person_name", "type": "string", "required": True, "semantic": "人员姓名"},
+                {"name": "start_date", "type": "date", "required": True, "semantic": "开始日期"},
+                {"name": "end_date", "type": "date", "required": True, "semantic": "结束日期"},
+            ],
+            output_schema=[
+                {"column": "report_date", "semantic": "日报日期", "role": "dimension"},
+                {"column": "task_content", "semantic": "任务内容", "role": "detail"},
+            ],
+            steps=[
+                {
+                    "name": "过滤人员和日期",
+                    "purpose": "按姓名与日期范围过滤日报明细",
+                    "key_rules": ["排除已作废记录"],
+                }
+            ],
+            attribution_hints="回答中说明统计范围和过滤口径。",
+            implementation_type="semantic_plan",
+            status="active",
+        )
+        db_session.add(bp)
+        db_session.commit()
+        db_session.refresh(bp)
+
+        result = analysis_blueprint_execute_node(db_session)(
+            {
+                "question": "我要查询2024年杨凯的日报",
+                "dataset_id": sample_dataset.id,
+                "blueprint_id": bp.id,
+            }
+        )
+
+        assert result["sql_result"] is None
+        assert result["sql"] is None
+        assert result["generation_mode"] == "analysis_blueprint_semantic"
+        assert result["route_payload"]["kind"] == "analysis_blueprint_semantic"
+        assert "个人计划任务日报查询" in result["blueprint_context"]
+        assert "不能要求用户提供 SQL" in result["blueprint_context"]
+        assert "任务内容" in result["blueprint_context"]
+
+    def test_schema_recall_appends_blueprint_context(self, db_session, sample_dataset):
+        """Schema 召回：语义蓝图上下文会随数据集约束一起进入提示词。"""
+        from app.graph.nodes import schema_recall_node
+
+        blueprint_context = "【命中的分析蓝图语义计划】\n蓝图名称: 个人计划任务日报查询"
+        result = schema_recall_node(db_session)(
+            {
+                "question": "我要查询2024年杨凯的日报",
+                "dataset_id": sample_dataset.id,
+                "blueprint_context": blueprint_context,
+            }
+        )
+
+        assert blueprint_context in result["schema_context"]
+        assert blueprint_context in result["dataset_prompt_instructions"]
+
+    def test_analysis_blueprint_execute_missing_required_param(self, db_session, sample_dataset):
+        """蓝图执行：缺少必填参数时进入澄清。"""
+        from app.graph.nodes import analysis_blueprint_execute_node
+        from app.models.dataset import AnalysisBlueprint
+
+        bp = AnalysisBlueprint(
+            dataset_id=sample_dataset.id,
+            name="毛利归因分析",
+            parameters=[{"name": "start_date", "type": "date", "required": True}],
+            call_template="SELECT :start_date AS start_date",
+            status="active",
+        )
+        db_session.add(bp)
+        db_session.commit()
+        db_session.refresh(bp)
+
+        result = analysis_blueprint_execute_node(db_session)(
+            {
+                "question": "跑毛利分析",
+                "dataset_id": sample_dataset.id,
+                "blueprint_id": bp.id,
+            }
+        )
+
+        assert result["sql_result"] is None
+        assert result["route_payload"]["kind"] == "clarification"
+        assert result["route_payload"]["missing"] == ["start_date"]
+
+    def test_analysis_blueprint_execute_blocks_unsafe_sql(self, db_session, sample_dataset):
+        """蓝图执行：拦截非只读 SQL。"""
+        from app.graph.nodes import analysis_blueprint_execute_node
+        from app.models.dataset import AnalysisBlueprint
+
+        bp = AnalysisBlueprint(
+            dataset_id=sample_dataset.id,
+            name="危险蓝图",
+            call_template="DROP TABLE orders",
+            status="active",
+        )
+        db_session.add(bp)
+        db_session.commit()
+        db_session.refresh(bp)
+
+        result = analysis_blueprint_execute_node(db_session)(
+            {
+                "question": "执行危险蓝图",
+                "dataset_id": sample_dataset.id,
+                "blueprint_id": bp.id,
+            }
+        )
+
+        assert result["sql_result"] is None
+        assert "只读查询" in result["error"]
+
+    def test_entry_intent_knowledge_term(self, db_session, sample_dataset):
+        """入口分类：知识解释命中业务术语。"""
+        from app.graph.nodes import entry_intent_classification_node
+        from app.models.dataset import BusinessTerm
+
+        term = BusinessTerm(
+            dataset_id=sample_dataset.id,
+            name="gmv",
+            display_name="GMV",
+            aliases=["销售额"],
+            definition="商品交易总额，按支付成功订单金额汇总。",
+            status="active",
+        )
+        db_session.add(term)
+        db_session.commit()
+        db_session.refresh(term)
+
+        state = {
+            "question": "GMV是什么口径",
+            "dataset_id": sample_dataset.id,
+            "intent": "query",
+            "entities": {},
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] == "knowledge_qa"
+        assert result["entry_route"] == "knowledge_qa"
+        assert result["knowledge_term_id"] == term.id
+        assert "商品交易总额" in result["answer"]
+
+    def test_entry_intent_permission_rejection(self, db_session, sample_dataset):
+        """入口分类：权限不足问题拒答，不进入 QueryGraph。"""
+        from app.graph.nodes import entry_intent_classification_node
+
+        state = {
+            "question": "帮我查一下没有权限的数据源",
+            "dataset_id": sample_dataset.id,
+            "intent": "query",
+            "entities": {},
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] == "rejection"
+        assert result["entry_route"] == "reject"
+        assert "权限" in result["answer"]
+
+    def test_entry_intent_clarification(self, db_session, sample_dataset):
+        """入口分类：短句指代不清时进入澄清。"""
+        from app.graph.nodes import entry_intent_classification_node
+
+        state = {
+            "question": "这个呢",
+            "dataset_id": sample_dataset.id,
+            "intent": "query",
+            "entities": {},
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] == "clarification"
+        assert result["entry_route"] == "clarify"
+        assert "补充" in result["answer"]
 
     def test_dsl_validate_semantic_valid(self):
         """DSL 校验：语义层路径，合法 DSL"""
@@ -305,6 +605,44 @@ class TestWorkflowRouting:
 
         assert _should_continue({"intent": "query"}) == "schema_recall"
 
+    def test_entry_classification_router_query_graph(self):
+        """入口分类：普通问数进入 QueryGraph。"""
+        from app.graph.workflow import _entry_classification_router
+
+        assert _entry_classification_router({"entry_route": "query_graph"}) == "schema_recall"
+
+    def test_entry_classification_router_non_query(self):
+        """入口分类：蓝图/知识库/澄清/拒答不进入 NL2SQL。"""
+        from app.graph.workflow import _entry_classification_router
+
+        assert (
+            _entry_classification_router({"entry_route": "analysis_blueprint"})
+            == "analysis_blueprint_execute"
+        )
+
+    def test_analysis_blueprint_execution_router_success(self):
+        """蓝图执行成功后生成报告。"""
+        from app.graph.workflow import _analysis_blueprint_execution_router
+
+        assert _analysis_blueprint_execution_router({"sql_result": {"rows": []}}) == "report"
+
+    def test_analysis_blueprint_execution_router_failed(self):
+        """蓝图执行失败后直接结束。"""
+        from app.graph.workflow import _analysis_blueprint_execution_router
+
+        assert _analysis_blueprint_execution_router({"sql_result": None}) == "end"
+
+    def test_analysis_blueprint_execution_router_semantic_plan(self):
+        """手动语义蓝图执行后回到 QueryGraph。"""
+        from app.graph.workflow import _analysis_blueprint_execution_router
+
+        assert (
+            _analysis_blueprint_execution_router(
+                {"generation_mode": "analysis_blueprint_semantic", "sql_result": None}
+            )
+            == "schema_recall"
+        )
+
     def test_dsl_validation_router_pass(self):
         """DSL 校验通过 → 编译"""
         from app.graph.workflow import _dsl_validation_router
@@ -355,6 +693,98 @@ class TestWorkflowRouting:
 
 class TestChatStreamEvents:
     """测试 /api/chat/stream SSE 事件格式（astream_events）"""
+
+    def test_sse_data_serializes_datetime_and_decimal(self):
+        """SSE payload 应兼容 datetime 和 Decimal 等查询结果值。"""
+        from app.api.chat import _sse_data
+
+        event = _sse_data(
+            {
+                "type": "final",
+                "sql_result": {
+                    "rows": [
+                        {
+                            "created_at": datetime(2026, 6, 8, 16, 27, 10),
+                            "amount": Decimal("12.30"),
+                        }
+                    ]
+                },
+            }
+        )
+
+        payload = json.loads(event["data"])
+
+        assert payload["sql_result"]["rows"][0]["created_at"] == "2026-06-08T16:27:10"
+        assert payload["sql_result"]["rows"][0]["amount"] == 12.3
+
+    def test_extract_node_output_supports_langgraph_nested_output(self):
+        """LangGraph 节点名包装输出时，应提取真实节点结果。"""
+        from app.api.chat import _extract_node_output
+
+        event = {
+            "event": "on_chain_end",
+            "data": {
+                "output": {
+                    "entry_intent_classification": {
+                        "entry_intent": "metric_query",
+                        "entry_route": "query_graph",
+                        "route_payload": {"kind": "metric_query"},
+                    }
+                }
+            },
+            "metadata": {"langgraph_node": "entry_intent_classification"},
+        }
+
+        output = _extract_node_output(event, "entry_intent_classification")
+
+        assert output["entry_intent"] == "metric_query"
+        assert output["entry_route"] == "query_graph"
+        assert output["route_payload"]["kind"] == "metric_query"
+
+    def test_extract_node_output_supports_deep_wrapped_output(self):
+        """LCEL 事件多层 output 包装时，仍能提取节点状态。"""
+        from app.api.chat import _extract_node_output
+
+        event = {
+            "event": "on_chain_end",
+            "data": {
+                "output": {
+                    "output": {
+                        "analysis_blueprint_execute": {
+                            "answer": "运行分析蓝图前还需要补充参数：start_date",
+                            "error": "运行分析蓝图前还需要补充参数：start_date",
+                            "sql_result": None,
+                            "route_payload": {
+                                "kind": "clarification",
+                                "missing": ["start_date"],
+                            },
+                        }
+                    }
+                }
+            },
+            "metadata": {"langgraph_node": "analysis_blueprint_execute"},
+        }
+
+        output = _extract_node_output(event, "analysis_blueprint_execute")
+
+        assert output["answer"].startswith("运行分析蓝图前还需要补充参数")
+        assert output["route_payload"]["kind"] == "clarification"
+        assert output["route_payload"]["missing"] == ["start_date"]
+
+    def test_extract_node_output_keeps_flat_output(self):
+        """旧的扁平事件输出仍保持兼容。"""
+        from app.api.chat import _extract_node_output
+
+        event = {
+            "event": "on_chain_end",
+            "data": {"output": {"intent": "query", "entities": {"metrics": ["gmv"]}}},
+            "metadata": {"langgraph_node": "intent_recognition"},
+        }
+
+        output = _extract_node_output(event, "intent_recognition")
+
+        assert output["intent"] == "query"
+        assert output["entities"]["metrics"] == ["gmv"]
 
     def test_chat_stream_event_types(self, client, sample_dataset):
         """SSE 流式接口每个事件必须含 type 字段，值为 step / token / final 之一"""
@@ -433,7 +863,7 @@ class TestChatStreamEvents:
                 yield {
                     "event": "on_chain_end",
                     "name": "intent_recognition",
-                    "data": {"output": {}},
+                    "data": {"output": {"intent": "query", "entities": {}}},
                     "metadata": {"langgraph_node": "intent_recognition"},
                 }
 

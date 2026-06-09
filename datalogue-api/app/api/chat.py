@@ -18,6 +18,7 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.encoders import jsonable_encoder
 from sse_starlette.sse import EventSourceResponse
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 # 节点名称到前端展示名的映射
 _NODE_DISPLAY_NAMES = {
     "intent_recognition": "意图识别",
+    "entry_intent_classification": "入口分类",
+    "analysis_blueprint_execute": "蓝图执行",
     "schema_recall": "Schema 召回",
     "metric_resolution_node": "指标解析",
     "dsl_generate": "DSL 生成",
@@ -40,6 +43,78 @@ _NODE_DISPLAY_NAMES = {
     "sql_execute": "SQL 执行",
     "report_generator": "报告生成",
 }
+
+_STATE_OUTPUT_KEYS = {
+    "intent",
+    "entities",
+    "entry_intent",
+    "entry_route",
+    "entry_reason",
+    "blueprint_id",
+    "blueprint_match",
+    "blueprint_context",
+    "knowledge_term_id",
+    "route_payload",
+    "schema_context",
+    "query_constraints",
+    "metric_resolution",
+    "dsl",
+    "dsl_valid",
+    "sql",
+    "sql_result",
+    "answer",
+    "sql_list",
+    "error",
+    "generation_mode",
+    "should_retry",
+    "token_usage",
+}
+
+
+def _sse_data(payload: dict) -> dict:
+    """将 SSE payload 转成 JSON 字符串，兼容 datetime/date/Decimal 等对象。"""
+    return {"data": json.dumps(jsonable_encoder(payload), ensure_ascii=False)}
+
+
+def _is_state_output(value: dict) -> bool:
+    """判断字典是否像 AgentState 节点输出。"""
+    return bool(_STATE_OUTPUT_KEYS.intersection(value.keys()))
+
+
+def _find_state_output(value: object, lg_node: str = "", depth: int = 0) -> dict:
+    """递归查找 LangGraph/LCEL 事件中的 AgentState 输出片段。"""
+    if depth > 5 or not isinstance(value, dict):
+        return {}
+
+    if lg_node and isinstance(value.get(lg_node), dict):
+        nested = _find_state_output(value[lg_node], lg_node, depth + 1)
+        return nested or value[lg_node]
+
+    if _is_state_output(value):
+        return value
+
+    for key in ("output", "__end__", "state", "result"):
+        nested = _find_state_output(value.get(key), lg_node, depth + 1)
+        if nested:
+            return nested
+
+    if len(value) == 1:
+        nested = _find_state_output(next(iter(value.values())), lg_node, depth + 1)
+        if nested:
+            return nested
+
+    return {}
+
+
+def _extract_node_output(event: dict, lg_node: str) -> dict:
+    """从 LangGraph 事件中提取当前节点的真实输出。
+
+    astream_events(version="v2") 在不同 LangGraph 版本/事件层级下可能返回两类结构：
+    1. {"output": {"entry_intent": "..."}}
+    2. {"output": {"entry_intent_classification": {"entry_intent": "..."}}}
+    前端 step 事件需要的是节点真实输出，而不是外层节点名包装。
+    """
+    return _find_state_output(event.get("data", {}).get("output", {}) or {}, lg_node)
 
 
 async def _stream_chat(payload: schemas.ChatRequest, db: Session):
@@ -100,7 +175,16 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "history": history,
         "intent": None,
         "entities": None,
+        "entry_intent": None,
+        "entry_route": None,
+        "entry_reason": None,
+        "blueprint_id": None,
+        "blueprint_match": None,
+        "blueprint_context": None,
+        "knowledge_term_id": None,
+        "route_payload": None,
         "schema_context": None,
+        "query_constraints": None,
         "dsl": None,
         "dsl_valid": False,
         "sql": None,
@@ -147,20 +231,17 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     "status": "running",
                 }
                 logger.info(f"[_stream_chat] step running: {lg_node}")
-                yield {"data": json.dumps(sse_payload, ensure_ascii=False)}
+                yield _sse_data(sse_payload)
 
             # ── 节点完成（每节点只报一次）────────────────────
-            elif (
-                kind == "on_chain_end"
-                and lg_node in _NODE_DISPLAY_NAMES
-                and lg_node not in reported_done
-            ):
+            elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES:
+                output = _extract_node_output(event, lg_node)
+                if lg_node in reported_done or not output:
+                    continue
                 reported_done.add(lg_node)
                 elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
-                output: dict = event.get("data", {}).get("output", {}) or {}
                 # 合并节点输出到 final_state（允许 None 值传播）
-                if isinstance(output, dict):
-                    final_state.update(output)
+                final_state.update(output)
 
                 sse_payload = {
                     "type": "step",
@@ -173,6 +254,19 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 if lg_node == "intent_recognition":
                     sse_payload["intent"] = final_state.get("intent") or ""
                     sse_payload["entities"] = final_state.get("entities") or {}
+                elif lg_node == "entry_intent_classification":
+                    sse_payload["entry_intent"] = final_state.get("entry_intent") or ""
+                    sse_payload["entry_route"] = final_state.get("entry_route") or ""
+                    sse_payload["entry_reason"] = final_state.get("entry_reason") or ""
+                    sse_payload["blueprint_id"] = final_state.get("blueprint_id")
+                    sse_payload["route_payload"] = final_state.get("route_payload") or {}
+                elif lg_node == "analysis_blueprint_execute":
+                    result = final_state.get("sql_result") or {}
+                    sse_payload["blueprint_id"] = final_state.get("blueprint_id")
+                    sse_payload["sql"] = final_state.get("sql") or ""
+                    sse_payload["rows"] = result.get("row_count", 0)
+                    sse_payload["columns"] = result.get("columns", [])
+                    sse_payload["route_payload"] = final_state.get("route_payload") or {}
                 elif lg_node == "metric_resolution_node":
                     sse_payload["metric_resolution"] = final_state.get("metric_resolution") or {}
                 elif lg_node == "dsl_generate":
@@ -192,7 +286,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     sse_payload["elapsed_ms"] = elapsed_ms
                 step_traces.append(sse_payload)
                 logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
-                yield {"data": json.dumps(sse_payload, ensure_ascii=False)}
+                yield _sse_data(sse_payload)
+
+            # ── 图级结束事件：兜底合并完整最终状态 ───────────────
+            elif kind == "on_chain_end" and not lg_node:
+                output = _extract_node_output(event, "")
+                if output:
+                    final_state.update(output)
 
             # ── LLM token ───────────────────────────────────
             elif kind == "on_chat_model_stream":
@@ -205,26 +305,14 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 chunk = event.get("data", {}).get("chunk")
                 token: str = getattr(chunk, "content", "") or ""
                 if token:
-                    yield {
-                        "data": json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                    }
+                    yield _sse_data({"type": "token", "content": token})
 
         logger.info("[_stream_chat] astream_events 完成")
 
     except Exception as e:
         logger.exception(f"[_stream_chat] 工作流异常: {e}")
-        yield {
-            "data": json.dumps(
-                {"type": "step", "node": "error", "display_name": "错误", "status": "done"},
-                ensure_ascii=False,
-            )
-        }
-        yield {
-            "data": json.dumps(
-                {"type": "final", "sql": None, "sql_list": [], "answer": f"处理出错：{e}"},
-                ensure_ascii=False,
-            )
-        }
+        yield _sse_data({"type": "step", "node": "error", "display_name": "错误", "status": "done"})
+        yield _sse_data({"type": "final", "sql": None, "sql_list": [], "answer": f"处理出错：{e}"})
         return
 
     # ── 保存助手消息并发送 final 事件 ────────────────
@@ -257,6 +345,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "sql": sql,
         "sql_list": sql_list,
         "answer": answer,
+        "entry_intent": final_state.get("entry_intent"),
+        "entry_route": final_state.get("entry_route"),
+        "entry_reason": final_state.get("entry_reason"),
+        "blueprint_id": final_state.get("blueprint_id"),
+        "blueprint_match": final_state.get("blueprint_match"),
+        "knowledge_term_id": final_state.get("knowledge_term_id"),
+        "route_payload": final_state.get("route_payload"),
         "metric_resolution": final_state.get("metric_resolution"),
         "generation_mode": final_state.get("generation_mode"),
         "sql_result": final_state.get("sql_result"),
@@ -266,7 +361,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     logger.info(
         f"[_stream_chat] final: answer_len={len(answer)}, sql={sql}, error={error}, mode={generation_mode}"
     )
-    yield {"data": json.dumps(final_payload, ensure_ascii=False)}
+    yield _sse_data(final_payload)
 
     token_usage = final_state.get("token_usage")
     db.add(

@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.models.dataset import SourceTable, SourceColumn
 from app.graph.llm import get_llm
-from langchain.schema import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 

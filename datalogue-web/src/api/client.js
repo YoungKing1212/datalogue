@@ -453,6 +453,11 @@ export function analyzeBlueprintSql(datasetId, sql) {
   return post(`/api/dataset/${datasetId}/blueprints/analyze-sql`, { sql });
 }
 
+/** 根据业务场景生成分析蓝图草稿 */
+export function analyzeBlueprintDescription(datasetId, data) {
+  return post(`/api/dataset/${datasetId}/blueprints/analyze-description`, data);
+}
+
 /** 查询 SQL 分析任务 */
 export function getBlueprintAnalyzeTask(datasetId, taskId) {
   return get(`/api/dataset/${datasetId}/blueprints/analyze-sql/${taskId}`);

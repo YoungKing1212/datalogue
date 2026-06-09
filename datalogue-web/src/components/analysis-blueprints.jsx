@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './icons';
 import {
+  analyzeBlueprintDescription,
   analyzeBlueprintSql,
   createAnalysisBlueprint,
+  getAnalysisBlueprintUsageStats,
   listAnalysisBlueprints,
+  listAnalysisBlueprintUsageLogs,
   testAnalysisBlueprint,
   updateAnalysisBlueprint,
   updateAnalysisBlueprintStatus,
@@ -33,6 +36,44 @@ const emptyBlueprint = {
   status: 'draft',
   ai_confidence: null,
   owner: '',
+};
+
+const MANUAL_BLUEPRINT_EXAMPLE = {
+  name: '区域销售波动分析',
+  questions: '上周华东区销售为什么下降？\n本月哪些区域拖累了 GMV？',
+  scenario: '当业务负责人询问某个区域、渠道或品类的销售变化原因时，先判断核心指标的环比/同比变化，再拆解订单量、客单价、转化率、退款等可能影响因素，最后给出主要贡献项。',
+  output: '输出变化结论、影响最大的维度、关键指标变化和可继续追问的方向。优先用表格展示拆解结果，最后补充一段业务解读。',
+  rules: '销售额只统计已支付订单；退款金额需要从销售额中扣除；默认按自然周比较，用户指定时间时以用户时间为准。',
+};
+
+const BLUEPRINT_MODE_META = {
+  sql: {
+    title: '从 SQL 导入',
+    icon: 'sql',
+    desc: '适合已有 SQL、存储过程或报表脚本，AI 会拆解参数、输出列和业务步骤。',
+    badge: '工程迁移',
+  },
+  manual: {
+    title: '手动创建',
+    icon: 'edit',
+    desc: '适合从业务问题出发，让 AI 根据场景、问法和口径生成语义蓝图草稿。',
+    badge: '业务共创',
+  },
+};
+
+const WIZARD_STEP_HELP = {
+  sql: [
+    '粘贴可运行 SQL 或存储过程，AI 会先做结构化拆解。',
+    '确认 AI 提取的名称、触发词、问法和低置信字段。',
+    '校准参数、输出列、业务逻辑和结果解读提示。',
+    '保存草稿、按需运行测试，再发布到问数链路。',
+  ],
+  manual: [
+    '用业务语言描述用户会问什么、判断逻辑和统计口径。',
+    '确认 AI 生成的语义蓝图草稿，补齐触发问法。',
+    '校准参数、输出列、业务逻辑和结果解读提示。',
+    '保存草稿、按需运行测试，再发布到问数链路。',
+  ],
 };
 
 function safeJson(value, fallback) {
@@ -84,6 +125,11 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
   const [step, setStep] = useState(1);
   const [mode, setMode] = useState('sql');
   const [sqlText, setSqlText] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [businessScenario, setBusinessScenario] = useState('');
+  const [manualQuestionsText, setManualQuestionsText] = useState('');
+  const [expectedOutput, setExpectedOutput] = useState('');
+  const [businessRules, setBusinessRules] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -97,8 +143,30 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
   const [stepsText, setStepsText] = useState('[]');
   const [testParamsText, setTestParamsText] = useState('{}');
   const [lowConfidenceFields, setLowConfidenceFields] = useState([]);
+  const stepLabels = mode === 'manual'
+    ? ['描述场景', 'AI 草稿', '高级配置', '发布与测试']
+    : ['上传 SQL', 'AI 审核', '精细配置', '触发与测试'];
+  const stepHelp = WIZARD_STEP_HELP[mode];
+  const currentStepHelp = stepHelp[step - 1] || '';
+  const stepProgress = Math.round((step / stepLabels.length) * 100);
+  const manualSummary = [
+    ['蓝图名称', manualName],
+    ['业务场景', businessScenario],
+    ['用户可能问法', manualQuestionsText],
+    ['希望输出', expectedOutput],
+    ['数据口径约束', businessRules],
+  ];
+  const manualFilledCount = manualSummary.filter(([, value]) => String(value || '').trim()).length;
 
   const updateForm = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+
+  const fillManualExample = () => {
+    setManualName(MANUAL_BLUEPRINT_EXAMPLE.name);
+    setManualQuestionsText(MANUAL_BLUEPRINT_EXAMPLE.questions);
+    setBusinessScenario(MANUAL_BLUEPRINT_EXAMPLE.scenario);
+    setExpectedOutput(MANUAL_BLUEPRINT_EXAMPLE.output);
+    setBusinessRules(MANUAL_BLUEPRINT_EXAMPLE.rules);
+  };
 
   const applyAnalysisResult = (result) => {
     const next = {
@@ -129,7 +197,29 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
 
   const handleAnalyze = async () => {
     if (mode === 'manual') {
-      setStep(2);
+      if (!businessScenario.trim()) {
+        alert('请先填写业务场景');
+        return;
+      }
+      setAnalyzing(true);
+      try {
+        const task = await analyzeBlueprintDescription(datasetId, {
+          name: manualName,
+          business_scenario: businessScenario,
+          example_questions: linesToArray(manualQuestionsText),
+          expected_output: expectedOutput,
+          business_rules: businessRules,
+        });
+        if (task.status === 'failed') {
+          throw new Error(task.error || '分析任务失败');
+        }
+        applyAnalysisResult(task.result || {});
+        setStep(2);
+      } catch (err) {
+        alert('AI 分析失败: ' + (err.message || '未知错误'));
+      } finally {
+        setAnalyzing(false);
+      }
       return;
     }
     if (!sqlText.trim()) {
@@ -139,6 +229,9 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
     setAnalyzing(true);
     try {
       const task = await analyzeBlueprintSql(datasetId, sqlText);
+      if (task.status === 'failed') {
+        throw new Error(task.error || '分析任务失败');
+      }
       applyAnalysisResult(task.result || {});
       setStep(2);
     } catch (err) {
@@ -155,7 +248,7 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
     parameters: safeJson(parametersText, form.parameters || []),
     output_schema: safeJson(outputSchemaText, form.output_schema || []),
     steps: safeJson(stepsText, form.steps || []),
-    raw_sql: sqlText || form.raw_sql,
+    raw_sql: mode === 'sql' ? (sqlText || form.raw_sql) : (form.raw_sql || ''),
   });
 
   const saveDraft = async () => {
@@ -200,10 +293,6 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
   const handlePublish = async () => {
     const bp = savedBlueprint || await saveDraft();
     if (!bp) return;
-    if (!testResult && !(bp.last_test_result || {}).ok) {
-      alert('发布前必须先完成一次测试');
-      return;
-    }
     try {
       const published = await updateAnalysisBlueprintStatus(datasetId, bp.id, {
         action: 'publish',
@@ -218,111 +307,197 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
 
   return (
     <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.42)', zIndex: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+      className="blueprint-wizard-backdrop"
       onClick={onClose}
     >
       <div
-        style={{ width: 'min(1120px, 96vw)', maxHeight: '92vh', overflow: 'auto', background: 'var(--bg)', border: '1px solid var(--hairline)', borderRadius: 12 }}
+        className="blueprint-wizard"
         onClick={e => e.stopPropagation()}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', borderBottom: '1px solid var(--hairline)' }}>
-          <h3 style={{ margin: 0, fontSize: 16 }}>新建分析蓝图</h3>
-          <div style={{ display: 'flex', gap: 6, marginLeft: 12 }}>
-            {['上传 SQL', 'AI 审核', '精细配置', '触发与测试'].map((label, idx) => (
-              <span key={label} style={{ fontSize: 11, color: step === idx + 1 ? 'var(--accent)' : 'var(--text-3)', background: step === idx + 1 ? 'var(--accent-soft)' : 'transparent', padding: '3px 7px', borderRadius: 5 }}>
-                {idx + 1}. {label}
-              </span>
-            ))}
+        <div className="blueprint-wizard-head">
+          <div>
+            <div className="blueprint-wizard-kicker"><Icon name="branch" />分析蓝图向导</div>
+            <h3>新建分析蓝图</h3>
           </div>
-          <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={onClose}><Icon name="x" /></button>
+          <div className="blueprint-wizard-progress" aria-label={`当前进度 ${stepProgress}%`}>
+            <span>{stepProgress}%</span>
+            <div><i style={{ width: `${stepProgress}%` }} /></div>
+          </div>
+          <button className="icon-btn" onClick={onClose} title="关闭"><Icon name="x" /></button>
         </div>
 
-        <div style={{ padding: 18 }}>
-          {step === 1 && (
-            <div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-                <button className="btn ghost" style={{ height: 72, justifyContent: 'flex-start', border: mode === 'sql' ? '1px solid var(--accent)' : '1px solid var(--hairline)', background: mode === 'sql' ? 'var(--accent-soft)' : 'var(--surface)' }} onClick={() => setMode('sql')}>
-                  <Icon name="sql" />从 SQL 导入
-                </button>
-                <button className="btn ghost" style={{ height: 72, justifyContent: 'flex-start', border: mode === 'manual' ? '1px solid var(--accent)' : '1px solid var(--hairline)', background: mode === 'manual' ? 'var(--accent-soft)' : 'var(--surface)' }} onClick={() => setMode('manual')}>
-                  <Icon name="edit" />手动创建
-                </button>
-              </div>
-              <textarea
-                value={sqlText}
-                onChange={e => setSqlText(e.target.value)}
-                placeholder="粘贴 SQL / 存储过程代码..."
-                style={{ width: '100%', minHeight: 300, border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)', color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5 }}
-              />
+        <div className="blueprint-wizard-shell">
+          <aside className="blueprint-wizard-side">
+            <div className="blueprint-side-section">
+              <div className="blueprint-side-title">创建方式</div>
+              {Object.entries(BLUEPRINT_MODE_META).map(([key, item]) => (
+                <BlueprintModeButton
+                  key={key}
+                  item={item}
+                  active={mode === key}
+                  onClick={() => setMode(key)}
+                />
+              ))}
             </div>
-          )}
-
-          {step === 2 && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div className="blueprint-side-section">
+              <div className="blueprint-side-title">流程</div>
+              <BlueprintWizardStepper labels={stepLabels} activeStep={step} help={stepHelp} />
+            </div>
+            <div className="blueprint-assistant-note">
+              <Icon name="sparkle" />
               <div>
-                <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>AI 提取，可编辑</div>
-                <WizardField label="蓝图名称" value={form.name} onChange={v => updateForm('name', v)} />
-                <WizardTextArea label="业务描述" value={form.description} onChange={v => updateForm('description', v)} rows={4} />
-                <WizardTextArea label="触发关键词（每行一条）" value={triggerKeywordsText} onChange={setTriggerKeywordsText} rows={4} />
-                <WizardTextArea label="触发问法（每行一条）" value={triggerExamplesText} onChange={setTriggerExamplesText} rows={4} />
-                <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 6 }}>
-                  AI 置信度: <strong>{form.ai_confidence != null ? Math.round(form.ai_confidence * 100) : 0}%</strong>
+                <strong>{mode === 'manual' ? 'AI 会读取业务语义' : 'AI 会解析 SQL 结构'}</strong>
+                <span>{currentStepHelp}</span>
+              </div>
+            </div>
+          </aside>
+
+          <main className="blueprint-wizard-main">
+            <BlueprintWizardStage
+              eyebrow={stepLabels[step - 1]}
+              title={mode === 'manual' && step === 1 ? '描述你要沉淀的业务分析能力' : mode === 'sql' && step === 1 ? '粘贴已有 SQL 或存储过程' : step === 2 ? '确认 AI 生成的蓝图草稿' : step === 3 ? '校准高级结构化配置' : '测试、保存并发布'}
+              desc={currentStepHelp}
+            />
+
+            {step === 1 && (
+              mode === 'sql' ? (
+                <textarea
+                  className="blueprint-sql-composer"
+                  value={sqlText}
+                  onChange={e => setSqlText(e.target.value)}
+                  placeholder={'粘贴 SQL / 存储过程代码...\n\n示例：\nSELECT region, SUM(order_amount) AS gmv\nFROM orders\nWHERE pay_status = :status AND order_date BETWEEN :start_date AND :end_date\nGROUP BY region'}
+                />
+              ) : (
+                <div className="blueprint-manual-workbench">
+                  <section className="blueprint-manual-form">
+                    <ManualBlueprintExample onUseExample={fillManualExample} />
+                    <WizardField
+                      label="蓝图名称"
+                      value={manualName}
+                      onChange={setManualName}
+                      placeholder={`例如：${MANUAL_BLUEPRINT_EXAMPLE.name}`}
+                      hint="用业务人员能搜索到的名称，不需要写数据表或 SQL。"
+                    />
+                    <WizardTextArea
+                      label="用户可能问法"
+                      value={manualQuestionsText}
+                      onChange={setManualQuestionsText}
+                      rows={4}
+                      placeholder={MANUAL_BLUEPRINT_EXAMPLE.questions}
+                      hint="每行一条，写真实用户会问出口的问题。"
+                    />
+                    <WizardTextArea
+                      label="业务场景"
+                      value={businessScenario}
+                      onChange={setBusinessScenario}
+                      rows={7}
+                      placeholder={MANUAL_BLUEPRINT_EXAMPLE.scenario}
+                      hint="说明这个蓝图要解决什么业务问题、通常怎么判断结果。"
+                    />
+                    <WizardTextArea
+                      label="希望输出"
+                      value={expectedOutput}
+                      onChange={setExpectedOutput}
+                      rows={6}
+                      placeholder={MANUAL_BLUEPRINT_EXAMPLE.output}
+                      hint="描述希望 AI 返回哪些结论、表格或拆解维度。"
+                    />
+                    <WizardTextArea
+                      label="数据口径约束"
+                      value={businessRules}
+                      onChange={setBusinessRules}
+                      rows={5}
+                      placeholder={MANUAL_BLUEPRINT_EXAMPLE.rules}
+                      hint="填写统计边界、默认时间、排除条件、业务口径等约束。"
+                    />
+                  </section>
+                  <BlueprintInputDigest items={manualSummary} filledCount={manualFilledCount} />
                 </div>
-                {lowConfidenceFields.length > 0 && (
-                  <div style={{ marginTop: 8, padding: 10, borderRadius: 8, background: 'var(--warn-soft)', color: 'var(--text-2)', fontSize: 12 }}>
-                    {lowConfidenceFields.map((f, idx) => (
-                      <div key={idx}>需确认: {f.path} · {Math.round((f.confidence || 0) * 100)}%</div>
-                    ))}
+              )
+            )}
+
+            {step === 2 && (
+              <div className="blueprint-review-grid">
+                <section className="blueprint-editor-stack">
+                  <div className="blueprint-section-label">AI 提取，可编辑</div>
+                  <WizardField label="蓝图名称" value={form.name} onChange={v => updateForm('name', v)} />
+                  <WizardTextArea label="业务描述" value={form.description} onChange={v => updateForm('description', v)} rows={4} />
+                  <WizardTextArea label="触发关键词（每行一条）" value={triggerKeywordsText} onChange={setTriggerKeywordsText} rows={4} />
+                  <WizardTextArea label="触发问法（每行一条）" value={triggerExamplesText} onChange={setTriggerExamplesText} rows={4} />
+                  <div className="blueprint-confidence">
+                    AI 置信度: <strong>{form.ai_confidence != null ? Math.round(form.ai_confidence * 100) : 0}%</strong>
                   </div>
-                )}
-              </div>
-              <div>
-                <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>原始 SQL，只读</div>
-                <pre style={{ minHeight: 430, maxHeight: 520, overflow: 'auto', margin: 0, padding: 12, borderRadius: 8, border: '1px solid var(--hairline)', background: 'var(--bg-2)', color: 'var(--text-2)', fontSize: 12, lineHeight: 1.5 }}>{sqlText || form.raw_sql || '手动创建模式暂无 SQL'}</pre>
-              </div>
-            </div>
-          )}
-
-          {step === 3 && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-              <WizardTextArea label="参数列表 JSON" value={parametersText} onChange={setParametersText} rows={12} mono />
-              <WizardTextArea label="输出列语义 JSON" value={outputSchemaText} onChange={setOutputSchemaText} rows={12} mono />
-              <WizardTextArea label="业务逻辑步骤 JSON" value={stepsText} onChange={setStepsText} rows={12} mono />
-              <WizardTextArea label="结果解读提示" value={form.attribution_hints || ''} onChange={v => updateForm('attribution_hints', v)} rows={12} />
-            </div>
-          )}
-
-          {step === 4 && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <div>
-                <WizardTextArea label="触发问法（至少 2 条，每行一条）" value={triggerExamplesText} onChange={setTriggerExamplesText} rows={8} />
-                <WizardTextArea label="测试参数 JSON" value={testParamsText} onChange={setTestParamsText} rows={8} mono />
-                <button className="btn primary" onClick={handleRunTest} disabled={testing || saving}>
-                  <Icon name="play" />{testing ? '测试中…' : '运行测试'}
-                </button>
-              </div>
-              <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, overflow: 'hidden' }}>
-                <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--hairline)', background: 'var(--bg-2)', fontSize: 12, color: 'var(--text-3)' }}>测试结果</div>
-                {testResult ? (
-                  <div style={{ padding: 12, fontSize: 12 }}>
-                    <div style={{ color: 'var(--pos)', marginBottom: 8 }}>SQL 执行成功 ({testResult.execution_time_ms}ms)</div>
-                    <div style={{ overflow: 'auto', marginBottom: 10 }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                        <thead><tr>{testResult.columns.map(c => <th key={c} style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid var(--hairline)', color: 'var(--text-3)' }}>{c}</th>)}</tr></thead>
-                        <tbody>{testResult.rows.map((row, idx) => <tr key={idx}>{testResult.columns.map(c => <td key={c} style={{ padding: 6, borderBottom: '1px solid var(--hairline)' }}>{String(row[c] ?? '')}</td>)}</tr>)}</tbody>
-                      </table>
+                  {lowConfidenceFields.length > 0 && (
+                    <div className="blueprint-warn-box">
+                      {lowConfidenceFields.map((f, idx) => (
+                        <div key={idx}>需确认: {f.path} · {Math.round((f.confidence || 0) * 100)}%</div>
+                      ))}
                     </div>
-                    <div style={{ lineHeight: 1.6, color: 'var(--text-2)' }}>{testResult.interpretation_preview}</div>
-                  </div>
-                ) : (
-                  <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>运行测试后显示 SQL 结果和 AI 解读预览</div>
-                )}
+                  )}
+                </section>
+                <section className="blueprint-source-preview">
+                  <div className="blueprint-section-label">{mode === 'manual' ? '业务场景输入' : '原始 SQL，只读'}</div>
+                  <pre>
+                    {mode === 'manual'
+                      ? [
+                          manualName && `蓝图名称：${manualName}`,
+                          businessScenario && `业务场景：${businessScenario}`,
+                          manualQuestionsText && `用户可能问法：\n${manualQuestionsText}`,
+                          expectedOutput && `希望输出：${expectedOutput}`,
+                          businessRules && `数据口径约束：${businessRules}`,
+                        ].filter(Boolean).join('\n\n')
+                      : (sqlText || form.raw_sql)}
+                  </pre>
+                </section>
               </div>
-            </div>
-          )}
+            )}
+
+            {step === 3 && (
+              <div className="blueprint-config-grid">
+                <WizardTextArea label="参数列表 JSON" value={parametersText} onChange={setParametersText} rows={12} mono />
+                <WizardTextArea label="输出列语义 JSON" value={outputSchemaText} onChange={setOutputSchemaText} rows={12} mono />
+                <WizardTextArea label="业务逻辑步骤 JSON" value={stepsText} onChange={setStepsText} rows={12} mono />
+                <WizardTextArea label="结果解读提示" value={form.attribution_hints || ''} onChange={v => updateForm('attribution_hints', v)} rows={12} />
+              </div>
+            )}
+
+            {step === 4 && (
+              <div className="blueprint-review-grid">
+                <section className="blueprint-editor-stack">
+                  <WizardTextArea label="触发问法（至少 2 条，每行一条）" value={triggerExamplesText} onChange={setTriggerExamplesText} rows={8} />
+                  <WizardTextArea label="测试参数 JSON" value={testParamsText} onChange={setTestParamsText} rows={8} mono />
+                  <button className="btn primary" onClick={handleRunTest} disabled={testing || saving}>
+                    <Icon name="play" />{testing ? '测试中…' : '运行测试'}
+                  </button>
+                </section>
+                <section className="blueprint-test-panel">
+                  <div className="blueprint-test-head">测试结果</div>
+                  {testResult ? (
+                    <div className="blueprint-test-body">
+                      <div className="blueprint-test-ok">SQL 执行成功 ({testResult.execution_time_ms}ms)</div>
+                      <div className="blueprint-result-table">
+                        <table>
+                          <thead><tr>{testResult.columns.map(c => <th key={c}>{c}</th>)}</tr></thead>
+                          <tbody>{testResult.rows.map((row, idx) => <tr key={idx}>{testResult.columns.map(c => <td key={c}>{String(row[c] ?? '')}</td>)}</tr>)}</tbody>
+                        </table>
+                      </div>
+                      <div className="blueprint-test-copy">{testResult.interpretation_preview}</div>
+                    </div>
+                  ) : (
+                    <div className="blueprint-test-empty">运行测试后显示 SQL 结果和 AI 解读预览</div>
+                  )}
+                </section>
+              </div>
+            )}
+          </main>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '14px 18px', borderTop: '1px solid var(--hairline)' }}>
+        <div className="blueprint-wizard-actions">
+          <div className="blueprint-action-hint">
+            {step === 1 && mode === 'manual'
+              ? `已填写 ${manualFilledCount}/5 项，业务场景为必填。`
+              : currentStepHelp}
+          </div>
           <button className="btn ghost" onClick={onClose}>取消</button>
           {step > 1 && <button className="btn ghost" onClick={() => setStep(step - 1)}>上一步</button>}
           {step < 4 ? (
@@ -341,32 +516,205 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
   );
 }
 
-function WizardField({ label, value, onChange }) {
+function BlueprintModeButton({ item, active, onClick }) {
   return (
-    <label style={{ display: 'block', marginBottom: 10 }}>
-      <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>{label}</div>
-      <input value={value || ''} onChange={e => onChange(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface)', fontSize: 13 }} />
+    <button className={'blueprint-mode-option ' + (active ? 'active' : '')} onClick={onClick}>
+      <span className="blueprint-mode-icon"><Icon name={item.icon} /></span>
+      <span>
+        <strong>{item.title}</strong>
+        <em>{item.desc}</em>
+      </span>
+      <small>{item.badge}</small>
+    </button>
+  );
+}
+
+function BlueprintWizardStepper({ labels, activeStep, help }) {
+  return (
+    <div className="blueprint-stepper">
+      {labels.map((label, idx) => {
+        const stepNo = idx + 1;
+        const done = stepNo < activeStep;
+        const active = stepNo === activeStep;
+        return (
+          <button
+            key={label}
+            className={'blueprint-step-item ' + (active ? 'active ' : '') + (done ? 'done' : '')}
+            type="button"
+            disabled
+          >
+            <span>{done ? <Icon name="check" /> : stepNo}</span>
+            <strong>{label}</strong>
+            <em>{help[idx]}</em>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BlueprintWizardStage({ eyebrow, title, desc }) {
+  return (
+    <div className="blueprint-stage-head">
+      <div className="blueprint-section-label">{eyebrow}</div>
+      <h4>{title}</h4>
+      <p>{desc}</p>
+    </div>
+  );
+}
+
+function ManualBlueprintExample({ onUseExample }) {
+  return (
+    <div className="blueprint-example-panel">
+      <div className="blueprint-example-head">
+        <span><Icon name="sparkle" />填写示例</span>
+        <button type="button" className="btn ghost" onClick={onUseExample}>套用示例</button>
+      </div>
+      <div className="blueprint-example-grid">
+        <ExampleLine label="业务场景" text={MANUAL_BLUEPRINT_EXAMPLE.scenario} />
+        <ExampleLine label="希望输出" text={MANUAL_BLUEPRINT_EXAMPLE.output} />
+        <ExampleLine label="用户问法" text={MANUAL_BLUEPRINT_EXAMPLE.questions.replace('\n', ' / ')} />
+        <ExampleLine label="口径约束" text={MANUAL_BLUEPRINT_EXAMPLE.rules} />
+      </div>
+    </div>
+  );
+}
+
+function ExampleLine({ label, text }) {
+  return (
+    <div className="blueprint-example-line">
+      <span>{label}: </span>
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function BlueprintInputDigest({ items, filledCount }) {
+  return (
+    <aside className="blueprint-input-digest">
+      <div className="blueprint-digest-head">
+        <div>
+          <div className="blueprint-section-label">AI 输入摘要</div>
+          <strong>{filledCount}/5 项已填写</strong>
+        </div>
+        <Icon name="sparkle" />
+      </div>
+      <div className="blueprint-digest-list">
+        {items.map(([label, value]) => (
+          <DigestLine key={label} label={label} value={value} />
+        ))}
+      </div>
+      <div className="blueprint-digest-note">
+        这里展示 AI 将读取的业务语义。保持描述清楚即可，不需要写 SQL、表名或字段名。
+      </div>
+    </aside>
+  );
+}
+
+function DigestLine({ label, value }) {
+  const text = String(value || '').trim();
+  return (
+    <div className={'blueprint-digest-line ' + (text ? 'filled' : '')}>
+      <span>{label}</span>
+      <p>{text || '待填写'}</p>
+    </div>
+  );
+}
+
+function WizardField({ label, value, onChange, placeholder = '', hint = '' }) {
+  return (
+    <label className="blueprint-form-field">
+      <div>{label}</div>
+      {hint && <span>{hint}</span>}
+      <input value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} />
     </label>
   );
 }
 
-function WizardTextArea({ label, value, onChange, rows = 6, mono = false }) {
+function WizardTextArea({ label, value, onChange, rows = 6, mono = false, placeholder = '', hint = '' }) {
   return (
-    <label style={{ display: 'block', marginBottom: 10 }}>
-      <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>{label}</div>
+    <label className="blueprint-form-field">
+      <div>{label}</div>
+      {hint && <span>{hint}</span>}
       <textarea
+        className={mono ? 'mono' : ''}
         value={value || ''}
         onChange={e => onChange(e.target.value)}
         rows={rows}
-        style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface)', fontSize: 12, lineHeight: 1.5, fontFamily: mono ? 'var(--font-mono)' : 'inherit', resize: 'vertical' }}
+        placeholder={placeholder}
       />
     </label>
   );
 }
 
 function BlueprintDetail({ datasetId, blueprint, onChanged }) {
+  const [activeTab, setActiveTab] = useState('overview');
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null);
+  const [actionBusy, setActionBusy] = useState('');
+  const [testResult, setTestResult] = useState(blueprint?.last_test_result || null);
+  const [testQuestion, setTestQuestion] = useState('');
+  const [testParams, setTestParams] = useState({});
+  const [usageStats, setUsageStats] = useState(null);
+  const [usageLogs, setUsageLogs] = useState([]);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const previousBlueprintId = useRef(null);
+  const blueprintId = blueprint?.id;
+  const blueprintName = blueprint?.name || '';
+  const blueprintParameters = useMemo(() => blueprint?.parameters || [], [blueprint?.parameters]);
+  const blueprintTriggerExamples = useMemo(() => blueprint?.trigger_examples || [], [blueprint?.trigger_examples]);
+  const blueprintLastTestResult = blueprint?.last_test_result || null;
+  const detailTabs = [
+    { id: 'overview', label: '概览' },
+    { id: 'parameters', label: `参数·L1 (${blueprintParameters.length})` },
+    { id: 'outputs', label: `输出列·L1 (${(blueprint?.output_schema || []).length})` },
+    { id: 'steps', label: `业务逻辑·L2 (${(blueprint?.steps || []).length})` },
+    { id: 'test', label: '测试' },
+    { id: 'usage', label: '使用记录' },
+  ];
+
+  useEffect(() => {
+    if (!blueprintId) return;
+    const switchedBlueprint = previousBlueprintId.current !== blueprintId;
+    previousBlueprintId.current = blueprintId;
+    setTestResult(blueprintLastTestResult);
+    if (switchedBlueprint) {
+      setActiveTab('overview');
+      setTestQuestion(blueprintTriggerExamples[0] || blueprintName);
+      setTestParams(buildDefaultParams(blueprintParameters));
+      setUsageStats(null);
+      setUsageLogs([]);
+    }
+  }, [blueprintId, blueprintLastTestResult, blueprintName, blueprintParameters, blueprintTriggerExamples]);
+
+  useEffect(() => {
+    if (!blueprintId || activeTab !== 'usage') return;
+    let cancelled = false;
+    const loadUsage = async () => {
+      setUsageLoading(true);
+      try {
+        const [stats, logs] = await Promise.all([
+          getAnalysisBlueprintUsageStats(datasetId, blueprintId),
+          listAnalysisBlueprintUsageLogs(datasetId, blueprintId),
+        ]);
+        if (!cancelled) {
+          setUsageStats(stats);
+          setUsageLogs(logs || []);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[blueprints] usage load failed:', err);
+          setUsageStats(null);
+          setUsageLogs([]);
+        }
+      } finally {
+        if (!cancelled) setUsageLoading(false);
+      }
+    };
+    loadUsage();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, blueprintId, datasetId]);
 
   if (!blueprint) {
     return (
@@ -386,9 +734,10 @@ function BlueprintDetail({ datasetId, blueprint, onChanged }) {
   const runQuickTest = async () => {
     setTesting(true);
     try {
-      const result = await testAnalysisBlueprint(datasetId, blueprint.id, {}, blueprint.name);
+      const result = await testAnalysisBlueprint(datasetId, blueprint.id, testParams, testQuestion || blueprint.name);
       setTestResult(result);
-      onChanged?.({ ...blueprint, last_test_result: result });
+      onChanged?.({ ...blueprint, last_test_result: result, last_validated_at: new Date().toISOString() });
+      setActiveTab('test');
     } catch (err) {
       alert('测试失败: ' + (err.message || '未知错误'));
     } finally {
@@ -397,63 +746,369 @@ function BlueprintDetail({ datasetId, blueprint, onChanged }) {
   };
 
   const changeStatus = async (action) => {
+    setActionBusy(action);
     try {
-      const updated = await updateAnalysisBlueprintStatus(datasetId, blueprint.id, { action });
+      const updated = await updateAnalysisBlueprintStatus(datasetId, blueprint.id, {
+        action,
+        change_summary: action === 'publish' ? '详情页发布蓝图' : action === 'deprecate' ? '详情页弃用蓝图' : '详情页重新启用蓝图',
+      });
       onChanged?.(updated);
     } catch (err) {
       alert('操作失败: ' + (err.message || '未知错误'));
+    } finally {
+      setActionBusy('');
     }
   };
 
+  const statusAction = blueprint.status === 'deprecated'
+    ? { action: 'reactivate', label: '重新启用', icon: 'check' }
+    : { action: 'deprecate', label: '弃用', icon: 'archive' };
+
   return (
     <div className="blueprint-detail">
-      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{blueprint.name}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>v{blueprint.version} · {blueprint.owner || '数据团队'}</div>
+      <div className="blueprint-detail-head">
+        <div>
+          <div className="blueprint-detail-title">{blueprint.name}</div>
+          <div className="blueprint-detail-meta">v{blueprint.version} · {blueprint.owner || '数据团队'}</div>
         </div>
         <BlueprintStatusBadge status={blueprint.status} />
       </div>
-      <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid var(--hairline)', overflow: 'auto' }}>
-        {['概览', '参数·L1', '输出列·L1', '业务逻辑·L2', '测试', '使用记录'].map(t => (
-          <span key={t} style={{ fontSize: 11, color: t === '概览' ? 'var(--text)' : 'var(--text-3)', background: t === '概览' ? 'var(--bg-2)' : 'transparent', padding: '3px 6px', borderRadius: 4, whiteSpace: 'nowrap' }}>{t}</span>
+      <div className="blueprint-detail-tabs">
+        {detailTabs.map(tab => (
+          <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => setActiveTab(tab.id)}>
+            {tab.label}
+          </button>
         ))}
       </div>
-      <div style={{ padding: 12 }}>
-        <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 12 }}>{blueprint.description || '暂无描述'}</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
-          <Stat label="AI 置信度" value={blueprint.ai_confidence != null ? `${Math.round(blueprint.ai_confidence * 100)}%` : '—'} />
-          <Stat label="参数" value={(blueprint.parameters || []).length} />
-          <Stat label="输出列" value={(blueprint.output_schema || []).length} />
-          <Stat label="最近验证" value={blueprint.last_validated_at ? blueprint.last_validated_at.slice(0, 10) : '未验证'} />
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 6 }}>触发问法</div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-          {(blueprint.trigger_examples || []).slice(0, 4).map(t => (
-            <span key={t} style={{ padding: '2px 6px', borderRadius: 4, background: 'var(--bg-2)', color: 'var(--text-2)', fontSize: 11 }}>{t}</span>
-          ))}
-        </div>
-        {testResult && (
-          <div style={{ padding: 8, borderRadius: 6, background: 'var(--pos-soft)', color: 'var(--text-2)', fontSize: 12, marginBottom: 10 }}>
-            测试成功: {testResult.rows.length} 行 · {testResult.columns.length} 列
-          </div>
+      <div className="blueprint-detail-body">
+        {activeTab === 'overview' && (
+          <BlueprintOverview blueprint={blueprint} testResult={testResult} onOpenTab={setActiveTab} />
         )}
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <button className="btn ghost" onClick={runQuickTest} disabled={testing}><Icon name="play" />{testing ? '测试中…' : '测试'}</button>
-          <button className="btn ghost" onClick={() => changeStatus('publish')}><Icon name="check" />发布</button>
-          <button className="btn ghost" onClick={() => changeStatus('deprecated')}><Icon name="archive" />弃用</button>
+        {activeTab === 'parameters' && (
+          <StructuredList
+            emptyText="暂无参数定义"
+            items={blueprint.parameters || []}
+            renderItem={(item, idx) => <ParameterCard key={item.name || idx} item={item} />}
+          />
+        )}
+        {activeTab === 'outputs' && (
+          <StructuredList
+            emptyText="暂无输出列定义"
+            items={blueprint.output_schema || []}
+            renderItem={(item, idx) => <OutputColumnCard key={item.name || idx} item={item} />}
+          />
+        )}
+        {activeTab === 'steps' && (
+          <StructuredList
+            emptyText="暂无业务逻辑步骤"
+            items={blueprint.steps || []}
+            renderItem={(item, idx) => <StepCard key={item.id || item.name || idx} item={item} index={idx} />}
+          />
+        )}
+        {activeTab === 'test' && (
+          <BlueprintTestPanel
+            blueprint={blueprint}
+            params={testParams}
+            question={testQuestion}
+            result={testResult}
+            testing={testing}
+            onParamChange={(name, value) => setTestParams(prev => ({ ...prev, [name]: value }))}
+            onQuestionChange={setTestQuestion}
+            onRun={runQuickTest}
+          />
+        )}
+        {activeTab === 'usage' && (
+          <BlueprintUsagePanel loading={usageLoading} stats={usageStats} logs={usageLogs} />
+        )}
+        <div className="blueprint-detail-actions">
+          <button className="btn ghost" onClick={() => setActiveTab('test')} disabled={testing}>
+            <Icon name="play" />测试
+          </button>
+          <button className="btn ghost" onClick={() => changeStatus('publish')} disabled={actionBusy === 'publish' || blueprint.status === 'active'}>
+            <Icon name="check" />{actionBusy === 'publish' ? '发布中…' : '发布'}
+          </button>
+          <button className="btn ghost" onClick={() => changeStatus(statusAction.action)} disabled={Boolean(actionBusy)}>
+            <Icon name={statusAction.icon} />{actionBusy === statusAction.action ? '处理中…' : statusAction.label}
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-function Stat({ label, value }) {
+function BlueprintOverview({ blueprint, testResult, onOpenTab }) {
   return (
-    <div style={{ padding: 8, borderRadius: 6, background: 'var(--bg-2)' }}>
-      <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 13, fontWeight: 600 }}>{value}</div>
+    <div className="blueprint-overview">
+      <div className="blueprint-description">{blueprint.description || '暂无描述'}</div>
+      <div className="blueprint-stat-grid">
+        <Stat label="AI 置信度" value={blueprint.ai_confidence != null ? `${Math.round(blueprint.ai_confidence * 100)}%` : '—'} />
+        <Stat label="参数" value={(blueprint.parameters || []).length} onClick={() => onOpenTab('parameters')} />
+        <Stat label="输出列" value={(blueprint.output_schema || []).length} onClick={() => onOpenTab('outputs')} />
+        <Stat label="最近验证" value={blueprint.last_validated_at ? blueprint.last_validated_at.slice(0, 10) : '未验证'} />
+      </div>
+      <InfoBlock label="触发关键词" values={blueprint.trigger_keywords || []} emptyText="暂无触发关键词" />
+      <InfoBlock label="触发问法" values={(blueprint.trigger_examples || []).slice(0, 8)} emptyText="暂无触发问法" />
+      {blueprint.when_to_use && <InfoText label="适用条件" text={blueprint.when_to_use} />}
+      {testResult && (
+        <div className={testResult.ok ? 'blueprint-test-status ok' : 'blueprint-test-status failed'}>
+          {testResult.ok
+            ? `最近测试成功：${(testResult.rows || []).length} 行 · ${(testResult.columns || []).length} 列`
+            : `最近测试失败：${testResult.error_message || '未知错误'}`}
+        </div>
+      )}
     </div>
+  );
+}
+
+function InfoBlock({ label, values, emptyText }) {
+  return (
+    <div className="blueprint-info-block">
+      <div className="blueprint-mini-label">{label}</div>
+      <div className="blueprint-chip-list">
+        {values.length ? values.map(value => <span key={value}>{value}</span>) : <em>{emptyText}</em>}
+      </div>
+    </div>
+  );
+}
+
+function InfoText({ label, text }) {
+  return (
+    <div className="blueprint-info-block">
+      <div className="blueprint-mini-label">{label}</div>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function StructuredList({ items, renderItem, emptyText }) {
+  if (!items.length) {
+    return <div className="blueprint-empty-inline">{emptyText}</div>;
+  }
+  return <div className="blueprint-structured-list">{items.map(renderItem)}</div>;
+}
+
+function ParameterCard({ item }) {
+  if (typeof item === 'string') {
+    return (
+      <div className="blueprint-structured-card">
+        <div className="blueprint-structured-head">
+          <strong>{item}</strong>
+          <span>string</span>
+        </div>
+        <p>暂无说明</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="blueprint-structured-card">
+      <div className="blueprint-structured-head">
+        <strong>{item.name || item.key || '未命名参数'}</strong>
+        <span>{item.type || item.data_type || 'string'}</span>
+      </div>
+      <p>{item.description || item.business_meaning || item.label || '暂无说明'}</p>
+      <div className="blueprint-card-meta">
+        <span>必填: {item.required === false ? '否' : '是'}</span>
+        {item.default != null && <span>默认值: {String(item.default)}</span>}
+        {item.enum_values?.length ? <span>枚举: {item.enum_values.join(', ')}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function OutputColumnCard({ item }) {
+  if (typeof item === 'string') {
+    return (
+      <div className="blueprint-structured-card">
+        <div className="blueprint-structured-head">
+          <strong>{item}</strong>
+          <span>字段</span>
+        </div>
+        <p>来自分析 SQL 的输出列</p>
+      </div>
+    );
+  }
+  const columnName = item.name || item.key || item.column || item.field || item.path || item.column_name || item.alias;
+  const columnType = item.type || item.data_type || item.role || item.semantic_type || '字段';
+  const columnDescription = item.description || item.business_meaning || item.semantic || item.reason || item.label || '暂无说明';
+
+  return (
+    <div className="blueprint-structured-card">
+      <div className="blueprint-structured-head">
+        <strong>{columnName || '未命名输出列'}</strong>
+        <span>{columnType}</span>
+      </div>
+      <p>{columnDescription}</p>
+      <div className="blueprint-card-meta">
+        {item.format && <span>格式: {item.format}</span>}
+        {item.source && <span>来源: {item.source}</span>}
+      </div>
+    </div>
+  );
+}
+
+function StepCard({ item, index }) {
+  if (typeof item === 'string') {
+    return (
+      <div className="blueprint-step-card">
+        <span>{index + 1}</span>
+        <div>
+          <strong>{`步骤 ${index + 1}`}</strong>
+          <p>{item}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const stepNo = item.step || index + 1;
+  const description = item.description || item.purpose || item.action || item.logic || '';
+  const rules = item.key_rules || item.rules || [];
+  const outputs = item.output_columns || item.outputs || [];
+
+  return (
+    <div className="blueprint-step-card">
+      <span>{stepNo}</span>
+      <div>
+        <strong>{item.name || item.title || `步骤 ${index + 1}`}</strong>
+        <p>{description || '暂无步骤说明'}</p>
+        {rules.length ? (
+          <div className="blueprint-step-rules">
+            {rules.slice(0, 4).map(rule => (
+              <em key={rule}>{rule}</em>
+            ))}
+          </div>
+        ) : null}
+        {outputs.length ? (
+          <div className="blueprint-card-meta">
+            <span>
+              输出: {outputs.slice(0, 6).join(', ')}
+              {outputs.length > 6 ? ' ...' : ''}
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function BlueprintTestPanel({ blueprint, params, question, result, testing, onParamChange, onQuestionChange, onRun }) {
+  return (
+    <div className="blueprint-test-workbench">
+      <div className="blueprint-test-form">
+        <label className="blueprint-form-field">
+          <div>测试问法</div>
+          <span>用于模拟用户问题，也会写入本次测试请求。</span>
+          <input value={question || ''} onChange={e => onQuestionChange(e.target.value)} placeholder={blueprint.name} />
+        </label>
+        <div className="blueprint-mini-label">测试参数</div>
+        {(blueprint.parameters || []).length ? (
+          <div className="blueprint-param-grid">
+            {(blueprint.parameters || []).map((param, idx) => {
+              const paramKey = getParameterKey(param, idx);
+              const placeholder = typeof param === 'string' ? '输入测试值' : (param.description || param.type || '输入测试值');
+              return (
+                <label key={paramKey} className="blueprint-param-input">
+                  <span>{paramKey}</span>
+                  <input
+                    value={params[paramKey] ?? ''}
+                    onChange={e => onParamChange(paramKey, e.target.value)}
+                    placeholder={placeholder}
+                  />
+                </label>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="blueprint-empty-inline">当前蓝图没有参数，测试会直接运行。</div>
+        )}
+        <button className="btn primary" onClick={onRun} disabled={testing}>
+          <Icon name="play" />{testing ? '测试中…' : '运行测试'}
+        </button>
+      </div>
+      <BlueprintTestResult result={result} />
+    </div>
+  );
+}
+
+function BlueprintTestResult({ result }) {
+  if (!result) {
+    return <div className="blueprint-empty-inline">运行测试后显示 SQL 预览、结果数据和错误信息。</div>;
+  }
+  return (
+    <div className="blueprint-test-result">
+      <div className={result.ok ? 'blueprint-test-status ok' : 'blueprint-test-status failed'}>
+        {result.ok ? `执行成功 · ${result.execution_time_ms}ms` : `执行失败 · ${result.error_message || '未知错误'}`}
+      </div>
+      {result.sql_preview && (
+        <pre className="blueprint-sql-preview">{result.sql_preview}</pre>
+      )}
+      {(result.columns || []).length > 0 && (
+        <div className="blueprint-result-table">
+          <table>
+            <thead><tr>{result.columns.map(c => <th key={c}>{c}</th>)}</tr></thead>
+            <tbody>{(result.rows || []).slice(0, 20).map((row, idx) => <tr key={idx}>{result.columns.map(c => <td key={c}>{String(row[c] ?? '')}</td>)}</tr>)}</tbody>
+          </table>
+        </div>
+      )}
+      {result.interpretation_preview && <p>{result.interpretation_preview}</p>}
+    </div>
+  );
+}
+
+function BlueprintUsagePanel({ loading, stats, logs }) {
+  if (loading) return <div className="blueprint-empty-inline">使用记录加载中…</div>;
+  return (
+    <div className="blueprint-usage-panel">
+      <div className="blueprint-stat-grid">
+        <Stat label="调用次数" value={stats?.usage_count ?? 0} />
+        <Stat label="日志总数" value={stats?.total_logs ?? 0} />
+        <Stat label="成功率" value={`${Math.round((stats?.execution_success_rate || 0) * 100)}%`} />
+        <Stat label="平均耗时" value={`${stats?.avg_execution_time_ms || 0}ms`} />
+      </div>
+      <div className="blueprint-mini-label">最近调用</div>
+      {(logs || []).length ? (
+        <div className="blueprint-usage-list">
+          {logs.map(log => (
+            <div key={log.id} className="blueprint-usage-row">
+              <strong>{log.question || '未记录问题'}</strong>
+              <span>{log.execution_success ? '成功' : '失败'} · {log.execution_time_ms ?? 0}ms · {formatDateTime(log.created_at)}</span>
+              {log.error_message && <p>{log.error_message}</p>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="blueprint-empty-inline">暂无真实调用记录。</div>
+      )}
+    </div>
+  );
+}
+
+function buildDefaultParams(parameters) {
+  return (parameters || []).reduce((acc, param) => {
+    const name = getParameterKey(param, Object.keys(acc).length);
+    if (!name) return acc;
+    acc[name] = typeof param === 'string' ? '' : (param.default ?? param.default_value ?? param.example ?? '');
+    return acc;
+  }, {});
+}
+
+function getParameterKey(param, index) {
+  if (typeof param === 'string') return param;
+  return param.name || param.key || `param_${index + 1}`;
+}
+
+function formatDateTime(value) {
+  if (!value) return '未知时间';
+  return String(value).replace('T', ' ').slice(0, 19);
+}
+
+function Stat({ label, value, onClick }) {
+  const Tag = onClick ? 'button' : 'div';
+  return (
+    <Tag className={'blueprint-stat-card ' + (onClick ? 'clickable' : '')} onClick={onClick}>
+      <div>{label}</div>
+      <strong>{value}</strong>
+    </Tag>
   );
 }
 

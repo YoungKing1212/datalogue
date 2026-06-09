@@ -24,6 +24,8 @@ from app.graph.state import AgentState
 logger = logging.getLogger(__name__)
 from app.graph.nodes import (
     intent_recognition_node,
+    entry_intent_classification_node,
+    analysis_blueprint_execute_node,
     schema_recall_node,
     metric_resolution_node,
     dsl_generate_node,
@@ -36,11 +38,33 @@ from app.graph.nodes import (
 
 
 def _should_continue(state: AgentState) -> str:
-    """判断意图识别后应该走向哪个分支。"""
+    """判断旧版粗粒度意图识别后应该走向哪个分支。"""
     intent = state.get("intent")
     if intent == "chitchat":
         return "end"
     return "schema_recall"
+
+
+def _entry_classification_router(state: AgentState) -> str:
+    """入口分类后进行主链路分流。"""
+    if state.get("entry_route") == "query_graph":
+        return "schema_recall"
+    if state.get("entry_route") == "analysis_blueprint":
+        return "analysis_blueprint_execute"
+    return "end"
+
+
+def _analysis_blueprint_execution_router(state: AgentState) -> str:
+    """分析蓝图执行后分流。
+
+    SQL 模板蓝图执行成功后生成报告；手动语义计划蓝图不要求可执行 SQL，
+    而是带着蓝图上下文回到 QueryGraph 继续做 Schema 召回和 NL2SQL。
+    """
+    if state.get("generation_mode") == "analysis_blueprint_semantic":
+        return "schema_recall"
+    if state.get("sql_result") is not None:
+        return "report"
+    return "end"
 
 
 def _dsl_validation_router(state: AgentState) -> str:
@@ -102,6 +126,8 @@ def build_workflow(db: Session) -> Any:
 
     # 注册节点
     workflow.add_node("intent_recognition", intent_recognition_node)
+    workflow.add_node("entry_intent_classification", entry_intent_classification_node(db))
+    workflow.add_node("analysis_blueprint_execute", analysis_blueprint_execute_node(db))
     workflow.add_node("schema_recall", schema_recall_node(db))
     workflow.add_node("metric_resolution_node", metric_resolution_node)
     workflow.add_node("dsl_generate", dsl_generate_node)
@@ -117,13 +143,26 @@ def build_workflow(db: Session) -> Any:
     # 设置入口
     workflow.set_entry_point("intent_recognition")
 
-    # 意图识别分支：闲聊直接结束，查询继续
+    # 意图识别 → 入口分类：在进入 QueryGraph 前识别蓝图、知识库、澄清和拒答
+    workflow.add_edge("intent_recognition", "entry_intent_classification")
+
     workflow.add_conditional_edges(
-        "intent_recognition",
-        _should_continue,
+        "entry_intent_classification",
+        _entry_classification_router,
         {
-            "end": END,
             "schema_recall": "schema_recall",
+            "analysis_blueprint_execute": "analysis_blueprint_execute",
+            "end": END,
+        },
+    )
+
+    workflow.add_conditional_edges(
+        "analysis_blueprint_execute",
+        _analysis_blueprint_execution_router,
+        {
+            "schema_recall": "schema_recall",
+            "report": "report_generator",
+            "end": END,
         },
     )
 

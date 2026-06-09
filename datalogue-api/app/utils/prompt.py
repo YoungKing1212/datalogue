@@ -16,6 +16,7 @@
 import json as _json
 
 from app.models.dataset import SemanticDataset
+from app.utils.query_constraints import render_query_constraints_instruction
 
 
 def build_schema_prompt(dataset: SemanticDataset, metrics: list, dimensions: list) -> str:
@@ -30,6 +31,10 @@ def build_schema_prompt(dataset: SemanticDataset, metrics: list, dimensions: lis
     lines = [f"数据集: {dataset.name}", f"描述: {dataset.description or '无'}", ""]
     if dataset.tables_json:
         lines.append(f"tables_json: {_json.dumps(dataset.tables_json, ensure_ascii=False)}")
+        lines.append("")
+    query_constraints = render_query_constraints_instruction(dataset.query_constraints)
+    if query_constraints:
+        lines.append(query_constraints)
         lines.append("")
     # 数据集级 LLM 约束（硬性要求）—— 放在"指标列表"之前，优先被 LLM 看到。
     # 仅当非空才注入，避免噪音。

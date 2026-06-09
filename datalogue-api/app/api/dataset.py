@@ -11,9 +11,8 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any, List
-import json
 import logging
 import re
 import time
@@ -26,7 +25,12 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app import schemas, models
-from app.graph.llm import get_llm
+from app.services.analysis_blueprint import execute_analysis_blueprint
+from app.services.blueprint_analyzer import (
+    analyze_description_for_blueprint,
+    analyze_sql_for_blueprint,
+)
+from app.utils.query_constraints import normalize_query_constraints
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -66,7 +70,9 @@ def list_datasets(datasource_id: int | None = None, db: Session = Depends(get_db
 @router.post("", response_model=schemas.DatasetOut)
 def create_dataset(payload: schemas.DatasetCreate, db: Session = Depends(get_db)):
     logger.info(f"创建数据集: name={payload.name}")
-    ds = models.SemanticDataset(**payload.model_dump())
+    data = payload.model_dump()
+    data["query_constraints"] = normalize_query_constraints(data.get("query_constraints"))
+    ds = models.SemanticDataset(**data)
     db.add(ds)
     db.commit()
     db.refresh(ds)
@@ -94,6 +100,8 @@ def update_dataset(ds_id: int, payload: schemas.DatasetUpdate, db: Session = Dep
         logger.warning(f"数据集不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据集不存在")
     data = payload.model_dump(exclude_unset=True)
+    if "query_constraints" in data:
+        data["query_constraints"] = normalize_query_constraints(data.get("query_constraints"))
     for key, value in data.items():
         setattr(ds, key, value)
     db.commit()
@@ -950,100 +958,219 @@ def _apply_blueprint_snapshot(bp: models.AnalysisBlueprint, snapshot: dict[str, 
             setattr(bp, key, snapshot[key])
 
 
-def _mock_analyze_sql(sql: str) -> dict[str, Any]:
-    sql_lower = sql.lower()
-    params = []
-    if "start" in sql_lower or "p_start" in sql_lower:
-        params.append(
+def _run_blueprint_analysis_task(
+    task_id: str,
+    sql: str,
+    diff_base: dict[str, Any] | None = None,
+) -> None:
+    """执行分析蓝图 AI 分析，并写入任务状态便于日志和兼容查询。"""
+    started_perf = time.perf_counter()
+    task = BLUEPRINT_ANALYZE_TASKS.get(task_id, {})
+    queued_perf = task.get("_queued_perf")
+    queue_wait_ms = int((started_perf - queued_perf) * 1000) if queued_perf else 0
+    logger.info(
+        "开始分析蓝图 AI 任务: task_id=%s, queue_wait_ms=%s, sql_chars=%s",
+        task_id,
+        queue_wait_ms,
+        len(sql or ""),
+    )
+    try:
+        result = analyze_sql_for_blueprint(sql)
+        if diff_base:
+            result["diff_summary"] = {
+                "name_changed": diff_base["name"] != result.get("name"),
+                "parameter_count_before": diff_base["parameter_count"],
+                "parameter_count_after": len(result.get("parameters") or []),
+                "step_count_before": diff_base["step_count"],
+                "step_count_after": len(result.get("steps") or []),
+            }
+        duration_ms = int((time.perf_counter() - started_perf) * 1000)
+        BLUEPRINT_ANALYZE_TASKS[task_id].update(
             {
-                "name": "start_date",
-                "type": "date",
-                "extract_hint": "时间起点，默认本月1号",
-                "default_expr": "MONTH_START",
-                "required": True,
-                "confidence": 0.86,
+                "status": "done",
+                "result": result,
+                "error": None,
+                "completed_at": time.time(),
+                "duration_ms": duration_ms,
             }
         )
-    if "end" in sql_lower or "p_end" in sql_lower:
-        params.append(
+        timing = result.get("analysis_timing_ms") or {}
+        logger.info(
+            (
+                "分析蓝图 AI 任务阶段耗时: task_id=%s, queue_wait_ms=%s, "
+                "preprocess_ms=%s, prompt_ms=%s, llm_client_ms=%s, "
+                "llm_invoke_ms=%s, llm_total_ms=%s, parse_json_ms=%s, "
+                "merge_ms=%s, analyzer_total_ms=%s, task_total_ms=%s, "
+                "prompt_chars=%s, sql_chars=%s"
+            ),
+            task_id,
+            queue_wait_ms,
+            timing.get("preprocess"),
+            timing.get("prompt_build"),
+            timing.get("llm_client"),
+            timing.get("llm_invoke"),
+            timing.get("llm_total"),
+            timing.get("parse_json"),
+            timing.get("merge"),
+            timing.get("total"),
+            duration_ms,
+            timing.get("prompt_chars"),
+            timing.get("sql_chars"),
+        )
+    except Exception as exc:  # pragma: no cover - 具体异常由模型服务决定
+        duration_ms = int((time.perf_counter() - started_perf) * 1000)
+        BLUEPRINT_ANALYZE_TASKS[task_id].update(
             {
-                "name": "end_date",
-                "type": "date",
-                "extract_hint": "时间终点，默认今天",
-                "default_expr": "TODAY",
-                "required": True,
-                "confidence": 0.84,
+                "status": "failed",
+                "result": None,
+                "error": str(exc),
+                "completed_at": time.time(),
+                "duration_ms": duration_ms,
             }
         )
-    if "region" in sql_lower:
-        params.append(
-            {
-                "name": "region",
-                "type": "string",
-                "extract_hint": "区域名称，未提及传 NULL",
-                "default_expr": "NULL",
-                "required": False,
-                "confidence": 0.68,
-            }
-        )
-    if not params:
-        params.append(
-            {
-                "name": "report_date",
-                "type": "date",
-                "extract_hint": "报表日期，默认今天",
-                "default_expr": "TODAY",
-                "required": True,
-                "confidence": 0.72,
-            }
-        )
+        logger.exception("分析蓝图 AI 任务失败: task_id=%s, duration_ms=%s", task_id, duration_ms)
 
-    name = "月度毛利归因报表" if "margin" in sql_lower or "毛利" in sql else "SQL 分析蓝图"
-    output_schema = [
-        {"column": "category", "semantic": "业务分类", "unit": "-", "role": "dimension", "confidence": 0.78},
-        {"column": "revenue", "semantic": "营收金额", "unit": "元", "role": "metric", "confidence": 0.74},
-        {"column": "gross_margin", "semantic": "毛利额", "unit": "元", "role": "metric", "confidence": 0.7},
-        {"column": "margin_rate", "semantic": "毛利率", "unit": "%", "role": "metric", "confidence": 0.68},
-    ]
-    steps = [
-        {
-            "step": 1,
-            "name": "基础数据筛选",
-            "purpose": "按用户输入参数限定业务数据范围",
-            "key_rules": ["过滤无效或取消状态记录", "按时间和区域参数裁剪数据"],
-            "output_columns": [],
-            "confidence": 0.8,
-        },
-        {
-            "step": 2,
-            "name": "业务指标聚合",
-            "purpose": "汇总核心收入、成本和变化指标",
-            "key_rules": ["按业务分类聚合", "保留最终 SELECT 输出列"],
-            "output_columns": [c["column"] for c in output_schema],
-            "confidence": 0.76,
-        },
-    ]
+
+def _execute_blueprint_analysis_request(
+    sql: str,
+    diff_base: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """同步执行分析任务，避免前端轮询造成高频请求。"""
+    task_id = str(uuid.uuid4())
+    created_at = time.time()
+    queued_perf = time.perf_counter()
+    BLUEPRINT_ANALYZE_TASKS[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "result": None,
+        "error": None,
+        "created_at": created_at,
+        "_queued_perf": queued_perf,
+    }
+    logger.info(
+        "分析蓝图 AI 同步任务开始: task_id=%s, sql_chars=%s, has_diff_base=%s",
+        task_id,
+        len(sql or ""),
+        bool(diff_base),
+    )
+    _run_blueprint_analysis_task(task_id, sql, diff_base)
+    BLUEPRINT_ANALYZE_TASKS[task_id].pop("_queued_perf", None)
+    return BLUEPRINT_ANALYZE_TASKS[task_id]
+
+
+def _dataset_blueprint_context(ds_id: int, db: Session) -> dict[str, Any]:
+    """为手动创建蓝图提供数据集内已有语义参考。"""
+    ds = _ensure_dataset(ds_id, db)
+    metrics = (
+        db.query(models.SemanticMetric)
+        .filter(models.SemanticMetric.dataset_id == ds_id)
+        .limit(20)
+        .all()
+    )
+    dimensions = (
+        db.query(models.SemanticDimension)
+        .filter(models.SemanticDimension.dataset_id == ds_id)
+        .limit(20)
+        .all()
+    )
+    terms = (
+        db.query(models.BusinessTerm)
+        .filter(models.BusinessTerm.dataset_id == ds_id)
+        .limit(20)
+        .all()
+    )
     return {
-        "name": name,
-        "description": "AI 根据 SQL 草稿提取的分析蓝图，请数据团队审核业务含义和低置信字段。",
-        "trigger_keywords": ["毛利", "毛利率", "利润结构"] if "margin" in sql_lower else ["日报", "分析"],
-        "trigger_examples": ["为什么本月毛利下降", "各品类毛利情况"]
-        if "margin" in sql_lower
-        else ["查看今天的分析报表", "本周业务日报"],
-        "when_to_use": "当用户询问固定报表、归因分析或需要按参数运行既定 SQL 逻辑时使用。",
-        "parameters": params,
-        "implementation_type": "stored_procedure" if "procedure" in sql_lower else "sql_template",
-        "call_template": "SELECT * FROM analyzed_blueprint(:params)",
-        "output_schema": output_schema,
-        "steps": steps,
-        "attribution_hints": "优先关注核心度量的环比变化、排名变化和低于预期的分类。",
-        "raw_sql": sql,
-        "ai_confidence": 0.82,
-        "low_confidence_fields": [
-            {"path": "parameters.region", "confidence": 0.68, "reason": "区域参数语义需人工确认"},
-            {"path": "output_schema.margin_rate", "confidence": 0.68, "reason": "输出列单位需确认"},
+        "dataset": {"name": ds.name, "description": ds.description},
+        "metrics": [
+            {
+                "name": metric.name,
+                "display_name": metric.display_name,
+                "description": metric.description,
+                "synonyms": metric.synonyms or [],
+            }
+            for metric in metrics
+        ],
+        "dimensions": [
+            {
+                "name": dimension.name,
+                "display_name": dimension.display_name,
+                "column_name": dimension.column_name,
+                "table_name": dimension.table_name,
+                "synonyms": dimension.synonyms or [],
+                "enum_values": dimension.enum_values or [],
+            }
+            for dimension in dimensions
+        ],
+        "terms": [
+            {
+                "name": term.name,
+                "display_name": term.display_name,
+                "definition": term.definition,
+                "aliases": term.aliases or [],
+            }
+            for term in terms
         ],
     }
+
+
+def _execute_blueprint_description_request(
+    payload: schemas.BlueprintAnalyzeDescriptionPayload,
+    dataset_context: dict[str, Any],
+) -> dict[str, Any]:
+    """同步执行业务场景蓝图分析，返回兼容任务结构。"""
+    task_id = str(uuid.uuid4())
+    started_perf = time.perf_counter()
+    BLUEPRINT_ANALYZE_TASKS[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "result": None,
+        "error": None,
+        "created_at": time.time(),
+    }
+    logger.info(
+        "手动蓝图 AI 同步任务开始: task_id=%s, scenario_chars=%s",
+        task_id,
+        len(payload.business_scenario or ""),
+    )
+    try:
+        result = analyze_description_for_blueprint(payload.model_dump(), dataset_context)
+        duration_ms = int((time.perf_counter() - started_perf) * 1000)
+        BLUEPRINT_ANALYZE_TASKS[task_id].update(
+            {
+                "status": "done",
+                "result": result,
+                "error": None,
+                "completed_at": time.time(),
+                "duration_ms": duration_ms,
+            }
+        )
+        timing = result.get("analysis_timing_ms") or {}
+        logger.info(
+            (
+                "手动蓝图 AI 任务阶段耗时: task_id=%s, llm_client_ms=%s, "
+                "llm_invoke_ms=%s, parse_json_ms=%s, merge_ms=%s, total_ms=%s, prompt_chars=%s"
+            ),
+            task_id,
+            timing.get("llm_client"),
+            timing.get("llm_invoke"),
+            timing.get("parse_json"),
+            timing.get("merge"),
+            duration_ms,
+            timing.get("prompt_chars"),
+        )
+    except Exception as exc:  # pragma: no cover - 具体异常由模型服务决定
+        duration_ms = int((time.perf_counter() - started_perf) * 1000)
+        BLUEPRINT_ANALYZE_TASKS[task_id].update(
+            {
+                "status": "failed",
+                "result": None,
+                "error": str(exc),
+                "completed_at": time.time(),
+                "duration_ms": duration_ms,
+            }
+        )
+        logger.exception("手动蓝图 AI 任务失败: task_id=%s, duration_ms=%s", task_id, duration_ms)
+    return BLUEPRINT_ANALYZE_TASKS[task_id]
 
 
 @router.get("/{ds_id}/blueprints", response_model=List[schemas.BlueprintOut])
@@ -1073,31 +1200,30 @@ def create_blueprint(
     "/{ds_id}/blueprints/analyze-sql", response_model=schemas.BlueprintAnalyzeTaskOut
 )
 def analyze_blueprint_sql(
-    ds_id: int, payload: schemas.BlueprintAnalyzeSqlPayload, db: Session = Depends(get_db)
+    ds_id: int,
+    payload: schemas.BlueprintAnalyzeSqlPayload,
+    db: Session = Depends(get_db),
 ):
     _ensure_dataset(ds_id, db)
     if not payload.sql.strip():
         raise HTTPException(status_code=400, detail="sql 不能为空")
-    task_id = str(uuid.uuid4())
-    started_at = time.time()
-    try:
-        result = _mock_analyze_sql(payload.sql)
-        BLUEPRINT_ANALYZE_TASKS[task_id] = {
-            "task_id": task_id,
-            "status": "done",
-            "result": result,
-            "error": None,
-            "created_at": started_at,
-        }
-    except Exception as exc:
-        BLUEPRINT_ANALYZE_TASKS[task_id] = {
-            "task_id": task_id,
-            "status": "failed",
-            "result": None,
-            "error": str(exc),
-            "created_at": started_at,
-        }
-    return BLUEPRINT_ANALYZE_TASKS[task_id]
+    return _execute_blueprint_analysis_request(payload.sql)
+
+
+@router.post(
+    "/{ds_id}/blueprints/analyze-description",
+    response_model=schemas.BlueprintAnalyzeTaskOut,
+)
+def analyze_blueprint_description(
+    ds_id: int,
+    payload: schemas.BlueprintAnalyzeDescriptionPayload,
+    db: Session = Depends(get_db),
+):
+    _ensure_dataset(ds_id, db)
+    if not payload.business_scenario.strip():
+        raise HTTPException(status_code=400, detail="业务场景不能为空")
+    dataset_context = _dataset_blueprint_context(ds_id, db)
+    return _execute_blueprint_description_request(payload, dataset_context)
 
 
 @router.get(
@@ -1137,8 +1263,6 @@ def update_blueprint_status(
     bp = _get_blueprint(ds_id, bid, db)
     action = payload.action
     if action == "publish":
-        if not (bp.last_test_result or {}).get("ok"):
-            raise HTTPException(status_code=400, detail="发布前必须先完成一次测试")
         bp.status = "active"
         bp.version = (bp.version or 0) + 1
         snapshot = _blueprint_snapshot(bp)
@@ -1164,40 +1288,50 @@ def update_blueprint_status(
     return bp
 
 
+def _make_json_serializable(obj: Any) -> Any:
+    """递归将 datetime/date 等不可 JSON 序列化的对象转为字符串。"""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _make_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_make_json_serializable(v) for v in obj]
+    return obj
+
+
 @router.post("/{ds_id}/blueprints/{bid}/test", response_model=schemas.BlueprintTestOut)
 def test_blueprint(
     ds_id: int, bid: int, payload: schemas.BlueprintTestPayload, db: Session = Depends(get_db)
 ):
     bp = _get_blueprint(ds_id, bid, db)
-    output_schema = bp.output_schema or []
-    columns = [c.get("column") for c in output_schema if c.get("column")]
-    if not columns:
-        columns = ["category", "revenue", "gross_margin", "margin_rate"]
-    sample_rows = [
-        {columns[0]: "电子" if columns else "样例", **{c: i for i, c in enumerate(columns[1:], start=1)}},
-        {columns[0]: "服饰" if columns else "样例", **{c: i * 2 for i, c in enumerate(columns[1:], start=1)}},
-    ]
+    execute_result = execute_analysis_blueprint(
+        db,
+        bp,
+        question=payload.question or "蓝图测试运行",
+        input_params=payload.params,
+        require_active=False,
+        count_usage=False,
+    )
+    sql_result = execute_result.get("sql_result") or {}
+    columns = sql_result.get("columns") or []
+    rows = sql_result.get("rows") or []
     result = {
-        "ok": True,
-        "execution_success": True,
-        "execution_time_ms": 820,
+        "ok": bool(execute_result.get("ok")),
+        "execution_success": bool(execute_result.get("ok")),
+        "execution_time_ms": execute_result.get("execution_time_ms") or 0,
         "columns": columns,
-        "rows": sample_rows,
-        "sql_preview": bp.call_template or "SELECT * FROM blueprint_result(:params)",
-        "interpretation_preview": f"{bp.name} 测试成功，返回 {len(sample_rows)} 行 {len(columns)} 列。请确认样例结果和业务解读是否符合预期。",
-        "error_message": None,
+        "rows": rows,
+        "sql_preview": execute_result.get("sql") or bp.call_template or bp.raw_sql,
+        "interpretation_preview": (
+            f"{bp.name} 测试成功，返回 {len(rows)} 行 {len(columns)} 列。"
+            "请确认结果和业务解读是否符合预期。"
+        )
+        if execute_result.get("ok")
+        else None,
+        "error_message": execute_result.get("error"),
     }
     bp.last_validated_at = datetime.utcnow()
-    bp.last_test_result = result
-    db.add(
-        models.BlueprintUsageLog(
-            blueprint_id=bp.id,
-            question=payload.question or "蓝图测试运行",
-            extracted_params=payload.params,
-            execution_success=True,
-            execution_time_ms=result["execution_time_ms"],
-        )
-    )
+    bp.last_test_result = _make_json_serializable(result)
     db.commit()
     return result
 
@@ -1300,23 +1434,16 @@ def re_analyze_blueprint_sql(
     db: Session = Depends(get_db),
 ):
     bp = _get_blueprint(ds_id, bid, db)
-    result = _mock_analyze_sql(payload.sql)
-    result["diff_summary"] = {
-        "name_changed": bp.name != result.get("name"),
-        "parameter_count_before": len(bp.parameters or []),
-        "parameter_count_after": len(result.get("parameters") or []),
-        "step_count_before": len(bp.steps or []),
-        "step_count_after": len(result.get("steps") or []),
-    }
-    task_id = str(uuid.uuid4())
-    BLUEPRINT_ANALYZE_TASKS[task_id] = {
-        "task_id": task_id,
-        "status": "done",
-        "result": result,
-        "error": None,
-        "created_at": time.time(),
-    }
-    return BLUEPRINT_ANALYZE_TASKS[task_id]
+    if not payload.sql.strip():
+        raise HTTPException(status_code=400, detail="sql 不能为空")
+    return _execute_blueprint_analysis_request(
+        payload.sql,
+        {
+            "name": bp.name,
+            "parameter_count": len(bp.parameters or []),
+            "step_count": len(bp.steps or []),
+        },
+    )
 
 
 # ── LLM Auto Annotation ──────────────────────────────

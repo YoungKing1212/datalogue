@@ -25,6 +25,8 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.graph.llm import get_llm
 from app.graph.state import AgentState
 from app.models.dataset import (
+    AnalysisBlueprint,
+    BusinessTerm,
     SemanticDataset,
     SemanticMetric,
     SemanticDimension,
@@ -33,7 +35,12 @@ from app.models.dataset import (
     SourceColumn,
 )
 from app.models.datasource import Datasource
+from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.services.datasource import create_engine_for_datasource
+from app.utils.query_constraints import (
+    normalize_query_constraints,
+    render_query_constraints_instruction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +58,257 @@ from app.utils import (
 )
 
 # ── 节点 1: 意图识别 ──────────────────────────────────
+
+_PERMISSION_PATTERNS = (
+    "权限不足",
+    "没有权限",
+    "无权限",
+    "无权",
+    "不能访问",
+    "无法访问",
+    "未授权",
+    "forbidden",
+    "permission denied",
+)
+_DETAIL_PATTERNS = (
+    "明细",
+    "列表",
+    "记录",
+    "清单",
+    "详情",
+    "逐条",
+    "每一条",
+    "有哪些",
+    "所有",
+)
+_METRIC_PATTERNS = (
+    "多少",
+    "统计",
+    "汇总",
+    "合计",
+    "总数",
+    "趋势",
+    "同比",
+    "环比",
+    "排名",
+    "top",
+    "平均",
+    "占比",
+    "gmv",
+    "订单数",
+    "销售额",
+    "收入",
+    "利润",
+    "成本",
+)
+_BLUEPRINT_PATTERNS = (
+    "分析",
+    "归因",
+    "诊断",
+    "日报",
+    "周报",
+    "月报",
+    "报表",
+    "报告",
+    "拆解",
+    "复盘",
+)
+_KNOWLEDGE_PATTERNS = (
+    "是什么",
+    "什么意思",
+    "定义",
+    "解释",
+    "口径",
+    "怎么算",
+    "如何计算",
+    "规则",
+    "知识库",
+)
+_AMBIGUOUS_PATTERNS = (
+    "这个",
+    "那个",
+    "它",
+    "上面",
+    "刚才",
+    "继续",
+    "看一下",
+    "查一下",
+)
+
+
+def _normalized_text(text: str) -> str:
+    """归一化问题文本，便于做确定性入口路由匹配。"""
+    return re.sub(r"\s+", "", (text or "").lower())
+
+
+def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
+    """判断文本是否包含任意入口分类关键词。"""
+    return any(pattern in text for pattern in patterns)
+
+
+def _collect_blueprint_terms(bp: AnalysisBlueprint) -> list[str]:
+    """提取蓝图可用于路由匹配的关键词和示例。"""
+    terms: list[str] = []
+    values: list[Any] = [bp.name, bp.description, bp.when_to_use]
+    if isinstance(bp.trigger_keywords, list):
+        values.extend(bp.trigger_keywords)
+    if isinstance(bp.trigger_examples, list):
+        values.extend(bp.trigger_examples)
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            terms.append(value.strip())
+    return terms
+
+
+def _format_blueprint_list(items: Any, *, key: str = "") -> list[str]:
+    """将蓝图 JSON 列表字段转换为适合提示词消费的短文本。"""
+    if not isinstance(items, list):
+        return []
+    lines: list[str] = []
+    for idx, item in enumerate(items, start=1):
+        if isinstance(item, str) and item.strip():
+            lines.append(f"{idx}. {item.strip()}")
+            continue
+        if not isinstance(item, dict):
+            continue
+        if key and item.get(key):
+            title = str(item.get(key)).strip()
+        else:
+            title = str(item.get("name") or item.get("column") or f"第{idx}项").strip()
+        details = []
+        for field in (
+            "type",
+            "semantic",
+            "role",
+            "purpose",
+            "extract_hint",
+            "default_expr",
+            "required",
+            "key_rules",
+        ):
+            value = item.get(field)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, (list, dict)):
+                value = json.dumps(value, ensure_ascii=False)
+            details.append(f"{field}={value}")
+        suffix = f"；{'; '.join(details)}" if details else ""
+        lines.append(f"{idx}. {title}{suffix}")
+    return lines
+
+
+def _format_blueprint_semantic_context(bp: AnalysisBlueprint) -> str:
+    """把手动创建的语义计划蓝图转成 QueryGraph 可使用的业务约束。"""
+    lines = [
+        "【命中的分析蓝图语义计划】",
+        f"蓝图名称: {bp.name}",
+        "执行方式: semantic_plan，不能要求用户提供 SQL；请基于数据集语义层和所选表结构生成查询。",
+    ]
+    if bp.when_to_use:
+        lines.append(f"适用场景: {bp.when_to_use}")
+    if bp.description:
+        lines.append(f"业务描述: {bp.description}")
+    if bp.trigger_keywords:
+        lines.append(f"触发词: {'、'.join(str(t) for t in bp.trigger_keywords if t)}")
+    if bp.trigger_examples:
+        lines.append("用户可能问法:")
+        lines.extend(_format_blueprint_list(bp.trigger_examples))
+    parameter_lines = _format_blueprint_list(bp.parameters, key="name")
+    if parameter_lines:
+        lines.append("需要从用户问题中理解的业务参数:")
+        lines.extend(parameter_lines)
+    output_lines = _format_blueprint_list(bp.output_schema, key="column")
+    if output_lines:
+        lines.append("期望输出列或结果口径:")
+        lines.extend(output_lines)
+    step_lines = _format_blueprint_list(bp.steps, key="name")
+    if step_lines:
+        lines.append("业务分析步骤:")
+        lines.extend(step_lines)
+    if bp.attribution_hints:
+        lines.append(f"归因和解释提示: {bp.attribution_hints}")
+    lines.append("硬性要求: 不要向用户索要 SQL；不要把参数占位符当成输出内容；优先按蓝图业务步骤组织查询。")
+    return "\n".join(lines)
+
+
+def _query_constraints_text(state: AgentState) -> str:
+    """读取状态中的数据集查询约束，并渲染为 LLM 规则文本。"""
+    return render_query_constraints_instruction(state.get("query_constraints"))
+
+
+def _match_analysis_blueprint(db: Session, dataset_id: int | None, question: str) -> dict | None:
+    """在当前数据集的已发布分析蓝图中查找最匹配的路由目标。"""
+    if not dataset_id:
+        return None
+
+    q_norm = _normalized_text(question)
+    blueprints = (
+        db.query(AnalysisBlueprint)
+        .filter(
+            AnalysisBlueprint.dataset_id == dataset_id,
+            AnalysisBlueprint.status == "active",
+        )
+        .order_by(AnalysisBlueprint.usage_count.desc(), AnalysisBlueprint.updated_at.desc())
+        .all()
+    )
+
+    best: dict | None = None
+    for bp in blueprints:
+        matched_terms: list[str] = []
+        score = 0
+        for term in _collect_blueprint_terms(bp):
+            term_norm = _normalized_text(term)
+            if not term_norm:
+                continue
+            if term_norm in q_norm:
+                matched_terms.append(term)
+                score += 3 if term in (bp.trigger_keywords or []) else 2
+            elif q_norm in term_norm and len(q_norm) >= 4:
+                matched_terms.append(term)
+                score += 1
+
+        if score <= 0:
+            continue
+        candidate = {
+            "blueprint_id": bp.id,
+            "name": bp.name,
+            "score": score,
+            "matched_terms": matched_terms[:5],
+            "call_template": bp.call_template,
+        }
+        if best is None or score > best["score"]:
+            best = candidate
+    return best
+
+
+def _match_business_term(db: Session, dataset_id: int | None, question: str) -> dict | None:
+    """按业务术语名称和别名匹配知识库问答目标。"""
+    if not dataset_id:
+        return None
+
+    q_norm = _normalized_text(question)
+    terms = (
+        db.query(BusinessTerm)
+        .filter(BusinessTerm.dataset_id == dataset_id, BusinessTerm.status == "active")
+        .order_by(BusinessTerm.updated_at.desc(), BusinessTerm.id.desc())
+        .all()
+    )
+
+    for term in terms:
+        candidates = [term.name, term.display_name, *(term.aliases or [])]
+        matched = [
+            c
+            for c in candidates
+            if isinstance(c, str) and c.strip() and _normalized_text(c) in q_norm
+        ]
+        if matched:
+            return {
+                "term_id": term.id,
+                "name": term.display_name or term.name,
+                "definition": term.definition,
+                "matched_terms": matched[:5],
+            }
+    return None
 
 
 def intent_recognition_node(state: AgentState) -> Dict[str, Any]:
@@ -104,6 +362,261 @@ def intent_recognition_node(state: AgentState) -> Dict[str, Any]:
     }
 
 
+def entry_intent_classification_node(db: Session):
+    """构建 QueryGraph 前置入口分类节点。
+
+    该节点只负责路由决策，不执行蓝图或知识库查询；非普通问数场景会写入
+    `answer` 和 `route_payload`，由工作流直接结束并交给 API 层透出。
+    """
+
+    def _node(state: AgentState) -> Dict[str, Any]:
+        question = state.get("question") or ""
+        q_norm = _normalized_text(question)
+        intent = state.get("intent") or "query"
+        entities = state.get("entities") or {}
+        dataset_id = state.get("dataset_id")
+        logger.info("入口意图分类开始: intent=%s, dataset_id=%s", intent, dataset_id)
+
+        if intent == "chitchat":
+            return {
+                "entry_intent": "chitchat",
+                "entry_route": "direct_answer",
+                "entry_reason": "粗粒度意图识别为闲聊，直接返回回答。",
+                "route_payload": {"kind": "direct_answer"},
+            }
+
+        if intent == "function":
+            answer = (
+                "当前问数入口只处理数据查询、分析蓝图和知识解释，"
+                "暂不直接执行保存、发布或导出类操作。"
+            )
+            return {
+                "entry_intent": "rejection",
+                "entry_route": "reject",
+                "entry_reason": "功能操作不应进入 QueryGraph。",
+                "answer": answer,
+                "route_payload": {"kind": "unsupported_function"},
+            }
+
+        if _contains_any(q_norm, _PERMISSION_PATTERNS):
+            answer = (
+                "这个问题涉及权限不足或未授权资源，我不能绕过权限继续查询。"
+                "请先确认数据集、数据源或知识库授权后再重试。"
+            )
+            return {
+                "entry_intent": "rejection",
+                "entry_route": "reject",
+                "entry_reason": "用户输入命中权限不足/未授权语义。",
+                "answer": answer,
+                "route_payload": {"kind": "permission_denied"},
+            }
+
+        blueprint_match = _match_analysis_blueprint(db, dataset_id, question)
+        if blueprint_match:
+            answer = (
+                f"已命中分析蓝图「{blueprint_match['name']}」，"
+                "将按固定分析逻辑处理。"
+            )
+            return {
+                "entry_intent": "analysis_blueprint",
+                "entry_route": "analysis_blueprint",
+                "entry_reason": (
+                    "问题命中已发布分析蓝图的关键词、示例或使用说明。"
+                ),
+                "blueprint_id": blueprint_match["blueprint_id"],
+                "blueprint_match": blueprint_match,
+                "answer": answer,
+                "route_payload": {"kind": "analysis_blueprint", **blueprint_match},
+            }
+
+        is_knowledge_question = _contains_any(q_norm, _KNOWLEDGE_PATTERNS)
+        if is_knowledge_question:
+            term_match = _match_business_term(db, dataset_id, question)
+            answer = (
+                "我识别到这是知识解释类问题，"
+                "但还需要更具体的业务术语或可用知识库内容才能回答。"
+            )
+            payload: dict[str, Any] = {"kind": "knowledge_qa"}
+            term_id = None
+            if term_match:
+                term_id = term_match["term_id"]
+                payload.update(term_match)
+                if term_match.get("definition"):
+                    answer = f"{term_match['name']}：{term_match['definition']}"
+                else:
+                    answer = (
+                        f"已识别业务术语「{term_match['name']}」，"
+                        "但知识库中还没有维护定义。"
+                    )
+            return {
+                "entry_intent": "knowledge_qa",
+                "entry_route": "knowledge_qa",
+                "entry_reason": "问题命中定义、口径、解释等知识库问答语义。",
+                "knowledge_term_id": term_id,
+                "answer": answer,
+                "route_payload": payload,
+            }
+
+        has_metric_entity = bool(entities.get("metrics"))
+        has_dimension_entity = bool(entities.get("dimensions"))
+        is_detail_query = _contains_any(q_norm, _DETAIL_PATTERNS)
+        is_metric_query = has_metric_entity or _contains_any(q_norm, _METRIC_PATTERNS)
+        is_blueprint_like = _contains_any(q_norm, _BLUEPRINT_PATTERNS)
+        is_short_ambiguous = len(q_norm) <= 4 and _contains_any(q_norm, _AMBIGUOUS_PATTERNS)
+
+        if is_blueprint_like and not is_metric_query and not is_detail_query:
+            answer = (
+                "这个问题更像固定分析诉求，但当前没有命中可用分析蓝图。"
+                "请补充要分析的主题、指标或选择具体蓝图。"
+            )
+            return {
+                "entry_intent": "clarification",
+                "entry_route": "clarify",
+                "entry_reason": "复杂固定分析语义未命中已发布蓝图，进入澄清。",
+                "answer": answer,
+                "route_payload": {"kind": "clarification", "missing": ["blueprint_or_metrics"]},
+            }
+
+        if is_short_ambiguous:
+            answer = (
+                "这个问题缺少明确对象。"
+                "请补充要查询的指标、维度、时间范围或业务术语。"
+            )
+            return {
+                "entry_intent": "clarification",
+                "entry_route": "clarify",
+                "entry_reason": "短句或指代不清，无法可靠判断查询目标。",
+                "answer": answer,
+                "route_payload": {"kind": "clarification", "missing": ["query_target"]},
+            }
+
+        if is_detail_query:
+            return {
+                "entry_intent": "detail_query",
+                "entry_route": "query_graph",
+                "entry_reason": "问题命中明细/列表类查询语义，继续 NL2SQL。",
+                "route_payload": {"kind": "detail_query"},
+            }
+
+        if is_metric_query or has_dimension_entity:
+            return {
+                "entry_intent": "metric_query",
+                "entry_route": "query_graph",
+                "entry_reason": "问题命中指标/统计类查询语义，继续 NL2SQL。",
+                "route_payload": {"kind": "metric_query"},
+            }
+
+        answer = (
+            "我还无法确定你想查询数据、运行分析蓝图，还是询问业务知识。"
+            "请补充查询对象或说明要分析的问题。"
+        )
+        return {
+            "entry_intent": "clarification",
+            "entry_route": "clarify",
+            "entry_reason": "未命中普通问数、蓝图、知识库或拒答规则。",
+            "answer": answer,
+            "route_payload": {"kind": "clarification", "missing": ["intent"]},
+        }
+
+    return _node
+
+
+def analysis_blueprint_execute_node(db: Session):
+    """执行已发布分析蓝图，或将手动语义蓝图交回 QueryGraph。"""
+
+    def _node(state: AgentState) -> Dict[str, Any]:
+        blueprint_id = state.get("blueprint_id")
+        question = state.get("question") or ""
+        dataset_id = state.get("dataset_id")
+        logger.info("分析蓝图执行开始: blueprint_id=%s, dataset_id=%s", blueprint_id, dataset_id)
+
+        if not blueprint_id:
+            return {
+                "sql_result": None,
+                "error": "未命中分析蓝图，无法执行",
+                "should_retry": False,
+            }
+
+        bp = db.get(AnalysisBlueprint, blueprint_id)
+        if not bp or (dataset_id and bp.dataset_id != dataset_id):
+            return {
+                "sql_result": None,
+                "error": "分析蓝图不存在或不属于当前数据集",
+                "should_retry": False,
+            }
+
+        implementation_type = (bp.implementation_type or "").strip()
+        if implementation_type == "semantic_plan":
+            blueprint_context = _format_blueprint_semantic_context(bp)
+            logger.info(
+                "分析蓝图为语义计划，转入 QueryGraph: blueprint_id=%s, context_len=%s",
+                bp.id,
+                len(blueprint_context),
+            )
+            return {
+                "sql_result": None,
+                "sql": None,
+                "sql_list": [],
+                "blueprint_context": blueprint_context,
+                "generation_mode": "analysis_blueprint_semantic",
+                "error": None,
+                "should_retry": False,
+                "route_payload": {
+                    "kind": "analysis_blueprint_semantic",
+                    "blueprint_id": bp.id,
+                    "name": bp.name,
+                    "implementation_type": implementation_type,
+                },
+            }
+
+        result = execute_analysis_blueprint(
+            db,
+            bp,
+            question=question,
+            require_active=True,
+            count_usage=True,
+        )
+        if not result.get("ok"):
+            missing = result.get("missing") or []
+            answer = result.get("error") or "分析蓝图执行失败"
+            route_payload = {
+                "kind": "clarification" if missing else "analysis_blueprint_error",
+                "blueprint_id": bp.id,
+                "params": result.get("params") or {},
+            }
+            if missing:
+                route_payload["missing"] = missing
+            return {
+                "sql_result": None,
+                "sql": result.get("sql"),
+                "sql_list": [result["sql"]] if result.get("sql") else [],
+                "error": answer,
+                "answer": answer,
+                "route_payload": {
+                    **route_payload,
+                },
+                "should_retry": False,
+            }
+
+        return {
+            "sql": result["sql"],
+            "sql_list": [result["sql"]],
+            "sql_result": result["sql_result"],
+            "generation_mode": "analysis_blueprint",
+            "error": None,
+            "should_retry": False,
+            "route_payload": {
+                "kind": "analysis_blueprint",
+                "blueprint_id": bp.id,
+                "name": bp.name,
+                "params": result["params"],
+                "execution_time_ms": result["execution_time_ms"],
+            },
+        }
+
+    return _node
+
+
 # ── 节点 2: Schema 召回（可选）──────────────────────────
 
 
@@ -115,6 +628,8 @@ def schema_recall_node(db: Session):
 
     def _node(state: AgentState) -> Dict[str, Any]:
         dataset_id = state.get("dataset_id")
+        blueprint_context = (state.get("blueprint_context") or "").strip()
+        default_constraints = normalize_query_constraints(None)
         logger.info(f"Schema召回节点开始: dataset_id={dataset_id}")
         if not dataset_id:
             datasource = db.query(Datasource).filter(Datasource.status == "connected").first()
@@ -134,11 +649,16 @@ def schema_recall_node(db: Session):
                         lines.append(f"表: {t['name']} | 列: {cols}")
                     if len(lines) == 2:
                         lines.append("（数据源无可用表）")
+                    schema_context = "\n".join(lines)
+                    if blueprint_context:
+                        schema_context = f"{schema_context}\n\n{blueprint_context}"
                     return {
-                        "schema_context": "\n".join(lines),
+                        "schema_context": schema_context,
                         "dataset_id": None,
                         "schema_structured": None,
                         "ddl_context": None,
+                        "query_constraints": default_constraints,
+                        "dataset_prompt_instructions": blueprint_context or None,
                     }
                 except Exception as e:
                     logger.error(f"读取数据源Schema失败: {e}")
@@ -147,6 +667,7 @@ def schema_recall_node(db: Session):
                         "dataset_id": None,
                         "schema_structured": None,
                         "ddl_context": None,
+                        "query_constraints": default_constraints,
                     }
             else:
                 return {
@@ -154,6 +675,7 @@ def schema_recall_node(db: Session):
                     "dataset_id": None,
                     "schema_structured": None,
                     "ddl_context": None,
+                    "query_constraints": default_constraints,
                 }
 
         ds = db.get(SemanticDataset, dataset_id)
@@ -164,6 +686,7 @@ def schema_recall_node(db: Session):
                 "dataset_id": None,
                 "schema_structured": None,
                 "ddl_context": None,
+                "query_constraints": default_constraints,
             }
 
         metrics = db.query(SemanticMetric).filter(SemanticMetric.dataset_id == ds.id).all()
@@ -172,6 +695,8 @@ def schema_recall_node(db: Session):
             f"使用语义层Schema: dataset={ds.name}, metrics={len(metrics)}, dimensions={len(dimensions)}"
         )
         context = "【语义层】\n" + _build_schema_prompt(ds, metrics, dimensions)
+        if blueprint_context:
+            context = f"{context}\n\n{blueprint_context}"
 
         # 构建结构化对象供编译器直接使用，避免正则解析
         structured = {
@@ -256,13 +781,18 @@ def schema_recall_node(db: Session):
                 context,
             )
 
+        prompt_instructions = ds.prompt_instructions or ""
+        if blueprint_context:
+            prompt_instructions = f"{prompt_instructions}\n\n{blueprint_context}".strip()
+
         return {
             "schema_context": context,
             "dataset_id": ds.id,
             "schema_structured": structured,
             "ddl_context": ddl_context,
+            "query_constraints": normalize_query_constraints(ds.query_constraints),
             # 数据集级 LLM 约束（供 report_generator 等不读 schema_context 的节点用）
-            "dataset_prompt_instructions": ds.prompt_instructions,
+            "dataset_prompt_instructions": prompt_instructions or None,
         }
 
     return _node
@@ -349,6 +879,21 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
     entities = state.get("entities", {})
     retry_count = state.get("retry_count", 0)
     error = state.get("error")
+    query_constraints = normalize_query_constraints(state.get("query_constraints"))
+    query_constraints_text = _query_constraints_text(state)
+    if query_constraints["enabled"]:
+        dsl_limit_example = query_constraints["default_limit"]
+        semantic_time_rule = (
+            f"3. 用户没有明确时间范围时，默认查询最近 {query_constraints['default_time_range_days']} 天\n"
+        )
+        semantic_limit_rule = (
+            f"5. 用户没有明确返回条数时，默认 limit={query_constraints['default_limit']}；"
+            f"最大不能超过 {query_constraints['max_limit']}\n"
+        )
+    else:
+        dsl_limit_example = "null"
+        semantic_time_rule = "3. 时间范围只在用户明确提出时设置，不要自行添加默认时间范围\n"
+        semantic_limit_rule = "5. 用户明确要求返回条数时再设置 limit；否则可以省略或设为 null\n"
 
     llm = get_llm(temperature=0.1)
 
@@ -358,6 +903,11 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
 
     # ── 路径 2: 真实数据源 Schema，直接生成 SQL ──
     if has_real_schema:
+        query_rules = (
+            f"3. 请遵守以下查询约束：\n{query_constraints_text}\n"
+            if query_constraints_text
+            else ""
+        )
         system = SystemMessage(
             content=(
                 "你是一个 SQL 生成专家。根据用户问题和你提供的真实表结构，"
@@ -366,7 +916,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
                 "规则：\n"
                 "1. 只生成 SELECT，禁止 INSERT/UPDATE/DELETE/DROP/TRUNCATE 等操作\n"
                 "2. 严格使用真实表结构中的表名和列名\n"
-                "3. limit 默认 100，最大 1000\n"
+                f"{query_rules}"
             )
         )
         human_text = f"用户问题: {question}\n\n真实表结构:\n{schema}"
@@ -431,6 +981,11 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
                     "token_usage": state.get("token_usage"),
                 }
 
+            query_rules = (
+                f"3. 请遵守以下查询约束：\n{query_constraints_text}\n"
+                if query_constraints_text
+                else ""
+            )
             system = SystemMessage(
                 content=(
                     "你是一个 SQL 生成专家。用户的问题中涉及的数据指标未在语义层中定义，"
@@ -440,8 +995,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
                     "规则：\n"
                     "1. 只生成 SELECT，禁止 INSERT/UPDATE/DELETE/DROP/TRUNCATE 等操作\n"
                     "2. 严格使用表结构中的表名和列名\n"
-                    "3. limit 默认 100，最大 1000\n"
-                    "4. 如果用户没有告诉具体的时间范围，时间范围尽量推断，默认近30天\n"
+                    f"{query_rules}"
                 )
             )
             human_text = f"用户问题: {question}\n\n表结构:\n{ddl_context}"
@@ -526,14 +1080,14 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
                 '  "filters": [{"field": "字段名", "op": "eq|in|gt|lt|between", "values": []}],\n'
                 '  "time_range": {"field": "时间字段", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},\n'
                 '  "order_by": [{"field": "字段", "direction": "ASC|DESC"}],\n'
-                '  "limit": 100\n'
+                f'  "limit": {dsl_limit_example}\n'
                 "}\n\n"
                 "规则：\n"
                 "1. metrics 和 dimensions 的值必须严格来自语义层定义的 name\n"
                 "2. 已识别实体解析中给出了用户词到语义层 name 的映射，请严格使用解析后的名称\n"
-                "3. 时间范围尽量推断，默认近30天\n"
+                f"{semantic_time_rule}"
                 "4. 若用户要求排序，加入 order_by\n"
-                "5. limit 默认 100，最大 1000\n"
+                f"{semantic_limit_rule}"
                 "6. time_range.field 必须使用所选指标在语义层中声明的 time_field，不要从 DDL 自由发挥\n"
             )
         )
@@ -572,13 +1126,16 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
 
     # ── 路径 3: 完全没有 schema，LLM 猜 SQL ──
     logger.info("走无Schema路径: 让LLM猜测SQL")
+    query_rules = (
+        f"2. 请遵守以下查询约束：\n{query_constraints_text}\n" if query_constraints_text else ""
+    )
     system = SystemMessage(
         content=(
             "你是一个 SQL 生成专家。根据用户问题，生成可执行的 SELECT 语句（仅输出 JSON，不要其他说明）：\n\n"
             '  {"sql": "SELECT ..."}\n\n'
             "规则：\n"
             "1. 只生成 SELECT，禁止 INSERT/UPDATE/DELETE/DROP 等\n"
-            "2. limit 默认 100\n"
+            f"{query_rules}"
         )
     )
     human_text = f"用户问题: {question}"
@@ -706,6 +1263,7 @@ def dsl_compiler_node(db: Session):
         dsl = state.get("dsl") or {}
         schema = state.get("schema_context") or ""
         structured = state.get("schema_structured")
+        query_constraints = normalize_query_constraints(state.get("query_constraints"))
 
         # 推断方言（从 dataset_id 查 Datasource.db_type）
         dataset_id = state.get("dataset_id")
@@ -958,8 +1516,15 @@ def dsl_compiler_node(db: Session):
             ]
             sql_parts.append(f"ORDER BY {', '.join(orders)}")
 
-        limit = dsl.get("limit", 100)
-        sql_parts.append(f"LIMIT {limit}")
+        limit = dsl.get("limit")
+        if limit in (None, "") and query_constraints["enabled"]:
+            limit = query_constraints["default_limit"]
+        if limit not in (None, ""):
+            try:
+                limit = min(int(limit), query_constraints["max_limit"])
+            except (TypeError, ValueError):
+                limit = query_constraints["default_limit"]
+            sql_parts.append(f"LIMIT {limit}")
         sql = "\n".join(sql_parts)
 
         forbidden = ["insert", "update", "delete", "drop", "alter", "create", "grant"]

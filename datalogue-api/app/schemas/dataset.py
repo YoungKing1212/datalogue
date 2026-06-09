@@ -23,6 +23,7 @@ class DatasetCreate(BaseModel):
     tables_json: Dict[str, Any] = {}
     description: Optional[str] = None
     prompt_instructions: Optional[str] = None
+    query_constraints: Optional[Dict[str, Any]] = None
     status: str = "draft"
 
 
@@ -32,6 +33,7 @@ class DatasetUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     prompt_instructions: Optional[str] = None
+    query_constraints: Optional[Dict[str, Any]] = None
     status: Optional[str] = None
     tables_json: Optional[Dict[str, Any]] = None
 
@@ -43,6 +45,7 @@ class DatasetOut(BaseModel):
     tables_json: Dict[str, Any]
     description: Optional[str] = None
     prompt_instructions: Optional[str] = None
+    query_constraints: Optional[Dict[str, Any]] = None
     status: str
     created_at: Optional[datetime] = None
 
@@ -357,6 +360,17 @@ class BlueprintStatusPayload(BaseModel):
 class BlueprintAnalyzeSqlPayload(BaseModel):
     sql: str
     mode: str = "sql_import"
+
+
+class BlueprintAnalyzeDescriptionPayload(BaseModel):
+    """手动创建蓝图时提交的业务场景描述。"""
+
+    name: Optional[str] = None
+    business_scenario: str
+    example_questions: List[str] = []
+    expected_output: Optional[str] = None
+    business_rules: Optional[str] = None
+    owner: Optional[str] = None
 
 
 class BlueprintAnalyzeTaskOut(BaseModel):

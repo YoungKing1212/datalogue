@@ -68,6 +68,31 @@ const TERM_STATUS_OPTIONS = [
 
 const termTypeLabel = (type) => TERM_TYPE_OPTIONS.find(item => item.value === type)?.label || type || '未分类';
 const termStatusLabel = (status) => TERM_STATUS_OPTIONS.find(item => item.value === status)?.label || status || '未知';
+const DEFAULT_QUERY_CONSTRAINTS = {
+  enabled: true,
+  default_time_range_days: 30,
+  default_limit: 100,
+  max_limit: 1000,
+};
+
+const normalizeQueryConstraints = (value) => {
+  const raw = value || {};
+  const maxLimit = Math.max(1, Math.min(10000, Number(raw.max_limit ?? DEFAULT_QUERY_CONSTRAINTS.max_limit) || DEFAULT_QUERY_CONSTRAINTS.max_limit));
+  const defaultLimit = Math.min(
+    maxLimit,
+    Math.max(1, Number(raw.default_limit ?? DEFAULT_QUERY_CONSTRAINTS.default_limit) || DEFAULT_QUERY_CONSTRAINTS.default_limit)
+  );
+  const defaultDays = Math.max(
+    1,
+    Math.min(3650, Number(raw.default_time_range_days ?? DEFAULT_QUERY_CONSTRAINTS.default_time_range_days) || DEFAULT_QUERY_CONSTRAINTS.default_time_range_days)
+  );
+  return {
+    enabled: raw.enabled ?? DEFAULT_QUERY_CONSTRAINTS.enabled,
+    default_time_range_days: defaultDays,
+    default_limit: defaultLimit,
+    max_limit: maxLimit,
+  };
+};
 
 function DatasetsScreen() {
   // ── 数据集状态 ──
@@ -179,7 +204,13 @@ function DatasetsScreen() {
     owner: '',
     status: 'draft',
   });
-  const [dsForm, setDsForm] = useState({ name: '', datasource_id: '', description: '', prompt_instructions: '' });
+  const [dsForm, setDsForm] = useState({
+    name: '',
+    datasource_id: '',
+    description: '',
+    prompt_instructions: '',
+    query_constraints: DEFAULT_QUERY_CONSTRAINTS,
+  });
   const [showPromptForm, setShowPromptForm] = useState(false);
   const [promptFormDs, setPromptFormDs] = useState(null);
   const [datasources, setDatasources] = useState([]);
@@ -518,11 +549,18 @@ function DatasetsScreen() {
         datasource_id: Number(dsForm.datasource_id),
         description: dsForm.description || undefined,
         prompt_instructions: dsForm.prompt_instructions || undefined,
+        query_constraints: normalizeQueryConstraints(dsForm.query_constraints),
         tables_json: {},
         status: 'draft',
       });
       setShowDsForm(false);
-      setDsForm({ name: '', datasource_id: '', description: '', prompt_instructions: '' });
+      setDsForm({
+        name: '',
+        datasource_id: '',
+        description: '',
+        prompt_instructions: '',
+        query_constraints: DEFAULT_QUERY_CONSTRAINTS,
+      });
       loadDatasets();
     } catch (err) { alert('创建失败: ' + (err.message || '未知错误')); }
   };
@@ -531,8 +569,8 @@ function DatasetsScreen() {
   const openCtxMenu = (e, ds) => {
     e.preventDefault();
     e.stopPropagation();
-    // 防止菜单超出右/下边界：菜单大约宽 160、高 ~88
-    const menuW = 160, menuH = 88;
+    // 防止菜单超出右/下边界：菜单大约宽 160、高 ~116
+    const menuW = 160, menuH = 116;
     const x = Math.min(e.clientX, window.innerWidth - menuW - 8);
     const y = Math.min(e.clientY, window.innerHeight - menuH - 8);
     setCtxMenu({ x, y, ds });
@@ -1685,11 +1723,18 @@ function DatasetsScreen() {
               <span>重命名</span>
             </button>
             <button
-              onClick={() => { setPromptFormDs({ ...ctxMenu.ds }); setShowPromptForm(true); setCtxMenu(null); }}
+              onClick={() => {
+                setPromptFormDs({
+                  ...ctxMenu.ds,
+                  query_constraints: normalizeQueryConstraints(ctxMenu.ds.query_constraints),
+                });
+                setShowPromptForm(true);
+                setCtxMenu(null);
+              }}
               style={ctxMenuItemStyle}
             >
-              <Icon name="bookmark" style={{ width: 14, height: 14, color: 'var(--text-3)' }} />
-              <span>编辑约束</span>
+              <Icon name="cog" style={{ width: 14, height: 14, color: 'var(--text-3)' }} />
+              <span>查询约束</span>
             </button>
             <div style={{ height: 1, background: 'var(--hairline)', margin: '4px 2px' }} />
             <button
@@ -2400,6 +2445,10 @@ function DatasetsScreen() {
             <FormField label="名称" value={dsForm.name} onChange={v => setDsForm({ ...dsForm, name: v })} placeholder="如: 零售业务数据集" />
             <FormField label="数据源" type="select" value={dsForm.datasource_id} onChange={v => setDsForm({ ...dsForm, datasource_id: v })} options={[{ value: '', label: '请选择数据源' }, ...datasources.map(d => ({ value: String(d.id), label: d.name }))]} />
             <FormField label="描述 (可选)" value={dsForm.description} onChange={v => setDsForm({ ...dsForm, description: v })} placeholder="数据集用途说明…" />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '8px 10px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 12, color: 'var(--text-2)' }}>
+              <Icon name="cog" style={{ width: 14, height: 14, color: 'var(--accent)' }} />
+              <span>新建数据集默认开启 SQL 查询约束：未指定时间查最近 30 天，默认返回 100 条。</span>
+            </div>
             <FormField
               label="LLM 约束 (可选)"
               type="textarea"
@@ -2416,18 +2465,93 @@ function DatasetsScreen() {
         </div>
       )}
 
-      {/* ── 弹窗：编辑数据集级 LLM 约束（右键菜单触发）── */}
+      {/* ── 弹窗：编辑数据集级查询约束（右键菜单触发）── */}
       {showPromptForm && promptFormDs && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowPromptForm(false)}>
           <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 560, border: '1px solid var(--hairline)' }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ margin: '0 0 6px' }}>编辑 LLM 约束 — {promptFormDs.name}</h3>
+            <h3 style={{ margin: '0 0 6px' }}>查询约束 — {promptFormDs.name}</h3>
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 14, lineHeight: 1.5 }}>
-              问数时会作为「硬性要求」注入到 LLM 提示词中，覆盖 DSL 生成 / SQL 审计 / 报告生成全链路。
+              这些规则会作为硬性要求进入 SQL / DSL 生成提示词，并影响语义 DSL 编译时的默认 LIMIT。
+            </div>
+            <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, marginBottom: 14, background: 'var(--surface-2)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 500, color: 'var(--text)', marginBottom: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={promptFormDs.query_constraints?.enabled ?? true}
+                  onChange={e => setPromptFormDs({
+                    ...promptFormDs,
+                    query_constraints: {
+                      ...normalizeQueryConstraints(promptFormDs.query_constraints),
+                      enabled: e.target.checked,
+                    },
+                  })}
+                />
+                开启默认查询约束
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>默认时间范围（天）</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="3650"
+                    value={normalizeQueryConstraints(promptFormDs.query_constraints).default_time_range_days}
+                    onChange={e => setPromptFormDs({
+                      ...promptFormDs,
+                      query_constraints: {
+                        ...normalizeQueryConstraints(promptFormDs.query_constraints),
+                        default_time_range_days: e.target.value,
+                      },
+                    })}
+                    disabled={!(promptFormDs.query_constraints?.enabled ?? true)}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>默认返回条数</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10000"
+                    value={normalizeQueryConstraints(promptFormDs.query_constraints).default_limit}
+                    onChange={e => setPromptFormDs({
+                      ...promptFormDs,
+                      query_constraints: {
+                        ...normalizeQueryConstraints(promptFormDs.query_constraints),
+                        default_limit: e.target.value,
+                      },
+                    })}
+                    disabled={!(promptFormDs.query_constraints?.enabled ?? true)}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>最大返回条数</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10000"
+                    value={normalizeQueryConstraints(promptFormDs.query_constraints).max_limit}
+                    onChange={e => setPromptFormDs({
+                      ...promptFormDs,
+                      query_constraints: {
+                        ...normalizeQueryConstraints(promptFormDs.query_constraints),
+                        max_limit: e.target.value,
+                      },
+                    })}
+                    disabled={!(promptFormDs.query_constraints?.enabled ?? true)}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box' }}
+                  />
+                </div>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                例如用户只问“查询日报”，系统会默认补最近 N 天；用户没说返回几条时会补默认 LIMIT。
+              </div>
             </div>
             <FormField
-              label="数据集级 LLM 约束"
+              label="其他 LLM 约束"
               type="textarea"
-              rows={10}
+              rows={6}
               value={promptFormDs.prompt_instructions || ''}
               onChange={v => setPromptFormDs({ ...promptFormDs, prompt_instructions: v })}
               placeholder="例：金额统一保留两位小数；用户说'杨凯'时翻译为 person_name='杨凯'；订单状态枚举：1=待支付, 2=已支付, 4=已退款"
@@ -2438,7 +2562,10 @@ function DatasetsScreen() {
                 className="btn primary"
                 onClick={async () => {
                   try {
-                    await updateDataset(promptFormDs.id, { prompt_instructions: promptFormDs.prompt_instructions || '' });
+                    await updateDataset(promptFormDs.id, {
+                      prompt_instructions: promptFormDs.prompt_instructions || '',
+                      query_constraints: normalizeQueryConstraints(promptFormDs.query_constraints),
+                    });
                     setShowPromptForm(false);
                     await loadDatasets();
                   } catch (err) {
