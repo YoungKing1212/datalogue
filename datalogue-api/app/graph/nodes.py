@@ -24,6 +24,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.graph.llm import get_llm
 from app.graph.state import AgentState
+from app.schemas.dsl import get_dsl_item_name, normalize_dsl
 from app.models.dataset import (
     AnalysisBlueprint,
     BusinessTerm,
@@ -234,6 +235,44 @@ def _format_blueprint_semantic_context(bp: AnalysisBlueprint) -> str:
 def _query_constraints_text(state: AgentState) -> str:
     """读取状态中的数据集查询约束，并渲染为 LLM 规则文本。"""
     return render_query_constraints_instruction(state.get("query_constraints"))
+
+
+def _dsl_item_names(items: Any) -> list[str]:
+    """读取 DSL 列表中的名称，兼容旧字符串和 v2 资产引用对象。"""
+    if not isinstance(items, list):
+        return []
+    return [name for item in items if (name := get_dsl_item_name(item))]
+
+
+def _dsl_field_name(field: Any) -> str:
+    """读取 filter/order_by/time_range 中的字段名。"""
+    return get_dsl_item_name(field)
+
+
+def _format_dsl_asset_catalog(structured: dict | None) -> str:
+    """把结构化语义层资产整理成 NL2DSL v2 可引用目录。"""
+    if not structured:
+        return ""
+    lines = ["【可引用语义资产（生成 DSL 时必须优先使用这里的 asset_id）】"]
+    for asset_type, title, items in (
+        ("metric", "指标", structured.get("metrics") or []),
+        ("dimension", "维度", structured.get("dimensions") or []),
+        ("term", "业务术语", structured.get("terms") or []),
+        ("blueprint", "分析蓝图", structured.get("blueprints") or []),
+    ):
+        if not items:
+            continue
+        lines.append(f"{title}:")
+        for item in items:
+            aliases = item.get("synonyms") or item.get("aliases") or []
+            alias_text = f"，同义词={aliases}" if aliases else ""
+            lines.append(
+                "- "
+                f"asset_type={asset_type}, asset_id={item.get('id')}, "
+                f"name={item.get('name')}, display_name={item.get('display_name') or item.get('name')}"
+                f"{alias_text}"
+            )
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def _match_analysis_blueprint(db: Session, dataset_id: int | None, question: str) -> dict | None:
@@ -691,6 +730,19 @@ def schema_recall_node(db: Session):
 
         metrics = db.query(SemanticMetric).filter(SemanticMetric.dataset_id == ds.id).all()
         dimensions = db.query(SemanticDimension).filter(SemanticDimension.dataset_id == ds.id).all()
+        terms = (
+            db.query(BusinessTerm)
+            .filter(BusinessTerm.dataset_id == ds.id, BusinessTerm.status == "active")
+            .all()
+        )
+        blueprints = (
+            db.query(AnalysisBlueprint)
+            .filter(
+                AnalysisBlueprint.dataset_id == ds.id,
+                AnalysisBlueprint.status == "active",
+            )
+            .all()
+        )
         logger.info(
             f"使用语义层Schema: dataset={ds.name}, metrics={len(metrics)}, dimensions={len(dimensions)}"
         )
@@ -704,6 +756,7 @@ def schema_recall_node(db: Session):
             "tables_json": ds.tables_json or {},
             "metrics": [
                 {
+                    "id": m.id,
                     "name": m.name,
                     "display_name": m.display_name,
                     "expr": m.expr,
@@ -716,6 +769,7 @@ def schema_recall_node(db: Session):
             ],
             "dimensions": [
                 {
+                    "id": d.id,
                     "name": d.name,
                     "display_name": d.display_name,
                     "column_name": d.column_name,
@@ -725,6 +779,28 @@ def schema_recall_node(db: Session):
                     "synonyms": d.synonyms or [],
                 }
                 for d in dimensions
+            ],
+            "terms": [
+                {
+                    "id": t.id,
+                    "name": t.name,
+                    "display_name": t.display_name,
+                    "term_type": t.term_type,
+                    "aliases": t.aliases or [],
+                    "definition": t.definition,
+                }
+                for t in terms
+            ],
+            "blueprints": [
+                {
+                    "id": bp.id,
+                    "name": bp.name,
+                    "display_name": bp.name,
+                    "trigger_keywords": bp.trigger_keywords or [],
+                    "trigger_examples": bp.trigger_examples or [],
+                    "implementation_type": bp.implementation_type,
+                }
+                for bp in blueprints
             ],
         }
 
@@ -963,6 +1039,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
         structured = state.get("schema_structured")
         ddl_context = state.get("ddl_context", "")
         metric_resolution = state.get("metric_resolution") or {}
+        asset_catalog = _format_dsl_asset_catalog(structured)
         all_matched = metric_resolution.get("all_matched", True)
         unresolved = metric_resolution.get("unresolved", [])
 
@@ -1056,15 +1133,45 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
             res_lines = ["已识别实体解析:"]
             for r in metric_resolution.get("metrics", []):
                 if r["status"] == "matched":
+                    matched_metric = None
+                    if structured:
+                        matched_metric = next(
+                            (
+                                m
+                                for m in structured.get("metrics", [])
+                                if m.get("name") == r["resolved"]
+                            ),
+                            None,
+                        )
+                    asset_id_text = (
+                        f"，asset_id={matched_metric.get('id')}"
+                        if matched_metric and matched_metric.get("id") is not None
+                        else ""
+                    )
                     res_lines.append(
-                        f"- 指标 '{r['entity']}' → 语义层名称 '{r['resolved']}' ({r['match_type']})"
+                        f"- 指标 '{r['entity']}' → 语义层名称 '{r['resolved']}' ({r['match_type']}{asset_id_text})"
                     )
                 else:
                     res_lines.append(f"- 指标 '{r['entity']}' → 未在语义层中定义")
             for r in metric_resolution.get("dimensions", []):
                 if r["status"] == "matched":
+                    matched_dimension = None
+                    if structured:
+                        matched_dimension = next(
+                            (
+                                d
+                                for d in structured.get("dimensions", [])
+                                if d.get("name") == r["resolved"]
+                            ),
+                            None,
+                        )
+                    asset_id_text = (
+                        f"，asset_id={matched_dimension.get('id')}"
+                        if matched_dimension and matched_dimension.get("id") is not None
+                        else ""
+                    )
                     res_lines.append(
-                        f"- 维度 '{r['entity']}' → 语义层名称 '{r['resolved']}' ({r['match_type']})"
+                        f"- 维度 '{r['entity']}' → 语义层名称 '{r['resolved']}' ({r['match_type']}{asset_id_text})"
                     )
                 else:
                     res_lines.append(f"- 维度 '{r['entity']}' → 未在语义层中定义")
@@ -1073,25 +1180,34 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
         system = SystemMessage(
             content=(
                 "你是一个数据查询 DSL 生成专家。根据用户问题和提供的语义层信息，"
-                "生成符合以下 JSON Schema 的 DSL 对象（仅输出 JSON，不要其他说明）：\n\n"
+                "生成符合 NL2DSL v2 JSON Schema 的 DSL 对象（仅输出 JSON，不要其他说明）：\n\n"
                 "{\n"
-                '  "metrics": ["指标英文名，必须在语义层列表中"],\n'
-                '  "dimensions": ["维度英文名，可选"],\n'
-                '  "filters": [{"field": "字段名", "op": "eq|in|gt|lt|between", "values": []}],\n'
+                '  "version": "2.0",\n'
+                '  "metrics": [{"name": "指标英文名，必须在语义层列表中", "asset_type": "metric", "asset_id": 1, "confidence": 0.0}],\n'
+                '  "dimensions": [{"name": "维度英文名，可选", "asset_type": "dimension", "asset_id": 1, "confidence": 0.0}],\n'
+                '  "terms": [{"name": "业务术语英文名，可选", "asset_type": "term", "asset_id": 1, "confidence": 0.0}],\n'
+                '  "blueprints": [{"name": "分析蓝图名称，可选", "asset_type": "blueprint", "asset_id": 1, "confidence": 0.0}],\n'
+                '  "filters": [{"field": {"name": "字段或维度名", "asset_type": "dimension|field|column", "asset_id": 1, "confidence": 0.0}, "op": "eq|in|gt|gte|lt|lte|neq|between", "values": []}],\n'
                 '  "time_range": {"field": "时间字段", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},\n'
-                '  "order_by": [{"field": "字段", "direction": "ASC|DESC"}],\n'
-                f'  "limit": {dsl_limit_example}\n'
+                '  "order_by": [{"field": {"name": "指标或维度名", "asset_type": "metric|dimension|field", "asset_id": 1}, "direction": "ASC|DESC"}],\n'
+                f'  "limit": {dsl_limit_example},\n'
+                '  "confidence": 0.0,\n'
+                '  "ambiguities": [{"text": "原始歧义词", "reason": "歧义原因", "candidates": [{"name": "候选资产", "asset_type": "metric", "asset_id": 1, "confidence": 0.0}], "resolution_hint": "需要用户确认的问题"}]\n'
                 "}\n\n"
                 "规则：\n"
                 "1. metrics 和 dimensions 的值必须严格来自语义层定义的 name\n"
-                "2. 已识别实体解析中给出了用户词到语义层 name 的映射，请严格使用解析后的名称\n"
+                "2. 已识别实体解析和可引用语义资产中给出了用户词到语义层 name / asset_id 的映射，请严格使用解析后的名称和 ID\n"
                 f"{semantic_time_rule}"
                 "4. 若用户要求排序，加入 order_by\n"
                 f"{semantic_limit_rule}"
                 "6. time_range.field 必须使用所选指标在语义层中声明的 time_field，不要从 DDL 自由发挥\n"
+                "7. asset_id 必须来自可引用语义资产；找不到 ID 时填 null，不要编造\n"
+                "8. 如果一个词可能对应多个资产，把候选写入 ambiguities，不要丢失歧义\n"
             )
         )
         human_text = f"用户问题: {question}\n\n语义层信息:\n{schema}"
+        if asset_catalog:
+            human_text += f"\n\n{asset_catalog}"
         if resolution_text:
             human_text += f"\n\n{resolution_text}"
         if entities:
@@ -1105,7 +1221,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
             human_text,
         )
         response = llm.invoke([system, human])
-        dsl = _safe_json_parse(str(response.content))
+        dsl = normalize_dsl(_safe_json_parse(str(response.content)))
         usage = _extract_token_usage(response)
         merged = _merge_token_usage(state.get("token_usage") or {}, usage)
         logger.debug(
@@ -1194,7 +1310,7 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
     和样例，重试命中率显著提升。
     """
     logger.info("DSL校验节点开始（基础校验，深度判断交由 sql_audit）")
-    dsl = state.get("dsl") or {}
+    dsl = normalize_dsl(state.get("dsl") or {})
     schema = state.get("schema_context") or ""
     structured = state.get("schema_structured")
 
@@ -1202,19 +1318,34 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
     if "direct_sql" in dsl:
         sql = dsl.get("direct_sql", "")
         if not sql:
-            return {"dsl_valid": False, "error": "LLM 未生成有效 SQL", "should_retry": True}
-        return {"dsl_valid": True, "error": None, "should_retry": False}
+            return {
+                "dsl": dsl,
+                "dsl_valid": False,
+                "error": "LLM 未生成有效 SQL",
+                "should_retry": True,
+            }
+        return {"dsl": dsl, "dsl_valid": True, "error": None, "should_retry": False}
 
     # 真实数据源 Schema 模式
     if schema and "【数据源真实表结构】" in schema:
         sql = dsl.get("sql") or ""
         if not sql:
-            return {"dsl_valid": False, "error": "LLM 未生成有效 SQL", "should_retry": True}
-        return {"dsl_valid": True, "error": None, "should_retry": False}
+            return {
+                "dsl": dsl,
+                "dsl_valid": False,
+                "error": "LLM 未生成有效 SQL",
+                "should_retry": True,
+            }
+        return {"dsl": dsl, "dsl_valid": True, "error": None, "should_retry": False}
 
     # 语义层 DSL 模式
     if not dsl or not isinstance(dsl, dict):
-        return {"dsl_valid": False, "error": "DSL 为空或格式错误", "should_retry": True}
+        return {
+            "dsl": dsl,
+            "dsl_valid": False,
+            "error": "DSL 为空或格式错误",
+            "should_retry": True,
+        }
 
     # 优先从结构化对象中提取有效名称
     if structured:
@@ -1229,25 +1360,30 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
                 valid_names.add(m.group(1))
 
     errors = []
-    metrics = dsl.get("metrics", [])
+    metrics = _dsl_item_names(dsl.get("metrics", []))
     if not metrics:
         errors.append("metrics 不能为空")
     for m in metrics:
         if m not in valid_names:
             errors.append(f"指标 '{m}' 不在语义层定义中")
-    for d in dsl.get("dimensions", []):
+    for d in _dsl_item_names(dsl.get("dimensions", [])):
         if d not in valid_names:
             errors.append(f"维度 '{d}' 不在语义层定义中")
     for f in dsl.get("filters", []):
-        field = f.get("field")
+        field = _dsl_field_name(f.get("field"))
         if field and field not in valid_names:
             errors.append(f"过滤字段 '{field}' 不在语义层定义中")
 
     if errors:
         logger.warning(f"DSL校验失败: {'; '.join(errors)}")
-        return {"dsl_valid": False, "error": "; ".join(errors), "should_retry": True}
+        return {
+            "dsl": dsl,
+            "dsl_valid": False,
+            "error": "; ".join(errors),
+            "should_retry": True,
+        }
     logger.info("DSL校验通过")
-    return {"dsl_valid": True, "error": None, "should_retry": False}
+    return {"dsl": dsl, "dsl_valid": True, "error": None, "should_retry": False}
 
 
 # ── 节点 5: DSL 编译器（代码实现）─────────────────────────
@@ -1260,7 +1396,7 @@ def dsl_compiler_node(db: Session):
 
     def _node(state: AgentState) -> Dict[str, Any]:
         logger.info("DSL编译节点开始")
-        dsl = state.get("dsl") or {}
+        dsl = normalize_dsl(state.get("dsl") or {})
         schema = state.get("schema_context") or ""
         structured = state.get("schema_structured")
         query_constraints = normalize_query_constraints(state.get("query_constraints"))
@@ -1344,7 +1480,7 @@ def dsl_compiler_node(db: Session):
         selects = []
         used_tables = {}  # alias -> table_name
 
-        for m_name in dsl.get("metrics", []):
+        for m_name in _dsl_item_names(dsl.get("metrics", [])):
             m = metric_map.get(m_name)
             if m:
                 expr = m.get("expr", m_name)
@@ -1356,7 +1492,7 @@ def dsl_compiler_node(db: Session):
             else:
                 selects.append(f"{m_name} AS {m_name}")
 
-        for d_name in dsl.get("dimensions", []):
+        for d_name in _dsl_item_names(dsl.get("dimensions", [])):
             d = dim_map.get(d_name)
             if d:
                 col = d.get("column_name", d_name)
@@ -1384,7 +1520,8 @@ def dsl_compiler_node(db: Session):
             # 注意：alias 可能是空字符串/None，统一回退到 primary_table
             primary_alias = tables_def[0].get("alias") or primary_table
         elif dsl.get("metrics"):
-            first_metric = metric_map.get(dsl["metrics"][0])
+            first_metric_name = _dsl_item_names(dsl.get("metrics", []))[0]
+            first_metric = metric_map.get(first_metric_name)
             if first_metric:
                 primary_table = first_metric.get("table_name")
         if not primary_table:
@@ -1426,14 +1563,14 @@ def dsl_compiler_node(db: Session):
         wheres = []
 
         # 指标内置过滤条件（先 sanitize，!= null → IS NOT NULL）
-        for m_name in dsl.get("metrics", []):
+        for m_name in _dsl_item_names(dsl.get("metrics", [])):
             m = metric_map.get(m_name)
             if m and m.get("filter_sql"):
                 wheres.append(f"({_sanitize_filter_sql(m['filter_sql'])})")
 
         # DSL 中的 filters
         for f in dsl.get("filters", []):
-            field = f["field"]
+            field = _dsl_field_name(f["field"])
             op = f["op"]
             vals = f.get("values", [])
             dim = dim_map.get(field)
@@ -1448,8 +1585,14 @@ def dsl_compiler_node(db: Session):
                 wheres.append(f"{field} = '{vals[0]}'")
             elif op == "gt" and vals:
                 wheres.append(f"{field} > '{vals[0]}'")
+            elif op == "gte" and vals:
+                wheres.append(f"{field} >= '{vals[0]}'")
             elif op == "lt" and vals:
                 wheres.append(f"{field} < '{vals[0]}'")
+            elif op == "lte" and vals:
+                wheres.append(f"{field} <= '{vals[0]}'")
+            elif op == "neq" and vals:
+                wheres.append(f"{field} <> '{vals[0]}'")
             elif op == "between" and len(vals) >= 2:
                 wheres.append(f"{field} BETWEEN '{vals[0]}' AND '{vals[1]}'")
 
@@ -1459,10 +1602,11 @@ def dsl_compiler_node(db: Session):
         valid_time_fields = {
             m.get("time_field") for m in metric_map.values() if m.get("time_field")
         }
-        tr_field = tr.get("field") if isinstance(tr, dict) else None
+        tr_field = _dsl_field_name(tr.get("field")) if isinstance(tr, dict) else None
         # LLM 填了不合法的时间字段 → 强制回退到第一个 metric 的 time_field
         if tr_field and tr_field not in valid_time_fields and dsl.get("metrics"):
-            first_metric = metric_map.get(dsl["metrics"][0])
+            first_metric_name = _dsl_item_names(dsl.get("metrics", []))[0]
+            first_metric = metric_map.get(first_metric_name)
             if first_metric and first_metric.get("time_field"):
                 logger.warning(
                     f"DSL time_range.field='{tr_field}' 不在已声明的 time_field {valid_time_fields} 中，"
@@ -1478,7 +1622,8 @@ def dsl_compiler_node(db: Session):
                 wheres.append(f"{time_field} <= '{tr['end']}'")
         elif dsl.get("metrics"):
             # 自动推断：使用第一个指标的时间字段
-            first_metric = metric_map.get(dsl["metrics"][0])
+            first_metric_name = _dsl_item_names(dsl.get("metrics", []))[0]
+            first_metric = metric_map.get(first_metric_name)
             if first_metric and first_metric.get("time_field"):
                 tf = _quote_ident(first_metric["time_field"], dialect) or first_metric["time_field"]
                 # 默认近30天
@@ -1496,7 +1641,7 @@ def dsl_compiler_node(db: Session):
         if wheres:
             sql_parts.append("WHERE " + " AND ".join(wheres))
 
-        dims = dsl.get("dimensions", [])
+        dims = _dsl_item_names(dsl.get("dimensions", []))
         if dims:
             group_cols = []
             for d_name in dims:
@@ -1512,7 +1657,8 @@ def dsl_compiler_node(db: Session):
         ob = dsl.get("order_by", [])
         if ob:
             orders = [
-                f"{_quote_ident(o['field'], dialect) or o['field']} {o['direction']}" for o in ob
+                f"{_quote_ident(_dsl_field_name(o['field']), dialect) or _dsl_field_name(o['field'])} {o['direction']}"
+                for o in ob
             ]
             sql_parts.append(f"ORDER BY {', '.join(orders)}")
 

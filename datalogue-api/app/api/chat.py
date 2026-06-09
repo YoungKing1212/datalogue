@@ -353,6 +353,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "knowledge_term_id": final_state.get("knowledge_term_id"),
         "route_payload": final_state.get("route_payload"),
         "metric_resolution": final_state.get("metric_resolution"),
+        "dsl": final_state.get("dsl"),
         "generation_mode": final_state.get("generation_mode"),
         "sql_result": final_state.get("sql_result"),
         "conversation_id": conv_id,

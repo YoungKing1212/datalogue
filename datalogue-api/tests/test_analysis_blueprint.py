@@ -232,6 +232,9 @@ def test_create_and_list_blueprints(client, sample_dataset):
     assert data["name"] == "月度毛利归因报表"
     assert data["status"] == "draft"
     assert data["version"] == 0
+    assert data["creation_source"] == "manual"
+    assert data["ai_generated"] is False
+    assert data["ai_generation_type"] is None
 
     list_resp = client.get(f"/api/dataset/{sample_dataset.id}/blueprints")
     assert list_resp.status_code == 200
@@ -265,6 +268,9 @@ def test_analyze_sql_returns_task_result(client, sample_dataset, monkeypatch):
     assert "毛利下降原因" in data["result"]["description"]
     assert data["result"]["call_template"] == ""
     assert data["result"]["analysis_engine"] == "llm"
+    assert data["result"]["creation_source"] == "sql_ai_analysis"
+    assert data["result"]["ai_generated"] is True
+    assert data["result"]["ai_generation_type"] == "sql_analysis"
     timing = data["result"]["analysis_timing_ms"]
     assert set(timing) >= {
         "preprocess",
@@ -309,11 +315,38 @@ def test_analyze_description_returns_manual_ai_draft(client, sample_dataset, mon
     assert result["call_template"] == ""
     assert result["raw_sql"] == ""
     assert result["analysis_source"] == "business_description"
+    assert result["creation_source"] == "manual_ai_draft"
+    assert result["ai_generated"] is True
+    assert result["ai_generation_type"] == "description_analysis"
     assert "为什么本月毛利下降" in result["trigger_examples"]
     prompt_messages = mock_llm.invoke.call_args.args[0]
     prompt_text = prompt_messages[1].content
     assert "测试数据集" in prompt_text
     assert "GMV" in prompt_text
+
+
+def test_create_blueprint_persists_ai_source_fields(client, sample_dataset):
+    """保存 AI 分析草稿后，应能在蓝图列表和详情中区分来源。"""
+    payload = {
+        **_blueprint_payload(),
+        "creation_source": "sql_ai_analysis",
+        "ai_generated": True,
+        "ai_generation_type": "sql_analysis",
+    }
+
+    resp = client.post(f"/api/dataset/{sample_dataset.id}/blueprints", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["creation_source"] == "sql_ai_analysis"
+    assert data["ai_generated"] is True
+    assert data["ai_generation_type"] == "sql_analysis"
+
+    list_resp = client.get(f"/api/dataset/{sample_dataset.id}/blueprints")
+    assert list_resp.status_code == 200
+    listed = list_resp.json()[0]
+    assert listed["creation_source"] == "sql_ai_analysis"
+    assert listed["ai_generated"] is True
 
 
 def test_re_analyze_sql_returns_ai_diff(client, sample_dataset, monkeypatch):

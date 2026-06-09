@@ -19,6 +19,12 @@ const STATUS_META = {
   deprecated: { label: '已弃用', color: '#6b7280', bg: '#f3f4f6', strike: true },
 };
 
+const SOURCE_META = {
+  sql_ai_analysis: { label: 'AI SQL分析', color: '#0369a1', bg: '#e0f2fe' },
+  manual_ai_draft: { label: 'AI业务草稿', color: '#7c3aed', bg: '#ede9fe' },
+  manual: { label: '手动填写', color: '#475569', bg: '#f1f5f9' },
+};
+
 const emptyBlueprint = {
   name: '',
   description: '',
@@ -34,6 +40,9 @@ const emptyBlueprint = {
   attribution_hints: '',
   raw_sql: '',
   status: 'draft',
+  creation_source: 'manual',
+  ai_generated: false,
+  ai_generation_type: null,
   ai_confidence: null,
   owner: '',
 };
@@ -121,6 +130,16 @@ function BlueprintStatusBadge({ status }) {
   );
 }
 
+function BlueprintSourceBadge({ blueprint }) {
+  const source = blueprint?.creation_source || (blueprint?.ai_generated ? 'sql_ai_analysis' : 'manual');
+  const meta = SOURCE_META[source] || SOURCE_META.manual;
+  return (
+    <span className="blueprint-source-badge" style={{ color: meta.color, background: meta.bg }}>
+      {meta.label}
+    </span>
+  );
+}
+
 function BlueprintWizard({ datasetId, onClose, onSaved }) {
   const [step, setStep] = useState(1);
   const [mode, setMode] = useState('sql');
@@ -183,6 +202,9 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
       steps: result.steps || [],
       attribution_hints: result.attribution_hints || '',
       raw_sql: result.raw_sql || sqlText,
+      creation_source: result.creation_source || (mode === 'manual' ? 'manual_ai_draft' : 'sql_ai_analysis'),
+      ai_generated: result.ai_generated ?? true,
+      ai_generation_type: result.ai_generation_type || (mode === 'manual' ? 'description_analysis' : 'sql_analysis'),
       ai_confidence: result.ai_confidence ?? null,
       status: 'draft',
     };
@@ -769,7 +791,9 @@ function BlueprintDetail({ datasetId, blueprint, onChanged }) {
       <div className="blueprint-detail-head">
         <div>
           <div className="blueprint-detail-title">{blueprint.name}</div>
-          <div className="blueprint-detail-meta">v{blueprint.version} · {blueprint.owner || '数据团队'}</div>
+          <div className="blueprint-detail-meta">
+            v{blueprint.version} · {blueprint.owner || '数据团队'} · <BlueprintSourceBadge blueprint={blueprint} />
+          </div>
         </div>
         <BlueprintStatusBadge status={blueprint.status} />
       </div>
@@ -1236,6 +1260,7 @@ function AnalysisBlueprintsPanel({ datasetId }) {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bp.name}</div>
                       <BlueprintStatusBadge status={bp.status} />
+                      <BlueprintSourceBadge blueprint={bp} />
                     </div>
                     <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 4 }}>
                       触发: {(bp.trigger_keywords || []).join(' · ') || '—'}

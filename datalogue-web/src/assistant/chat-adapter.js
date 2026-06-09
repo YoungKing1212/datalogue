@@ -180,6 +180,7 @@ export function makeChatAdapter({ datasetIdRef }) {
             custom: {
               sql: finalPayload.sql || null,
               sqlResult: finalPayload.sql_result || null,
+              dsl: finalPayload.dsl || null,
               metricResolution: finalPayload.metric_resolution || null,
               generationMode: finalPayload.generation_mode || null,
               intent: finalPayload.intent || null,

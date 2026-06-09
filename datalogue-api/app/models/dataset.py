@@ -292,6 +292,9 @@ class AnalysisBlueprint(Base, TimestampMixin):
 
     status = Column(String(20), default="draft", nullable=False)
     version = Column(Integer, default=0, nullable=False)
+    creation_source = Column(String(30), default="manual", nullable=False)
+    ai_generated = Column(Boolean, default=False, nullable=False)
+    ai_generation_type = Column(String(30))
     ai_confidence = Column(Float)
     owner = Column(String(50))
     last_validated_at = Column(DateTime)

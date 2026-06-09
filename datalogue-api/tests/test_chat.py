@@ -511,6 +511,122 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         assert "LIMIT 50" in sql
         assert "INSERT" not in sql.upper()
 
+    def test_dsl_validate_normalizes_legacy_dsl(self):
+        """DSL 校验：旧字符串 DSL 通过时应规范化为资产引用结构。"""
+        from app.graph.nodes import dsl_validate_node
+
+        state = {
+            "dsl": {"metrics": ["gmv"], "dimensions": ["region"]},
+            "schema_structured": {
+                "metrics": [{"id": 1, "name": "gmv"}],
+                "dimensions": [{"id": 2, "name": "region"}],
+            },
+            "schema_context": "【语义层】",
+        }
+        result = dsl_validate_node(state)
+
+        assert result["dsl_valid"] is True
+        assert result["dsl"]["version"] == "2.0"
+        assert result["dsl"]["metrics"][0]["name"] == "gmv"
+        assert result["dsl"]["metrics"][0]["asset_type"] == "metric"
+
+    def test_dsl_compiler_semantic_asset_refs(self, db_session):
+        """DSL 编译器：v2 资产引用对象应与旧字符串 DSL 等价编译。"""
+        from app.graph.nodes import dsl_compiler_node
+
+        state = {
+            "dsl": {
+                "version": "2.0",
+                "metrics": [
+                    {
+                        "name": "gmv",
+                        "asset_type": "metric",
+                        "asset_id": 1,
+                        "confidence": 0.92,
+                    }
+                ],
+                "dimensions": [
+                    {
+                        "name": "region",
+                        "asset_type": "dimension",
+                        "asset_id": 2,
+                        "confidence": 0.88,
+                    }
+                ],
+                "filters": [
+                    {
+                        "field": {
+                            "name": "region",
+                            "asset_type": "dimension",
+                            "asset_id": 2,
+                            "confidence": 0.88,
+                        },
+                        "op": "eq",
+                        "values": ["华东"],
+                    }
+                ],
+                "order_by": [
+                    {
+                        "field": {
+                            "name": "gmv",
+                            "asset_type": "metric",
+                            "asset_id": 1,
+                        },
+                        "direction": "DESC",
+                    }
+                ],
+                "limit": 20,
+                "ambiguities": [
+                    {
+                        "text": "销售",
+                        "reason": "可能指多个资产",
+                        "candidates": [
+                            {
+                                "name": "gmv",
+                                "asset_type": "metric",
+                                "asset_id": 1,
+                                "confidence": 0.6,
+                            }
+                        ],
+                    }
+                ],
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": {
+                "tables_json": {"tables": [{"name": "orders", "alias": "o"}], "joins": []},
+                "metrics": [
+                    {
+                        "id": 1,
+                        "name": "gmv",
+                        "display_name": "GMV",
+                        "expr": "SUM(o.amount)",
+                        "table_name": "orders",
+                        "time_field": None,
+                        "filter_sql": None,
+                    }
+                ],
+                "dimensions": [
+                    {
+                        "id": 2,
+                        "name": "region",
+                        "display_name": "地区",
+                        "column_name": "region",
+                        "table_name": None,
+                    }
+                ],
+            },
+        }
+
+        result = dsl_compiler_node(db_session)(state)
+
+        assert result["error"] is None
+        assert "SUM(o.amount) AS gmv" in result["sql"]
+        assert "region" in result["sql"]
+        assert "= '华东'" in result["sql"]
+        assert "ORDER BY" in result["sql"]
+        assert "gmv" in result["sql"]
+        assert "LIMIT 20" in result["sql"]
+
     def test_dsl_compiler_direct_sql(self, db_session):
         """DSL 编译器：direct_sql 路径直通"""
         from app.graph.nodes import dsl_compiler_node

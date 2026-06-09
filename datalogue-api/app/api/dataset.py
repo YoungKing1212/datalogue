@@ -925,6 +925,9 @@ def _blueprint_snapshot(bp: models.AnalysisBlueprint) -> dict[str, Any]:
         "raw_sql": bp.raw_sql,
         "status": bp.status,
         "version": bp.version,
+        "creation_source": bp.creation_source,
+        "ai_generated": bp.ai_generated,
+        "ai_generation_type": bp.ai_generation_type,
         "ai_confidence": bp.ai_confidence,
         "owner": bp.owner,
         "last_validated_at": bp.last_validated_at.isoformat()
@@ -950,6 +953,9 @@ def _apply_blueprint_snapshot(bp: models.AnalysisBlueprint, snapshot: dict[str, 
         "steps",
         "attribution_hints",
         "raw_sql",
+        "creation_source",
+        "ai_generated",
+        "ai_generation_type",
         "ai_confidence",
         "owner",
         "last_test_result",
@@ -976,6 +982,9 @@ def _run_blueprint_analysis_task(
     )
     try:
         result = analyze_sql_for_blueprint(sql)
+        result["creation_source"] = "sql_ai_analysis"
+        result["ai_generated"] = True
+        result["ai_generation_type"] = "sql_analysis"
         if diff_base:
             result["diff_summary"] = {
                 "name_changed": diff_base["name"] != result.get("name"),
@@ -1134,6 +1143,9 @@ def _execute_blueprint_description_request(
     )
     try:
         result = analyze_description_for_blueprint(payload.model_dump(), dataset_context)
+        result["creation_source"] = "manual_ai_draft"
+        result["ai_generated"] = True
+        result["ai_generation_type"] = "description_analysis"
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
         BLUEPRINT_ANALYZE_TASKS[task_id].update(
             {

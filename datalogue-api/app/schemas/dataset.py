@@ -300,6 +300,9 @@ class BlueprintCreate(BaseModel):
     attribution_hints: Optional[str] = None
     raw_sql: Optional[str] = None
     status: str = "draft"
+    creation_source: str = "manual"
+    ai_generated: bool = False
+    ai_generation_type: Optional[str] = None
     ai_confidence: Optional[float] = None
     owner: Optional[str] = None
 
@@ -318,6 +321,9 @@ class BlueprintUpdate(BaseModel):
     steps: Optional[List[Dict[str, Any]]] = None
     attribution_hints: Optional[str] = None
     raw_sql: Optional[str] = None
+    creation_source: Optional[str] = None
+    ai_generated: Optional[bool] = None
+    ai_generation_type: Optional[str] = None
     ai_confidence: Optional[float] = None
     owner: Optional[str] = None
 
@@ -340,6 +346,9 @@ class BlueprintOut(BaseModel):
     raw_sql: Optional[str] = None
     status: str
     version: int
+    creation_source: str = "manual"
+    ai_generated: bool = False
+    ai_generation_type: Optional[str] = None
     ai_confidence: Optional[float] = None
     owner: Optional[str] = None
     last_validated_at: Optional[datetime] = None
