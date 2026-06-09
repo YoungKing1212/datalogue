@@ -22,6 +22,8 @@ import logging
 from app.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_SQL_RETRY_COUNT = 3
 from app.graph.nodes import (
     intent_recognition_node,
     entry_intent_classification_node,
@@ -84,7 +86,8 @@ def _dsl_validation_router(state: AgentState) -> str:
     if state.get("should_retry") is False:
         return "end"
     retry = state.get("retry_count", 0)
-    if retry < 3:
+    max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
+    if retry < max_retry:
         return "retry"
     return "end"
 
@@ -108,14 +111,15 @@ def _sql_execution_router(state: AgentState) -> str:
 def _sql_audit_router(state: AgentState) -> str:
     """SQL 审计后路由。
     - retryable=False：权限、表未选、语义层缺字段等硬性问题 → END
-    - retry_count 已用尽（>= 3） → END
+    - retry_count 已用尽（>= max_retry_count） → END
     - retryable=True → increment_retry → dsl_generate
     """
     audit = state.get("sql_audit_result") or {}
     if audit.get("retryable") is False or audit.get("severity") == "architectural":
         return "end"
     retry = state.get("retry_count", 0)
-    if retry >= 3:
+    max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
+    if retry >= max_retry:
         return "end"
     return "retry"
 

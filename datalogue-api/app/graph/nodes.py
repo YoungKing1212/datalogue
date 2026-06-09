@@ -51,6 +51,8 @@ from app.utils.query_constraints import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MAX_SQL_RETRY_COUNT = 3
+
 # 通用工具（json 解析 / token 计量 / prompt 构建 / 跨方言 SQL）拆到 app.utils
 from app.utils import (
     safe_json_parse as _safe_json_parse,
@@ -83,6 +85,98 @@ def _safe_llm_invoke(llm, messages: list, path: str = ""):
             return None, f"LLM 请求频率超限，请稍后重试。[{err_str[:120]}]"
         # 其他 API 错误
         return None, f"LLM 调用异常：{err_str[:200]}"
+
+
+def _sql_retry_trace(state: AgentState) -> list[dict[str, Any]]:
+    """读取 SQL 自动修复重试记录，复制后再写回，避免原地修改状态。"""
+    trace = state.get("sql_retry_trace") or []
+    return [dict(item) for item in trace if isinstance(item, dict)]
+
+
+def _start_sql_retry_trace(
+    state: AgentState,
+    diagnosis: dict[str, Any],
+    *,
+    original_error: str,
+) -> list[dict[str, Any]]:
+    """诊断可修复时登记一次待执行的 SQL 自动修复重试。"""
+    trace = _sql_retry_trace(state)
+    retry_count = state.get("retry_count", 0)
+    max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
+    attempt = retry_count + 1
+    trace.append(
+        {
+            "attempt": attempt,
+            "max_attempts": max_retry,
+            "original_sql": state.get("sql"),
+            "repair_reason": diagnosis.get("suggested_action")
+            or diagnosis.get("suggested_fix")
+            or diagnosis.get("detail")
+            or diagnosis.get("title"),
+            "diagnosis_code": diagnosis.get("code"),
+            "diagnosis_title": diagnosis.get("title"),
+            "diagnosis_detail": diagnosis.get("detail") or diagnosis.get("root_cause"),
+            "original_error": original_error,
+            "status": "pending",
+            "result": "等待自动修复重试",
+        }
+    )
+    return trace
+
+
+def _finish_latest_sql_retry_trace(
+    state: AgentState,
+    *,
+    status: str,
+    result: str,
+    repaired_sql: str | None = None,
+    error: str | None = None,
+    row_count: int | None = None,
+) -> list[dict[str, Any]] | None:
+    """回填最近一次 SQL 自动修复重试结果。"""
+    trace = _sql_retry_trace(state)
+    if not trace:
+        return None
+    idx = None
+    for i in range(len(trace) - 1, -1, -1):
+        if trace[i].get("status") == "pending":
+            idx = i
+            break
+    if idx is None:
+        idx = len(trace) - 1
+    item = dict(trace[idx])
+    item.update(
+        {
+            "status": status,
+            "result": result,
+            "repaired_sql": repaired_sql if repaired_sql is not None else state.get("sql"),
+        }
+    )
+    if error:
+        item["error"] = error
+    if row_count is not None:
+        item["row_count"] = row_count
+    trace[idx] = item
+    return trace
+
+
+def _attach_sql_retry_failure(
+    state: AgentState,
+    output: dict[str, Any],
+    *,
+    result: str,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """节点提前失败时，把失败原因写回最近一次自动修复记录。"""
+    retry_trace = _finish_latest_sql_retry_trace(
+        state,
+        status="failed",
+        result=result,
+        error=error or output.get("error"),
+    )
+    if retry_trace is not None:
+        output["sql_retry_trace"] = retry_trace
+    return output
 
 
 # ── 节点 1: 意图识别 ──────────────────────────────────
@@ -1762,34 +1856,46 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
     if "direct_sql" in dsl:
         sql = dsl.get("direct_sql", "")
         if not sql:
-            return {
-                "dsl": dsl,
-                "dsl_valid": False,
-                "error": "LLM 未生成有效 SQL",
-                "should_retry": True,
-            }
+            return _attach_sql_retry_failure(
+                state,
+                {
+                    "dsl": dsl,
+                    "dsl_valid": False,
+                    "error": "LLM 未生成有效 SQL",
+                    "should_retry": True,
+                },
+                result="自动修复未生成有效 SQL",
+            )
         return {"dsl": dsl, "dsl_valid": True, "error": None, "should_retry": False}
 
     # 真实数据源 Schema 模式
     if schema and "【数据源真实表结构】" in schema:
         sql = dsl.get("sql") or ""
         if not sql:
-            return {
-                "dsl": dsl,
-                "dsl_valid": False,
-                "error": "LLM 未生成有效 SQL",
-                "should_retry": True,
-            }
+            return _attach_sql_retry_failure(
+                state,
+                {
+                    "dsl": dsl,
+                    "dsl_valid": False,
+                    "error": "LLM 未生成有效 SQL",
+                    "should_retry": True,
+                },
+                result="自动修复未生成有效 SQL",
+            )
         return {"dsl": dsl, "dsl_valid": True, "error": None, "should_retry": False}
 
     # 语义层 DSL 模式
     if not dsl or not isinstance(dsl, dict):
-        return {
-            "dsl": dsl,
-            "dsl_valid": False,
-            "error": "DSL 为空或格式错误",
-            "should_retry": True,
-        }
+        return _attach_sql_retry_failure(
+            state,
+            {
+                "dsl": dsl,
+                "dsl_valid": False,
+                "error": "DSL 为空或格式错误",
+                "should_retry": True,
+            },
+            result="自动修复未生成有效 DSL",
+        )
 
     # 优先从结构化对象中提取有效名称（包含原始字段，LLM 可基于上下文推理使用）
     if structured:
@@ -1826,12 +1932,17 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
 
     if errors:
         logger.warning(f"DSL校验失败: {'; '.join(errors)}")
-        return {
-            "dsl": dsl,
-            "dsl_valid": False,
-            "error": "; ".join(errors),
-            "should_retry": True,
-        }
+        error_text = "; ".join(errors)
+        return _attach_sql_retry_failure(
+            state,
+            {
+                "dsl": dsl,
+                "dsl_valid": False,
+                "error": error_text,
+                "should_retry": True,
+            },
+            result="自动修复生成的 DSL 未通过校验",
+        )
     logger.info("DSL校验通过")
     return {"dsl": dsl, "dsl_valid": True, "error": None, "should_retry": False}
 
@@ -1861,7 +1972,11 @@ def dsl_compiler_node(db: Session):
             sql = dsl.get("direct_sql", "")
             if not sql:
                 logger.error("direct_sql模式: SQL为空")
-                return {"sql": None, "error": "未生成有效 SQL"}
+                return _attach_sql_retry_failure(
+                    state,
+                    {"sql": None, "error": "未生成有效 SQL"},
+                    result="自动修复未生成可执行 SQL",
+                )
             guard_result = _guard_readonly_sql(
                 sql,
                 dialect=dialect,
@@ -1869,12 +1984,16 @@ def dsl_compiler_node(db: Session):
             )
             if not guard_result.ok:
                 logger.error("direct_sql模式: SQL Guard 拦截: %s", guard_result.error)
-                return {
+                return _attach_sql_retry_failure(
+                    state,
+                    {
                     "sql": None,
                     "error": guard_result.error,
                     "sql_guard": guard_result.__dict__,
                     "should_retry": False,
-                }
+                    },
+                    result="自动修复后的 SQL 未通过安全校验",
+                )
             sql = guard_result.normalized_sql or sql
             logger.info("direct_sql模式: 编译成功")
             return {
@@ -1889,7 +2008,11 @@ def dsl_compiler_node(db: Session):
             sql = dsl.get("sql") or ""
             if not sql:
                 logger.error("真实Schema模式: SQL为空")
-                return {"sql": None, "error": "未生成有效 SQL"}
+                return _attach_sql_retry_failure(
+                    state,
+                    {"sql": None, "error": "未生成有效 SQL"},
+                    result="自动修复未生成可执行 SQL",
+                )
             guard_result = _guard_readonly_sql(
                 sql,
                 dialect=dialect,
@@ -1897,12 +2020,16 @@ def dsl_compiler_node(db: Session):
             )
             if not guard_result.ok:
                 logger.error("真实Schema模式: SQL Guard 拦截: %s", guard_result.error)
-                return {
+                return _attach_sql_retry_failure(
+                    state,
+                    {
                     "sql": None,
                     "error": guard_result.error,
                     "sql_guard": guard_result.__dict__,
                     "should_retry": False,
-                }
+                    },
+                    result="自动修复后的 SQL 未通过安全校验",
+                )
             sql = guard_result.normalized_sql or sql
             logger.info("真实Schema模式: 编译成功")
             return {
@@ -1914,7 +2041,11 @@ def dsl_compiler_node(db: Session):
 
         if not dsl:
             logger.error("DSL为空，无法编译")
-            return {"sql": None, "error": "DSL 为空，无法编译"}
+            return _attach_sql_retry_failure(
+                state,
+                {"sql": None, "error": "DSL 为空，无法编译"},
+                result="自动修复未生成有效 DSL",
+            )
 
         # ── 优先使用结构化对象 ──
         if structured:
@@ -2038,10 +2169,12 @@ def dsl_compiler_node(db: Session):
         if not primary_table:
             # 兜底：实在找不到就别用假名 "orders"，直接报错让上层重试
             logger.error("DSL编译: 无法确定主表（tables_json 为空且指标未指定 table_name）")
-            return {
-                "sql": None,
-                "error": "无法确定主表，请在数据集配置中维护 tables_json 或为指标指定 table_name",
-            }
+            error_text = "无法确定主表，请在数据集配置中维护 tables_json 或为指标指定 table_name"
+            return _attach_sql_retry_failure(
+                state,
+                {"sql": None, "error": error_text},
+                result="自动修复仍无法确定主表",
+            )
 
         # 主表 FROM：仅在 alias 与表名不同（且有效）时输出 AS 子句
         if primary_alias and primary_alias != primary_table:
@@ -2205,12 +2338,16 @@ def dsl_compiler_node(db: Session):
         )
         if not guard_result.ok:
             logger.error("DSL编译: SQL Guard 拦截: %s", guard_result.error)
-            return {
+            return _attach_sql_retry_failure(
+                state,
+                {
                 "sql": None,
                 "error": guard_result.error,
                 "sql_guard": guard_result.__dict__,
                 "should_retry": False,
-            }
+                },
+                result="自动修复后的 SQL 未通过安全校验",
+            )
         sql = guard_result.normalized_sql or sql
 
         logger.info(f"DSL编译成功 (dialect={dialect}): {sql}")
@@ -2297,15 +2434,36 @@ def sql_execute_node(db: Session):
                     "column_labels": _build_column_labels(db, dataset_id),
                 }
                 logger.info(f"SQL执行成功: 返回 {len(rows)} 行")
-                return {"sql_result": result, "error": None, "should_retry": False}
+                output = {"sql_result": result, "error": None, "should_retry": False}
+                retry_trace = _finish_latest_sql_retry_trace(
+                    state,
+                    status="success",
+                    result=f"自动修复后执行成功，返回 {len(rows)} 行",
+                    repaired_sql=sql,
+                    row_count=len(rows),
+                )
+                if retry_trace is not None:
+                    output["sql_retry_trace"] = retry_trace
+                return output
         except Exception as e:
             logger.error(f"SQL执行失败: {e}")
-            return {
+            error_text = f"SQL 执行失败: {str(e)}"
+            output = {
                 "sql_result": None,
-                "error": f"SQL 执行失败: {str(e)}",
+                "error": error_text,
                 "should_retry": True,
                 "datasource_dialect": dialect,
             }
+            retry_trace = _finish_latest_sql_retry_trace(
+                state,
+                status="failed",
+                result="自动修复后执行仍失败",
+                repaired_sql=sql,
+                error=error_text,
+            )
+            if retry_trace is not None:
+                output["sql_retry_trace"] = retry_trace
+            return output
         finally:
             engine.dispose()
 
@@ -2406,6 +2564,7 @@ def sql_audit_node(db: Session):
         semantic_asset_resolution = state.get("semantic_asset_resolution") or {}
         dataset_id = state.get("dataset_id")
         retry_count = state.get("retry_count", 0)
+        max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
         datasource_dialect = state.get("datasource_dialect")
 
         # 解析 datasource（sample data 查询需要）
@@ -2495,6 +2654,22 @@ def sql_audit_node(db: Session):
             result = {}
 
         diagnosis = _merge_llm_sql_diagnosis(base_diagnosis, result)
+        retryable = bool(diagnosis.get("retryable"))
+        will_retry = retryable and retry_count < max_retry
+        diagnosis["retry_decision"] = {
+            "will_retry": will_retry,
+            "retry_count": retry_count,
+            "max_retry_count": max_retry,
+            "reason": (
+                "诊断为可自动修复，进入下一轮 SQL 生成"
+                if will_retry
+                else (
+                    "已达到自动修复重试上限"
+                    if retryable
+                    else "诊断为不可自动修复，终止重试"
+                )
+            ),
+        }
         audit = dict(diagnosis)
         logger.info(
             "SQL审计完成: code=%s severity=%s retryable=%s root_cause=%r",
@@ -2513,12 +2688,25 @@ def sql_audit_node(db: Session):
         _write_sql_diagnosis_log(db, state, diagnosis)
 
         friendly_error = _format_sql_diagnosis_error(diagnosis, original_error)
+        retry_trace = _sql_retry_trace(state)
+        if will_retry:
+            retry_trace = _start_sql_retry_trace(
+                state,
+                diagnosis,
+                original_error=original_error,
+            )
+        elif retryable:
+            friendly_error = (
+                f"{friendly_error}。已达到自动修复重试上限（{max_retry} 次），"
+                "无法继续安全重试。"
+            )
 
         return {
             "sql_audit_result": audit,
             "sql_diagnosis": diagnosis,
-            "should_retry": bool(diagnosis.get("retryable")),
+            "should_retry": will_retry,
             "error": friendly_error,
+            "sql_retry_trace": retry_trace,
             "token_usage": merged,
         }
 

@@ -72,7 +72,9 @@ class AgentState(TypedDict):
     # 控制层
     error: Optional[str]  # 错误信息（用于重试）
     retry_count: int  # 当前重试次数
+    max_retry_count: int  # 本轮 SQL 自动修复最多重试次数
     should_retry: bool  # 是否触发重试
+    sql_retry_trace: Optional[List[dict]]  # SQL 自动修复重试记录，含原 SQL、修复原因和结果
 
     # SQL 审计（sql_audit_node 写入）：区分 fixable（可重试） / architectural（需用户改数据集）
     # 注意：节点名是 "sql_audit"，state 字段必须用不同名（LangGraph 禁止同名）

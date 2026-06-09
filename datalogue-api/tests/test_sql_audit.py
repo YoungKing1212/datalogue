@@ -56,6 +56,8 @@ def _make_state(**overrides):
             "unresolved": [],
         },
         "dataset_id": 4,
+        "max_retry_count": 3,
+        "sql_retry_trace": [],
         "token_usage": None,
     }
     state.update(overrides)
@@ -185,6 +187,10 @@ class TestSqlAuditNode:
         assert result["sql_audit_result"]["wrong_field"] == "create_date"
         assert result["sql_diagnosis"]["code"] == "FIELD_NOT_FOUND"
         assert result["should_retry"] is True
+        assert result["sql_retry_trace"][0]["attempt"] == 1
+        assert result["sql_retry_trace"][0]["original_sql"] == state["sql"]
+        assert result["sql_retry_trace"][0]["status"] == "pending"
+        assert "apply_time" in result["sql_retry_trace"][0]["repair_reason"]
         # error 字段被改写为诊断友好文本
         assert "SQL 执行失败诊断" in result["error"]
         assert "time_range.field" in result["error"]
@@ -226,8 +232,47 @@ class TestSqlAuditNode:
         assert result["sql_audit_result"]["retryable"] is False
         assert result["sql_audit_result"]["code"] == "FIELD_NOT_FOUND"
         assert result["should_retry"] is False
+        assert result["sql_retry_trace"] == []
         assert "SQL 执行失败诊断" in result["error"]
         assert "语义层" in result["error"]
+
+    def test_retry_exhausted_should_explain_unable_to_fix(self, monkeypatch):
+        from app.graph.nodes import sql_audit_node
+
+        llm_response = _mock_llm_response(
+            json.dumps(
+                {
+                    "root_cause": "字段名仍然错误",
+                    "wrong_field": "create_date",
+                    "suggested_fix": "应改用 apply_time",
+                },
+                ensure_ascii=False,
+            )
+        )
+        _patch_get_llm(monkeypatch, llm_response)
+        _patch_fetch_sample_rows(monkeypatch)
+
+        db = MagicMock()
+        db.get.return_value = None
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        result = sql_audit_node(db)(
+            _make_state(
+                retry_count=3,
+                max_retry_count=3,
+                sql_retry_trace=[
+                    {"attempt": 1, "status": "failed"},
+                    {"attempt": 2, "status": "failed"},
+                    {"attempt": 3, "status": "failed"},
+                ],
+            )
+        )
+
+        assert result["should_retry"] is False
+        assert result["sql_diagnosis"]["retry_decision"]["will_retry"] is False
+        assert result["sql_diagnosis"]["retry_decision"]["reason"] == "已达到自动修复重试上限"
+        assert "已达到自动修复重试上限（3 次）" in result["error"]
+        assert len(result["sql_retry_trace"]) == 3
 
     # ── 测试 3: LLM 返回非 JSON → fallback fixable ─────────
 
@@ -253,6 +298,7 @@ class TestSqlAuditNode:
         assert result["should_retry"] is True
         assert result["sql_audit_result"]["code"] == "FIELD_NOT_FOUND"
         assert result["sql_audit_result"]["root_cause"]
+        assert result["sql_retry_trace"][0]["result"] == "等待自动修复重试"
         # error 字段在 fixable 路径下被重写
         assert "SQL 执行失败诊断" in result["error"]
 
@@ -282,6 +328,7 @@ class TestSqlAuditNode:
         assert result["sql_audit_result"]["severity"] == "fixable"
         assert result["sql_audit_result"]["code"] == "FIELD_NOT_FOUND"
         assert result["should_retry"] is True
+        assert result["sql_retry_trace"][0]["diagnosis_code"] == "FIELD_NOT_FOUND"
         assert "SQL 执行失败诊断" in result["error"]
         assert "Unknown column 'create_date'" in result["error"]
 
@@ -317,6 +364,31 @@ class TestSqlAuditNode:
         assert result["sql_audit_result"]["severity"] == "fixable"
         assert result["sql_audit_result"]["retryable"] is True
         assert result["should_retry"] is True
+
+    def test_finish_latest_sql_retry_trace_records_result(self):
+        from app.graph.nodes import _finish_latest_sql_retry_trace
+
+        state = _make_state(
+            sql="SELECT SUM(refund_amt) FROM t_refund WHERE apply_time >= '2025-01-01'",
+            sql_retry_trace=[
+                {
+                    "attempt": 1,
+                    "original_sql": "SELECT SUM(refund_amt) FROM t_refund WHERE create_date >= '2025-01-01'",
+                    "repair_reason": "改用 apply_time",
+                    "status": "pending",
+                }
+            ],
+        )
+        trace = _finish_latest_sql_retry_trace(
+            state,
+            status="success",
+            result="自动修复后执行成功，返回 1 行",
+            row_count=1,
+        )
+
+        assert trace[0]["status"] == "success"
+        assert trace[0]["repaired_sql"] == state["sql"]
+        assert trace[0]["row_count"] == 1
 
     def test_write_sql_diagnosis_log_best_effort(self, monkeypatch, db_session, sample_dataset):
         from app.graph.nodes import sql_audit_node
@@ -430,6 +502,17 @@ class TestSqlAuditRouter:
         state = {
             "sql_audit_result": {"severity": "fixable", "retryable": True},
             "retry_count": 3,
+            "max_retry_count": 3,
+        }
+        assert _sql_audit_router(state) == "end"
+
+    def test_custom_max_retry_count_routes_to_end(self):
+        from app.graph.workflow import _sql_audit_router
+
+        state = {
+            "sql_audit_result": {"severity": "fixable", "retryable": True},
+            "retry_count": 2,
+            "max_retry_count": 2,
         }
         assert _sql_audit_router(state) == "end"
 

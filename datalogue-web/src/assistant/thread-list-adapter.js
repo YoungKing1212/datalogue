@@ -82,7 +82,9 @@ function formatStepAsReasoning(step) {
     const diagnosis = step.sql_diagnosis || step.sql_audit_result || {};
     const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || 'SQL 执行失败';
     const suggested = diagnosis.suggested_action || diagnosis.suggested_fix || '';
-    detail = suggested ? `${title} · ${suggested}` : title;
+    const retries = step.sql_retry_trace?.length ?? 0;
+    const retryText = retries ? ` · 自动修复第 ${retries} 次` : '';
+    detail = suggested ? `${title} · ${suggested}${retryText}` : `${title}${retryText}`;
   } else if (step.node === 'report_generator') {
     detail = '已生成分析报告';
   }

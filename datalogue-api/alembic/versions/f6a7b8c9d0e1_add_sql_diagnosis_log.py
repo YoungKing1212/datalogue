@@ -23,6 +23,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision: str = "f6a7b8c9d0e1"
@@ -32,28 +33,56 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "sql_diagnosis_log",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("conversation_id", sa.Integer(), nullable=True),
-        sa.Column("dataset_id", sa.Integer(), nullable=True),
-        sa.Column("question", sa.Text(), nullable=True),
-        sa.Column("sql", sa.Text(), nullable=True),
-        sa.Column("error", sa.Text(), nullable=True),
-        sa.Column("diagnosis", sa.JSON(), nullable=True),
-        sa.Column("retry_count", sa.Integer(), server_default="0", nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True),
-        sa.ForeignKeyConstraint(["conversation_id"], ["conversation.id"]),
-        sa.ForeignKeyConstraint(["dataset_id"], ["semantic_dataset.id"]),
-        sa.PrimaryKeyConstraint("id"),
+    inspector = inspect(op.get_bind())
+    table_exists = inspector.has_table("sql_diagnosis_log")
+    existing_indexes = (
+        {idx.get("name") for idx in inspector.get_indexes("sql_diagnosis_log")}
+        if table_exists
+        else set()
     )
-    op.create_index("ix_sql_diagnosis_log_conversation_id", "sql_diagnosis_log", ["conversation_id"])
-    op.create_index("ix_sql_diagnosis_log_dataset_id", "sql_diagnosis_log", ["dataset_id"])
-    op.create_index("ix_sql_diagnosis_log_id", "sql_diagnosis_log", ["id"])
+
+    if not table_exists:
+        op.create_table(
+            "sql_diagnosis_log",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("conversation_id", sa.Integer(), nullable=True),
+            sa.Column("dataset_id", sa.Integer(), nullable=True),
+            sa.Column("question", sa.Text(), nullable=True),
+            sa.Column("sql", sa.Text(), nullable=True),
+            sa.Column("error", sa.Text(), nullable=True),
+            sa.Column("diagnosis", sa.JSON(), nullable=True),
+            sa.Column("retry_count", sa.Integer(), server_default="0", nullable=False),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=True,
+            ),
+            sa.ForeignKeyConstraint(["conversation_id"], ["conversation.id"]),
+            sa.ForeignKeyConstraint(["dataset_id"], ["semantic_dataset.id"]),
+            sa.PrimaryKeyConstraint("id"),
+        )
+    if "ix_sql_diagnosis_log_conversation_id" not in existing_indexes:
+        op.create_index(
+            "ix_sql_diagnosis_log_conversation_id",
+            "sql_diagnosis_log",
+            ["conversation_id"],
+        )
+    if "ix_sql_diagnosis_log_dataset_id" not in existing_indexes:
+        op.create_index("ix_sql_diagnosis_log_dataset_id", "sql_diagnosis_log", ["dataset_id"])
+    if "ix_sql_diagnosis_log_id" not in existing_indexes:
+        op.create_index("ix_sql_diagnosis_log_id", "sql_diagnosis_log", ["id"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_sql_diagnosis_log_id", table_name="sql_diagnosis_log")
-    op.drop_index("ix_sql_diagnosis_log_dataset_id", table_name="sql_diagnosis_log")
-    op.drop_index("ix_sql_diagnosis_log_conversation_id", table_name="sql_diagnosis_log")
+    inspector = inspect(op.get_bind())
+    if not inspector.has_table("sql_diagnosis_log"):
+        return
+    indexes = {idx.get("name") for idx in inspector.get_indexes("sql_diagnosis_log")}
+    if "ix_sql_diagnosis_log_id" in indexes:
+        op.drop_index("ix_sql_diagnosis_log_id", table_name="sql_diagnosis_log")
+    if "ix_sql_diagnosis_log_dataset_id" in indexes:
+        op.drop_index("ix_sql_diagnosis_log_dataset_id", table_name="sql_diagnosis_log")
+    if "ix_sql_diagnosis_log_conversation_id" in indexes:
+        op.drop_index("ix_sql_diagnosis_log_conversation_id", table_name="sql_diagnosis_log")
     op.drop_table("sql_diagnosis_log")

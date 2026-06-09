@@ -68,7 +68,9 @@ function formatStepAsReasoning(ev) {
     const diagnosis = ev.sql_diagnosis || ev.sql_audit_result || {};
     const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || 'SQL 执行失败';
     const suggested = diagnosis.suggested_action || diagnosis.suggested_fix || '';
-    detail = suggested ? `${title} · ${suggested}` : title;
+    const retries = ev.sql_retry_trace?.length ?? 0;
+    const retryText = retries ? ` · 自动修复第 ${retries} 次` : '';
+    detail = suggested ? `${title} · ${suggested}${retryText}` : `${title}${retryText}`;
   } else if (ev.node === 'report_generator') {
     detail = '已生成分析报告';
   }
@@ -202,6 +204,7 @@ export function makeChatAdapter({ datasetIdRef }) {
               sqlResult: finalPayload.sql_result || null,
               sqlDiagnosis: finalPayload.sql_diagnosis || null,
               sqlAuditResult: finalPayload.sql_audit_result || null,
+              sqlRetryTrace: finalPayload.sql_retry_trace || null,
               dsl: finalPayload.dsl || null,
               termNormalization: finalPayload.term_normalization || null,
               semanticAssetResolution: finalPayload.semantic_asset_resolution || null,

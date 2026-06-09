@@ -72,6 +72,7 @@ _STATE_OUTPUT_KEYS = {
     "datasource_dialect",
     "sql_audit_result",
     "sql_diagnosis",
+    "sql_retry_trace",
     "answer",
     "sql_list",
     "error",
@@ -213,7 +214,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "sql_list": [],
         "error": None,
         "retry_count": 0,
+        "max_retry_count": 3,
         "should_retry": False,
+        "sql_retry_trace": [],
         "token_usage": None,
     }
 
@@ -324,6 +327,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     sse_payload["code"] = diagnosis.get("code")
                     sse_payload["severity"] = diagnosis.get("severity")
                     sse_payload["retryable"] = diagnosis.get("retryable")
+                    sse_payload["sql_retry_trace"] = final_state.get("sql_retry_trace") or []
                 step_traces.append(sse_payload)
                 logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
                 yield _sse_data(sse_payload)
@@ -362,6 +366,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     generation_mode = final_state.get("generation_mode")
     retry_count = final_state.get("retry_count", 0)
     sql_diagnosis = final_state.get("sql_diagnosis") or final_state.get("sql_audit_result")
+    sql_retry_trace = final_state.get("sql_retry_trace") or []
 
     if raw_answer:
         answer = str(raw_answer)
@@ -372,7 +377,17 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             answer = "AI 基于表结构推断查询时未能成功，请检查已选表配置或尝试换一种问法。"
     elif error:
         if sql_diagnosis:
-            answer = f"查询处理出现问题：{error}"
+            retry_suffix = ""
+            if sql_retry_trace:
+                retry_suffix = f"。系统已尝试自动修复 {len(sql_retry_trace)} 次"
+                failed_reasons = [
+                    item.get("result") or item.get("error")
+                    for item in sql_retry_trace
+                    if item.get("status") == "failed"
+                ]
+                if failed_reasons:
+                    retry_suffix += f"，最后结果：{failed_reasons[-1]}"
+            answer = f"查询处理出现问题：{error}{retry_suffix}"
         elif retry_count >= 3:
             answer = f"查询多次尝试后仍未能成功：{error}。建议检查语义层配置或数据源连接。"
         else:
@@ -404,6 +419,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "sql_result": final_state.get("sql_result"),
         "sql_diagnosis": sql_diagnosis,
         "sql_audit_result": final_state.get("sql_audit_result"),
+        "sql_retry_trace": sql_retry_trace,
         "conversation_id": conv_id,
         "title": conv.title,
     }

@@ -33,6 +33,7 @@ class TestChatAPI:
         assert _NODE_DISPLAY_NAMES["sql_audit"] == "SQL 诊断"
         assert "sql_audit_result" in _STATE_OUTPUT_KEYS
         assert "sql_diagnosis" in _STATE_OUTPUT_KEYS
+        assert "sql_retry_trace" in _STATE_OUTPUT_KEYS
 
     def test_chat_stream_basic(self, client, sample_dataset):
         """基础流式问数接口应返回 200"""
