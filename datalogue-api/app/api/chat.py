@@ -36,6 +36,8 @@ _NODE_DISPLAY_NAMES = {
     "entry_intent_classification": "入口分类",
     "analysis_blueprint_execute": "蓝图执行",
     "schema_recall": "Schema 召回",
+    "term_normalize_node": "术语归一化",
+    "semantic_asset_resolution_node": "语义资产解析",
     "metric_resolution_node": "指标解析",
     "dsl_generate": "DSL 生成",
     "dsl_validate": "DSL 校验",
@@ -57,6 +59,8 @@ _STATE_OUTPUT_KEYS = {
     "route_payload",
     "schema_context",
     "query_constraints",
+    "term_normalization",
+    "semantic_asset_resolution",
     "metric_resolution",
     "dsl",
     "dsl_valid",
@@ -184,7 +188,12 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "knowledge_term_id": None,
         "route_payload": None,
         "schema_context": None,
+        "schema_structured": None,
+        "ddl_context": None,
         "query_constraints": None,
+        "term_normalization": None,
+        "semantic_asset_resolution": None,
+        "metric_resolution": None,
         "dsl": None,
         "dsl_valid": False,
         "sql": None,
@@ -267,8 +276,17 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     sse_payload["rows"] = result.get("row_count", 0)
                     sse_payload["columns"] = result.get("columns", [])
                     sse_payload["route_payload"] = final_state.get("route_payload") or {}
-                elif lg_node == "metric_resolution_node":
+                elif lg_node in ("semantic_asset_resolution_node", "metric_resolution_node"):
+                    sse_payload["semantic_asset_resolution"] = (
+                        final_state.get("semantic_asset_resolution") or {}
+                    )
                     sse_payload["metric_resolution"] = final_state.get("metric_resolution") or {}
+                elif lg_node == "term_normalize_node":
+                    sse_payload["term_normalization"] = (
+                        final_state.get("term_normalization") or {}
+                    )
+                    sse_payload["entry_route"] = final_state.get("entry_route") or ""
+                    sse_payload["route_payload"] = final_state.get("route_payload") or {}
                 elif lg_node == "dsl_generate":
                     sse_payload["dsl"] = final_state.get("dsl") or {}
                     sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
@@ -352,6 +370,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "blueprint_match": final_state.get("blueprint_match"),
         "knowledge_term_id": final_state.get("knowledge_term_id"),
         "route_payload": final_state.get("route_payload"),
+        "term_normalization": final_state.get("term_normalization"),
+        "semantic_asset_resolution": final_state.get("semantic_asset_resolution"),
         "metric_resolution": final_state.get("metric_resolution"),
         "dsl": final_state.get("dsl"),
         "generation_mode": final_state.get("generation_mode"),

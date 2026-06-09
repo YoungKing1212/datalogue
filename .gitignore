@@ -1,6 +1,11 @@
 .superpowers/
 .claude/
 .playwright-mcp/
+.agents/skills/
+.codex/config.toml
+.cubestore/
+skills-lock.json
+feishu-cli-auth-qrcode.png
 
 # Python
 __pycache__/

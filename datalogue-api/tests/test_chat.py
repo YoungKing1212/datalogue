@@ -179,6 +179,255 @@ class TestLangGraphNodes:
         assert result["blueprint_id"] == bp.id
         assert result["route_payload"]["blueprint_id"] == bp.id
 
+    def test_semantic_asset_resolution_metric_synonym(self):
+        """语义资产解析：指标同义词命中，并兼容旧 metric_resolution。"""
+        from app.graph.nodes import semantic_asset_resolution_node
+
+        state = {
+            "question": "销售额是多少",
+            "entities": {"metrics": ["销售额"], "dimensions": []},
+            "schema_structured": {
+                "metrics": [
+                    {
+                        "id": 1,
+                        "name": "gmv",
+                        "display_name": "GMV",
+                        "synonyms": ["销售额"],
+                    }
+                ],
+                "dimensions": [],
+                "terms": [],
+                "fields": [],
+                "blueprints": [],
+            },
+        }
+        result = semantic_asset_resolution_node(state)
+
+        semantic = result["semantic_asset_resolution"]
+        assert semantic["metrics"][0]["name"] == "gmv"
+        assert semantic["metrics"][0]["asset_id"] == 1
+        assert semantic["metrics"][0]["match_type"] == "synonym"
+        assert result["metric_resolution"]["metrics"][0]["resolved"] == "gmv"
+        assert result["metric_resolution"]["all_matched"] is True
+
+    def test_term_normalize_node_alias_match(self):
+        """术语归一化：业务术语同义词应注入 entities.terms。"""
+        from app.graph.nodes import term_normalize_node
+
+        state = {
+            "question": "销售额趋势",
+            "entities": {"metrics": [], "dimensions": []},
+            "schema_structured": {
+                "terms": [
+                    {
+                        "id": 7,
+                        "name": "gmv",
+                        "display_name": "GMV",
+                        "term_type": "metric",
+                        "aliases": ["销售额"],
+                        "asset_links": [
+                            {
+                                "asset_type": "metric",
+                                "asset_id": 1,
+                                "asset_name": "gmv",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        result = term_normalize_node(state)
+
+        normalization = result["term_normalization"]
+        assert normalization["matched_terms"][0]["name"] == "gmv"
+        assert normalization["matched_terms"][0]["match_type"] == "synonym"
+        assert normalization["has_conflict"] is False
+        assert result["entities"]["terms"] == ["销售额"]
+
+    def test_term_normalize_node_conflict_clarification(self):
+        """术语归一化：同一个同义词命中多个术语时进入澄清。"""
+        from app.graph.nodes import term_normalize_node
+
+        state = {
+            "question": "销售额是多少",
+            "entities": {"metrics": [], "dimensions": []},
+            "schema_structured": {
+                "terms": [
+                    {
+                        "id": 1,
+                        "name": "gmv",
+                        "display_name": "GMV",
+                        "aliases": ["销售额"],
+                    },
+                    {
+                        "id": 2,
+                        "name": "paid_amount",
+                        "display_name": "实付金额",
+                        "aliases": ["销售额"],
+                    },
+                ]
+            },
+        }
+        result = term_normalize_node(state)
+
+        assert result["entry_intent"] == "clarification"
+        assert result["entry_route"] == "clarify"
+        assert result["route_payload"]["kind"] == "term_conflict_clarification"
+        assert result["term_normalization"]["has_conflict"] is True
+        assert {t["id"] for t in result["route_payload"]["conflicts"][0]["terms"]} == {1, 2}
+
+    def test_term_normalization_router_blocks_conflict(self):
+        """工作流路由：术语冲突时不继续进入 DSL 生成链路。"""
+        from app.graph.workflow import _term_normalization_router
+
+        assert (
+            _term_normalization_router(
+                {"route_payload": {"kind": "term_conflict_clarification"}}
+            )
+            == "end"
+        )
+        assert _term_normalization_router({"route_payload": {}}) == "semantic_asset_resolution"
+
+    def test_term_normalize_feeds_semantic_asset_resolution(self):
+        """术语归一化结果应影响后续资产解析。"""
+        from app.graph.nodes import semantic_asset_resolution_node, term_normalize_node
+
+        state = {
+            "question": "销售额趋势",
+            "entities": {"metrics": [], "dimensions": []},
+            "schema_structured": {
+                "metrics": [
+                    {"id": 1, "name": "gmv", "display_name": "GMV", "synonyms": []}
+                ],
+                "dimensions": [],
+                "fields": [],
+                "terms": [
+                    {
+                        "id": 7,
+                        "name": "sales_term",
+                        "display_name": "销售额术语",
+                        "aliases": ["销售额"],
+                        "asset_links": [
+                            {
+                                "asset_type": "metric",
+                                "asset_id": 1,
+                                "asset_name": "gmv",
+                            }
+                        ],
+                    }
+                ],
+                "blueprints": [],
+            },
+        }
+        normalized = term_normalize_node(state)
+        result = semantic_asset_resolution_node({**state, **normalized})
+
+        assert any(t["name"] == "sales_term" for t in result["semantic_asset_resolution"]["terms"])
+        assert any(
+            m["name"] == "gmv" and m["match_type"] == "linked_term"
+            for m in result["semantic_asset_resolution"]["metrics"]
+        )
+
+    def test_semantic_asset_resolution_field_label(self):
+        """语义资产解析：字段中文标注可被解析为 field 资产。"""
+        from app.graph.nodes import semantic_asset_resolution_node
+
+        state = {
+            "question": "查询人员姓名明细",
+            "entities": {"metrics": [], "dimensions": []},
+            "schema_structured": {
+                "metrics": [],
+                "dimensions": [],
+                "terms": [],
+                "fields": [
+                    {
+                        "id": 12,
+                        "name": "person_name",
+                        "column_name": "person_name",
+                        "display_name": "人员姓名",
+                        "table_name": "plan_task_daily_record",
+                        "synonyms": ["姓名"],
+                    }
+                ],
+                "blueprints": [],
+            },
+        }
+        result = semantic_asset_resolution_node(state)
+
+        fields = result["semantic_asset_resolution"]["fields"]
+        assert fields[0]["name"] == "person_name"
+        assert fields[0]["asset_type"] == "field"
+        assert fields[0]["match_type"] in ("display_name", "column_label", "synonym")
+
+    def test_semantic_asset_resolution_term_linked_metric(self):
+        """语义资产解析：命中业务术语后扩展显式关联指标。"""
+        from app.graph.nodes import semantic_asset_resolution_node
+
+        state = {
+            "question": "日报怎么看",
+            "entities": {"metrics": [], "dimensions": []},
+            "schema_structured": {
+                "metrics": [
+                    {
+                        "id": 3,
+                        "name": "daily_finish_rate",
+                        "display_name": "日报完成率",
+                        "synonyms": [],
+                    }
+                ],
+                "dimensions": [],
+                "fields": [],
+                "terms": [
+                    {
+                        "id": 8,
+                        "name": "daily_report",
+                        "display_name": "日报",
+                        "aliases": ["工作日报"],
+                        "asset_links": [
+                            {
+                                "asset_type": "metric",
+                                "asset_id": 3,
+                                "asset_name": "daily_finish_rate",
+                            }
+                        ],
+                    }
+                ],
+                "blueprints": [],
+            },
+        }
+        result = semantic_asset_resolution_node(state)
+
+        semantic = result["semantic_asset_resolution"]
+        assert semantic["terms"][0]["name"] == "daily_report"
+        assert any(
+            m["name"] == "daily_finish_rate" and m["match_type"] == "linked_term"
+            for m in semantic["metrics"]
+        )
+
+    def test_semantic_asset_resolution_ambiguity(self):
+        """语义资产解析：近似同名资产应输出歧义候选。"""
+        from app.graph.nodes import semantic_asset_resolution_node
+
+        state = {
+            "question": "查询地区",
+            "entities": {"metrics": [], "dimensions": ["地区"]},
+            "schema_structured": {
+                "metrics": [],
+                "dimensions": [
+                    {"id": 1, "name": "region", "display_name": "地区", "synonyms": []},
+                    {"id": 2, "name": "area", "display_name": "地区", "synonyms": []},
+                ],
+                "terms": [],
+                "fields": [],
+                "blueprints": [],
+            },
+        }
+        result = semantic_asset_resolution_node(state)
+
+        ambiguities = result["semantic_asset_resolution"]["ambiguities"]
+        assert ambiguities
+        assert {c["asset_id"] for c in ambiguities[0]["candidates"]} == {1, 2}
+
     def test_analysis_blueprint_execute_success(self, db_session, sample_dataset):
         """蓝图执行：执行只读 SQL 模板并写入结果。"""
         from app.graph.nodes import analysis_blueprint_execute_node

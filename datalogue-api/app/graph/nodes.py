@@ -249,6 +249,79 @@ def _dsl_field_name(field: Any) -> str:
     return get_dsl_item_name(field)
 
 
+def _coerce_text_list(value: Any) -> list[str]:
+    """把 JSON / 字符串 / 列表里的别名清洗成字符串列表。"""
+    if value is None:
+        return []
+    if isinstance(value, list | tuple | set):
+        raw_items = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("["):
+            parsed = _safe_json_parse(stripped)
+            raw_items = parsed if isinstance(parsed, list) else [stripped]
+        else:
+            raw_items = re.split(r"[,，、;/；\n]+", stripped)
+    else:
+        raw_items = [value]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _semantic_match_text(text: Any) -> str:
+    """统一语义资产匹配用文本，忽略大小写、空白、下划线和常见引用符。"""
+    if text is None:
+        return ""
+    return re.sub(r"[\s_`'\".]+", "", str(text).strip().lower())
+
+
+def _dedupe_texts(values: list[Any]) -> list[str]:
+    """按语义匹配规则去重，保留原始展示文本。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        norm = _semantic_match_text(text)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(text)
+    return out
+
+
+def _field_aliases(field: dict) -> list[str]:
+    """字段资产可匹配名称，排除样例值，避免把查询参数值误当资产名。"""
+    column_name = field.get("column_name") or field.get("name")
+    short_column = str(column_name).split(".")[-1] if column_name else None
+    return _dedupe_texts(
+        [
+            column_name,
+            short_column,
+            field.get("display_name"),
+            field.get("column_comment"),
+            field.get("business_desc"),
+            field.get("effective_desc"),
+            field.get("user_description"),
+            field.get("ai_description"),
+            *_coerce_text_list(field.get("synonyms")),
+        ]
+    )
+
+
 def _format_dsl_asset_catalog(structured: dict | None) -> str:
     """把结构化语义层资产整理成 NL2DSL v2 可引用目录。"""
     if not structured:
@@ -257,6 +330,7 @@ def _format_dsl_asset_catalog(structured: dict | None) -> str:
     for asset_type, title, items in (
         ("metric", "指标", structured.get("metrics") or []),
         ("dimension", "维度", structured.get("dimensions") or []),
+        ("field", "字段", structured.get("fields") or []),
         ("term", "业务术语", structured.get("terms") or []),
         ("blueprint", "分析蓝图", structured.get("blueprints") or []),
     ):
@@ -265,6 +339,8 @@ def _format_dsl_asset_catalog(structured: dict | None) -> str:
         lines.append(f"{title}:")
         for item in items:
             aliases = item.get("synonyms") or item.get("aliases") or []
+            if asset_type == "field":
+                aliases = _field_aliases(item)
             alias_text = f"，同义词={aliases}" if aliases else ""
             lines.append(
                 "- "
@@ -750,6 +826,20 @@ def schema_recall_node(db: Session):
         if blueprint_context:
             context = f"{context}\n\n{blueprint_context}"
 
+        selected_links = (
+            db.query(DatasetSourceTable).filter(DatasetSourceTable.dataset_id == ds.id).all()
+        )
+        selected_table_ids = [link.source_table_id for link in selected_links]
+        source_columns: list[SourceColumn] = []
+        if selected_table_ids:
+            source_columns = (
+                db.query(SourceColumn)
+                .join(SourceTable, SourceColumn.table_id == SourceTable.id)
+                .filter(SourceColumn.table_id.in_(selected_table_ids))
+                .order_by(SourceTable.table_name, SourceColumn.ordinal_position)
+                .all()
+            )
+
         # 构建结构化对象供编译器直接使用，避免正则解析
         structured = {
             "dataset_name": ds.name,
@@ -780,6 +870,33 @@ def schema_recall_node(db: Session):
                 }
                 for d in dimensions
             ],
+            "fields": [
+                {
+                    "id": c.id,
+                    "name": c.column_name,
+                    "column_name": c.column_name,
+                    "display_name": c.effective_desc
+                    or c.user_description
+                    or c.ai_description
+                    or c.column_comment
+                    or c.column_name,
+                    "table_name": c.table.table_name if c.table else None,
+                    "data_type": c.data_type,
+                    "column_comment": c.column_comment,
+                    "business_desc": c.business_desc,
+                    "ai_description": c.ai_description,
+                    "user_description": c.user_description,
+                    "effective_desc": c.effective_desc,
+                    "semantic_role": c.user_semantic_role
+                    or c.ai_semantic_role
+                    or c.semantic_role,
+                    "default_agg": c.ai_suggested_agg or c.default_agg,
+                    "synonyms": c.suggested_synonyms or [],
+                    "desc_source": c.desc_source,
+                    "review_status": c.review_status,
+                }
+                for c in source_columns
+            ],
             "terms": [
                 {
                     "id": t.id,
@@ -787,7 +904,16 @@ def schema_recall_node(db: Session):
                     "display_name": t.display_name,
                     "term_type": t.term_type,
                     "aliases": t.aliases or [],
+                    "forbidden_aliases": t.forbidden_aliases or [],
                     "definition": t.definition,
+                    "asset_links": [
+                        {
+                            "asset_type": link.asset_type,
+                            "asset_id": link.asset_id,
+                            "asset_name": link.asset_name,
+                        }
+                        for link in (t.asset_links or [])
+                    ],
                 }
                 for t in terms
             ],
@@ -806,10 +932,6 @@ def schema_recall_node(db: Session):
 
         # 构建所选表的真实 DDL（用于推断路径）
         ddl_lines = ["【所选表结构】", ""]
-        selected_links = (
-            db.query(DatasetSourceTable).filter(DatasetSourceTable.dataset_id == ds.id).all()
-        )
-        selected_table_ids = [link.source_table_id for link in selected_links]
         if selected_table_ids:
             tables = db.query(SourceTable).filter(SourceTable.id.in_(selected_table_ids)).all()
             for t in tables:
@@ -874,70 +996,570 @@ def schema_recall_node(db: Session):
     return _node
 
 
-# ── 节点 2.5: 指标/维度解析（Metric Resolution）────────────────
+# ── 节点 2.5: 业务术语归一化（Term Normalize）────────────────
 
 
-def metric_resolution_node(state: AgentState) -> Dict[str, Any]:
-    """将用户意图中提取的实体与语义层定义进行匹配解析。
-    输出每个 metric/dimension 的匹配详情，供意图卡、审计日志和 dsl_generate 使用。
-    """
-    entities = state.get("entities", {})
-    structured = state.get("schema_structured")
-    logger.info("metric_resolution 开始解析实体")
+def _term_match_candidates(term: dict) -> list[tuple[str, str]]:
+    """返回业务术语可匹配词，包含标准名、展示名和同义词。"""
+    candidates: list[tuple[str, str]] = []
+    if term.get("name"):
+        candidates.append((str(term["name"]), "exact"))
+    if term.get("display_name") and term.get("display_name") != term.get("name"):
+        candidates.append((str(term["display_name"]), "display_name"))
+    for alias in _coerce_text_list(term.get("aliases")):
+        candidates.append((alias, "synonym"))
 
-    # 构建语义层名称索引：原始词 -> 定义对象
-    metric_map: dict[str, dict] = {}
-    dim_map: dict[str, dict] = {}
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for token, match_type in candidates:
+        norm = _semantic_match_text(token)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        deduped.append((token, match_type))
+    return deduped
 
-    if structured:
-        for m in structured.get("metrics", []):
-            metric_map[m["name"]] = m
-            if m.get("display_name"):
-                metric_map[m["display_name"]] = m
-            for syn in m.get("synonyms", []):
-                metric_map[syn] = m
-        for d in structured.get("dimensions", []):
-            dim_map[d["name"]] = d
-            if d.get("display_name"):
-                dim_map[d["display_name"]] = d
-            for syn in d.get("synonyms", []):
-                dim_map[syn] = d
 
-    def _resolve(entity: str, lookup_map: dict) -> dict:
-        matched = lookup_map.get(entity)
-        if not matched:
-            return {"entity": entity, "resolved": None, "status": "unresolved", "match_type": None}
-        if entity == matched["name"]:
-            match_type = "exact"
-        elif entity == matched.get("display_name"):
-            match_type = "display_name"
-        else:
-            match_type = "synonym"
-        return {
-            "entity": entity,
-            "resolved": matched["name"],
-            "status": "matched",
+def _match_term_in_question(term: dict, question: str) -> dict | None:
+    """在用户问题中匹配一个业务术语。"""
+    q_norm = _semantic_match_text(question)
+    if not q_norm:
+        return None
+
+    best: dict | None = None
+    for token, match_type in _term_match_candidates(term):
+        token_norm = _semantic_match_text(token)
+        if not token_norm:
+            continue
+        confidence = 0.0
+        if token_norm == q_norm:
+            confidence = {"exact": 0.97, "display_name": 0.95, "synonym": 0.9}.get(
+                match_type, 0.88
+            )
+        elif len(token_norm) >= 2 and token_norm in q_norm:
+            confidence = {"exact": 0.9, "display_name": 0.88, "synonym": 0.84}.get(
+                match_type, 0.8
+            )
+        if confidence <= 0:
+            continue
+        candidate = {
+            "term_id": term.get("id"),
+            "name": term.get("name"),
+            "display_name": term.get("display_name") or term.get("name"),
+            "term_type": term.get("term_type"),
+            "definition": term.get("definition"),
+            "matched_text": token,
             "match_type": match_type,
+            "confidence": round(confidence, 2),
+            "aliases": term.get("aliases") or [],
+            "asset_links": term.get("asset_links") or [],
+        }
+        if best is None or candidate["confidence"] > best["confidence"]:
+            best = candidate
+    return best
+
+
+def _build_term_conflicts(matches: list[dict]) -> list[dict]:
+    """识别本次问题命中的术语冲突。"""
+    by_token: dict[str, list[dict]] = {}
+    for match in matches:
+        token = _semantic_match_text(match.get("matched_text"))
+        if not token:
+            continue
+        by_token.setdefault(token, []).append(match)
+
+    conflicts: list[dict] = []
+    for token, owners in by_token.items():
+        unique_ids = {m.get("term_id") for m in owners}
+        if len(unique_ids) <= 1:
+            continue
+        conflicts.append(
+            {
+                "type": "alias_collision",
+                "token": owners[0].get("matched_text") or token,
+                "term_ids": sorted(i for i in unique_ids if i is not None),
+                "terms": [
+                    {
+                        "id": m.get("term_id"),
+                        "name": m.get("name"),
+                        "display_name": m.get("display_name"),
+                        "definition": m.get("definition"),
+                    }
+                    for m in owners
+                ],
+                "severity": "warning",
+                "message": "同一个名称或同义词命中了多个业务术语",
+            }
+        )
+    return conflicts
+
+
+def term_normalize_node(state: AgentState) -> Dict[str, Any]:
+    """将业务术语、同义词和冲突信息注入 QueryGraph。
+
+    节点只做确定性归一化，不额外调用 LLM；冲突术语直接转澄清，避免下游
+    DSL/SQL 在错误口径上继续生成。
+    """
+    question = state.get("question") or ""
+    structured = state.get("schema_structured") or {}
+    terms = structured.get("terms") or []
+    entities = dict(state.get("entities") or {})
+    logger.info("term_normalize 开始: terms=%s", len(terms))
+
+    matches = [
+        match for term in terms if (match := _match_term_in_question(term, question))
+    ]
+    matches.sort(key=lambda item: item.get("confidence", 0), reverse=True)
+    conflicts = _build_term_conflicts(matches)
+    term_normalization = {
+        "matched_terms": matches,
+        "conflicts": conflicts,
+        "has_conflict": bool(conflicts),
+    }
+
+    if conflicts:
+        names = "、".join(
+            sorted(
+                {
+                    term.get("display_name") or term.get("name") or str(term.get("id"))
+                    for conflict in conflicts
+                    for term in conflict.get("terms", [])
+                }
+            )
+        )
+        answer = f"“{conflicts[0]['token']}”可能对应多个业务术语：{names}。请先确认你要使用哪个口径。"
+        logger.info("term_normalize 发现冲突: %s", conflicts)
+        return {
+            "term_normalization": term_normalization,
+            "entry_intent": "clarification",
+            "entry_route": "clarify",
+            "entry_reason": "业务术语同义词命中多个定义，需要用户澄清。",
+            "answer": answer,
+            "route_payload": {
+                "kind": "term_conflict_clarification",
+                "conflicts": conflicts,
+            },
+            "should_retry": False,
         }
 
-    resolved_metrics = [_resolve(em, metric_map) for em in (entities.get("metrics") or []) if em]
-    resolved_dimensions = [_resolve(ed, dim_map) for ed in (entities.get("dimensions") or []) if ed]
+    if matches:
+        existing_terms = _coerce_text_list(entities.get("terms"))
+        normalized_terms = _dedupe_texts([*existing_terms, *[m["matched_text"] for m in matches]])
+        entities["terms"] = normalized_terms
+
+    logger.info(
+        "term_normalize 完成: matched=%s, conflicts=%s",
+        len(matches),
+        len(conflicts),
+    )
+    return {
+        "entities": entities,
+        "term_normalization": term_normalization,
+    }
+
+
+# ── 节点 2.5: 语义资产解析（Semantic Asset Resolution）────────────
+
+_SEMANTIC_ASSET_BUCKETS = {
+    "term": "terms",
+    "metric": "metrics",
+    "dimension": "dimensions",
+    "field": "fields",
+    "blueprint": "blueprints",
+}
+
+
+def _asset_identity(asset: dict) -> str:
+    """生成资产去重键；字段可能没有跨环境稳定 ID，退回 name。"""
+    return f"{asset.get('asset_type')}:{asset.get('asset_id') or asset.get('name')}"
+
+
+def _context_bias(question: str, asset_type: str) -> float:
+    """根据问题语气给资产类型加轻量偏置，避免同名资产时选错大类。"""
+    q_norm = _normalized_text(question)
+    if asset_type == "metric" and any(p in q_norm for p in _METRIC_PATTERNS):
+        return 0.06
+    if asset_type in ("dimension", "field") and any(p in q_norm for p in _DETAIL_PATTERNS):
+        return 0.05
+    if asset_type == "term" and any(p in q_norm for p in _KNOWLEDGE_PATTERNS):
+        return 0.08
+    if asset_type == "blueprint" and any(p in q_norm for p in _BLUEPRINT_PATTERNS):
+        return 0.08
+    return 0.0
+
+
+def _asset_aliases(asset_type: str, item: dict) -> list[tuple[str, str]]:
+    """返回 (alias, match_type) 列表，match_type 供前端和审计解释来源。"""
+    aliases: list[tuple[str, str]] = []
+    if item.get("name"):
+        aliases.append((str(item["name"]), "exact"))
+    if item.get("display_name") and item.get("display_name") != item.get("name"):
+        aliases.append((str(item["display_name"]), "display_name"))
+
+    if asset_type == "field":
+        for alias in _field_aliases(item):
+            match_type = "column_label" if alias != item.get("column_name") else "exact"
+            aliases.append((alias, match_type))
+    elif asset_type == "blueprint":
+        for keyword in _coerce_text_list(item.get("trigger_keywords")):
+            aliases.append((keyword, "trigger_keyword"))
+        for example in _coerce_text_list(item.get("trigger_examples")):
+            aliases.append((example, "trigger_example"))
+    else:
+        for synonym in _coerce_text_list(item.get("synonyms")):
+            aliases.append((synonym, "synonym"))
+        for alias in _coerce_text_list(item.get("aliases")):
+            aliases.append((alias, "synonym"))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for alias, match_type in aliases:
+        norm = _semantic_match_text(alias)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        deduped.append((alias, match_type))
+    return deduped
+
+
+def _build_semantic_asset_catalog(structured: dict | None) -> list[dict]:
+    """从 schema_structured 构建统一资产列表。"""
+    if not structured:
+        return []
+    catalog: list[dict] = []
+    for asset_type, bucket in _SEMANTIC_ASSET_BUCKETS.items():
+        for item in structured.get(bucket) or []:
+            name = item.get("name") or item.get("column_name")
+            if not name:
+                continue
+            display_name = item.get("display_name") or name
+            catalog.append(
+                {
+                    "asset_type": asset_type,
+                    "asset_id": item.get("id"),
+                    "name": name,
+                    "display_name": display_name,
+                    "table_name": item.get("table_name"),
+                    "column_name": item.get("column_name"),
+                    "term_type": item.get("term_type"),
+                    "implementation_type": item.get("implementation_type"),
+                    "asset_links": item.get("asset_links") or [],
+                    "_item": item,
+                    "_aliases": _asset_aliases(asset_type, item),
+                }
+            )
+    return catalog
+
+
+def _candidate_from_match(
+    asset: dict,
+    *,
+    query_text: str,
+    matched_text: str,
+    match_type: str,
+    confidence: float,
+) -> dict:
+    """把一次命中转成可序列化候选，去掉内部字段。"""
+    return {
+        "asset_type": asset["asset_type"],
+        "asset_id": asset.get("asset_id"),
+        "name": asset.get("name"),
+        "display_name": asset.get("display_name"),
+        "table_name": asset.get("table_name"),
+        "column_name": asset.get("column_name"),
+        "term_type": asset.get("term_type"),
+        "implementation_type": asset.get("implementation_type"),
+        "matched_text": matched_text,
+        "query_text": query_text,
+        "match_type": match_type,
+        "confidence": round(min(confidence, 0.99), 2),
+    }
+
+
+def _match_semantic_asset(
+    asset: dict, query_text: str, question: str, preferred_type: str | None = None
+) -> dict | None:
+    """计算单个查询词与资产的最佳命中。"""
+    query_norm = _semantic_match_text(query_text)
+    question_norm = _semantic_match_text(question)
+    if not query_norm:
+        return None
+
+    best: dict | None = None
+    for alias, match_type in asset.get("_aliases") or []:
+        alias_norm = _semantic_match_text(alias)
+        if not alias_norm:
+            continue
+
+        confidence = 0.0
+        if query_norm == alias_norm:
+            confidence = {
+                "exact": 0.96,
+                "display_name": 0.94,
+                "synonym": 0.88,
+                "column_label": 0.86,
+                "trigger_keyword": 0.86,
+                "trigger_example": 0.78,
+            }.get(match_type, 0.82)
+        elif len(alias_norm) >= 2 and alias_norm in query_norm:
+            confidence = 0.78
+        elif len(query_norm) >= 2 and query_norm in alias_norm:
+            confidence = 0.72
+        elif query_text == question and len(alias_norm) >= 2 and alias_norm in question_norm:
+            confidence = 0.74
+
+        if confidence <= 0:
+            continue
+        confidence += _context_bias(question, asset["asset_type"])
+        if preferred_type == asset["asset_type"]:
+            confidence += 0.04
+        candidate = _candidate_from_match(
+            asset,
+            query_text=query_text,
+            matched_text=alias,
+            match_type=match_type,
+            confidence=confidence,
+        )
+        if best is None or candidate["confidence"] > best["confidence"]:
+            best = candidate
+    return best
+
+
+def _linked_asset_candidates(term_candidate: dict, catalog: list[dict]) -> list[dict]:
+    """术语命中后，把术语显式关联的语义资产也加入候选。"""
+    term_asset = next(
+        (
+            asset
+            for asset in catalog
+            if asset["asset_type"] == "term" and asset.get("asset_id") == term_candidate.get("asset_id")
+        ),
+        None,
+    )
+    if not term_asset:
+        return []
+
+    by_identity = {_asset_identity(asset): asset for asset in catalog}
+    out: list[dict] = []
+    for link in term_asset.get("asset_links") or []:
+        key = f"{link.get('asset_type')}:{link.get('asset_id')}"
+        asset = by_identity.get(key)
+        if not asset:
+            continue
+        out.append(
+            _candidate_from_match(
+                asset,
+                query_text=term_candidate["query_text"],
+                matched_text=term_candidate["matched_text"],
+                match_type="linked_term",
+                confidence=max(term_candidate["confidence"] - 0.08, 0.5),
+            )
+        )
+    return out
+
+
+def _entity_query_terms(entities: dict, question: str) -> list[dict]:
+    """把上游实体和原问题整理成待解析词。"""
+    terms: list[dict] = []
+    for entity in entities.get("terms") or []:
+        if entity:
+            terms.append({"text": str(entity), "preferred_type": "term"})
+    for entity in entities.get("metrics") or []:
+        if entity:
+            terms.append({"text": str(entity), "preferred_type": "metric"})
+    for entity in entities.get("dimensions") or []:
+        if entity:
+            terms.append({"text": str(entity), "preferred_type": "dimension"})
+
+    filters = entities.get("filters")
+    if isinstance(filters, list):
+        for item in filters:
+            if isinstance(item, dict) and item.get("field"):
+                terms.append({"text": str(item["field"]), "preferred_type": "field"})
+
+    if question:
+        terms.append({"text": question, "preferred_type": None})
+
+    deduped: list[dict] = []
+    seen: set[tuple[str, str | None]] = set()
+    for term in terms:
+        norm = _semantic_match_text(term["text"])
+        key = (norm, term.get("preferred_type"))
+        if not norm or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(term)
+    return deduped
+
+
+def _to_compat_metric_resolution(
+    semantic_resolution: dict, entities: dict, structured: dict | None
+) -> dict:
+    """把统一资产解析降级成旧 metric_resolution 输出，供旧节点和前端兼容。"""
+    by_type = {
+        bucket: {str(item.get("name")): item for item in (structured or {}).get(bucket) or []}
+        for bucket in ("metrics", "dimensions")
+    }
+
+    def _resolve_entity(entity: str, asset_type: str) -> dict:
+        bucket = "metrics" if asset_type == "metric" else "dimensions"
+        candidates = [
+            c
+            for c in semantic_resolution.get(bucket, [])
+            if c.get("query_text") == entity or c.get("matched_text") == entity
+        ]
+        if not candidates:
+            # 原问题全文命中的候选也可作为兼容解析结果。
+            candidates = semantic_resolution.get(bucket, [])
+        if not candidates:
+            return {
+                "entity": entity,
+                "resolved": None,
+                "status": "unresolved",
+                "match_type": None,
+                "asset_type": asset_type,
+                "asset_id": None,
+                "confidence": 0.0,
+            }
+        best = max(candidates, key=lambda c: c.get("confidence", 0))
+        resolved = best.get("name")
+        known = by_type.get(bucket, {}).get(str(resolved))
+        return {
+            "entity": entity,
+            "resolved": resolved,
+            "status": "matched" if known or resolved else "unresolved",
+            "match_type": best.get("match_type"),
+            "asset_type": asset_type,
+            "asset_id": best.get("asset_id"),
+            "confidence": best.get("confidence"),
+        }
+
+    resolved_metrics = [
+        _resolve_entity(str(entity), "metric") for entity in (entities.get("metrics") or []) if entity
+    ]
+    resolved_dimensions = [
+        _resolve_entity(str(entity), "dimension")
+        for entity in (entities.get("dimensions") or [])
+        if entity
+    ]
 
     all_matched = all(r["status"] == "matched" for r in resolved_metrics)
     unresolved = [r["entity"] for r in resolved_metrics if r["status"] == "unresolved"]
-
-    logger.info(
-        f"metric_resolution 完成: metrics={len(resolved_metrics)}, all_matched={all_matched}, unresolved={unresolved}"
-    )
-
     return {
-        "metric_resolution": {
-            "metrics": resolved_metrics,
-            "dimensions": resolved_dimensions,
-            "all_matched": all_matched,
-            "unresolved": unresolved,
-        }
+        "metrics": resolved_metrics,
+        "dimensions": resolved_dimensions,
+        "all_matched": all_matched,
+        "unresolved": unresolved,
     }
+
+
+def semantic_asset_resolution_node(state: AgentState) -> Dict[str, Any]:
+    """统一解析术语、指标、维度、字段和分析蓝图资产。
+
+    该节点替代旧 metric_resolution_node，但会继续输出 metric_resolution，
+    让 DSL 生成、SQL 审计和历史前端展示不用一次性迁移。
+    """
+    question = state.get("question", "") or ""
+    entities = state.get("entities") or {}
+    structured = state.get("schema_structured")
+    logger.info("semantic_asset_resolution 开始解析资产")
+
+    catalog = _build_semantic_asset_catalog(structured)
+    best_by_asset: dict[str, dict] = {}
+    candidates_by_query: dict[str, list[dict]] = {}
+
+    for query_term in _entity_query_terms(entities, question):
+        text = query_term["text"]
+        preferred_type = query_term.get("preferred_type")
+        matched_for_query: list[dict] = []
+        for asset in catalog:
+            candidate = _match_semantic_asset(asset, text, question, preferred_type)
+            if not candidate:
+                continue
+            key = _asset_identity(candidate)
+            if key not in best_by_asset or candidate["confidence"] > best_by_asset[key]["confidence"]:
+                best_by_asset[key] = candidate
+            matched_for_query.append(candidate)
+
+        if matched_for_query:
+            matched_for_query.sort(key=lambda c: c["confidence"], reverse=True)
+            candidates_by_query[text] = matched_for_query
+
+    # 术语关联扩展：命中业务术语时，把显式绑定资产加入解析结果。
+    for candidate in list(best_by_asset.values()):
+        if candidate.get("asset_type") != "term":
+            continue
+        for linked in _linked_asset_candidates(candidate, catalog):
+            key = _asset_identity(linked)
+            if key not in best_by_asset or linked["confidence"] > best_by_asset[key]["confidence"]:
+                best_by_asset[key] = linked
+
+    sorted_assets = sorted(
+        best_by_asset.values(),
+        key=lambda c: (c.get("confidence", 0), c.get("asset_type") == "metric"),
+        reverse=True,
+    )
+    semantic_resolution: dict[str, Any] = {
+        "assets": sorted_assets,
+        "terms": [],
+        "metrics": [],
+        "dimensions": [],
+        "fields": [],
+        "blueprints": [],
+        "ambiguities": [],
+        "unresolved": [],
+    }
+    for candidate in sorted_assets:
+        bucket = _SEMANTIC_ASSET_BUCKETS.get(candidate["asset_type"])
+        if bucket:
+            semantic_resolution[bucket].append(candidate)
+
+    for text, candidates in candidates_by_query.items():
+        if len(candidates) < 2:
+            continue
+        top = candidates[0]
+        close_candidates = [
+            c for c in candidates[:5] if top["confidence"] - c["confidence"] <= 0.08
+        ]
+        if len(close_candidates) >= 2:
+            semantic_resolution["ambiguities"].append(
+                {
+                    "text": text,
+                    "reason": "多个语义资产置信度接近",
+                    "candidates": close_candidates,
+                    "resolution_hint": f"请确认“{text}”具体指哪个业务资产",
+                }
+            )
+
+    explicit_terms = [t for t in _entity_query_terms(entities, question) if t.get("preferred_type")]
+    for term in explicit_terms:
+        text = term["text"]
+        if text not in candidates_by_query:
+            semantic_resolution["unresolved"].append(
+                {"text": text, "preferred_type": term.get("preferred_type")}
+            )
+
+    metric_resolution = _to_compat_metric_resolution(semantic_resolution, entities, structured)
+    logger.info(
+        "semantic_asset_resolution 完成: assets=%s, terms=%s, metrics=%s, dimensions=%s, fields=%s, "
+        "blueprints=%s, ambiguities=%s, unresolved=%s",
+        len(semantic_resolution["assets"]),
+        len(semantic_resolution["terms"]),
+        len(semantic_resolution["metrics"]),
+        len(semantic_resolution["dimensions"]),
+        len(semantic_resolution["fields"]),
+        len(semantic_resolution["blueprints"]),
+        len(semantic_resolution["ambiguities"]),
+        len(semantic_resolution["unresolved"]),
+    )
+    return {
+        "semantic_asset_resolution": semantic_resolution,
+        "metric_resolution": metric_resolution,
+    }
+
+
+def metric_resolution_node(state: AgentState) -> Dict[str, Any]:
+    """兼容旧调用：实际执行统一语义资产解析。"""
+    return semantic_asset_resolution_node(state)
 
 
 # ── 节点 3: DSL / SQL 生成 ──────────────────────────────────
@@ -1039,6 +1661,8 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
         structured = state.get("schema_structured")
         ddl_context = state.get("ddl_context", "")
         metric_resolution = state.get("metric_resolution") or {}
+        term_normalization = state.get("term_normalization") or {}
+        semantic_asset_resolution = state.get("semantic_asset_resolution") or {}
         asset_catalog = _format_dsl_asset_catalog(structured)
         all_matched = metric_resolution.get("all_matched", True)
         unresolved = metric_resolution.get("unresolved", [])
@@ -1208,6 +1832,16 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
         human_text = f"用户问题: {question}\n\n语义层信息:\n{schema}"
         if asset_catalog:
             human_text += f"\n\n{asset_catalog}"
+        if term_normalization:
+            human_text += (
+                "\n\n【业务术语归一化结果】\n"
+                f"{json.dumps(term_normalization, ensure_ascii=False)[:2000]}"
+            )
+        if semantic_asset_resolution:
+            human_text += (
+                "\n\n【语义资产解析结果】\n"
+                f"{json.dumps(semantic_asset_resolution, ensure_ascii=False)[:3000]}"
+            )
         if resolution_text:
             human_text += f"\n\n{resolution_text}"
         if entities:
@@ -1347,10 +1981,11 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
             "should_retry": True,
         }
 
-    # 优先从结构化对象中提取有效名称
+    # 优先从结构化对象中提取有效名称（包含原始字段，LLM 可基于上下文推理使用）
     if structured:
         valid_names = {m["name"] for m in structured.get("metrics", [])}
         valid_names.update({d["name"] for d in structured.get("dimensions", [])})
+        valid_names.update({f["name"] for f in structured.get("fields", [])})
     else:
         # fallback: 从文本中提取
         valid_names = set()
@@ -1620,17 +2255,17 @@ def dsl_compiler_node(db: Session):
                 wheres.append(f"{time_field} >= '{tr['start']}'")
             if tr.get("end"):
                 wheres.append(f"{time_field} <= '{tr['end']}'")
-        elif dsl.get("metrics"):
-            # 自动推断：使用第一个指标的时间字段
+        elif dsl.get("metrics") and query_constraints.get("enabled"):
+            # 仅在 query_constraints 启用时才自动追加默认时间范围
             first_metric_name = _dsl_item_names(dsl.get("metrics", []))[0]
             first_metric = metric_map.get(first_metric_name)
             if first_metric and first_metric.get("time_field"):
                 tf = _quote_ident(first_metric["time_field"], dialect) or first_metric["time_field"]
-                # 默认近30天
                 import datetime
 
+                days = query_constraints.get("default_time_range_days", 30)
                 end = datetime.date.today().isoformat()
-                start = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+                start = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
                 wheres.append(f"{tf} >= '{start}'")
                 wheres.append(f"{tf} <= '{end}'")
 
@@ -1877,6 +2512,8 @@ def sql_audit_node(db: Session):
         ddl_context = state.get("ddl_context", "") or ""
         structured = state.get("schema_structured")
         metric_resolution = state.get("metric_resolution") or {}
+        term_normalization = state.get("term_normalization") or {}
+        semantic_asset_resolution = state.get("semantic_asset_resolution") or {}
         dataset_id = state.get("dataset_id")
 
         # 解析 datasource（sample data 查询需要）
@@ -1933,6 +2570,14 @@ def sql_audit_node(db: Session):
             human_lines.append("")
             human_lines.append("【指标解析】")
             human_lines.append(json.dumps(metric_resolution, ensure_ascii=False)[:1500])
+        if term_normalization:
+            human_lines.append("")
+            human_lines.append("【业务术语归一化】")
+            human_lines.append(json.dumps(term_normalization, ensure_ascii=False)[:1500])
+        if semantic_asset_resolution:
+            human_lines.append("")
+            human_lines.append("【语义资产解析】")
+            human_lines.append(json.dumps(semantic_asset_resolution, ensure_ascii=False)[:2000])
 
         human = HumanMessage(content="\n".join(human_lines))
 

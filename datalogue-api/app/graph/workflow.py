@@ -27,7 +27,8 @@ from app.graph.nodes import (
     entry_intent_classification_node,
     analysis_blueprint_execute_node,
     schema_recall_node,
-    metric_resolution_node,
+    term_normalize_node,
+    semantic_asset_resolution_node,
     dsl_generate_node,
     dsl_validate_node,
     dsl_compiler_node,
@@ -65,6 +66,14 @@ def _analysis_blueprint_execution_router(state: AgentState) -> str:
     if state.get("sql_result") is not None:
         return "report"
     return "end"
+
+
+def _term_normalization_router(state: AgentState) -> str:
+    """业务术语归一化后路由；冲突术语必须先澄清。"""
+    route_payload = state.get("route_payload") or {}
+    if route_payload.get("kind") == "term_conflict_clarification":
+        return "end"
+    return "semantic_asset_resolution"
 
 
 def _dsl_validation_router(state: AgentState) -> str:
@@ -129,7 +138,8 @@ def build_workflow(db: Session) -> Any:
     workflow.add_node("entry_intent_classification", entry_intent_classification_node(db))
     workflow.add_node("analysis_blueprint_execute", analysis_blueprint_execute_node(db))
     workflow.add_node("schema_recall", schema_recall_node(db))
-    workflow.add_node("metric_resolution_node", metric_resolution_node)
+    workflow.add_node("term_normalize_node", term_normalize_node)
+    workflow.add_node("semantic_asset_resolution_node", semantic_asset_resolution_node)
     workflow.add_node("dsl_generate", dsl_generate_node)
     workflow.add_node("dsl_validate", dsl_validate_node)
     # dsl_compiler 现在是工厂函数（接 db 以查 Datasource.db_type 推断方言）
@@ -166,9 +176,17 @@ def build_workflow(db: Session) -> Any:
         },
     )
 
-    # Schema 召回 → 指标解析 → DSL 生成
-    workflow.add_edge("schema_recall", "metric_resolution_node")
-    workflow.add_edge("metric_resolution_node", "dsl_generate")
+    # Schema 召回 → 术语归一化 → 语义资产解析 → DSL 生成
+    workflow.add_edge("schema_recall", "term_normalize_node")
+    workflow.add_conditional_edges(
+        "term_normalize_node",
+        _term_normalization_router,
+        {
+            "semantic_asset_resolution": "semantic_asset_resolution_node",
+            "end": END,
+        },
+    )
+    workflow.add_edge("semantic_asset_resolution_node", "dsl_generate")
 
     # DSL 生成 → DSL 校验
     workflow.add_edge("dsl_generate", "dsl_validate")

@@ -225,7 +225,10 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
         if (ev.node === 'intent_recognition' && ev.status === 'done') {
           setIntent({ intent: ev.intent, entities: ev.entities });
         }
-        if (ev.node === 'metric_resolution' && ev.status === 'done') {
+        if (
+          (ev.node === 'semantic_asset_resolution_node' || ev.node === 'metric_resolution_node') &&
+          ev.status === 'done'
+        ) {
           setMetricResolution(ev.metric_resolution || null);
         }
         if (ev.node === 'dsl_generate' && ev.status === 'done') {

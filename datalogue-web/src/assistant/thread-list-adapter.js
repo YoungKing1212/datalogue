@@ -33,7 +33,11 @@ const reverseIdMap = new Map();
 // 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐）
 const NODE_DISPLAY = {
   intent_recognition: '意图识别',
+  entry_intent_classification: '入口分类',
+  analysis_blueprint_execute: '蓝图执行',
   schema_recall: 'Schema 召回',
+  term_normalize_node: '术语归一化',
+  semantic_asset_resolution_node: '语义资产解析',
   metric_resolution_node: '指标解析',
   dsl_generate: 'DSL 生成',
   dsl_validate: 'DSL 校验',
@@ -55,6 +59,15 @@ function formatStepAsReasoning(step) {
   } else if (step.node === 'schema_recall') {
     const lines = step.schema_summary || [];
     detail = lines.length ? lines.join(' / ') : '已检索相关表结构';
+  } else if (step.node === 'term_normalize_node') {
+    const normalization = step.term_normalization || {};
+    const matched = normalization.matched_terms?.length ?? 0;
+    const conflicts = normalization.conflicts?.length ?? 0;
+    detail = conflicts ? `发现 ${conflicts} 个术语冲突` : `命中 ${matched} 个业务术语`;
+  } else if (step.node === 'semantic_asset_resolution_node' || step.node === 'metric_resolution_node') {
+    const resolution = step.semantic_asset_resolution || {};
+    const count = resolution.assets?.length ?? step.metric_resolution?.metrics?.length ?? 0;
+    detail = `命中 ${count} 个语义资产`;
   } else if (step.node === 'dsl_generate') {
     detail = step.generation_mode === 'inferred' ? 'AI 推断生成' : '已基于指标生成';
   } else if (step.node === 'dsl_validate') {

@@ -47,6 +47,8 @@ class AgentState(TypedDict):
     ddl_context: Optional[str]  # 当前数据集所选表的真实 DDL
     query_constraints: Optional[dict]  # SQL 生成默认时间范围和默认 LIMIT 等结构化约束
     generation_mode: Optional[str]  # "semantic" | "inferred" — 供前端显示徽标
+    term_normalization: Optional[dict]  # 业务术语归一化结果，含命中同义词和冲突澄清
+    semantic_asset_resolution: Optional[dict]  # 术语/指标/维度/字段/蓝图统一资产解析结果
     metric_resolution: Optional[dict]  # 指标/维度解析结果，供意图卡和审计
     # 数据集级 LLM 约束（硬性要求）— schema_recall_node 写入，report_generator 等
     # 不读 schema_context 的节点直接从这里取

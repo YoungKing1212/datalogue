@@ -16,7 +16,12 @@ import { streamChatEvents } from '../api/client';
 // 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐，作为前端兜底）
 const NODE_DISPLAY = {
   intent_recognition: '意图识别',
+  entry_intent_classification: '入口分类',
+  analysis_blueprint_execute: '蓝图执行',
   schema_recall: 'Schema 召回',
+  term_normalize_node: '术语归一化',
+  semantic_asset_resolution_node: '语义资产解析',
+  metric_resolution_node: '指标解析',
   dsl_generate: 'DSL 生成',
   dsl_validate: 'DSL 校验',
   dsl_compiler: 'SQL 编译',
@@ -40,6 +45,15 @@ function formatStepAsReasoning(ev) {
   } else if (ev.node === 'schema_recall') {
     const lines = ev.schema_summary || [];
     detail = lines.length ? lines.join(' / ') : '已检索相关表结构';
+  } else if (ev.node === 'term_normalize_node') {
+    const normalization = ev.term_normalization || {};
+    const matched = normalization.matched_terms?.length ?? 0;
+    const conflicts = normalization.conflicts?.length ?? 0;
+    detail = conflicts ? `发现 ${conflicts} 个术语冲突` : `命中 ${matched} 个业务术语`;
+  } else if (ev.node === 'semantic_asset_resolution_node' || ev.node === 'metric_resolution_node') {
+    const resolution = ev.semantic_asset_resolution || {};
+    const count = resolution.assets?.length ?? ev.metric_resolution?.metrics?.length ?? 0;
+    detail = `命中 ${count} 个语义资产`;
   } else if (ev.node === 'dsl_generate') {
     detail = ev.generation_mode === 'inferred' ? 'AI 推断生成' : '已基于指标生成';
   } else if (ev.node === 'dsl_validate') {
@@ -181,6 +195,8 @@ export function makeChatAdapter({ datasetIdRef }) {
               sql: finalPayload.sql || null,
               sqlResult: finalPayload.sql_result || null,
               dsl: finalPayload.dsl || null,
+              termNormalization: finalPayload.term_normalization || null,
+              semanticAssetResolution: finalPayload.semantic_asset_resolution || null,
               metricResolution: finalPayload.metric_resolution || null,
               generationMode: finalPayload.generation_mode || null,
               intent: finalPayload.intent || null,
