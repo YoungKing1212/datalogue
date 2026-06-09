@@ -124,6 +124,124 @@ function MessageTextPart() {
   return <MessageContent text={text} streaming={isStreaming} />;
 }
 
+function joinValues(values, fallback = '未识别') {
+  if (!Array.isArray(values) || values.length === 0) return fallback;
+  return values.filter(Boolean).slice(0, 6).join('、') || fallback;
+}
+
+function sourceLabel(item) {
+  if (!item) return '';
+  const path = [item.table, item.column].filter(Boolean).join('.');
+  return path || item.name || '';
+}
+
+function confidenceText(level) {
+  if (level === 'high') return '高';
+  if (level === 'medium') return '中';
+  if (level === 'low') return '低';
+  return '未知';
+}
+
+/**
+ * AnswerExplanation — 结构化展示后端确定性解释包。
+ */
+function AnswerExplanation({ explanation }) {
+  const [open, setOpen] = useState(false);
+  if (!explanation) return null;
+  const caliber = explanation.caliber || {};
+  const confidence = explanation.confidence || {};
+  const sqlSummary = explanation.sql_summary || {};
+  const risks = explanation.risks || [];
+  const confirmation = explanation.confirmation || {};
+  const sources = (explanation.data_sources || []).map(sourceLabel).filter(Boolean);
+  const level = confidence.level || 'unknown';
+  const riskCount = risks.length;
+
+  return (
+    <div className={`answer-explanation answer-explanation-${level} ${open ? 'open' : ''}`}>
+      <button
+        type="button"
+        className="answer-explanation-head"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span className="answer-explanation-icon">
+          <Icon name={level === 'low' ? 'warn' : 'shield'} />
+        </span>
+        <div className="answer-explanation-title">
+          <strong>口径与可信度</strong>
+          <span>
+            {confidenceText(level)} · {Number(confidence.score ?? 0).toFixed(2)}
+            {riskCount ? ` · ${riskCount} 条风险` : ' · 无明显风险'}
+            {confirmation.required ? ' · 需要确认' : ''}
+          </span>
+        </div>
+        <Icon name="chev_down" className="answer-explanation-chev" />
+      </button>
+
+      {open && (
+        <div className="answer-explanation-body">
+          {confirmation.required && (
+            <div className="answer-explanation-confirm">
+              <Icon name="warn" />
+              <span>{confirmation.message || '当前回答置信度偏低，请先确认口径。'}</span>
+            </div>
+          )}
+
+          <div className="answer-explanation-grid">
+            <div>
+              <span>指标</span>
+              <strong>{joinValues(caliber.metrics)}</strong>
+            </div>
+            <div>
+              <span>维度</span>
+              <strong>{joinValues(caliber.dimensions)}</strong>
+            </div>
+            <div>
+              <span>术语</span>
+              <strong>{joinValues(caliber.terms)}</strong>
+            </div>
+            <div>
+              <span>蓝图</span>
+              <strong>{joinValues(caliber.blueprints, '未命中')}</strong>
+            </div>
+          </div>
+
+          <div className="answer-explanation-lines">
+            <div>
+              <span>数据来源</span>
+              <p>{sources.length ? sources.slice(0, 8).join('、') : '未能确定具体表或字段'}</p>
+            </div>
+            <div>
+              <span>SQL 摘要</span>
+              <p>
+                {sqlSummary.preview
+                  ? `涉及 ${(sqlSummary.tables || []).join('、') || '未解析到表'}`
+                  : '本次未生成 SQL'}
+              </p>
+            </div>
+            <div>
+              <span>风险提示</span>
+              {risks.length ? (
+                <ol className="answer-risk-list">
+                  {risks
+                    .map((item) => item.message)
+                    .filter(Boolean)
+                    .map((message, index) => (
+                      <li key={`${index}-${message}`}>{message}</li>
+                    ))}
+                </ol>
+              ) : (
+                <p>未发现明显风险</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * AIMessage — 助理消息气泡
  * - 用 MessagePrimitive.Parts 把 reasoning / text 分开渲染
@@ -135,6 +253,8 @@ export function AIMessage({ showSql = true }) {
   const api = useAui();
   const message = useAuiState((s) => s.message);
   const [sqlOpen, setSqlOpen] = useState(false);
+  const [resultOpen, setResultOpen] = useState(false);
+  const [sqlCopied, setSqlCopied] = useState(false);
   const [showActions, setShowActions] = useState(false);
 
   const isStreaming = message?.status?.type === 'running';
@@ -146,6 +266,7 @@ export function AIMessage({ showSql = true }) {
   const chartSubtitle = custom.chartSubtitle || null;
   const chartData = custom.chartData || null;
   const citations = custom.citations || null;
+  const answerExplanation = custom.answerExplanation || null;
 
   const handleCopy = () => {
     const text = (message?.content || [])
@@ -157,6 +278,15 @@ export function AIMessage({ showSql = true }) {
 
   const handleRegenerate = () => {
     api.message().reload();
+  };
+
+  const handleCopySql = (event) => {
+    event.stopPropagation();
+    if (!sql) return;
+    navigator.clipboard.writeText(sql).then(() => {
+      setSqlCopied(true);
+      setTimeout(() => setSqlCopied(false), 1400);
+    }).catch(console.error);
   };
 
   return (
@@ -191,41 +321,51 @@ export function AIMessage({ showSql = true }) {
         }}
       />
 
+      <AnswerExplanation explanation={answerExplanation} />
+
       {/* SQL 执行结果表格 */}
       {sqlResult && sqlResult.rows && sqlResult.rows.length > 0 && (
-        <div className="sql-result-card">
-          <div className="sql-result-head">
+        <div className={`sql-result-card ${resultOpen ? 'open' : ''}`}>
+          <button
+            type="button"
+            className="sql-result-head"
+            onClick={() => setResultOpen((v) => !v)}
+            aria-expanded={resultOpen}
+          >
             <Icon name="table" style={{ width: 13, height: 13 }} />
             <span>查询结果</span>
             <span className="sql-result-count">
               {sqlResult.rowCount ?? sqlResult.row_count ?? sqlResult.rows.length} 行
             </span>
-          </div>
-          <div className="sql-result-table-wrap">
-            <table className="sql-result-table">
-              <thead>
-                <tr>
-                  {(sqlResult.columns || []).map((col, i) => {
-                    const label = sqlResult.column_labels?.[col] || col;
-                    return (
-                      <th key={i} title={label !== col ? col : undefined}>
-                        {label}
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {sqlResult.rows.map((row, i) => (
-                  <tr key={i}>
-                    {(sqlResult.columns || []).map((col, j) => (
-                      <td key={j}>{row[col] ?? ''}</td>
-                    ))}
+            <Icon name="chev_down" className="sql-result-chev" />
+          </button>
+          {resultOpen && (
+            <div className="sql-result-table-wrap">
+              <table className="sql-result-table">
+                <thead>
+                  <tr>
+                    {(sqlResult.columns || []).map((col, i) => {
+                      const label = sqlResult.column_labels?.[col] || col;
+                      return (
+                        <th key={i} title={label !== col ? col : undefined}>
+                          {label}
+                        </th>
+                      );
+                    })}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {sqlResult.rows.map((row, i) => (
+                    <tr key={i}>
+                      {(sqlResult.columns || []).map((col, j) => (
+                        <td key={j}>{row[col] ?? ''}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -273,10 +413,32 @@ export function AIMessage({ showSql = true }) {
 
       {/* SQL 可折叠 */}
       {showSql && sql && (
-        <div className={'collapse ' + (sqlOpen ? 'open' : '')}>
-          <div className="collapse-head" onClick={() => setSqlOpen((v) => !v)}>
+        <div className={'collapse sql-collapse ' + (sqlOpen ? 'open' : '')}>
+          <div
+            role="button"
+            tabIndex={0}
+            className="collapse-head"
+            onClick={() => setSqlOpen((v) => !v)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setSqlOpen((v) => !v);
+              }
+            }}
+            aria-expanded={sqlOpen}
+          >
             <Icon name="sql" />
-            生成的 SQL
+            <span className="sql-collapse-title">SQL</span>
+            <button
+              type="button"
+              className="collapse-copy"
+              onClick={handleCopySql}
+              title="复制 SQL"
+            >
+              <Icon name="copy" />
+              <span>{sqlCopied ? '已复制' : '复制'}</span>
+            </button>
+            <Icon name="chev_down" className="sql-collapse-chev" />
           </div>
           {sqlOpen && (
             <div className="collapse-body">

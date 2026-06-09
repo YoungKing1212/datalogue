@@ -67,6 +67,7 @@ class AgentState(TypedDict):
 
     # 输出层
     answer: Optional[str]  # 最终自然语言回答
+    answer_explanation: Optional[dict]  # 回答口径、来源、SQL 摘要、置信度和风险解释包
     sql_list: List[str]  # 本轮执行的所有 SQL
 
     # 控制层

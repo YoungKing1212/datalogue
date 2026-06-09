@@ -34,6 +34,7 @@ class TestChatAPI:
         assert "sql_audit_result" in _STATE_OUTPUT_KEYS
         assert "sql_diagnosis" in _STATE_OUTPUT_KEYS
         assert "sql_retry_trace" in _STATE_OUTPUT_KEYS
+        assert "answer_explanation" in _STATE_OUTPUT_KEYS
 
     def test_chat_stream_basic(self, client, sample_dataset):
         """基础流式问数接口应返回 200"""
@@ -1172,6 +1173,150 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         # 无结果时直接 return dict，不调 LLM，但函数本身是 async 所以也要 asyncio.run
         result = asyncio.run(report_generator_node(state))
         assert "未返回结果" in result["answer"]
+
+
+class TestAnswerExplanation:
+    """测试 T-022 回答解释包。"""
+
+    def test_semantic_query_explanation_contains_caliber_source_and_sql_summary(self):
+        from app.services.answer_explanation import build_answer_explanation
+
+        state = {
+            "dsl": {
+                "version": "2.0",
+                "metrics": [
+                    {
+                        "name": "gmv",
+                        "asset_type": "metric",
+                        "asset_id": 1,
+                        "display_name": "GMV",
+                    }
+                ],
+                "dimensions": [
+                    {
+                        "name": "region",
+                        "asset_type": "dimension",
+                        "asset_id": 2,
+                        "display_name": "区域",
+                    }
+                ],
+                "limit": 100,
+            },
+            "semantic_asset_resolution": {
+                "assets": [
+                    {
+                        "asset_type": "metric",
+                        "asset_id": 1,
+                        "display_name": "GMV",
+                        "table_name": "orders",
+                        "column_name": "amount",
+                        "confidence": 0.96,
+                    }
+                ],
+                "metrics": [{"display_name": "GMV"}],
+                "dimensions": [{"display_name": "区域"}],
+                "terms": [],
+                "blueprints": [],
+                "ambiguities": [],
+                "unresolved": [],
+            },
+            "sql": "SELECT region, SUM(amount) AS gmv FROM orders GROUP BY region LIMIT 100",
+            "sql_result": {"columns": ["region", "gmv"], "rows": [{"region": "华东", "gmv": 100}]},
+            "query_constraints": {"default_limit": 100},
+        }
+
+        explanation = build_answer_explanation(state)
+
+        assert "GMV" in explanation["caliber"]["metrics"]
+        assert "区域" in explanation["caliber"]["dimensions"]
+        assert explanation["data_sources"][0]["table"] == "orders"
+        assert "orders" in explanation["sql_summary"]["tables"]
+        assert explanation["confidence"]["level"] in {"high", "medium"}
+        assert explanation["confirmation"]["required"] is False
+
+    def test_ambiguity_explanation_requires_confirmation(self):
+        from app.services.answer_explanation import build_answer_explanation
+
+        state = {
+            "dsl": {"metrics": [], "dimensions": []},
+            "semantic_asset_resolution": {
+                "assets": [],
+                "metrics": [],
+                "dimensions": [],
+                "terms": [],
+                "blueprints": [],
+                "ambiguities": [
+                    {
+                        "text": "收入",
+                        "resolution_hint": "请确认“收入”具体指哪个业务资产",
+                        "candidates": [{"asset_id": 1}, {"asset_id": 2}],
+                    }
+                ],
+                "unresolved": [],
+            },
+            "sql": "SELECT SUM(amount) AS revenue FROM orders",
+            "sql_result": {"columns": ["revenue"], "rows": [{"revenue": 10}]},
+        }
+
+        explanation = build_answer_explanation(state)
+
+        assert explanation["confidence"]["level"] == "low"
+        assert explanation["confirmation"]["required"] is True
+        assert "请确认" in explanation["confirmation"]["message"]
+
+    def test_inferred_query_adds_risk(self):
+        from app.services.answer_explanation import build_answer_explanation
+
+        explanation = build_answer_explanation(
+            {
+                "dsl": {"direct_sql": "SELECT COUNT(*) AS c FROM orders", "inferred": True},
+                "generation_mode": "inferred",
+                "sql": "SELECT COUNT(*) AS c FROM orders",
+                "sql_result": {"columns": ["c"], "rows": [{"c": 1}]},
+            }
+        )
+
+        messages = [item["message"] for item in explanation["risks"]]
+        assert any("基于表结构推断" in message for message in messages)
+        assert "orders" in explanation["sql_summary"]["tables"]
+
+    def test_blueprint_sql_explanation_contains_name_and_params(self):
+        from app.services.answer_explanation import build_answer_explanation
+
+        explanation = build_answer_explanation(
+            {
+                "dsl": {"direct_sql": "SELECT * FROM daily_report WHERE person_name = :person_name"},
+                "sql": "SELECT * FROM daily_report WHERE person_name = '杨凯'",
+                "sql_result": {"columns": ["person_name"], "rows": [{"person_name": "杨凯"}]},
+                "generation_mode": "analysis_blueprint",
+                "route_payload": {
+                    "kind": "analysis_blueprint",
+                    "blueprint_id": 7,
+                    "name": "个人日报查询",
+                    "params": {"person_name": "杨凯"},
+                },
+            }
+        )
+
+        assert "个人日报查询" in explanation["caliber"]["blueprints"]
+        assert explanation["caliber"]["blueprint_params"]["person_name"] == "杨凯"
+        assert "daily_report" in explanation["sql_summary"]["tables"]
+
+    def test_term_conflict_clarification_is_low_confidence_without_sql(self):
+        from app.services.answer_explanation import build_answer_explanation
+
+        explanation = build_answer_explanation(
+            {
+                "dsl": {},
+                "term_normalization": {"has_conflict": True},
+                "route_payload": {"kind": "term_conflict_clarification"},
+                "answer": "“收入”可能对应多个业务术语，请先确认你要使用哪个口径。",
+            }
+        )
+
+        assert explanation["confidence"]["level"] == "low"
+        assert explanation["confirmation"]["required"] is True
+        assert explanation["sql_summary"]["preview"] == ""
 
 
 class TestWorkflowRouting:

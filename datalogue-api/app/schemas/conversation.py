@@ -38,6 +38,7 @@ class MessageOut(BaseModel):
     report_html: Optional[str] = None
     token_usage: Optional[dict] = None
     step_trace: Optional[List[dict]] = None
+    response_metadata: Optional[dict] = None
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)

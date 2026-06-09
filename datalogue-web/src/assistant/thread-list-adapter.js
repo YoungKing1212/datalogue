@@ -117,7 +117,11 @@ function messagesFromBackend(detail) {
       content: parts,
       createdAt: m.created_at ? new Date(m.created_at) : new Date(),
       status: m.role === 'assistant' ? { type: 'complete', reason: 'stop' } : undefined,
-      metadata: { custom: {} },
+      metadata: {
+        custom: {
+          answerExplanation: m.response_metadata?.answer_explanation || null,
+        },
+      },
     });
   }
   return out;

@@ -48,6 +48,7 @@ class Message(Base):
     report_html = Column(Text)
     token_usage = Column(JSON)
     step_trace = Column(JSON)
+    response_metadata = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

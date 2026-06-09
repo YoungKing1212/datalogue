@@ -25,6 +25,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app import schemas, models
 from app.graph.workflow import build_workflow
+from app.services.answer_explanation import (
+    build_answer_explanation,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -74,6 +77,7 @@ _STATE_OUTPUT_KEYS = {
     "sql_diagnosis",
     "sql_retry_trace",
     "answer",
+    "answer_explanation",
     "sql_list",
     "error",
     "generation_mode",
@@ -210,6 +214,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "datasource_dialect": None,
         "sql_audit_result": None,
         "sql_diagnosis": None,
+        "answer_explanation": None,
         "answer": None,
         "sql_list": [],
         "error": None,
@@ -395,6 +400,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     else:
         answer = "抱歉，暂时无法回答这个问题。请尝试选择数据集后提问，或检查语义层配置。"
 
+    answer_explanation = build_answer_explanation(final_state)
+    final_state["answer_explanation"] = answer_explanation
+
     sql = final_state.get("sql")
     sql_list = final_state.get("sql_list") or []
 
@@ -420,6 +428,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "sql_diagnosis": sql_diagnosis,
         "sql_audit_result": final_state.get("sql_audit_result"),
         "sql_retry_trace": sql_retry_trace,
+        "answer_explanation": answer_explanation,
         "conversation_id": conv_id,
         "title": conv.title,
     }
@@ -437,6 +446,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             sql_list=sql_list,
             token_usage=token_usage,
             step_trace=step_traces,
+            response_metadata={"answer_explanation": answer_explanation},
         )
     )
     db.commit()

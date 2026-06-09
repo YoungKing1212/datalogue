@@ -79,7 +79,16 @@ class TestConversationAPI:
         db.refresh(conv)
 
         msg1 = Message(conversation_id=conv.id, role="user", content="你好")
-        msg2 = Message(conversation_id=conv.id, role="assistant", content="你好！")
+        msg2 = Message(
+            conversation_id=conv.id,
+            role="assistant",
+            content="你好！",
+            response_metadata={
+                "answer_explanation": {
+                    "confidence": {"level": "high", "score": 0.92},
+                }
+            },
+        )
         db.add(msg1)
         db.add(msg2)
         db.commit()
@@ -93,3 +102,6 @@ class TestConversationAPI:
         assert len(data["messages"]) == 2
         assert data["messages"][0]["role"] == "user"
         assert data["messages"][1]["role"] == "assistant"
+        assert data["messages"][1]["response_metadata"]["answer_explanation"]["confidence"][
+            "level"
+        ] == "high"

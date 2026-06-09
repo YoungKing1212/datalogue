@@ -205,6 +205,7 @@ export function makeChatAdapter({ datasetIdRef }) {
               sqlDiagnosis: finalPayload.sql_diagnosis || null,
               sqlAuditResult: finalPayload.sql_audit_result || null,
               sqlRetryTrace: finalPayload.sql_retry_trace || null,
+              answerExplanation: finalPayload.answer_explanation || null,
               dsl: finalPayload.dsl || null,
               termNormalization: finalPayload.term_normalization || null,
               semanticAssetResolution: finalPayload.semantic_asset_resolution || null,
