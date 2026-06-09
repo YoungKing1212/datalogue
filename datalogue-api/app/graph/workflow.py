@@ -107,12 +107,12 @@ def _sql_execution_router(state: AgentState) -> str:
 
 def _sql_audit_router(state: AgentState) -> str:
     """SQL 审计后路由。
-    - architectural：数据集配置错误，LLM 无法修复 → END
+    - retryable=False：权限、表未选、语义层缺字段等硬性问题 → END
     - retry_count 已用尽（>= 3） → END
-    - 其他（fixable） → increment_retry → dsl_generate
+    - retryable=True → increment_retry → dsl_generate
     """
     audit = state.get("sql_audit_result") or {}
-    if audit.get("severity") == "architectural":
+    if audit.get("retryable") is False or audit.get("severity") == "architectural":
         return "end"
     retry = state.get("retry_count", 0)
     if retry >= 3:

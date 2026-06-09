@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.models.dataset import AnalysisBlueprint, BlueprintUsageLog, SemanticDataset
 from app.models.datasource import Datasource
 from app.services.datasource import create_engine_for_datasource
+from app.utils.sql_guard import guard_readonly_sql
 
 logger = logging.getLogger(__name__)
 
@@ -339,29 +340,12 @@ def extract_blueprint_params(
 
 def validate_blueprint_sql(sql: str) -> str | None:
     """校验蓝图执行 SQL，只允许只读查询。"""
-    sql_clean = (sql or "").strip()
-    if not sql_clean:
+    guard_result = guard_readonly_sql(sql, query_constraints={"enabled": False})
+    if guard_result.ok:
+        return None
+    if guard_result.code == "EMPTY_SQL":
         return "分析蓝图未配置可执行 SQL"
-    if not re.match(r"^(select|with)\b", sql_clean, flags=re.IGNORECASE):
-        return "分析蓝图执行器只允许 SELECT/WITH 只读查询"
-
-    forbidden = [
-        "insert",
-        "update",
-        "delete",
-        "drop",
-        "alter",
-        "create",
-        "grant",
-        "truncate",
-        "merge",
-        "replace",
-    ]
-    sql_lower = sql_clean.lower()
-    for kw in forbidden:
-        if re.search(rf"\b{kw}\b", sql_lower):
-            return f"分析蓝图 SQL 包含危险关键字 '{kw}'，已拦截"
-    return None
+    return guard_result.error
 
 
 def execute_analysis_blueprint(
@@ -444,8 +428,13 @@ def execute_analysis_blueprint(
             "diagnosis": diagnosis,
         }
 
-    validation_error = validate_blueprint_sql(sql)
-    if validation_error:
+    guard_result = guard_readonly_sql(
+        sql,
+        dialect=_datasource_dialect(datasource),
+        query_constraints=getattr(dataset, "query_constraints", None),
+    )
+    if not guard_result.ok:
+        validation_error = guard_result.error or "SQL 安全校验未通过"
         diagnosis = _build_diagnosis("UNSAFE_SQL", validation_error)
         _write_blueprint_usage_log(
             db,
@@ -466,6 +455,7 @@ def execute_analysis_blueprint(
             "row_count": 0,
             "diagnosis": diagnosis,
         }
+    sql = guard_result.normalized_sql or sql
 
     engine = create_engine_for_datasource(datasource)
     started_at = time.monotonic()

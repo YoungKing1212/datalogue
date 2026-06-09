@@ -27,7 +27,7 @@ from .dataset import (
     BlueprintVersion,
     BlueprintUsageLog,
 )
-from .conversation import Conversation, Message
+from .conversation import Conversation, Message, SQLDiagnosisLog
 
 __all__ = [
     "Datasource",
@@ -46,4 +46,5 @@ __all__ = [
     "BlueprintUsageLog",
     "Conversation",
     "Message",
+    "SQLDiagnosisLog",
 ]

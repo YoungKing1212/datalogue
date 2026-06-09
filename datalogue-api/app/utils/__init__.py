@@ -17,6 +17,8 @@
 # - token         : LLM Token 用量提取与合并
 # - prompt        : 语义层 schema 文本构建
 # - sql_dialect   : 跨方言 SQL 引号 / null sanitize / 危险关键字扫描
+# - sql_guard     : SQL 执行前静态安全校验与方言规范化
+# - sql_diagnosis : SQL 执行失败确定性诊断
 # - sample_data   : 给 SQL 审计 Agent 提供真实表样例
 # - column_labels : 语义层 → 中文列头映射
 
@@ -30,6 +32,8 @@ from app.utils.sql_dialect import (
     contains_forbidden_keyword,
     FORBIDDEN_SQL_KEYWORDS,
 )
+from app.utils.sql_guard import SQLGuardResult, guard_readonly_sql
+from app.utils.sql_diagnosis import classify_sql_execution_error, merge_llm_sql_diagnosis
 from app.utils.sample_data import fetch_sample_rows
 from app.utils.column_labels import build_column_labels
 
@@ -43,6 +47,10 @@ __all__ = [
     "sanitize_filter_sql",
     "contains_forbidden_keyword",
     "FORBIDDEN_SQL_KEYWORDS",
+    "SQLGuardResult",
+    "guard_readonly_sql",
+    "classify_sql_execution_error",
+    "merge_llm_sql_diagnosis",
     "fetch_sample_rows",
     "build_column_labels",
 ]

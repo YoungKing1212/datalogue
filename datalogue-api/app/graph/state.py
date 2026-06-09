@@ -22,6 +22,7 @@ class AgentState(TypedDict):
     # 输入层
     question: str  # 用户原始问题
     dataset_id: Optional[int]  # 指定数据集（可选）
+    conversation_id: Optional[int]  # 当前会话 ID，用于诊断日志关联
     history: Optional[List[dict]]  # 历史对话消息（最近 N 轮）
 
     # 意图识别层
@@ -62,6 +63,7 @@ class AgentState(TypedDict):
     # SQL 层
     sql: Optional[str]  # 编译后的 SQL
     sql_result: Optional[dict]  # 查询结果 {"columns": [], "rows": []}
+    datasource_dialect: Optional[str]  # 实际执行 SQL 的数据源方言
 
     # 输出层
     answer: Optional[str]  # 最终自然语言回答
@@ -77,6 +79,7 @@ class AgentState(TypedDict):
     sql_audit_result: Optional[
         dict
     ]  # {"root_cause": str, "wrong_field": str, "suggested_fix": str, "severity": "fixable"|"architectural"}
+    sql_diagnosis: Optional[dict]  # SQL 执行失败的结构化诊断，供前端和日志使用
 
     # 可观测性
     token_usage: Optional[

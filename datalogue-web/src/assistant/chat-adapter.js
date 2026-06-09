@@ -26,6 +26,7 @@ const NODE_DISPLAY = {
   dsl_validate: 'DSL 校验',
   dsl_compiler: 'SQL 编译',
   sql_execute: 'SQL 执行',
+  sql_audit: 'SQL 诊断',
   report_generator: '报告生成',
 };
 
@@ -63,6 +64,11 @@ function formatStepAsReasoning(ev) {
   } else if (ev.node === 'sql_execute') {
     const rows = ev.rows ?? 0;
     detail = `返回 ${rows} 行${ev.columns?.length ? ' · ' + ev.columns.length + ' 列' : ''}`;
+  } else if (ev.node === 'sql_audit') {
+    const diagnosis = ev.sql_diagnosis || ev.sql_audit_result || {};
+    const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || 'SQL 执行失败';
+    const suggested = diagnosis.suggested_action || diagnosis.suggested_fix || '';
+    detail = suggested ? `${title} · ${suggested}` : title;
   } else if (ev.node === 'report_generator') {
     detail = '已生成分析报告';
   }
@@ -89,7 +95,7 @@ function extractQuestion(messages) {
 function emitTrace(ev) {
   try {
     window.dispatchEvent(new CustomEvent('datalogue:trace', { detail: ev }));
-  } catch (e) {
+  } catch (_e) {
     /* SSR 保护 */
   }
 }
@@ -182,7 +188,7 @@ export function makeChatAdapter({ datasetIdRef }) {
                 },
               }),
             );
-          } catch (e) {
+          } catch (_e) {
             /* SSR 保护 */
           }
         }
@@ -194,6 +200,8 @@ export function makeChatAdapter({ datasetIdRef }) {
             custom: {
               sql: finalPayload.sql || null,
               sqlResult: finalPayload.sql_result || null,
+              sqlDiagnosis: finalPayload.sql_diagnosis || null,
+              sqlAuditResult: finalPayload.sql_audit_result || null,
               dsl: finalPayload.dsl || null,
               termNormalization: finalPayload.term_normalization || null,
               semanticAssetResolution: finalPayload.semantic_asset_resolution || null,

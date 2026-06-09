@@ -18,6 +18,7 @@ SQL 审计节点（sql_audit_node）单元测试 — mock LLM + 样例数据查�
 import json
 from unittest.mock import MagicMock
 
+import pytest
 
 
 # 通用 state 模板
@@ -98,6 +99,58 @@ def _patch_fetch_sample_rows(
 # ── 测试 1: fixable → should_retry=True，error 字段被重写 ─────────
 
 
+class TestSqlDiagnosisClassifier:
+    """确定性 SQL 执行错误分类测试。"""
+
+    @pytest.mark.parametrize(
+        ("error", "sql", "expected_code", "expected_retryable"),
+        [
+            ("Unknown column 'create_date' in 'where clause'", "SELECT create_date FROM orders", "FIELD_NOT_FOUND", True),
+            ("no such table: missing_orders", "SELECT * FROM missing_orders", "TABLE_NOT_SELECTED", False),
+            ("no such table: orders", "SELECT * FROM orders", "TABLE_NOT_FOUND", False),
+            ("column must appear in the GROUP BY clause", "SELECT region, SUM(amount) FROM orders", "AGGREGATION_ERROR", True),
+            ("operator does not exist: integer = text", "SELECT * FROM orders WHERE id = 'abc'", "TYPE_ERROR", True),
+            ("permission denied for table orders", "SELECT * FROM orders", "PERMISSION_DENIED", False),
+            ("syntax error at or near \"LIMIT\"", "SELECT * FROM orders LIMIT", "SYNTAX_OR_DIALECT", True),
+            ("statement timeout", "SELECT * FROM orders", "TIMEOUT", False),
+            ("database server closed the connection unexpectedly", "SELECT * FROM orders", "UNKNOWN_EXECUTION_ERROR", True),
+        ],
+    )
+    def test_classify_error_categories(self, error, sql, expected_code, expected_retryable):
+        from app.utils import classify_sql_execution_error
+
+        diagnosis = classify_sql_execution_error(
+            error=error,
+            sql=sql,
+            schema_structured={"tables_json": {"tables": [{"name": "orders"}]}},
+            datasource_dialect="postgres",
+        )
+
+        assert diagnosis["code"] == expected_code
+        assert diagnosis["retryable"] is expected_retryable
+        assert diagnosis["category"]
+        assert diagnosis["title"]
+        assert diagnosis["suggested_action"]
+        assert diagnosis["original_error"] == error
+
+    def test_semantic_asset_missing_field_is_architectural(self):
+        from app.utils import classify_sql_execution_error
+
+        diagnosis = classify_sql_execution_error(
+            error="Unknown column 'refund_amt' in 'field list'",
+            sql="SELECT SUM(refund_amt) FROM t_refund",
+            schema_structured={
+                "tables_json": {"tables": [{"name": "t_refund"}]},
+                "metrics": [{"name": "退款金额", "expr": "SUM(refund_amt)", "table_name": "t_refund"}],
+            },
+        )
+
+        assert diagnosis["code"] == "FIELD_NOT_FOUND"
+        assert diagnosis["severity"] == "architectural"
+        assert diagnosis["retryable"] is False
+        assert "语义层" in diagnosis["detail"]
+
+
 class TestSqlAuditNode:
     """sql_audit_node 行为测试。"""
 
@@ -130,9 +183,10 @@ class TestSqlAuditNode:
 
         assert result["sql_audit_result"]["severity"] == "fixable"
         assert result["sql_audit_result"]["wrong_field"] == "create_date"
+        assert result["sql_diagnosis"]["code"] == "FIELD_NOT_FOUND"
         assert result["should_retry"] is True
-        # error 字段被改写为审计友好文本（包含"上一轮 SQL 失败审计"）
-        assert "上一轮 SQL 失败审计" in result["error"]
+        # error 字段被改写为诊断友好文本
+        assert "SQL 执行失败诊断" in result["error"]
         assert "time_range.field" in result["error"]
         # token_usage 累加
         assert result["token_usage"]["total_tokens"] == 300
@@ -161,15 +215,19 @@ class TestSqlAuditNode:
         db.query.return_value.filter.return_value.first.return_value = None
 
         node = sql_audit_node(db)
-        state = _make_state()
+        state = _make_state(
+            sql="SELECT SUM(refund_amt) AS 退款金额 FROM t_refund",
+            error="Unknown column 'refund_amt' in 'field list'",
+        )
 
         result = node(state)
 
         assert result["sql_audit_result"]["severity"] == "architectural"
+        assert result["sql_audit_result"]["retryable"] is False
+        assert result["sql_audit_result"]["code"] == "FIELD_NOT_FOUND"
         assert result["should_retry"] is False
-        # architectural 时 error 字段保留原值（不带"上一轮 SQL 失败审计"）
-        assert "上一轮 SQL 失败审计" not in result["error"]
-        assert "Unknown column 'create_date'" in result["error"]
+        assert "SQL 执行失败诊断" in result["error"]
+        assert "语义层" in result["error"]
 
     # ── 测试 3: LLM 返回非 JSON → fallback fixable ─────────
 
@@ -193,10 +251,10 @@ class TestSqlAuditNode:
         # safe_json_parse 返回 {}，severity 默认 fixable
         assert result["sql_audit_result"]["severity"] == "fixable"
         assert result["should_retry"] is True
-        # root_cause 为 None（LLM 没给）
-        assert result["sql_audit_result"]["root_cause"] is None
+        assert result["sql_audit_result"]["code"] == "FIELD_NOT_FOUND"
+        assert result["sql_audit_result"]["root_cause"]
         # error 字段在 fixable 路径下被重写
-        assert "上一轮 SQL 失败审计" in result["error"]
+        assert "SQL 执行失败诊断" in result["error"]
 
     # ── 测试 4: LLM 异常 → fallback fixable + 原始 error ─────────
 
@@ -220,10 +278,11 @@ class TestSqlAuditNode:
 
         result = node(state)
 
-        # 异常兜底：severity=fixable, 原始 error 保留（不被重写）
+        # 异常兜底：使用确定性诊断，不依赖 LLM。
         assert result["sql_audit_result"]["severity"] == "fixable"
-        assert "SQL审计节点异常" in result["sql_audit_result"]["root_cause"]
+        assert result["sql_audit_result"]["code"] == "FIELD_NOT_FOUND"
         assert result["should_retry"] is True
+        assert "SQL 执行失败诊断" in result["error"]
         assert "Unknown column 'create_date'" in result["error"]
 
     # ── 测试 5: LLM 返回非法 severity → 兜底 fixable ─────────
@@ -254,9 +313,50 @@ class TestSqlAuditNode:
 
         result = node(state)
 
-        # 非法 severity → 兜底 fixable
+        # 非法 severity 不覆盖确定性诊断。
         assert result["sql_audit_result"]["severity"] == "fixable"
+        assert result["sql_audit_result"]["retryable"] is True
         assert result["should_retry"] is True
+
+    def test_write_sql_diagnosis_log_best_effort(self, monkeypatch, db_session, sample_dataset):
+        from app.graph.nodes import sql_audit_node
+        from app.models import Conversation, SQLDiagnosisLog
+
+        conv = Conversation(title="SQL 诊断测试", thread_id="thread-sql-diagnosis", user_id=1)
+        db_session.add(conv)
+        db_session.commit()
+        db_session.refresh(conv)
+
+        llm_response = _mock_llm_response(
+            json.dumps(
+                {
+                    "root_cause": "time_range.field 错填 DDL 列名",
+                    "wrong_field": "create_date",
+                    "suggested_fix": "应改用 apply_time",
+                },
+                ensure_ascii=False,
+            )
+        )
+        _patch_get_llm(monkeypatch, llm_response)
+        _patch_fetch_sample_rows(monkeypatch)
+
+        state = _make_state(
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            retry_count=1,
+        )
+        result = sql_audit_node(db_session)(state)
+
+        log = (
+            db_session.query(SQLDiagnosisLog)
+            .filter(SQLDiagnosisLog.conversation_id == conv.id)
+            .one()
+        )
+        assert log.dataset_id == sample_dataset.id
+        assert log.retry_count == 1
+        assert log.sql == state["sql"]
+        assert log.diagnosis["code"] == result["sql_diagnosis"]["code"]
+        assert log.diagnosis["suggested_action"] == "应改用 apply_time"
 
     # ── 测试 6: _collect_audit_table_names 边界 ─────────
 
@@ -301,7 +401,16 @@ class TestSqlAuditRouter:
         from app.graph.workflow import _sql_audit_router
 
         state = {
-            "sql_audit_result": {"severity": "architectural", "root_cause": "DDL 缺列"},
+            "sql_audit_result": {"severity": "architectural", "retryable": False, "root_cause": "DDL 缺列"},
+            "retry_count": 0,
+        }
+        assert _sql_audit_router(state) == "end"
+
+    def test_retryable_false_routes_to_end(self):
+        from app.graph.workflow import _sql_audit_router
+
+        state = {
+            "sql_audit_result": {"severity": "fixable", "retryable": False},
             "retry_count": 0,
         }
         assert _sql_audit_router(state) == "end"
@@ -310,7 +419,7 @@ class TestSqlAuditRouter:
         from app.graph.workflow import _sql_audit_router
 
         state = {
-            "sql_audit_result": {"severity": "fixable", "root_cause": "time_field 错填"},
+            "sql_audit_result": {"severity": "fixable", "retryable": True, "root_cause": "time_field 错填"},
             "retry_count": 1,
         }
         assert _sql_audit_router(state) == "retry"
@@ -319,7 +428,7 @@ class TestSqlAuditRouter:
         from app.graph.workflow import _sql_audit_router
 
         state = {
-            "sql_audit_result": {"severity": "fixable"},
+            "sql_audit_result": {"severity": "fixable", "retryable": True},
             "retry_count": 3,
         }
         assert _sql_audit_router(state) == "end"

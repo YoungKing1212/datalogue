@@ -26,6 +26,14 @@ from unittest.mock import patch, MagicMock
 class TestChatAPI:
     """测试 /api/chat 路由"""
 
+    def test_sql_audit_node_is_exposed_to_stream_payloads(self):
+        """SQL 诊断节点应纳入 SSE 展示名和状态输出提取。"""
+        from app.api.chat import _NODE_DISPLAY_NAMES, _STATE_OUTPUT_KEYS
+
+        assert _NODE_DISPLAY_NAMES["sql_audit"] == "SQL 诊断"
+        assert "sql_audit_result" in _STATE_OUTPUT_KEYS
+        assert "sql_diagnosis" in _STATE_OUTPUT_KEYS
+
     def test_chat_stream_basic(self, client, sample_dataset):
         """基础流式问数接口应返回 200"""
         payload = {
@@ -604,7 +612,7 @@ class TestLangGraphNodes:
         )
 
         assert result["sql_result"] is None
-        assert "只读查询" in result["error"]
+        assert "drop" in result["error"].lower()
 
     def test_entry_intent_knowledge_term(self, db_session, sample_dataset):
         """入口分类：知识解释命中业务术语。"""
@@ -879,7 +887,7 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         assert "LIMIT 20" in result["sql"]
 
     def test_dsl_compiler_direct_sql(self, db_session):
-        """DSL 编译器：direct_sql 路径直通"""
+        """DSL 编译器：direct_sql 路径会补齐默认 LIMIT。"""
         from app.graph.nodes import dsl_compiler_node
 
         state = {
@@ -887,7 +895,8 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
             "schema_context": "",
         }
         result = dsl_compiler_node(db_session)(state)
-        assert result["sql"] == "SELECT id FROM users WHERE status = 'active'"
+        assert result["sql"] == "SELECT id FROM users WHERE status = 'active' LIMIT 100"
+        assert result["sql_guard"]["ok"] is True
 
     def test_dsl_compiler_forbidden_keyword(self, db_session):
         """DSL 编译器：拦截危险 SQL 关键字"""

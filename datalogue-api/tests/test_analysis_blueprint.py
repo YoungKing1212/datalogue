@@ -619,7 +619,7 @@ def test_blueprint_test_blocks_unsafe_sql(client, sample_dataset):
 
     assert test_resp.status_code == 200
     assert test_resp.json()["ok"] is False
-    assert "只读查询" in test_resp.json()["error_message"]
+    assert "delete" in test_resp.json()["error_message"].lower()
     assert test_resp.json()["row_count"] == 0
     assert test_resp.json()["diagnosis"]["code"] == "UNSAFE_SQL"
 

@@ -25,6 +25,7 @@ dependencies = [
     "orjson==3.10.3",
     "pytest==8.2.2",
     "pytest-asyncio==0.23.7",
+    "sqlglot==30.9.0",
 ]
 
 [project.optional-dependencies]

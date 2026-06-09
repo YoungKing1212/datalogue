@@ -49,3 +49,17 @@ class Message(Base):
     token_usage = Column(JSON)
     step_trace = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SQLDiagnosisLog(Base):
+    __tablename__ = "sql_diagnosis_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversation.id"), nullable=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
+    question = Column(Text)
+    sql = Column(Text)
+    error = Column(Text)
+    diagnosis = Column(JSON)
+    retry_count = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

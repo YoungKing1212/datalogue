@@ -39,6 +39,7 @@ from app.models.dataset import (
     BusinessTerm,
     SemanticDataset,
 )
+from app.models.conversation import SQLDiagnosisLog
 from app.models.datasource import Datasource
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.services.dataset_context import build_dataset_query_context
@@ -61,6 +62,8 @@ from app.utils import (
     build_column_labels as _build_column_labels,
     fetch_sample_rows as _fetch_sample_rows,
     guard_readonly_sql as _guard_readonly_sql,
+    classify_sql_execution_error as _classify_sql_execution_error,
+    merge_llm_sql_diagnosis as _merge_llm_sql_diagnosis,
 )
 
 def _safe_llm_invoke(llm, messages: list, path: str = ""):
@@ -2297,7 +2300,12 @@ def sql_execute_node(db: Session):
                 return {"sql_result": result, "error": None, "should_retry": False}
         except Exception as e:
             logger.error(f"SQL执行失败: {e}")
-            return {"sql_result": None, "error": f"SQL 执行失败: {str(e)}", "should_retry": True}
+            return {
+                "sql_result": None,
+                "error": f"SQL 执行失败: {str(e)}",
+                "should_retry": True,
+                "datasource_dialect": dialect,
+            }
         finally:
             engine.dispose()
 
@@ -2343,6 +2351,39 @@ def _collect_audit_table_names(dsl: dict, structured: dict | None, sql: str | No
     return names
 
 
+def _write_sql_diagnosis_log(db: Session, state: AgentState, diagnosis: dict[str, Any]) -> None:
+    """best-effort 写入 SQL 诊断日志，失败不影响主问数流程。"""
+    try:
+        db.add(
+            SQLDiagnosisLog(
+                conversation_id=state.get("conversation_id"),
+                dataset_id=state.get("dataset_id"),
+                question=state.get("question"),
+                sql=state.get("sql"),
+                error=state.get("error"),
+                diagnosis=diagnosis,
+                retry_count=state.get("retry_count", 0),
+            )
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("SQL诊断日志写入失败，已忽略: %s", exc)
+
+
+def _format_sql_diagnosis_error(diagnosis: dict[str, Any], original_error: str) -> str:
+    """把结构化诊断转换成重试和最终回答可读的错误文本。"""
+    title = diagnosis.get("title") or "SQL 执行失败"
+    detail = diagnosis.get("detail") or diagnosis.get("root_cause") or original_error
+    suggested = diagnosis.get("suggested_action") or diagnosis.get("suggested_fix")
+    parts = [f"SQL 执行失败诊断：{title}。{detail}"]
+    if suggested:
+        parts.append(f"建议：{suggested}")
+    if original_error:
+        parts.append(f"原始错误：{original_error}")
+    return "。".join(part.rstrip("。") for part in parts if part)
+
+
 def sql_audit_node(db: Session):
     """SQL 审计 Agent 节点。SQL 执行失败时被路由到这里。
     调 LLM（temperature=0）输出结构化诊断 JSON，区分 fixable / architectural。
@@ -2364,6 +2405,8 @@ def sql_audit_node(db: Session):
         term_normalization = state.get("term_normalization") or {}
         semantic_asset_resolution = state.get("semantic_asset_resolution") or {}
         dataset_id = state.get("dataset_id")
+        retry_count = state.get("retry_count", 0)
+        datasource_dialect = state.get("datasource_dialect")
 
         # 解析 datasource（sample data 查询需要）
         datasource = None
@@ -2373,6 +2416,8 @@ def sql_audit_node(db: Session):
                 datasource = db.get(Datasource, ds.datasource_id)
         if datasource is None:
             datasource = db.query(Datasource).filter(Datasource.status == "connected").first()
+        if datasource_dialect is None and datasource is not None:
+            datasource_dialect = (getattr(datasource, "db_type", None) or "").lower() or None
 
         # 收集审计相关的表名
         table_names = _collect_audit_table_names(dsl, structured, sql)
@@ -2393,6 +2438,15 @@ def sql_audit_node(db: Session):
         if len(ddl_block) > 6000:
             ddl_block = ddl_block[:6000] + "\n...（DDL 截断）"
 
+        base_diagnosis = _classify_sql_execution_error(
+            error=original_error,
+            sql=sql,
+            ddl_context=ddl_block,
+            schema_structured=structured,
+            datasource_dialect=datasource_dialect,
+            retry_count=retry_count,
+        )
+
         # 调 LLM（审计是确定性判断，temperature=0）
         llm = get_llm(temperature=0.0)
         system = SystemMessage(content=SQL_AUDIT_SYSTEM)
@@ -2403,6 +2457,7 @@ def sql_audit_node(db: Session):
             f"DSL: {json.dumps(dsl, ensure_ascii=False) if dsl else '（无）'}",
             f"SQL: {sql or '（空）'}",
             f"错误: {original_error}",
+            f"确定性诊断: {json.dumps(base_diagnosis, ensure_ascii=False)}",
         ]
         if schema_context:
             human_lines.append("")
@@ -2430,63 +2485,40 @@ def sql_audit_node(db: Session):
 
         human = HumanMessage(content="\n".join(human_lines))
 
-        # 异常兜底 + JSON 解析失败兜底
+        response = None
+        result: dict[str, Any] = {}
         try:
             response = llm.invoke([system, human])
             result = _safe_json_parse(str(response.content))
         except Exception as e:
-            logger.error(f"SQL审计: LLM 调用失败: {e}，降级为 fixable + 原 error")
-            return {
-                "sql_audit_result": {
-                    "root_cause": f"SQL审计节点异常: {e}",
-                    "wrong_field": None,
-                    "suggested_fix": None,
-                    "severity": "fixable",
-                },
-                "should_retry": True,
-                "error": original_error,
-                "token_usage": state.get("token_usage"),
-            }
+            logger.error("SQL审计: LLM 调用失败，使用确定性诊断兜底: %s", e)
+            result = {}
 
-        severity = result.get("severity", "fixable")
-        if severity not in ("fixable", "architectural"):
-            # 非法 severity → 兜底 fixable
-            logger.warning(f"SQL审计: 收到非预期 severity='{severity}'，降级为 fixable")
-            severity = "fixable"
-
-        audit = {
-            "root_cause": result.get("root_cause"),
-            "wrong_field": result.get("wrong_field"),
-            "suggested_fix": result.get("suggested_fix"),
-            "severity": severity,
-        }
+        diagnosis = _merge_llm_sql_diagnosis(base_diagnosis, result)
+        audit = dict(diagnosis)
         logger.info(
-            f"SQL审计完成: severity={severity} | root_cause={audit['root_cause']!r} | "
-            f"wrong_field={audit['wrong_field']!r}"
+            "SQL审计完成: code=%s severity=%s retryable=%s root_cause=%r",
+            diagnosis.get("code"),
+            diagnosis.get("severity"),
+            diagnosis.get("retryable"),
+            diagnosis.get("root_cause"),
         )
 
         # token 计量
-        usage = _extract_token_usage(response)
-        merged = _merge_token_usage(state.get("token_usage") or {}, usage)
+        merged = state.get("token_usage")
+        if response is not None:
+            usage = _extract_token_usage(response)
+            merged = _merge_token_usage(state.get("token_usage") or {}, usage)
 
-        # 重写 error：fixable 时给 LLM 友好诊断，architectural 时保留原 error
-        if severity == "fixable":
-            friendly_error = (
-                f"上一轮 SQL 失败审计：{audit['root_cause']}。"
-                f"建议：{audit['suggested_fix']}。"
-                f"（原错误：{original_error}）"
-            )
-            return {
-                "sql_audit_result": audit,
-                "should_retry": True,
-                "error": friendly_error,
-                "token_usage": merged,
-            }
+        _write_sql_diagnosis_log(db, state, diagnosis)
+
+        friendly_error = _format_sql_diagnosis_error(diagnosis, original_error)
 
         return {
             "sql_audit_result": audit,
-            "should_retry": False,
-            "error": original_error,
+            "sql_diagnosis": diagnosis,
+            "should_retry": bool(diagnosis.get("retryable")),
+            "error": friendly_error,
             "token_usage": merged,
         }
 
