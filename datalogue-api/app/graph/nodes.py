@@ -60,7 +60,27 @@ from app.utils import (
     sanitize_filter_sql as _sanitize_filter_sql,
     build_column_labels as _build_column_labels,
     fetch_sample_rows as _fetch_sample_rows,
+    guard_readonly_sql as _guard_readonly_sql,
 )
+
+def _safe_llm_invoke(llm, messages: list, path: str = ""):
+    """统一封装 llm.invoke，捕获 API 级错误并转为结构化异常信息。
+    返回 (response, error_str)，正常时 error_str 为 None。
+    """
+    try:
+        return llm.invoke(messages), None
+    except Exception as e:
+        err_str = str(e)
+        logger.error(f"LLM 调用失败 path={path}: {err_str[:300]}")
+        # 敏感内容过滤（422 / new_sensitive）：不可重试
+        if "new_sensitive" in err_str or "422" in err_str:
+            return None, f"LLM 拒绝处理该请求（内容敏感过滤），请换一种提问方式。[{err_str[:120]}]"
+        # 限速 / 超配额（429）：可提示重试
+        if "429" in err_str or "rate_limit" in err_str.lower():
+            return None, f"LLM 请求频率超限，请稍后重试。[{err_str[:120]}]"
+        # 其他 API 错误
+        return None, f"LLM 调用异常：{err_str[:200]}"
+
 
 # ── 节点 1: 意图识别 ──────────────────────────────────
 
@@ -1449,7 +1469,9 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
             system.content,
             human_text,
         )
-        response = llm.invoke([system, human])
+        response, llm_err = _safe_llm_invoke(llm, [system, human], path="真实Schema")
+        if llm_err:
+            return {"dsl": {}, "sql": None, "sql_list": [], "error": llm_err, "should_retry": False}
         result = _safe_json_parse(str(response.content))
         sql = result.get("sql", "")
         usage = _extract_token_usage(response)
@@ -1528,7 +1550,9 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
                 system.content,
                 human_text,
             )
-            response = llm.invoke([system, human])
+            response, llm_err = _safe_llm_invoke(llm, [system, human], path="语义层-推断")
+            if llm_err:
+                return {"dsl": {}, "sql": None, "sql_list": [], "generation_mode": "inferred", "error": llm_err, "should_retry": False}
             result = _safe_json_parse(str(response.content))
             sql = result.get("sql", "")
             usage = _extract_token_usage(response)
@@ -1641,7 +1665,9 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
             system.content,
             human_text,
         )
-        response = llm.invoke([system, human])
+        response, llm_err = _safe_llm_invoke(llm, [system, human], path="语义层-确定性")
+        if llm_err:
+            return {"dsl": {}, "sql": None, "sql_list": [], "generation_mode": "semantic", "error": llm_err, "should_retry": False}
         dsl = normalize_dsl(_safe_json_parse(str(response.content)))
         usage = _extract_token_usage(response)
         merged = _merge_token_usage(state.get("token_usage") or {}, usage)
@@ -1676,7 +1702,9 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
         system.content,
         human_text,
     )
-    response = llm.invoke([system, human])
+    response, llm_err = _safe_llm_invoke(llm, [system, human], path="无Schema")
+    if llm_err:
+        return {"dsl": {}, "sql": None, "sql_list": [], "error": llm_err, "should_retry": False}
     result = _safe_json_parse(str(response.content))
     sql = result.get("sql", "")
     usage = _extract_token_usage(response)
@@ -1831,23 +1859,27 @@ def dsl_compiler_node(db: Session):
             if not sql:
                 logger.error("direct_sql模式: SQL为空")
                 return {"sql": None, "error": "未生成有效 SQL"}
-            forbidden = [
-                "insert",
-                "update",
-                "delete",
-                "drop",
-                "alter",
-                "create",
-                "grant",
-                "truncate",
-            ]
-            sql_lower = sql.lower()
-            for kw in forbidden:
-                if re.search(rf"\b{kw}\b", sql_lower):
-                    logger.error(f"direct_sql模式: SQL包含危险关键字 '{kw}'")
-                    return {"sql": None, "error": f"SQL 包含危险关键字 '{kw}'，已拦截"}
+            guard_result = _guard_readonly_sql(
+                sql,
+                dialect=dialect,
+                query_constraints=query_constraints,
+            )
+            if not guard_result.ok:
+                logger.error("direct_sql模式: SQL Guard 拦截: %s", guard_result.error)
+                return {
+                    "sql": None,
+                    "error": guard_result.error,
+                    "sql_guard": guard_result.__dict__,
+                    "should_retry": False,
+                }
+            sql = guard_result.normalized_sql or sql
             logger.info("direct_sql模式: 编译成功")
-            return {"sql": sql, "sql_list": [sql], "error": None}
+            return {
+                "sql": sql,
+                "sql_list": [sql],
+                "error": None,
+                "sql_guard": guard_result.__dict__,
+            }
 
         # 真实数据源 Schema 模式
         if schema and "【数据源真实表结构】" in schema:
@@ -1855,23 +1887,27 @@ def dsl_compiler_node(db: Session):
             if not sql:
                 logger.error("真实Schema模式: SQL为空")
                 return {"sql": None, "error": "未生成有效 SQL"}
-            forbidden = [
-                "insert",
-                "update",
-                "delete",
-                "drop",
-                "alter",
-                "create",
-                "grant",
-                "truncate",
-            ]
-            sql_lower = sql.lower()
-            for kw in forbidden:
-                if re.search(rf"\b{kw}\b", sql_lower):
-                    logger.error(f"真实Schema模式: SQL包含危险关键字 '{kw}'")
-                    return {"sql": None, "error": f"SQL 包含危险关键字 '{kw}'，已拦截"}
+            guard_result = _guard_readonly_sql(
+                sql,
+                dialect=dialect,
+                query_constraints=query_constraints,
+            )
+            if not guard_result.ok:
+                logger.error("真实Schema模式: SQL Guard 拦截: %s", guard_result.error)
+                return {
+                    "sql": None,
+                    "error": guard_result.error,
+                    "sql_guard": guard_result.__dict__,
+                    "should_retry": False,
+                }
+            sql = guard_result.normalized_sql or sql
             logger.info("真实Schema模式: 编译成功")
-            return {"sql": sql, "sql_list": [sql], "error": None}
+            return {
+                "sql": sql,
+                "sql_list": [sql],
+                "error": None,
+                "sql_guard": guard_result.__dict__,
+            }
 
         if not dsl:
             logger.error("DSL为空，无法编译")
@@ -2159,15 +2195,28 @@ def dsl_compiler_node(db: Session):
             sql_parts.append(f"LIMIT {limit}")
         sql = "\n".join(sql_parts)
 
-        forbidden = ["insert", "update", "delete", "drop", "alter", "create", "grant"]
-        sql_lower = sql.lower()
-        for kw in forbidden:
-            if re.search(rf"\b{kw}\b", sql_lower):
-                logger.error(f"DSL编译: SQL包含危险关键字 '{kw}'")
-                return {"sql": None, "error": f"SQL 包含危险关键字 '{kw}'，已拦截"}
+        guard_result = _guard_readonly_sql(
+            sql,
+            dialect=dialect,
+            query_constraints=query_constraints,
+        )
+        if not guard_result.ok:
+            logger.error("DSL编译: SQL Guard 拦截: %s", guard_result.error)
+            return {
+                "sql": None,
+                "error": guard_result.error,
+                "sql_guard": guard_result.__dict__,
+                "should_retry": False,
+            }
+        sql = guard_result.normalized_sql or sql
 
         logger.info(f"DSL编译成功 (dialect={dialect}): {sql}")
-        return {"sql": sql, "sql_list": [sql], "error": None}
+        return {
+            "sql": sql,
+            "sql_list": [sql],
+            "error": None,
+            "sql_guard": guard_result.__dict__,
+        }
 
     return _node
 
@@ -2184,17 +2233,6 @@ def sql_execute_node(db: Session):
         if not sql:
             logger.warning("SQL为空，跳过执行")
             return {"sql_result": None, "error": "SQL 为空", "should_retry": True}
-
-        forbidden = ["insert", "update", "delete", "drop", "alter", "create", "grant", "truncate"]
-        sql_lower = sql.lower()
-        for kw in forbidden:
-            if re.search(rf"\b{kw}\b", sql_lower):
-                logger.error(f"SQL执行: 包含危险关键字 '{kw}'")
-                return {
-                    "sql_result": None,
-                    "error": f"SQL 包含危险关键字 '{kw}'，已拦截",
-                    "should_retry": False,
-                }
 
         dataset_id = state.get("dataset_id")
         datasource = None
@@ -2213,6 +2251,22 @@ def sql_execute_node(db: Session):
                 "error": "无可用数据源，请先在数据源管理中测试连接",
                 "should_retry": False,
             }
+
+        dialect = (getattr(datasource, "db_type", None) or "postgres").lower()
+        guard_result = _guard_readonly_sql(
+            sql,
+            dialect=dialect,
+            query_constraints=state.get("query_constraints"),
+        )
+        if not guard_result.ok:
+            logger.error("SQL执行: SQL Guard 拦截: %s", guard_result.error)
+            return {
+                "sql_result": None,
+                "error": guard_result.error,
+                "sql_guard": guard_result.__dict__,
+                "should_retry": False,
+            }
+        sql = guard_result.normalized_sql or sql
 
         engine = create_engine_for_datasource(datasource)
         try:
