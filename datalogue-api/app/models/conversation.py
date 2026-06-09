@@ -25,6 +25,7 @@ class Conversation(Base):
     title = Column(String(200), nullable=False)
     thread_id = Column(String(64))
     user_id = Column(Integer, nullable=True)
+    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
     archived = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -22,10 +22,16 @@ import { ThreadList } from '../assistant/ThreadList';
 import { MyComposer, DatasetChip } from '../assistant/MyComposer';
 import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
-import { listDatasets } from '../api/client';
+import { getConversation, listDatasets } from '../api/client';
 
 // 单例 adapter（避免每次渲染重建）
 const threadListAdapter = new DatalogueThreadListAdapter();
+
+function inferConversationDatasetId(detail) {
+  const direct = detail?.conversation?.dataset_id;
+  if (direct != null) return Number(direct);
+  return null;
+}
 
 /**
  * 在 runtime context 内部：URL 反向同步
@@ -187,6 +193,29 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
   useEffect(() => {
     listDatasets().then(setDatasetList).catch(console.error);
   }, []);
+
+  // 切换历史会话时恢复该会话绑定的数据集，保证后续追问仍带 dataset_id
+  useEffect(() => {
+    if (!routeId || datasetList.length === 0) return undefined;
+    let cancelled = false;
+    getConversation(routeId)
+      .then((detail) => {
+        if (cancelled) return;
+        const datasetId = inferConversationDatasetId(detail);
+        if (datasetId == null) {
+          setSelectedDs(null);
+          return;
+        }
+        const matched = datasetList.find((item) => Number(item.id) === Number(datasetId));
+        setSelectedDs(matched || null);
+      })
+      .catch((err) => {
+        if (!cancelled) console.error('恢复会话数据集失败', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [routeId, datasetList]);
 
   // 把 selectedDs 变化同步到 datasetIdRef（通过 window 事件桥接给 DatasetSync）
   useEffect(() => {

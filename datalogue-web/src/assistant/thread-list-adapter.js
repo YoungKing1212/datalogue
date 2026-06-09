@@ -179,6 +179,7 @@ export class DatalogueThreadListAdapter {
         remoteId: String(c.id),
         externalId: c.thread_id || undefined,
         title: c.title,
+        datasetId: c.dataset_id ?? undefined,
       })),
     };
   }
@@ -240,6 +241,7 @@ export class DatalogueThreadListAdapter {
       remoteId: String(c.id),
       externalId: c.thread_id || undefined,
       title: c.title,
+      datasetId: c.dataset_id ?? undefined,
     };
   }
 

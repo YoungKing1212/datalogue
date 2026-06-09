@@ -73,7 +73,12 @@ class TestConversationAPI:
         if db is None:
             pytest.skip("无法获取测试数据库 session")
 
-        conv = Conversation(title="测试对话", thread_id="t-001", user_id=1)
+        conv = Conversation(
+            title="测试对话",
+            thread_id="t-001",
+            user_id=1,
+            dataset_id=sample_dataset.id,
+        )
         db.add(conv)
         db.commit()
         db.refresh(conv)
@@ -99,6 +104,7 @@ class TestConversationAPI:
         assert "conversation" in data
         assert "messages" in data
         assert data["conversation"]["title"] == "测试对话"
+        assert data["conversation"]["dataset_id"] == sample_dataset.id
         assert len(data["messages"]) == 2
         assert data["messages"][0]["role"] == "user"
         assert data["messages"][1]["role"] == "assistant"

@@ -284,11 +284,11 @@ def _confidence(state: AgentState, risks: list[dict[str, str]], dsl: dict[str, A
         if dsl_confidence < LOW_CONFIDENCE_THRESHOLD:
             reasons.append("DSL 生成置信度偏低")
 
-    if state.get("semantic_asset_resolution", {}).get("ambiguities"):
+    if (state.get("semantic_asset_resolution") or {}).get("ambiguities"):
         score = min(score, 0.62)
-    if state.get("semantic_asset_resolution", {}).get("unresolved"):
+    if (state.get("semantic_asset_resolution") or {}).get("unresolved"):
         score = min(score, 0.72)
-    if state.get("term_normalization", {}).get("has_conflict"):
+    if (state.get("term_normalization") or {}).get("has_conflict"):
         score = min(score, 0.45)
 
     score = round(max(0.05, min(score, 0.99)), 2)
@@ -323,7 +323,7 @@ def _confirmation(confidence: dict[str, Any], state: AgentState) -> dict[str, An
             _dedupe([item.get("text") for item in semantic.get("unresolved") or []])[:3]
         )
         message = f"请确认“{names}”对应的指标、维度或字段口径后再继续。"
-    elif state.get("term_normalization", {}).get("has_conflict"):
+    elif (state.get("term_normalization") or {}).get("has_conflict"):
         message = "请先确认业务术语口径，避免基于错误定义继续查询。"
     else:
         message = "当前回答置信度偏低，请确认口径、数据来源或时间范围后再继续。"

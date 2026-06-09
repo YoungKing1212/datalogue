@@ -45,6 +45,7 @@ def create_conversation(payload: schemas.ConversationCreate, db: Session = Depen
         title=payload.title,
         thread_id=payload.thread_id or f"thread-{uuid.uuid4().hex[:12]}",
         user_id=1,
+        dataset_id=payload.dataset_id,
         archived=False,
     )
     db.add(conv)

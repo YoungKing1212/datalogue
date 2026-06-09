@@ -88,3 +88,4 @@ class AgentState(TypedDict):
     token_usage: Optional[
         dict
     ]  # 累积 Token 用量 {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    schema_tokens: Optional[int]  # schema_context 部分的估算 token 数，用于 prompt 压缩监控

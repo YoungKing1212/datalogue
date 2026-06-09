@@ -261,7 +261,8 @@ def _extract_person_name(question: str) -> str | None:
     text = re.sub(r"\d{4}\s*年\s*(?:\d{1,2}\s*月)?", "", question or "")
     text = re.sub(r"^(?:我要|我想|帮我)?(?:查询|查看|查一下|查)", "", text)
     patterns = (
-        r"([\u4e00-\u9fa5]{2,4})的(?:日报|周报|月报|任务|记录|明细)",
+        # "XXX的[工作]日报" — 允许"的"和关键词之間有 0-2 个修饰字（工作、每日等）
+        r"([\u4e00-\u9fa5]{2,4})的[\u4e00-\u9fa5]{0,2}(?:日报|周报|月报|任务|记录|明细)",
         r"(?:查询|查看|查一下|查|我要查询)([\u4e00-\u9fa5]{2,4})(?:在|的|$)",
     )
     for pattern in patterns:

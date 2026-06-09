@@ -19,6 +19,7 @@ from decimal import Decimal
 from typing import Dict, Any
 
 import logging
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -330,11 +331,7 @@ def _format_blueprint_semantic_context(bp: AnalysisBlueprint) -> str:
         lines.append(f"适用场景: {bp.when_to_use}")
     if bp.description:
         lines.append(f"业务描述: {bp.description}")
-    if bp.trigger_keywords:
-        lines.append(f"触发词: {'、'.join(str(t) for t in bp.trigger_keywords if t)}")
-    if bp.trigger_examples:
-        lines.append("用户可能问法:")
-        lines.extend(_format_blueprint_list(bp.trigger_examples))
+    # trigger_keywords / trigger_examples / attribution_hints 属路由阶段数据，SQL 生成不需要
     parameter_lines = _format_blueprint_list(bp.parameters, key="name")
     if parameter_lines:
         lines.append("需要从用户问题中理解的业务参数:")
@@ -347,8 +344,6 @@ def _format_blueprint_semantic_context(bp: AnalysisBlueprint) -> str:
     if step_lines:
         lines.append("业务分析步骤:")
         lines.extend(step_lines)
-    if bp.attribution_hints:
-        lines.append(f"归因和解释提示: {bp.attribution_hints}")
     lines.append("硬性要求: 不要向用户索要 SQL；不要把参数占位符当成输出内容；优先按蓝图业务步骤组织查询。")
     return "\n".join(lines)
 
@@ -444,9 +439,10 @@ def _field_aliases(field: dict) -> list[str]:
 
 
 def _format_dsl_asset_catalog(structured: dict | None) -> str:
-    """把结构化语义层资产整理成 NL2DSL v2 可引用目录。"""
+    """把结构化语义层资产整理成 NL2DSL v2 可引用目录。fields 使用紧凑格式，unused 字段自动过滤。"""
     if not structured:
         return ""
+    from app.utils.schema_formatter import format_fields_compact
     lines = ["【可引用语义资产（生成 DSL 时必须优先使用这里的 asset_id）】"]
     for asset_type, title, items in (
         ("metric", "指标", structured.get("metrics") or []),
@@ -458,10 +454,14 @@ def _format_dsl_asset_catalog(structured: dict | None) -> str:
         if not items:
             continue
         lines.append(f"{title}:")
+        if asset_type == "field":
+            # fields 使用紧凑行格式，unused 在 format_fields_compact 内部过滤
+            compact = format_fields_compact(items)
+            if compact:
+                lines.append(compact)
+            continue
         for item in items:
             aliases = item.get("synonyms") or item.get("aliases") or []
-            if asset_type == "field":
-                aliases = _field_aliases(item)
             alias_text = f"，同义词={aliases}" if aliases else ""
             lines.append(
                 "- "
@@ -777,7 +777,7 @@ def analysis_blueprint_execute_node(db: Session):
                 bp.id,
                 len(blueprint_context),
             )
-            return {
+            return jsonable_encoder({
                 "sql_result": None,
                 "sql": None,
                 "sql_list": [],
@@ -791,7 +791,7 @@ def analysis_blueprint_execute_node(db: Session):
                     "name": bp.name,
                     "implementation_type": implementation_type,
                 },
-            }
+            })
 
         result = execute_analysis_blueprint(
             db,
@@ -810,7 +810,7 @@ def analysis_blueprint_execute_node(db: Session):
             }
             if missing:
                 route_payload["missing"] = missing
-            return {
+            return jsonable_encoder({
                 "sql_result": None,
                 "sql": result.get("sql"),
                 "sql_list": [result["sql"]] if result.get("sql") else [],
@@ -820,9 +820,9 @@ def analysis_blueprint_execute_node(db: Session):
                     **route_payload,
                 },
                 "should_retry": False,
-            }
+            })
 
-        return {
+        return jsonable_encoder({
             "sql": result["sql"],
             "sql_list": [result["sql"]],
             "sql_result": result["sql_result"],
@@ -836,7 +836,7 @@ def analysis_blueprint_execute_node(db: Session):
                 "params": result["params"],
                 "execution_time_ms": result["execution_time_ms"],
             },
-        }
+        })
 
     return _node
 
@@ -2444,7 +2444,7 @@ def sql_execute_node(db: Session):
                 )
                 if retry_trace is not None:
                     output["sql_retry_trace"] = retry_trace
-                return output
+                return jsonable_encoder(output)
         except Exception as e:
             logger.error(f"SQL执行失败: {e}")
             error_text = f"SQL 执行失败: {str(e)}"
@@ -2463,7 +2463,7 @@ def sql_execute_node(db: Session):
             )
             if retry_trace is not None:
                 output["sql_retry_trace"] = retry_trace
-            return output
+            return jsonable_encoder(output)
         finally:
             engine.dispose()
 
@@ -2487,7 +2487,7 @@ def _collect_audit_table_names(dsl: dict, structured: dict | None, sql: str | No
 
     if dsl and structured:
         metric_map = {m["name"]: m for m in structured.get("metrics", [])}
-        for m_name in dsl.get("metrics", []) or []:
+        for m_name in _dsl_item_names(dsl.get("metrics", [])):
             m = metric_map.get(m_name)
             if not m:
                 continue

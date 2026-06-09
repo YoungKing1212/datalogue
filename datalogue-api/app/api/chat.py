@@ -136,12 +136,19 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     """SSE 流式问数：驱动 LangGraph 工作流，逐步发送节点进度事件。"""
     logger.info(f"[_stream_chat] 开始处理问题: {payload.question[:50]}")
     conv_id: int | None = payload.conversation_id
+    effective_dataset_id: int | None = payload.dataset_id
 
     # 查找或创建对话
     if conv_id:
         conv = db.get(models.Conversation, conv_id)
         if not conv:
             raise HTTPException(status_code=404, detail="对话不存在")
+        if effective_dataset_id is None:
+            effective_dataset_id = conv.dataset_id
+        elif conv.dataset_id != effective_dataset_id:
+            conv.dataset_id = effective_dataset_id
+            db.commit()
+            db.refresh(conv)
         # 已存在对话的首条消息：自动用首句作为标题（避免「新对话」/空标题占位）
         existing_msg_count = (
             db.query(models.Message).filter(models.Message.conversation_id == conv_id).count()
@@ -157,6 +164,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             title=payload.question[:40],
             thread_id=f"thread-{payload.question[:20]}",
             user_id=1,
+            dataset_id=effective_dataset_id,
         )
         db.add(conv)
         db.commit()
@@ -173,7 +181,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     )
     db.commit()
 
-    # 查询历史消息（最近 6 轮，用于多轮对话上下文）
+    # 查询历史消息（最近 6 轮，用于意图识别上下文）
     history_msgs = (
         db.query(models.Message)
         .filter(models.Message.conversation_id == conv_id)
@@ -186,7 +194,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     # 构建初始状态
     initial_state = {
         "question": payload.question,
-        "dataset_id": payload.dataset_id,
+        "dataset_id": effective_dataset_id,
         "conversation_id": conv_id,
         "history": history,
         "intent": None,
@@ -400,7 +408,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     else:
         answer = "抱歉，暂时无法回答这个问题。请尝试选择数据集后提问，或检查语义层配置。"
 
-    answer_explanation = build_answer_explanation(final_state)
+    final_state["answer"] = answer
+    answer_explanation = jsonable_encoder(build_answer_explanation(final_state))
     final_state["answer_explanation"] = answer_explanation
 
     sql = final_state.get("sql")
@@ -429,6 +438,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "sql_audit_result": final_state.get("sql_audit_result"),
         "sql_retry_trace": sql_retry_trace,
         "answer_explanation": answer_explanation,
+        "schema_tokens": final_state.get("schema_tokens"),
         "conversation_id": conv_id,
         "title": conv.title,
     }
@@ -438,15 +448,18 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     yield _sse_data(final_payload)
 
     token_usage = final_state.get("token_usage")
+    # jsonable_encoder 把 datetime / Decimal 等转为 JSON 安全类型，再存 JSON 列
     db.add(
         models.Message(
             conversation_id=conv_id,
             role="assistant",
             content=answer,
             sql_list=sql_list,
-            token_usage=token_usage,
-            step_trace=step_traces,
-            response_metadata={"answer_explanation": answer_explanation},
+            token_usage=jsonable_encoder(token_usage),
+            step_trace=jsonable_encoder(step_traces),
+            response_metadata=jsonable_encoder({
+                "answer_explanation": answer_explanation,
+            }),
         )
     )
     db.commit()

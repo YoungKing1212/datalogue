@@ -1612,3 +1612,58 @@ class TestChatStreamEvents:
                 assert "node" in e
                 assert "status" in e
                 assert e["status"] in ("running", "done")
+
+
+class TestSchemaFormatter:
+    """SchemaFormatter 紧凑序列化工具单测。"""
+
+    def _make_field(self, name, data_type, role, desc="", agg=None, samples=None):
+        return {
+            "name": name,
+            "column_name": name,
+            "data_type": data_type,
+            "semantic_role": role,
+            "effective_desc": desc,
+            "default_agg": agg,
+            "sample_values": samples or [],
+        }
+
+    def test_schema_formatter_filters_unused(self):
+        """unused 字段不出现在 format_fields_compact 输出中。"""
+        from app.utils.schema_formatter import format_fields_compact
+
+        fields = [
+            self._make_field("person_name", "VARCHAR", "dimension_candidate", "人员名称"),
+            self._make_field("deleted_flag", "TINYINT", "unused", "软删除标记"),
+            self._make_field("version_num", "INT", "unused", "版本号"),
+        ]
+        result = format_fields_compact(fields)
+        assert "deleted_flag" not in result
+        assert "version_num" not in result
+        assert "person_name" in result
+
+    def test_schema_formatter_enum_inline(self):
+        """维度候选且样例 ≤ 6 个时，样例内联到括号里，不在单独 样例= 段。"""
+        from app.utils.schema_formatter import format_fields_compact
+
+        fields = [
+            self._make_field(
+                "order_status", "VARCHAR", "dimension_candidate", "订单状态",
+                samples=["已完成", "待处理", "已取消", "退款中"],
+            )
+        ]
+        result = format_fields_compact(fields)
+        assert "已完成" in result
+        assert "样例=" not in result  # 内联后不再单独出现 "样例=" 段
+        assert "(" in result and ")" in result
+
+    def test_schema_formatter_metric_with_agg(self):
+        """metric_candidate 字段输出 [M,SUM]。"""
+        from app.utils.schema_formatter import format_fields_compact
+
+        fields = [
+            self._make_field("order_amount", "DECIMAL", "metric_candidate", "订单金额", agg="SUM")
+        ]
+        result = format_fields_compact(fields)
+        assert "order_amount" in result
+        assert "[M,SUM]" in result

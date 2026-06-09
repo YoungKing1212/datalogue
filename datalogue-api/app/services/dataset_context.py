@@ -33,6 +33,7 @@ from app.models.dataset import (
     SourceTable,
 )
 from app.utils.query_constraints import normalize_query_constraints, render_query_constraints_instruction
+from app.utils.schema_formatter import ROLE_CODE, UNUSED_ROLES, estimate_tokens, _is_enum_dim
 
 logger = logging.getLogger(__name__)
 
@@ -361,10 +362,12 @@ def _field_entry(
     question: str,
     matched_ref_keys: set[tuple[str, int]],
     original_index: int,
-) -> ContextEntry:
+) -> "ContextEntry | None":
+    role = column.user_semantic_role or column.ai_semantic_role or column.semantic_role
+    if role in UNUSED_ROLES:
+        return None
     table_name = column.table.table_name if column.table else ""
     sample_values = ", ".join(str(v) for v in _coerce_text_list(column.sample_values)[:5])
-    role = column.user_semantic_role or column.ai_semantic_role or column.semantic_role
     default_agg = column.ai_suggested_agg or column.default_agg
     text = (
         f"- {table_name}.{column.column_name} ({column.data_type})"
@@ -534,21 +537,23 @@ def _build_ddl_context(source_columns: list[SourceColumn], selected_links: list[
         if table.business_desc:
             lines.append(f"  业务描述: {table.business_desc}")
         for column in [c for c in source_columns if c.table_id == table.id]:
-            col_desc = f"  - {column.column_name} ({column.data_type})"
-            if column.column_comment:
-                col_desc += f" 注释={column.column_comment}"
-            if column.business_desc:
-                col_desc += f" 业务描述={column.business_desc}"
             role = column.user_semantic_role or column.ai_semantic_role or column.semantic_role
-            if role:
-                col_desc += f" 角色={role}"
+            if role in UNUSED_ROLES:
+                continue
+            role_code = ROLE_CODE.get(role or "", "")
             default_agg = column.ai_suggested_agg or column.default_agg
-            if default_agg:
-                col_desc += f" 默认聚合={default_agg}"
-            samples = ", ".join(str(v) for v in _coerce_text_list(column.sample_values)[:5])
-            if samples:
-                col_desc += f" 样例={samples}"
-            lines.append(col_desc)
+            desc = (column.business_desc or column.column_comment or "").strip()
+            sample_list = _coerce_text_list(column.sample_values)
+            # 枚举维度：样例内联到括号
+            if _is_enum_dim(role or "", sample_list):
+                unique = list(dict.fromkeys(str(v) for v in sample_list))[:4]
+                desc = f"{desc}({'/'.join(unique)})" if desc else f"({'/'.join(unique)})"
+                sample_list = []
+            agg_suffix = f",{default_agg}" if role_code == "M" and default_agg and default_agg.upper() != "NONE" else ""
+            role_tag = f" [{role_code}{agg_suffix}]" if role_code else ""
+            sample_tag = f" 样例={','.join(str(v) for v in sample_list[:3])}" if sample_list else ""
+            desc_part = f' "{desc}"' if desc else ""
+            lines.append(f"  - {column.column_name}:{column.data_type}{desc_part}{role_tag}{sample_tag}")
         lines.append("")
     return "\n".join(lines)
 
@@ -613,7 +618,9 @@ def build_dataset_query_context(
         entries.append(_blueprint_entry(blueprint, question, matched_ref_keys, original_index))
         original_index += 1
     for column in source_columns:
-        entries.append(_field_entry(column, question, matched_ref_keys, original_index))
+        entry = _field_entry(column, question, matched_ref_keys, original_index)
+        if entry:
+            entries.append(entry)
         original_index += 1
 
     fixed_context = _render_context(dataset, [], query_constraints, blueprint_context)
@@ -681,6 +688,7 @@ def build_dataset_query_context(
         "query_constraints": query_constraints,
         "dataset_prompt_instructions": prompt_instructions or None,
         "dataset_context_debug": debug,
+        "schema_tokens": estimate_tokens(schema_context),
     }
 
 

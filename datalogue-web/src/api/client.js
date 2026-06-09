@@ -170,8 +170,8 @@ export function listConversations({ archived = false } = {}) {
 }
 
 /** 创建空对话，返回 ConversationOut */
-export function createConversation({ title = '新对话', thread_id = null } = {}) {
-  return post('/api/conversation', { title, thread_id });
+export function createConversation({ title = '新对话', thread_id = null, dataset_id = null } = {}) {
+  return post('/api/conversation', { title, thread_id, dataset_id });
 }
 
 /** 重命名对话 */

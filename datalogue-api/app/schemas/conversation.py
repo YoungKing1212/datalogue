@@ -22,6 +22,7 @@ class ConversationOut(BaseModel):
     title: str
     thread_id: Optional[str] = None
     user_id: Optional[int] = None
+    dataset_id: Optional[int] = None
     archived: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -54,6 +55,7 @@ class ConversationCreate(BaseModel):
 
     title: str = Field(default="新对话", max_length=200)
     thread_id: Optional[str] = Field(default=None, max_length=64)
+    dataset_id: Optional[int] = None
 
 
 class ConversationRename(BaseModel):
