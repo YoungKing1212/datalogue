@@ -400,6 +400,9 @@ class BlueprintTestOut(BaseModel):
     execution_time_ms: int
     columns: List[str]
     rows: List[Dict[str, Any]]
+    row_count: int = 0
+    diagnosis: Optional[Dict[str, Any]] = None
+    masking_summary: Optional[Dict[str, Any]] = None
     sql_preview: Optional[str] = None
     interpretation_preview: Optional[str] = None
     error_message: Optional[str] = None
@@ -429,6 +432,8 @@ class BlueprintUsageLogOut(BaseModel):
     extracted_params: Optional[Dict[str, Any]] = None
     execution_success: Optional[bool] = None
     execution_time_ms: Optional[int] = None
+    row_count: Optional[int] = None
+    diagnosis: Optional[Dict[str, Any]] = None
     user_feedback: Optional[str] = None
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None

@@ -554,6 +554,9 @@ def test_blueprint_test_remains_optional_validation(client, sample_dataset):
     )
     assert test_resp.status_code == 200
     assert test_resp.json()["ok"] is True
+    assert test_resp.json()["row_count"] == 1
+    assert test_resp.json()["diagnosis"] is None
+    assert test_resp.json()["masking_summary"] == {"masked_cells": 0, "masked_columns": []}
     assert test_resp.json()["rows"][0]["category"] == "电子"
 
 
@@ -599,6 +602,8 @@ def test_usage_stats_after_test(client, sample_dataset):
     logs = client.get(f"/api/dataset/{sample_dataset.id}/blueprints/{bid}/usage-logs")
     assert logs.status_code == 200
     assert logs.json()[0]["question"] == "为什么本月毛利下降"
+    assert logs.json()[0]["row_count"] == 1
+    assert logs.json()[0]["diagnosis"] is None
 
 
 def test_blueprint_test_blocks_unsafe_sql(client, sample_dataset):
@@ -615,3 +620,150 @@ def test_blueprint_test_blocks_unsafe_sql(client, sample_dataset):
     assert test_resp.status_code == 200
     assert test_resp.json()["ok"] is False
     assert "只读查询" in test_resp.json()["error_message"]
+    assert test_resp.json()["row_count"] == 0
+    assert test_resp.json()["diagnosis"]["code"] == "UNSAFE_SQL"
+
+    logs = client.get(f"/api/dataset/{sample_dataset.id}/blueprints/{bid}/usage-logs")
+    assert logs.status_code == 200
+    assert logs.json()[0]["row_count"] == 0
+    assert logs.json()[0]["diagnosis"]["code"] == "UNSAFE_SQL"
+
+
+def test_blueprint_test_missing_params_returns_diagnosis(client, sample_dataset):
+    payload = _blueprint_payload()
+    payload["parameters"] = [
+        {
+            "name": "required_region",
+            "type": "string",
+            "required": True,
+        }
+    ]
+    payload["call_template"] = "SELECT :required_region AS region"
+    create_resp = client.post(f"/api/dataset/{sample_dataset.id}/blueprints", json=payload)
+    bid = create_resp.json()["id"]
+
+    test_resp = client.post(
+        f"/api/dataset/{sample_dataset.id}/blueprints/{bid}/test",
+        json={"params": {}},
+    )
+
+    assert test_resp.status_code == 200
+    data = test_resp.json()
+    assert data["ok"] is False
+    assert data["row_count"] == 0
+    assert data["diagnosis"]["code"] == "MISSING_PARAMS"
+    assert "required_region" in data["diagnosis"]["detail"]
+
+
+def test_blueprint_test_execution_error_writes_diagnosis(client, sample_dataset):
+    payload = _blueprint_payload()
+    payload["call_template"] = "SELECT missing_column FROM missing_table"
+    create_resp = client.post(f"/api/dataset/{sample_dataset.id}/blueprints", json=payload)
+    bid = create_resp.json()["id"]
+
+    test_resp = client.post(
+        f"/api/dataset/{sample_dataset.id}/blueprints/{bid}/test",
+        json={"params": {"start_date": "2026-05-01", "end_date": "2026-05-31"}},
+    )
+
+    assert test_resp.status_code == 200
+    data = test_resp.json()
+    assert data["ok"] is False
+    assert data["row_count"] == 0
+    assert data["diagnosis"]["code"] == "EXECUTION_ERROR"
+
+    logs = client.get(f"/api/dataset/{sample_dataset.id}/blueprints/{bid}/usage-logs")
+    assert logs.status_code == 200
+    assert logs.json()[0]["row_count"] == 0
+    assert logs.json()[0]["diagnosis"]["code"] == "EXECUTION_ERROR"
+
+
+def test_blueprint_test_masks_sensitive_rows(client, sample_dataset):
+    payload = _blueprint_payload()
+    payload["parameters"] = []
+    payload["call_template"] = (
+        "SELECT '13812345678' AS phone, 'yangkai@example.com' AS email, "
+        "'110105199001011234' AS id_card, "
+        "'abcdefghijklmnopqrstuvwxyz123456' AS access_token"
+    )
+    create_resp = client.post(f"/api/dataset/{sample_dataset.id}/blueprints", json=payload)
+    bid = create_resp.json()["id"]
+
+    test_resp = client.post(
+        f"/api/dataset/{sample_dataset.id}/blueprints/{bid}/test",
+        json={"params": {}},
+    )
+
+    assert test_resp.status_code == 200
+    data = test_resp.json()
+    assert data["ok"] is True
+    row = data["rows"][0]
+    assert row["phone"] == "138****5678"
+    assert row["email"] == "yan***@example.com"
+    assert row["id_card"] == "110105********1234"
+    assert row["access_token"] == "abcd***3456"
+    assert data["masking_summary"]["masked_cells"] == 4
+    assert data["masking_summary"]["masked_columns"] == [
+        "access_token",
+        "email",
+        "id_card",
+        "phone",
+    ]
+
+
+def test_execute_blueprint_timeout_returns_diagnosis(db_session, sample_dataset, monkeypatch):
+    from app.models.dataset import AnalysisBlueprint, BlueprintUsageLog
+    from app.services.analysis_blueprint import BlueprintExecutionTimeout, execute_analysis_blueprint
+
+    bp = AnalysisBlueprint(
+        dataset_id=sample_dataset.id,
+        name="超时蓝图",
+        description="模拟数据库超时",
+        trigger_keywords=["超时"],
+        parameters=[],
+        implementation_type="sql_template",
+        call_template="SELECT 1 AS value",
+        timeout_seconds=1,
+        status="active",
+    )
+    db_session.add(bp)
+    db_session.commit()
+    db_session.refresh(bp)
+
+    class FakeConnection:
+        connection = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, *args, **kwargs):
+            raise BlueprintExecutionTimeout("statement timeout")
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+        def dispose(self):
+            return None
+
+    monkeypatch.setattr(
+        "app.services.analysis_blueprint.create_engine_for_datasource",
+        lambda datasource: FakeEngine(),
+    )
+
+    result = execute_analysis_blueprint(
+        db_session,
+        bp,
+        question="测试超时",
+        require_active=True,
+    )
+
+    assert result["ok"] is False
+    assert result["row_count"] == 0
+    assert result["diagnosis"]["code"] == "TIMEOUT"
+    log = db_session.query(BlueprintUsageLog).filter_by(blueprint_id=bp.id).one()
+    assert log.row_count == 0
+    assert log.diagnosis["code"] == "TIMEOUT"

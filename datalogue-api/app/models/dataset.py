@@ -337,6 +337,8 @@ class BlueprintUsageLog(Base):
     extracted_params = Column(JSON, default=dict)
     execution_success = Column(Boolean)
     execution_time_ms = Column(Integer)
+    row_count = Column(Integer)
+    diagnosis = Column(JSON)
     user_feedback = Column(String(10))
     error_message = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)

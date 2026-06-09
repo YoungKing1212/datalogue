@@ -38,14 +38,10 @@ from app.models.dataset import (
     AnalysisBlueprint,
     BusinessTerm,
     SemanticDataset,
-    SemanticMetric,
-    SemanticDimension,
-    DatasetSourceTable,
-    SourceTable,
-    SourceColumn,
 )
 from app.models.datasource import Datasource
 from app.services.analysis_blueprint import execute_analysis_blueprint
+from app.services.dataset_context import build_dataset_query_context
 from app.services.datasource import create_engine_for_datasource
 from app.utils.query_constraints import (
     normalize_query_constraints,
@@ -59,7 +55,6 @@ from app.utils import (
     safe_json_parse as _safe_json_parse,
     extract_token_usage as _extract_token_usage,
     merge_token_usage as _merge_token_usage,
-    build_schema_prompt as _build_schema_prompt,
     resolve_dialect as _resolve_dialect,
     quote_ident as _quote_ident,
     sanitize_filter_sql as _sanitize_filter_sql,
@@ -801,193 +796,34 @@ def schema_recall_node(db: Session):
                 "query_constraints": default_constraints,
             }
 
-        metrics = db.query(SemanticMetric).filter(SemanticMetric.dataset_id == ds.id).all()
-        dimensions = db.query(SemanticDimension).filter(SemanticDimension.dataset_id == ds.id).all()
-        terms = (
-            db.query(BusinessTerm)
-            .filter(BusinessTerm.dataset_id == ds.id, BusinessTerm.status == "active")
-            .all()
+        context_result = build_dataset_query_context(
+            db,
+            ds.id,
+            question=state.get("question") or "",
+            blueprint_context=blueprint_context,
+            matched_assets=state.get("semantic_asset_resolution"),
         )
-        blueprints = (
-            db.query(AnalysisBlueprint)
-            .filter(
-                AnalysisBlueprint.dataset_id == ds.id,
-                AnalysisBlueprint.status == "active",
-            )
-            .all()
-        )
+        debug = context_result.get("dataset_context_debug") or {}
+        asset_counts = debug.get("asset_counts") or {}
+        retained_counts = debug.get("retained_counts") or {}
         logger.info(
-            f"使用语义层Schema: dataset={ds.name}, metrics={len(metrics)}, dimensions={len(dimensions)}"
+            "使用数据集问数上下文: dataset=%s(id=%s), assets=%s, retained=%s, tokens=%s/%s",
+            ds.name,
+            ds.id,
+            asset_counts,
+            retained_counts,
+            debug.get("estimated_tokens"),
+            debug.get("token_budget"),
         )
-        context = "【语义层】\n" + _build_schema_prompt(ds, metrics, dimensions)
-        if blueprint_context:
-            context = f"{context}\n\n{blueprint_context}"
-
-        selected_links = (
-            db.query(DatasetSourceTable).filter(DatasetSourceTable.dataset_id == ds.id).all()
-        )
-        selected_table_ids = [link.source_table_id for link in selected_links]
-        source_columns: list[SourceColumn] = []
-        if selected_table_ids:
-            source_columns = (
-                db.query(SourceColumn)
-                .join(SourceTable, SourceColumn.table_id == SourceTable.id)
-                .filter(SourceColumn.table_id.in_(selected_table_ids))
-                .order_by(SourceTable.table_name, SourceColumn.ordinal_position)
-                .all()
-            )
-
-        # 构建结构化对象供编译器直接使用，避免正则解析
-        structured = {
-            "dataset_name": ds.name,
-            "tables_json": ds.tables_json or {},
-            "metrics": [
-                {
-                    "id": m.id,
-                    "name": m.name,
-                    "display_name": m.display_name,
-                    "expr": m.expr,
-                    "table_name": m.table_name,
-                    "time_field": m.time_field,
-                    "filter_sql": m.filter_sql,
-                    "synonyms": m.synonyms or [],
-                }
-                for m in metrics
-            ],
-            "dimensions": [
-                {
-                    "id": d.id,
-                    "name": d.name,
-                    "display_name": d.display_name,
-                    "column_name": d.column_name,
-                    "table_name": d.table_name,
-                    "join_to": d.join_to,
-                    "join_key": d.join_key,
-                    "synonyms": d.synonyms or [],
-                }
-                for d in dimensions
-            ],
-            "fields": [
-                {
-                    "id": c.id,
-                    "name": c.column_name,
-                    "column_name": c.column_name,
-                    "display_name": c.effective_desc
-                    or c.user_description
-                    or c.ai_description
-                    or c.column_comment
-                    or c.column_name,
-                    "table_name": c.table.table_name if c.table else None,
-                    "data_type": c.data_type,
-                    "column_comment": c.column_comment,
-                    "business_desc": c.business_desc,
-                    "ai_description": c.ai_description,
-                    "user_description": c.user_description,
-                    "effective_desc": c.effective_desc,
-                    "semantic_role": c.user_semantic_role
-                    or c.ai_semantic_role
-                    or c.semantic_role,
-                    "default_agg": c.ai_suggested_agg or c.default_agg,
-                    "synonyms": c.suggested_synonyms or [],
-                    "desc_source": c.desc_source,
-                    "review_status": c.review_status,
-                }
-                for c in source_columns
-            ],
-            "terms": [
-                {
-                    "id": t.id,
-                    "name": t.name,
-                    "display_name": t.display_name,
-                    "term_type": t.term_type,
-                    "aliases": t.aliases or [],
-                    "forbidden_aliases": t.forbidden_aliases or [],
-                    "definition": t.definition,
-                    "asset_links": [
-                        {
-                            "asset_type": link.asset_type,
-                            "asset_id": link.asset_id,
-                            "asset_name": link.asset_name,
-                        }
-                        for link in (t.asset_links or [])
-                    ],
-                }
-                for t in terms
-            ],
-            "blueprints": [
-                {
-                    "id": bp.id,
-                    "name": bp.name,
-                    "display_name": bp.name,
-                    "trigger_keywords": bp.trigger_keywords or [],
-                    "trigger_examples": bp.trigger_examples or [],
-                    "implementation_type": bp.implementation_type,
-                }
-                for bp in blueprints
-            ],
-        }
-
-        # 构建所选表的真实 DDL（用于推断路径）
-        ddl_lines = ["【所选表结构】", ""]
-        if selected_table_ids:
-            tables = db.query(SourceTable).filter(SourceTable.id.in_(selected_table_ids)).all()
-            for t in tables:
-                ddl_lines.append(f"表: {t.table_name}")
-                if t.table_comment:
-                    ddl_lines.append(f"  描述: {t.table_comment}")
-                if t.business_desc:
-                    ddl_lines.append(f"  业务描述: {t.business_desc}")
-                cols = (
-                    db.query(SourceColumn)
-                    .filter(SourceColumn.table_id == t.id)
-                    .order_by(SourceColumn.ordinal_position)
-                    .all()
-                )
-                for c in cols:
-                    col_desc = f"  - {c.column_name} ({c.data_type})"
-                    if c.column_comment:
-                        col_desc += f" 注释={c.column_comment}"
-                    if c.business_desc:
-                        col_desc += f" 业务描述={c.business_desc}"
-                    if c.semantic_role:
-                        col_desc += f" 角色={c.semantic_role}"
-                    if c.default_agg:
-                        col_desc += f" 默认聚合={c.default_agg}"
-                    ddl_lines.append(col_desc)
-                ddl_lines.append("")
-        else:
-            ddl_lines.append("（该数据集尚未选择任何表）")
-        ddl_context = "\n".join(ddl_lines)
-
-        # ── 调试日志：命中时打印召回明细；未命中时打印即将喂给 AI 的 schema_context 全文 ──
-        if metrics or dimensions:
-            logger.info(
-                f"【Schema 召回命中】dataset={ds.name}(id={ds.id}) | "
-                f"metrics={len(metrics)} 个 {[m.name for m in metrics]} | "
-                f"dimensions={len(dimensions)} 个 {[d.name for d in dimensions]}"
-            )
-        else:
+        if not (asset_counts.get("metrics") or asset_counts.get("dimensions")):
             logger.warning(
-                f"【Schema 召回未命中】dataset={ds.name}(id={ds.id}) | "
-                "metrics=0, dimensions=0 —— 以下为即将喂给 AI 的 schema_context 全文："
+                "【Schema 召回未命中】dataset=%s(id=%s) | metrics=0, dimensions=0",
+                ds.name,
+                ds.id,
             )
-            logger.info(
-                "【AI 提示词 schema_context】\n%s\n---END OF AI PROMPT---",
-                context,
-            )
-
-        prompt_instructions = ds.prompt_instructions or ""
-        if blueprint_context:
-            prompt_instructions = f"{prompt_instructions}\n\n{blueprint_context}".strip()
-
         return {
-            "schema_context": context,
+            **context_result,
             "dataset_id": ds.id,
-            "schema_structured": structured,
-            "ddl_context": ddl_context,
-            "query_constraints": normalize_query_constraints(ds.query_constraints),
-            # 数据集级 LLM 约束（供 report_generator 等不读 schema_context 的节点用）
-            "dataset_prompt_instructions": prompt_instructions or None,
         }
 
     return _node

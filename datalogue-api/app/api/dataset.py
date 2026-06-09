@@ -1327,15 +1327,25 @@ def test_blueprint(
     sql_result = execute_result.get("sql_result") or {}
     columns = sql_result.get("columns") or []
     rows = sql_result.get("rows") or []
+    row_count = execute_result.get("row_count")
+    if row_count is None:
+        row_count = sql_result.get("row_count")
+    if row_count is None:
+        row_count = len(rows)
     result = {
         "ok": bool(execute_result.get("ok")),
         "execution_success": bool(execute_result.get("ok")),
         "execution_time_ms": execute_result.get("execution_time_ms") or 0,
         "columns": columns,
         "rows": rows,
+        "row_count": row_count,
+        "diagnosis": execute_result.get("diagnosis"),
+        "masking_summary": execute_result.get("masking_summary")
+        or sql_result.get("masking_summary")
+        or {"masked_cells": 0, "masked_columns": []},
         "sql_preview": execute_result.get("sql") or bp.call_template or bp.raw_sql,
         "interpretation_preview": (
-            f"{bp.name} 测试成功，返回 {len(rows)} 行 {len(columns)} 列。"
+            f"{bp.name} 测试成功，返回 {row_count} 行 {len(columns)} 列。"
             "请确认结果和业务解读是否符合预期。"
         )
         if execute_result.get("ok")

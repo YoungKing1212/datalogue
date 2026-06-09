@@ -46,6 +46,7 @@ class AgentState(TypedDict):
     schema_structured: Optional[dict]  # 结构化语义层配置（供编译器使用）
     ddl_context: Optional[str]  # 当前数据集所选表的真实 DDL
     query_constraints: Optional[dict]  # SQL 生成默认时间范围和默认 LIMIT 等结构化约束
+    dataset_context_debug: Optional[dict]  # 数据集问数上下文组装调试摘要
     generation_mode: Optional[str]  # "semantic" | "inferred" — 供前端显示徽标
     term_normalization: Optional[dict]  # 业务术语归一化结果，含命中同义词和冲突澄清
     semantic_asset_resolution: Optional[dict]  # 术语/指标/维度/字段/蓝图统一资产解析结果

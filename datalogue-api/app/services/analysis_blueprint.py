@@ -29,6 +29,198 @@ from app.services.datasource import create_engine_for_datasource
 logger = logging.getLogger(__name__)
 
 
+class BlueprintExecutionTimeout(Exception):
+    """蓝图执行超时的内部异常标记。"""
+
+
+DIAGNOSIS_TITLES = {
+    "NOT_ACTIVE": "蓝图尚未发布",
+    "DATASOURCE_MISSING": "数据源不可用",
+    "MISSING_PARAMS": "缺少运行参数",
+    "UNSAFE_SQL": "SQL 安全校验未通过",
+    "TIMEOUT": "蓝图执行超时",
+    "EXECUTION_ERROR": "SQL 执行失败",
+}
+
+DIAGNOSIS_ACTIONS = {
+    "NOT_ACTIVE": "先发布蓝图，或在测试入口中执行校验。",
+    "DATASOURCE_MISSING": "检查数据集是否绑定了可用数据源。",
+    "MISSING_PARAMS": "补充缺失参数后重新测试。",
+    "UNSAFE_SQL": "仅允许 SELECT/WITH 只读查询，移除写操作或 DDL 语句。",
+    "TIMEOUT": "缩小查询范围、增加过滤条件或适当调大超时时间。",
+    "EXECUTION_ERROR": "检查 SQL 模板、参数名、表字段和数据源连接状态。",
+}
+
+SENSITIVE_COLUMN_PATTERN = re.compile(
+    r"(phone|mobile|tel|email|mail|id_card|identity|idcard|token|secret|password|passwd|pwd|key|api_key|access_key|credential)",
+    re.IGNORECASE,
+)
+EMAIL_PATTERN = re.compile(r"([A-Za-z0-9._%+-]{1,3})[A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+MOBILE_PATTERN = re.compile(r"(?<!\d)(1[3-9]\d)\d{4}(\d{4})(?!\d)")
+ID_CARD_PATTERN = re.compile(r"(?<!\d)(\d{6})\d{8}([\dXx]{4})(?!\d)")
+TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_\-.=]{24,}$")
+
+
+def _build_diagnosis(code: str, detail: str = "") -> dict[str, str]:
+    """构造蓝图执行失败的结构化诊断。"""
+    return {
+        "code": code,
+        "title": DIAGNOSIS_TITLES.get(code, "蓝图执行失败"),
+        "detail": detail,
+        "suggested_action": DIAGNOSIS_ACTIONS.get(code, "根据错误信息调整配置后重试。"),
+    }
+
+
+def _write_blueprint_usage_log(
+    db: Session,
+    bp: AnalysisBlueprint,
+    question: str,
+    params: dict[str, Any],
+    success: bool,
+    elapsed_ms: int | None = None,
+    row_count: int = 0,
+    diagnosis: dict[str, Any] | None = None,
+    error_message: str | None = None,
+) -> None:
+    """写入蓝图执行日志，测试执行也保留日志但不增加 usage_count。"""
+    db.add(
+        BlueprintUsageLog(
+            blueprint_id=bp.id,
+            question=question,
+            extracted_params=params,
+            execution_success=success,
+            execution_time_ms=elapsed_ms,
+            row_count=row_count,
+            diagnosis=diagnosis,
+            error_message=error_message,
+        )
+    )
+    db.commit()
+
+
+def _mask_sensitive_value(column: str, value: Any) -> tuple[Any, bool]:
+    """根据字段名和值规则脱敏单个单元格。"""
+    if value is None:
+        return value, False
+    text_value = str(value)
+    is_sensitive_column = bool(SENSITIVE_COLUMN_PATTERN.search(column or ""))
+    masked = text_value
+    changed = False
+
+    new_value = EMAIL_PATTERN.sub(r"\1***\2", masked)
+    changed = changed or new_value != masked
+    masked = new_value
+
+    new_value = MOBILE_PATTERN.sub(r"\1****\2", masked)
+    changed = changed or new_value != masked
+    masked = new_value
+
+    new_value = ID_CARD_PATTERN.sub(r"\1********\2", masked)
+    changed = changed or new_value != masked
+    masked = new_value
+
+    if TOKEN_PATTERN.fullmatch(masked):
+        masked = f"{masked[:4]}***{masked[-4:]}"
+        changed = True
+
+    if is_sensitive_column and not changed:
+        if len(masked) <= 4:
+            masked = "***"
+        else:
+            masked = f"***{masked[-4:]}"
+        changed = True
+
+    return masked if changed else value, changed
+
+
+def _mask_blueprint_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """统一脱敏蓝图查询结果并返回脱敏摘要。"""
+    masked_rows: list[dict[str, Any]] = []
+    masked_columns: set[str] = set()
+    masked_cells = 0
+
+    for row in rows:
+        masked_row: dict[str, Any] = {}
+        for column, value in row.items():
+            masked_value, changed = _mask_sensitive_value(column, value)
+            masked_row[column] = masked_value
+            if changed:
+                masked_columns.add(column)
+                masked_cells += 1
+        masked_rows.append(masked_row)
+
+    return masked_rows, {
+        "masked_cells": masked_cells,
+        "masked_columns": sorted(masked_columns),
+    }
+
+
+def _datasource_dialect(datasource: Datasource) -> str:
+    """获取数据源方言标识。"""
+    value = getattr(datasource, "type", None) or getattr(datasource, "db_type", None) or ""
+    return str(value).lower()
+
+
+def _get_raw_connection(conn: Any) -> Any:
+    """兼容 SQLAlchemy 1.x/2.x 获取底层 DBAPI 连接。"""
+    connection = getattr(conn, "connection", None)
+    if connection is None:
+        return None
+    return getattr(connection, "driver_connection", None) or getattr(connection, "connection", None)
+
+
+def _apply_database_timeout(conn: Any, datasource: Datasource, timeout_seconds: int):
+    """按方言 best-effort 设置数据库级超时，返回清理函数。"""
+    timeout_ms = max(1, int(timeout_seconds)) * 1000
+    dialect = _datasource_dialect(datasource)
+    cleanup = None
+
+    try:
+        if dialect in {"postgres", "postgresql"}:
+            conn.execute(text(f"SET statement_timeout = {timeout_ms}"))
+        elif dialect in {"mysql", "mariadb"}:
+            conn.execute(text(f"SET SESSION max_execution_time = {timeout_ms}"))
+        elif dialect == "sqlite":
+            raw_conn = _get_raw_connection(conn)
+            if hasattr(raw_conn, "set_progress_handler"):
+                started_at = time.monotonic()
+
+                def _timeout_handler():
+                    return 1 if time.monotonic() - started_at > timeout_seconds else 0
+
+                raw_conn.set_progress_handler(_timeout_handler, 1000)
+
+                def cleanup():
+                    raw_conn.set_progress_handler(None, 0)
+
+        else:
+            raw_conn = _get_raw_connection(conn)
+            if hasattr(raw_conn, "call_timeout"):
+                raw_conn.call_timeout = timeout_ms
+    except Exception as exc:
+        logger.warning("数据库级超时设置失败，继续执行蓝图: dialect=%s error=%s", dialect, exc)
+    return cleanup
+
+
+def _is_timeout_exception(exc: Exception) -> bool:
+    """识别常见方言超时异常。"""
+    if isinstance(exc, BlueprintExecutionTimeout):
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "timeout",
+            "timed out",
+            "statement timeout",
+            "max_execution_time",
+            "query execution was interrupted",
+            "interrupted",
+            "canceling statement due to statement timeout",
+        )
+    )
+
+
 def _default_blueprint_param(default_expr: str | None) -> Any:
     """解析蓝图参数的内置默认表达式。"""
     if not default_expr:
@@ -183,56 +375,123 @@ def execute_analysis_blueprint(
 ) -> dict[str, Any]:
     """执行分析蓝图并返回结构化执行结果。"""
     if require_active and bp.status != "active":
-        return {"ok": False, "error": "分析蓝图尚未发布，不能执行", "params": {}}
+        diagnosis = _build_diagnosis("NOT_ACTIVE", "分析蓝图尚未发布，不能执行")
+        _write_blueprint_usage_log(
+            db,
+            bp,
+            question,
+            {},
+            success=False,
+            elapsed_ms=0,
+            row_count=0,
+            diagnosis=diagnosis,
+            error_message=diagnosis["detail"],
+        )
+        return {
+            "ok": False,
+            "error": diagnosis["detail"],
+            "params": {},
+            "row_count": 0,
+            "diagnosis": diagnosis,
+        }
 
     dataset = db.get(SemanticDataset, bp.dataset_id)
     datasource = db.get(Datasource, dataset.datasource_id) if dataset else None
     if not datasource:
-        return {"ok": False, "error": "分析蓝图所属数据集没有可用数据源", "params": {}}
+        diagnosis = _build_diagnosis("DATASOURCE_MISSING", "分析蓝图所属数据集没有可用数据源")
+        _write_blueprint_usage_log(
+            db,
+            bp,
+            question,
+            {},
+            success=False,
+            elapsed_ms=0,
+            row_count=0,
+            diagnosis=diagnosis,
+            error_message=diagnosis["detail"],
+        )
+        return {
+            "ok": False,
+            "error": diagnosis["detail"],
+            "params": {},
+            "row_count": 0,
+            "diagnosis": diagnosis,
+        }
 
     sql = (bp.call_template or bp.raw_sql or "").strip()
     params, missing = extract_blueprint_params(bp, question, input_params)
     if missing:
+        detail = "运行分析蓝图前还需要补充参数：" + "、".join(missing)
+        diagnosis = _build_diagnosis("MISSING_PARAMS", detail)
+        _write_blueprint_usage_log(
+            db,
+            bp,
+            question,
+            params,
+            success=False,
+            elapsed_ms=0,
+            row_count=0,
+            diagnosis=diagnosis,
+            error_message=detail,
+        )
         return {
             "ok": False,
-            "error": "运行分析蓝图前还需要补充参数：" + "、".join(missing),
+            "error": detail,
             "params": params,
             "missing": missing,
             "sql": sql,
+            "row_count": 0,
+            "diagnosis": diagnosis,
         }
 
     validation_error = validate_blueprint_sql(sql)
     if validation_error:
-        db.add(
-            BlueprintUsageLog(
-                blueprint_id=bp.id,
-                question=question,
-                extracted_params=params,
-                execution_success=False,
-                error_message=validation_error,
-            )
+        diagnosis = _build_diagnosis("UNSAFE_SQL", validation_error)
+        _write_blueprint_usage_log(
+            db,
+            bp,
+            question,
+            params,
+            success=False,
+            elapsed_ms=0,
+            row_count=0,
+            diagnosis=diagnosis,
+            error_message=validation_error,
         )
-        db.commit()
-        return {"ok": False, "error": validation_error, "params": params, "sql": sql}
+        return {
+            "ok": False,
+            "error": validation_error,
+            "params": params,
+            "sql": sql,
+            "row_count": 0,
+            "diagnosis": diagnosis,
+        }
 
     engine = create_engine_for_datasource(datasource)
     started_at = time.monotonic()
+    timeout_seconds = max(1, int(bp.timeout_seconds or 30))
     try:
         with engine.connect() as conn:
-            result_proxy = conn.execute(text(sql), params)
-            columns = list(result_proxy.keys())
-            rows = []
-            for row in result_proxy:
-                row_dict = {}
-                for col, val in zip(columns, row):
-                    if isinstance(val, Decimal):
-                        val = float(val)
-                    row_dict[col] = val
-                rows.append(row_dict)
-                if len(rows) >= limit:
-                    break
+            cleanup_timeout = _apply_database_timeout(conn, datasource, timeout_seconds)
+            try:
+                result_proxy = conn.execute(text(sql), params)
+                columns = list(result_proxy.keys())
+                rows = []
+                for row in result_proxy:
+                    row_dict = {}
+                    for col, val in zip(columns, row):
+                        if isinstance(val, Decimal):
+                            val = float(val)
+                        row_dict[col] = val
+                    rows.append(row_dict)
+                    if len(rows) >= limit:
+                        break
+            finally:
+                if cleanup_timeout:
+                    cleanup_timeout()
 
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        masked_rows, masking_summary = _mask_blueprint_rows(rows)
         column_labels = {
             c.get("column"): c.get("semantic")
             for c in (bp.output_schema or [])
@@ -240,53 +499,75 @@ def execute_analysis_blueprint(
         }
         sql_result = {
             "columns": columns,
-            "rows": rows,
-            "row_count": len(rows),
+            "rows": masked_rows,
+            "row_count": len(masked_rows),
             "column_labels": column_labels,
             "blueprint_id": bp.id,
             "blueprint_name": bp.name,
             "execution_time_ms": elapsed_ms,
             "params": params,
+            "masking_summary": masking_summary,
         }
         if count_usage:
             bp.usage_count = (bp.usage_count or 0) + 1
-        db.add(
-            BlueprintUsageLog(
-                blueprint_id=bp.id,
-                question=question,
-                extracted_params=params,
-                execution_success=True,
-                execution_time_ms=elapsed_ms,
-            )
+        _write_blueprint_usage_log(
+            db,
+            bp,
+            question,
+            params,
+            success=True,
+            elapsed_ms=elapsed_ms,
+            row_count=len(masked_rows),
         )
-        db.commit()
+        logger.info(
+            "分析蓝图执行成功: blueprint_id=%s row_count=%s elapsed_ms=%s params=%s",
+            bp.id,
+            len(masked_rows),
+            elapsed_ms,
+            params,
+        )
         return {
             "ok": True,
             "sql": sql,
             "sql_result": sql_result,
             "params": params,
             "execution_time_ms": elapsed_ms,
+            "row_count": len(masked_rows),
+            "masking_summary": masking_summary,
+            "diagnosis": None,
         }
     except Exception as e:
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
-        logger.exception("分析蓝图执行失败: %s", e)
-        db.add(
-            BlueprintUsageLog(
-                blueprint_id=bp.id,
-                question=question,
-                extracted_params=params,
-                execution_success=False,
-                execution_time_ms=elapsed_ms,
-                error_message=str(e),
-            )
+        code = "TIMEOUT" if _is_timeout_exception(e) else "EXECUTION_ERROR"
+        diagnosis = _build_diagnosis(code, str(e))
+        logger.exception(
+            "分析蓝图执行失败: blueprint_id=%s code=%s elapsed_ms=%s params=%s error=%s",
+            bp.id,
+            code,
+            elapsed_ms,
+            params,
+            e,
         )
-        db.commit()
+        _write_blueprint_usage_log(
+            db,
+            bp,
+            question,
+            params,
+            success=False,
+            elapsed_ms=elapsed_ms,
+            row_count=0,
+            diagnosis=diagnosis,
+            error_message=str(e),
+        )
         return {
             "ok": False,
             "error": f"分析蓝图执行失败: {e}",
             "sql": sql,
             "params": params,
             "execution_time_ms": elapsed_ms,
+            "row_count": 0,
+            "diagnosis": diagnosis,
+            "masking_summary": {"masked_cells": 0, "masked_columns": []},
         }
     finally:
         engine.dispose()

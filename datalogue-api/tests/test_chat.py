@@ -549,6 +549,8 @@ class TestLangGraphNodes:
 
         assert blueprint_context in result["schema_context"]
         assert blueprint_context in result["dataset_prompt_instructions"]
+        assert result["dataset_context_debug"]["asset_counts"]["metrics"] == 2
+        assert result["dataset_context_debug"]["retained_counts"]["metrics"] == 2
 
     def test_analysis_blueprint_execute_missing_required_param(self, db_session, sample_dataset):
         """蓝图执行：缺少必填参数时进入澄清。"""
