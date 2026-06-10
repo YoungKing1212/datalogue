@@ -39,6 +39,8 @@ import {
   linkBusinessTermAssets,
   discoverBusinessTerms,
   checkBusinessTermConflicts,
+  listSemanticValidationCases,
+  createSemanticValidationCase,
 } from '../api/client';
 
 // ── DatasetsScreen — 语义层配置（三栏式）────────────────────
@@ -91,6 +93,96 @@ const normalizeQueryConstraints = (value) => {
     default_time_range_days: defaultDays,
     default_limit: defaultLimit,
     max_limit: maxLimit,
+  };
+};
+
+const validationAssetLabel = (asset) => (
+  asset?.display_name || asset?.name || asset?.asset_name || asset?.matched_text || String(asset?.id || '')
+);
+
+const uniqueValidationAssets = (items) => {
+  const seen = new Set();
+  return (items || []).filter(item => {
+    const key = `${item?.asset_type || item?.type || ''}:${item?.asset_id || item?.id || validationAssetLabel(item)}`;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const validationRouteLabel = (route) => {
+  if (route === 'analysis_blueprint') return '分析蓝图路径';
+  if (route === 'query_graph') return '普通问数路径';
+  if (route === 'clarify') return '澄清路径';
+  if (route === 'reject') return '拒答路径';
+  if (route === 'knowledge_qa') return '知识解释路径';
+  return route || '未识别';
+};
+
+const buildValidationReport = ({ question, finalData = {}, stepEvents = [], fallbackError = '' }) => {
+  const semantic = finalData.semantic_asset_resolution || {};
+  const termNormalization = finalData.term_normalization || {};
+  const routePayload = finalData.route_payload || {};
+  const diagnosis = finalData.sql_diagnosis || finalData.sql_audit_result || {};
+  const answerExplanation = finalData.answer_explanation || {};
+  const blueprintMatch = finalData.blueprint_match || {};
+  const terms = uniqueValidationAssets([
+    ...(termNormalization.matched_terms || []),
+    ...(semantic.terms || []),
+  ]);
+  const blueprints = uniqueValidationAssets([
+    ...(finalData.blueprint_id ? [{
+      id: finalData.blueprint_id,
+      name: blueprintMatch.name || routePayload.name || routePayload.blueprint_name,
+      matched_terms: blueprintMatch.matched_terms || routePayload.matched_terms || [],
+      score: blueprintMatch.score || routePayload.score,
+    }] : []),
+    ...(semantic.blueprints || []),
+  ]);
+  const failureReason = (
+    fallbackError
+    || finalData.error
+    || diagnosis.title
+    || diagnosis.detail
+    || diagnosis.original_error
+    || (['clarify', 'reject'].includes(finalData.entry_route) ? finalData.entry_reason : '')
+    || ''
+  );
+  const routeType = finalData.entry_route === 'analysis_blueprint'
+    ? 'analysis_blueprint'
+    : finalData.entry_route === 'query_graph'
+      ? 'query_graph'
+      : finalData.entry_route || 'unknown';
+  const status = failureReason || diagnosis.code ? 'failed' : 'passed';
+  return {
+    question,
+    status,
+    route_type: routeType,
+    entry_intent: finalData.entry_intent || '',
+    entry_route: finalData.entry_route || '',
+    entry_reason: finalData.entry_reason || '',
+    terms,
+    term_conflicts: termNormalization.conflicts || [],
+    blueprints,
+    normal_query_path: finalData.entry_route === 'query_graph',
+    sql: finalData.sql || '',
+    sql_list: finalData.sql_list || [],
+    failure_reason: failureReason,
+    answer: finalData.answer || '',
+    generation_mode: finalData.generation_mode || '',
+    risks: answerExplanation.risks || [],
+    confidence: answerExplanation.confidence || null,
+    steps: stepEvents.map(ev => ({
+      node: ev.node,
+      display_name: ev.display_name,
+      status: ev.status,
+      elapsed_ms: ev.elapsed_ms,
+    })),
+    raw: {
+      route_payload: routePayload,
+      sql_diagnosis: diagnosis,
+      dataset_context_debug: finalData.dataset_context_debug || null,
+    },
   };
 };
 
@@ -158,6 +250,7 @@ function DatasetsScreen() {
   const [metrics, setMetrics] = useState([]);
   const [dimensions, setDimensions] = useState([]);
   const [businessTerms, setBusinessTerms] = useState([]);
+  const [validationCases, setValidationCases] = useState([]);
   const [termSearch, setTermSearch] = useState('');
   const [termTypeFilter, setTermTypeFilter] = useState('');
   const [termStatusFilter, setTermStatusFilter] = useState('');
@@ -225,6 +318,9 @@ function DatasetsScreen() {
   const [testStreaming, setTestStreaming] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [testSql, setTestSql] = useState('');
+  const [testReport, setTestReport] = useState(null);
+  const [testStepEvents, setTestStepEvents] = useState([]);
+  const [savingValidationCase, setSavingValidationCase] = useState(false);
   const testAbortRef = useRef(null);
 
   // ── 数据集列表：右键菜单 + 二次确认删除 ──
@@ -313,7 +409,13 @@ function DatasetsScreen() {
   // ── 数据加载 ──
   const loadDatasets = () => {
     setLoading(true);
-    listDatasets().then(setDatasets).catch(console.error).finally(() => setLoading(false));
+    listDatasets()
+      .then(items => {
+        setDatasets(items);
+        setActiveDsId(prev => prev || items[0]?.id || null);
+      })
+      .catch(console.error)
+      .finally(() => setLoading(false));
   };
 
   const loadDatasources = () => {
@@ -322,14 +424,16 @@ function DatasetsScreen() {
 
   const loadDsMeta = async (dsId) => {
     try {
-      const [ms, ds, terms] = await Promise.all([
+      const [ms, ds, terms, cases] = await Promise.all([
         listDatasetMetrics(dsId),
         listDatasetDimensions(dsId),
         listBusinessTerms(dsId),
+        listSemanticValidationCases(dsId),
       ]);
       setMetrics(ms);
       setDimensions(ds);
       setBusinessTerms(terms);
+      setValidationCases(cases);
       setSelectedTermId(prev => (prev && terms.some(t => t.id === prev) ? prev : terms[0]?.id ?? null));
     } catch (err) { console.error(err); }
   };
@@ -942,34 +1046,77 @@ function DatasetsScreen() {
 
   // ── 试问验证 ──
   const handleTestQuery = () => {
-    if (!testQuestion.trim() || !activeDsId) return;
+    const dsId = activeDsId || datasets[0]?.id;
+    if (!testQuestion.trim() || !dsId) return;
+    const question = testQuestion.trim();
+    const stepEvents = [];
     setTestStreaming(true);
     setTestResult(null);
     setTestSql('');
+    setTestReport(null);
+    setTestStepEvents([]);
 
     const ctrl = streamChat(
-      { question: testQuestion.trim(), dataset_id: activeDsId },
+      { question, dataset_id: dsId },
       {
         onToken: (tok) => {
           setTestResult(prev => (prev || '') + tok);
         },
         onEvent: (ev) => {
+          stepEvents.push(ev);
+          setTestStepEvents([...stepEvents]);
           if (ev.step === 'dsl_compiler' && ev.status === 'done' && ev.output?.sql) {
             setTestSql(ev.output.sql);
+          } else if (ev.node === 'dsl_compiler' && ev.status === 'done' && ev.sql) {
+            setTestSql(ev.sql);
           }
         },
         onDone: (data) => {
           setTestStreaming(false);
           if (data.sql) setTestSql(data.sql);
           if (data.answer) setTestResult(data.answer);
+          setTestReport(buildValidationReport({ question, finalData: data, stepEvents }));
         },
         onError: (err) => {
           setTestStreaming(false);
-          setTestResult('验证失败: ' + err.message);
+          const message = '验证失败: ' + err.message;
+          setTestResult(message);
+          setTestReport(buildValidationReport({
+            question,
+            finalData: { answer: message, error: err.message },
+            stepEvents,
+            fallbackError: err.message,
+          }));
         },
       }
     );
     testAbortRef.current = ctrl;
+  };
+
+  const handleSaveValidationCase = async () => {
+    const dsId = activeDsId || datasets[0]?.id;
+    if (!dsId || !testReport) return;
+    setSavingValidationCase(true);
+    try {
+      await createSemanticValidationCase(dsId, {
+        question: testReport.question,
+        status: testReport.status,
+        route_type: testReport.route_type,
+        entry_intent: testReport.entry_intent,
+        entry_route: testReport.entry_route,
+        blueprint_id: testReport.blueprints?.[0]?.id || testReport.blueprints?.[0]?.asset_id || null,
+        sql: testReport.sql,
+        answer: testReport.answer,
+        error: testReport.failure_reason,
+        report: testReport,
+      });
+      const cases = await listSemanticValidationCases(dsId);
+      setValidationCases(cases);
+    } catch (err) {
+      alert('保存验证用例失败: ' + (err.message || '未知错误'));
+    } finally {
+      setSavingValidationCase(false);
+    }
   };
 
   // ── 当前数据集 ──
@@ -2369,15 +2516,22 @@ function DatasetsScreen() {
       </div>
 
       {/* ── 底部：试问验证 ── */}
-      {activeDsId && activeCapabilityTab === 'validation' && (
+      {currentDsId && activeCapabilityTab === 'validation' && (
         <div style={{ marginTop: 24, border: '1px solid var(--hairline)', borderRadius: 10, padding: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Icon name="beaker" style={{ width: 14, height: 14, color: 'var(--accent)' }} />
-            语义层验证
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Icon name="beaker" style={{ width: 14, height: 14, color: 'var(--accent)' }} />
+              语义层验证
+            </div>
+            {testReport && (
+              <button className="btn ghost" onClick={handleSaveValidationCase} disabled={savingValidationCase}>
+                <Icon name="bookmark" />{savingValidationCase ? '保存中…' : '保存用例'}
+              </button>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
             <input
-              placeholder="例如：上周各区域销售额"
+              placeholder="例如：净销售额最近 7 天趋势 / 运行门店经营分析蓝图"
               value={testQuestion}
               onChange={e => setTestQuestion(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleTestQuery(); }}
@@ -2390,18 +2544,130 @@ function DatasetsScreen() {
               <button className="btn ghost" onClick={() => { testAbortRef.current?.abort(); setTestStreaming(false); }}>停止</button>
             )}
           </div>
-          {testSql && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>生成的 SQL</div>
-              <pre style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 6, fontSize: 12, overflow: 'auto', margin: 0, color: 'var(--accent)' }}>{testSql}</pre>
+
+          {testStepEvents.length > 0 && !testReport && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+              {testStepEvents.slice(-6).map((step, idx) => (
+                <span key={`${step.node}-${idx}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 7px', borderRadius: 5, border: '1px solid var(--hairline)', background: 'var(--surface)', fontSize: 11, color: 'var(--text-2)' }}>
+                  <Icon name={step.status === 'done' ? 'check' : 'refresh'} style={{ width: 11, height: 11, color: step.status === 'done' ? 'var(--pos)' : 'var(--accent)' }} />
+                  {step.display_name || step.node}
+                </span>
+              ))}
             </div>
           )}
-          {testResult && (
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>回答</div>
-              <div style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 6, fontSize: 13, lineHeight: 1.6 }}>{testResult}</div>
+
+          {testReport && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(260px, 0.8fr)', gap: 12, marginBottom: 16 }}>
+              <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>验证报告</div>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 7px', borderRadius: 5, fontSize: 11, color: testReport.status === 'passed' ? 'var(--pos)' : 'var(--neg)', background: testReport.status === 'passed' ? 'rgba(34,197,94,0.10)' : 'rgba(239,68,68,0.10)' }}>
+                    <Icon name={testReport.status === 'passed' ? 'check' : 'warn'} style={{ width: 11, height: 11 }} />
+                    {testReport.status === 'passed' ? '通过' : '需复核'}
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
+                  {[
+                    ['路径', validationRouteLabel(testReport.entry_route)],
+                    ['术语命中', `${testReport.terms.length}`],
+                    ['蓝图命中', `${testReport.blueprints.length}`],
+                    ['置信度', testReport.confidence?.score != null ? `${Math.round(testReport.confidence.score * 100)}%` : '—'],
+                  ].map(([label, value]) => (
+                    <div key={label} style={{ border: '1px solid var(--hairline)', borderRadius: 6, padding: 8, background: 'var(--bg)' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{label}</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 5 }}>业务术语</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                      {testReport.terms.length ? testReport.terms.map((term, idx) => (
+                        <span key={`${validationAssetLabel(term)}-${idx}`} style={{ padding: '3px 7px', borderRadius: 5, background: 'rgba(59,130,246,0.10)', color: 'var(--accent)', fontSize: 11 }}>
+                          {validationAssetLabel(term)}
+                        </span>
+                      )) : <span style={{ color: 'var(--text-4)', fontSize: 12 }}>未命中</span>}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 5 }}>分析蓝图</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                      {testReport.blueprints.length ? testReport.blueprints.map((bp, idx) => (
+                        <span key={`${validationAssetLabel(bp)}-${idx}`} style={{ padding: '3px 7px', borderRadius: 5, background: 'rgba(245,158,11,0.12)', color: '#b45309', fontSize: 11 }}>
+                          {validationAssetLabel(bp)}
+                        </span>
+                      )) : <span style={{ color: 'var(--text-4)', fontSize: 12 }}>未命中</span>}
+                    </div>
+                  </div>
+                </div>
+
+                {testReport.failure_reason && (
+                  <div style={{ marginBottom: 12, border: '1px solid rgba(239,68,68,0.25)', borderRadius: 6, padding: 9, background: 'rgba(239,68,68,0.06)', color: 'var(--neg)', fontSize: 12, lineHeight: 1.5 }}>
+                    {testReport.failure_reason}
+                  </div>
+                )}
+
+                {(testSql || testReport.sql) && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>生成 SQL</div>
+                    <pre style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 6, fontSize: 12, overflow: 'auto', margin: 0, color: 'var(--accent)', maxHeight: 180 }}>{testSql || testReport.sql}</pre>
+                  </div>
+                )}
+
+                {testResult && (
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>回答</div>
+                    <div style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 6, fontSize: 13, lineHeight: 1.6 }}>{testResult}</div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>链路轨迹</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {testReport.steps.map((step, idx) => (
+                    <div key={`${step.node}-${idx}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, background: 'var(--bg)', border: '1px solid var(--hairline)' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                        <Icon name="trace" style={{ width: 12, height: 12, color: 'var(--text-3)' }} />
+                        {step.display_name || step.node}
+                      </span>
+                      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{step.elapsed_ms != null ? `${step.elapsed_ms}ms` : step.status}</span>
+                    </div>
+                  ))}
+                  {!testReport.steps.length && <div style={{ color: 'var(--text-4)', fontSize: 12 }}>暂无步骤事件</div>}
+                </div>
+              </div>
             </div>
           )}
+
+          <div style={{ borderTop: '1px solid var(--hairline)', paddingTop: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>最近保存用例</div>
+            {validationCases.length ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {validationCases.slice(0, 5).map(item => (
+                  <div key={item.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto auto', gap: 10, alignItems: 'center', padding: '8px 10px', border: '1px solid var(--hairline)', borderRadius: 7, background: 'var(--surface)' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.question}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{validationRouteLabel(item.entry_route)} · {item.created_at ? new Date(item.created_at).toLocaleString() : '未记录时间'}</div>
+                    </div>
+                    <span style={{ fontSize: 11, color: item.status === 'passed' ? 'var(--pos)' : 'var(--neg)' }}>{item.status === 'passed' ? '通过' : '需复核'}</span>
+                    <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => {
+                      const report = item.report || null;
+                      setTestQuestion(item.question);
+                      setTestReport(report);
+                      setTestSql(item.sql || report?.sql || '');
+                      setTestResult(item.answer || report?.answer || '');
+                      setTestStepEvents(report?.steps || []);
+                    }}>查看</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text-4)', fontSize: 12, padding: '8px 0' }}>暂无保存的验证用例</div>
+            )}
+          </div>
         </div>
       )}
 

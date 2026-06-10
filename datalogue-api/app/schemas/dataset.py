@@ -281,6 +281,40 @@ class BusinessTermConflictOut(BaseModel):
     conflicts: List[Dict[str, Any]]
 
 
+class SemanticValidationCaseCreate(BaseModel):
+    question: str
+    status: str = "unknown"
+    route_type: Optional[str] = None
+    entry_intent: Optional[str] = None
+    entry_route: Optional[str] = None
+    blueprint_id: Optional[int] = None
+    sql: Optional[str] = None
+    answer: Optional[str] = None
+    error: Optional[str] = None
+    report: Dict[str, Any] = {}
+    created_by: Optional[str] = None
+
+
+class SemanticValidationCaseOut(BaseModel):
+    id: int
+    dataset_id: int
+    question: str
+    status: str
+    route_type: Optional[str] = None
+    entry_intent: Optional[str] = None
+    entry_route: Optional[str] = None
+    blueprint_id: Optional[int] = None
+    sql: Optional[str] = None
+    answer: Optional[str] = None
+    error: Optional[str] = None
+    report: Dict[str, Any] = {}
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SelectTablesPayload(BaseModel):
     source_table_ids: List[int]
 

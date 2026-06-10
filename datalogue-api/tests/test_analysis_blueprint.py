@@ -127,6 +127,55 @@ def _manual_blueprint_payload():
     }
 
 
+def test_semantic_validation_case_create_and_list(client, sample_dataset):
+    """语义验证用例：保存报告快照后可按数据集倒序读取。"""
+    payload = {
+        "question": "净销售额最近 7 天趋势",
+        "status": "passed",
+        "route_type": "query_graph",
+        "entry_intent": "metric_query",
+        "entry_route": "query_graph",
+        "sql": "SELECT SUM(o.amount) AS gmv FROM orders o",
+        "answer": "净销售额为 100。",
+        "report": {
+            "terms": [{"name": "净销售额", "matched_text": "净销售额"}],
+            "blueprints": [],
+            "failure_reason": "",
+        },
+    }
+
+    created = client.post(
+        f"/api/dataset/{sample_dataset.id}/validation-cases",
+        json=payload,
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["id"]
+    assert body["dataset_id"] == sample_dataset.id
+    assert body["question"] == payload["question"]
+    assert body["status"] == "passed"
+    assert body["report"]["terms"][0]["name"] == "净销售额"
+
+    listed = client.get(f"/api/dataset/{sample_dataset.id}/validation-cases")
+
+    assert listed.status_code == 200
+    items = listed.json()
+    assert len(items) == 1
+    assert items[0]["id"] == body["id"]
+
+
+def test_semantic_validation_case_rejects_empty_question(client, sample_dataset):
+    """语义验证用例：空问题不能保存。"""
+    response = client.post(
+        f"/api/dataset/{sample_dataset.id}/validation-cases",
+        json={"question": "   ", "report": {}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "验证问题不能为空"
+
+
 def _patch_blueprint_ai(monkeypatch, payload: dict | None = None):
     """替换蓝图分析 LLM，避免测试访问真实模型。"""
     mock_llm = MagicMock()

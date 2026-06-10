@@ -11,6 +11,8 @@
 # Created On  : 2026-06-05
 # ============================================================
 
+from datetime import datetime
+
 from sqlalchemy import Boolean, Column, Integer, String, Text, JSON, ForeignKey, DateTime, func
 from sqlalchemy.orm import relationship
 
@@ -65,3 +67,20 @@ class SQLDiagnosisLog(Base):
     diagnosis = Column(JSON)
     retry_count = Column(Integer, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PendingClarification(Base):
+    __tablename__ = "pending_clarification"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversation.id"), nullable=False, index=True)
+    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
+    clarification_type = Column(String(50), nullable=False, default="term_conflict")
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    original_question = Column(Text, nullable=False)
+    conflict_payload = Column(JSON)
+    candidates = Column(JSON)
+    expires_at = Column(DateTime, nullable=False)
+    resolved_at = Column(DateTime)
+    selected_payload = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

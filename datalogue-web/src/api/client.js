@@ -422,6 +422,16 @@ export function checkBusinessTermConflicts(datasetId) {
   return post(`/api/dataset/${datasetId}/terms/conflicts/check`);
 }
 
+/** 获取语义验证用例列表 */
+export function listSemanticValidationCases(datasetId, limit = 20) {
+  return get(`/api/dataset/${datasetId}/validation-cases?limit=${encodeURIComponent(limit)}`);
+}
+
+/** 保存语义验证用例 */
+export function createSemanticValidationCase(datasetId, data) {
+  return post(`/api/dataset/${datasetId}/validation-cases`, data);
+}
+
 /** 手动触发单张表的 AI 标注 */
 export function annotateSourceTable(tableId) {
   return post(`/api/datasource/source-table/${tableId}/annotate`);

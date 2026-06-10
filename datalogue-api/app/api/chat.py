@@ -16,6 +16,7 @@
 import json
 import logging
 import time
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 # 节点名称到前端展示名的映射
 _NODE_DISPLAY_NAMES = {
+    "clarification_resolution": "澄清解析",
     "intent_recognition": "意图识别",
     "entry_intent_classification": "入口分类",
     "analysis_blueprint_execute": "蓝图执行",
@@ -62,6 +64,9 @@ _STATE_OUTPUT_KEYS = {
     "blueprint_context",
     "knowledge_term_id",
     "route_payload",
+    "clarification_response",
+    "clarification_resolution",
+    "selected_term_id",
     "schema_context",
     "query_constraints",
     "dataset_context_debug",
@@ -84,6 +89,8 @@ _STATE_OUTPUT_KEYS = {
     "should_retry",
     "token_usage",
 }
+
+TERM_CLARIFICATION_TTL_MINUTES = 30
 
 
 def _sse_data(payload: dict) -> dict:
@@ -130,6 +137,72 @@ def _extract_node_output(event: dict, lg_node: str) -> dict:
     前端 step 事件需要的是节点真实输出，而不是外层节点名包装。
     """
     return _find_state_output(event.get("data", {}).get("output", {}) or {}, lg_node)
+
+
+def _term_conflict_candidates(route_payload: dict) -> list[dict]:
+    """从术语冲突 payload 里整理可展示候选。"""
+    existing = route_payload.get("candidates")
+    if existing:
+        return existing
+    candidates: list[dict] = []
+    seen: set[int] = set()
+    for conflict in route_payload.get("conflicts") or []:
+        token = conflict.get("token")
+        for term in conflict.get("terms") or []:
+            term_id = term.get("id") or term.get("term_id")
+            if term_id is None or term_id in seen:
+                continue
+            seen.add(term_id)
+            candidates.append(
+                {
+                    "index": len(candidates) + 1,
+                    "term_id": term_id,
+                    "name": term.get("name"),
+                    "display_name": term.get("display_name") or term.get("name"),
+                    "definition": term.get("definition"),
+                    "term_type": term.get("term_type"),
+                    "aliases": term.get("aliases") or [],
+                    "matched_text": token,
+                }
+            )
+    return candidates
+
+
+def _ensure_pending_term_clarification(
+    db: Session,
+    *,
+    conversation_id: int,
+    dataset_id: int | None,
+    question: str,
+    route_payload: dict,
+) -> dict:
+    """为术语冲突创建 pending clarification，并回填前端需要的字段。"""
+    if route_payload.get("clarification_id"):
+        return route_payload
+    candidates = _term_conflict_candidates(route_payload)
+    expires_at = datetime.utcnow() + timedelta(minutes=TERM_CLARIFICATION_TTL_MINUTES)
+    pending = models.PendingClarification(
+        conversation_id=conversation_id,
+        dataset_id=dataset_id,
+        clarification_type="term_conflict",
+        status="pending",
+        original_question=question,
+        conflict_payload=jsonable_encoder(route_payload),
+        candidates=jsonable_encoder(candidates),
+        expires_at=expires_at,
+    )
+    db.add(pending)
+    db.commit()
+    db.refresh(pending)
+    enriched = dict(route_payload)
+    enriched.update(
+        {
+            "clarification_id": pending.id,
+            "candidates": candidates,
+            "expires_at": expires_at.isoformat(),
+        }
+    )
+    return enriched
 
 
 async def _stream_chat(payload: schemas.ChatRequest, db: Session):
@@ -197,6 +270,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "dataset_id": effective_dataset_id,
         "conversation_id": conv_id,
         "history": history,
+        "clarification_response": jsonable_encoder(payload.clarification_response),
+        "clarification_resolution": None,
         "intent": None,
         "entities": None,
         "entry_intent": None,
@@ -206,6 +281,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "blueprint_match": None,
         "blueprint_context": None,
         "knowledge_term_id": None,
+        "selected_term_id": None,
         "route_payload": None,
         "schema_context": None,
         "schema_structured": None,
@@ -290,6 +366,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 if lg_node == "intent_recognition":
                     sse_payload["intent"] = final_state.get("intent") or ""
                     sse_payload["entities"] = final_state.get("entities") or {}
+                elif lg_node == "clarification_resolution":
+                    sse_payload["clarification_resolution"] = (
+                        final_state.get("clarification_resolution") or {}
+                    )
+                    sse_payload["route_payload"] = final_state.get("route_payload") or {}
                 elif lg_node == "entry_intent_classification":
                     sse_payload["entry_intent"] = final_state.get("entry_intent") or ""
                     sse_payload["entry_route"] = final_state.get("entry_route") or ""
@@ -373,6 +454,17 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         return
 
     # ── 保存助手消息并发送 final 事件 ────────────────
+    route_payload = final_state.get("route_payload") or {}
+    if route_payload.get("kind") == "term_conflict_clarification" and conv_id:
+        route_payload = _ensure_pending_term_clarification(
+            db,
+            conversation_id=conv_id,
+            dataset_id=effective_dataset_id,
+            question=final_state.get("question") or payload.question,
+            route_payload=route_payload,
+        )
+        final_state["route_payload"] = route_payload
+
     # 智能兜底：根据失败原因给出具体提示，而非生硬的"抱歉"
     raw_answer = final_state.get("answer")
     error = final_state.get("error")
@@ -426,7 +518,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "blueprint_id": final_state.get("blueprint_id"),
         "blueprint_match": final_state.get("blueprint_match"),
         "knowledge_term_id": final_state.get("knowledge_term_id"),
+        "selected_term_id": final_state.get("selected_term_id"),
         "route_payload": final_state.get("route_payload"),
+        "clarification_resolution": final_state.get("clarification_resolution"),
         "term_normalization": final_state.get("term_normalization"),
         "semantic_asset_resolution": final_state.get("semantic_asset_resolution"),
         "metric_resolution": final_state.get("metric_resolution"),
@@ -459,6 +553,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             step_trace=jsonable_encoder(step_traces),
             response_metadata=jsonable_encoder({
                 "answer_explanation": answer_explanation,
+                "route_payload": final_state.get("route_payload"),
+                "clarification_resolution": final_state.get("clarification_resolution"),
             }),
         )
     )

@@ -23,11 +23,12 @@ from .dataset import (
     BusinessTermAssetLink,
     BusinessTermRelation,
     BusinessTermChangeLog,
+    SemanticValidationCase,
     AnalysisBlueprint,
     BlueprintVersion,
     BlueprintUsageLog,
 )
-from .conversation import Conversation, Message, SQLDiagnosisLog
+from .conversation import Conversation, Message, SQLDiagnosisLog, PendingClarification
 
 __all__ = [
     "Datasource",
@@ -41,10 +42,12 @@ __all__ = [
     "BusinessTermAssetLink",
     "BusinessTermRelation",
     "BusinessTermChangeLog",
+    "SemanticValidationCase",
     "AnalysisBlueprint",
     "BlueprintVersion",
     "BlueprintUsageLog",
     "Conversation",
     "Message",
     "SQLDiagnosisLog",
+    "PendingClarification",
 ]

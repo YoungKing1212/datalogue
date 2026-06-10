@@ -16,6 +16,7 @@ import MessageContent from '../components/message-content';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
+  clarification_resolution: '澄清解析',
   intent_recognition: '意图识别',
   schema_recall: 'Schema 召回',
   dsl_generate: 'DSL 生成',
@@ -26,6 +27,7 @@ const NODE_STEP_NAMES = {
 };
 
 const NODE_ICONS = {
+  clarification_resolution: 'book',
   intent_recognition: 'brain',
   schema_recall: 'database',
   dsl_generate: 'code',
@@ -242,6 +244,50 @@ function AnswerExplanation({ explanation }) {
   );
 }
 
+function TermClarificationCard({ clarification, routePayload, onSelect }) {
+  const candidates = clarification?.candidates || routePayload?.candidates || [];
+  if (!candidates.length) return null;
+  return (
+    <div className="term-clarification-card">
+      <div className="term-clarification-head">
+        <span className="term-clarification-icon">
+          <Icon name="book" />
+        </span>
+        <div>
+          <strong>请选择业务术语口径</strong>
+          <span>点击候选后发送，或直接回复序号 / 术语名称</span>
+        </div>
+      </div>
+      <div className="term-clarification-options">
+        {candidates.map((candidate, index) => {
+          const optionIndex = candidate.index || index + 1;
+          const label = candidate.display_name || candidate.name || `术语 ${optionIndex}`;
+          return (
+            <button
+              key={`${candidate.term_id || candidate.id || optionIndex}-${label}`}
+              type="button"
+              className="term-clarification-option"
+              onClick={() => onSelect(candidate, optionIndex, label)}
+            >
+              <span className="term-clarification-index">{optionIndex}</span>
+              <span className="term-clarification-body">
+                <strong>{label}</strong>
+                <em>{candidate.name && candidate.name !== label ? candidate.name : candidate.term_type || '业务术语'}</em>
+                {candidate.definition && <small>{candidate.definition}</small>}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {clarification?.expiresAt && (
+        <div className="term-clarification-expire">
+          有效期至 {new Date(clarification.expiresAt).toLocaleTimeString()}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * AIMessage — 助理消息气泡
  * - 用 MessagePrimitive.Parts 把 reasoning / text 分开渲染
@@ -267,6 +313,20 @@ export function AIMessage({ showSql = true }) {
   const chartData = custom.chartData || null;
   const citations = custom.citations || null;
   const answerExplanation = custom.answerExplanation || null;
+  const routePayload = custom.routePayload || null;
+  const clarification = custom.clarification || null;
+
+  const handleSelectClarification = (candidate, optionIndex, label) => {
+    const clarificationId =
+      clarification?.clarificationId || routePayload?.clarification_id || null;
+    window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
+      clarification_id: clarificationId,
+      selected_term_id: candidate.term_id || candidate.id,
+      selected_index: optionIndex,
+      selected_text: label,
+    };
+    api.composer().setText(`选择：${label}`);
+  };
 
   const handleCopy = () => {
     const text = (message?.content || [])
@@ -322,6 +382,12 @@ export function AIMessage({ showSql = true }) {
       />
 
       <AnswerExplanation explanation={answerExplanation} />
+
+      <TermClarificationCard
+        clarification={clarification}
+        routePayload={routePayload}
+        onSelect={handleSelectClarification}
+      />
 
       {/* SQL 执行结果表格 */}
       {sqlResult && sqlResult.rows && sqlResult.rows.length > 0 && (

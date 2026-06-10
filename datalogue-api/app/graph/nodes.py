@@ -15,6 +15,7 @@
 
 import json
 import re
+from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Any
 
@@ -25,7 +26,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.graph.llm import get_llm
 from app.graph.state import AgentState
-from app.schemas.dsl import get_dsl_item_name, normalize_dsl
+from app.schemas.dsl import get_dsl_asset_id, get_dsl_item_name, normalize_dsl
 from app.prompts.intent_router import INTENT_RECOGNITION_SYSTEM
 from app.prompts.dsl_generate import (
     build_real_schema_system,
@@ -40,7 +41,7 @@ from app.models.dataset import (
     BusinessTerm,
     SemanticDataset,
 )
-from app.models.conversation import SQLDiagnosisLog
+from app.models.conversation import PendingClarification, SQLDiagnosisLog
 from app.models.datasource import Datasource
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.services.dataset_context import build_dataset_query_context
@@ -363,6 +364,42 @@ def _dsl_item_names(items: Any) -> list[str]:
 def _dsl_field_name(field: Any) -> str:
     """读取 filter/order_by/time_range 中的字段名。"""
     return get_dsl_item_name(field)
+
+
+def _structured_asset_index(structured: dict | None, section: str) -> tuple[set[str], set[int]]:
+    """从 schema_structured 中提取指定语义资产的名称与 ID。"""
+    names: set[str] = set()
+    ids: set[int] = set()
+    if not isinstance(structured, dict):
+        return names, ids
+    for item in structured.get(section) or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("name", "display_name"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                names.add(value)
+        asset_id = item.get("id") or item.get("asset_id")
+        if isinstance(asset_id, int):
+            ids.add(asset_id)
+    return names, ids
+
+
+def _dsl_unknown_assets(items: Any, valid_names: set[str], valid_ids: set[int]) -> list[str]:
+    """校验 DSL 中的术语/蓝图资产引用是否存在。"""
+    if not isinstance(items, list):
+        return []
+    unknown: list[str] = []
+    for item in items:
+        name = get_dsl_item_name(item)
+        asset_id = get_dsl_asset_id(item)
+        if asset_id is not None:
+            if asset_id not in valid_ids:
+                unknown.append(f"{name or '未命名'}#{asset_id}")
+            continue
+        if name and name not in valid_names:
+            unknown.append(name)
+    return unknown
 
 
 def _coerce_text_list(value: Any) -> list[str]:
@@ -1044,6 +1081,269 @@ def _build_term_conflicts(matches: list[dict]) -> list[dict]:
     return conflicts
 
 
+def _clarification_candidates_from_conflicts(conflicts: list[dict]) -> list[dict]:
+    """将术语冲突压平成前端可展示、后端可解析的候选列表。"""
+    candidates: list[dict] = []
+    seen: set[int] = set()
+    for conflict in conflicts or []:
+        token = conflict.get("token")
+        for term in conflict.get("terms") or []:
+            term_id = term.get("id") or term.get("term_id")
+            if term_id is None or term_id in seen:
+                continue
+            seen.add(term_id)
+            candidates.append(
+                {
+                    "index": len(candidates) + 1,
+                    "term_id": term_id,
+                    "name": term.get("name"),
+                    "display_name": term.get("display_name") or term.get("name"),
+                    "definition": term.get("definition"),
+                    "term_type": term.get("term_type"),
+                    "aliases": _coerce_text_list(term.get("aliases")),
+                    "matched_text": token,
+                }
+            )
+    return candidates
+
+
+def _parse_clarification_response(payload: Any) -> dict[str, Any]:
+    """兼容 Pydantic 对象和普通 dict，提取澄清回复。"""
+    if payload is None:
+        return {}
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(exclude_none=True)
+    if isinstance(payload, dict):
+        return {k: v for k, v in payload.items() if v is not None}
+    return {}
+
+
+_ORDINAL_WORDS = {
+    "一": 1,
+    "第一个": 1,
+    "第一": 1,
+    "1": 1,
+    "二": 2,
+    "第二个": 2,
+    "第二": 2,
+    "2": 2,
+    "三": 3,
+    "第三个": 3,
+    "第三": 3,
+    "3": 3,
+    "四": 4,
+    "第四个": 4,
+    "第四": 4,
+    "4": 4,
+    "五": 5,
+    "第五个": 5,
+    "第五": 5,
+    "5": 5,
+}
+
+
+def _response_selected_index(text: str) -> int | None:
+    """从“第一个/1/选 2”等回复中提取候选序号。"""
+    normalized = _normalized_text(text)
+    if not normalized:
+        return None
+    for word, value in _ORDINAL_WORDS.items():
+        if _normalized_text(word) == normalized or _normalized_text(word) in normalized:
+            return value
+    match = re.search(r"(?:选择|选|第)?\s*(\d+)", text or "")
+    return int(match.group(1)) if match else None
+
+
+def _candidate_matches_text(candidate: dict, text: str) -> bool:
+    """判断自然语言回复是否指向某个候选术语。"""
+    text_norm = _semantic_match_text(text)
+    if not text_norm:
+        return False
+    aliases = [
+        candidate.get("display_name"),
+        candidate.get("name"),
+        *(_coerce_text_list(candidate.get("aliases"))),
+    ]
+    for alias in aliases:
+        alias_norm = _semantic_match_text(alias)
+        if alias_norm and (alias_norm == text_norm or alias_norm in text_norm):
+            return True
+    return False
+
+
+def _resolve_clarification_candidate(
+    candidates: list[dict],
+    response: dict[str, Any],
+    text: str,
+) -> dict | None:
+    """从结构化回复或自然语言中解析候选项。"""
+    selected_term_id = response.get("selected_term_id")
+    if selected_term_id is not None:
+        for candidate in candidates:
+            if int(candidate.get("term_id")) == int(selected_term_id):
+                return candidate
+
+    selected_index = response.get("selected_index")
+    if selected_index is None:
+        selected_index = _response_selected_index(response.get("selected_text") or text)
+    if selected_index is not None:
+        for candidate in candidates:
+            if int(candidate.get("index") or 0) == int(selected_index):
+                return candidate
+
+    selected_text = response.get("selected_text") or text
+    for candidate in candidates:
+        if _candidate_matches_text(candidate, selected_text):
+            return candidate
+    return None
+
+
+def _latest_pending_clarification(
+    db: Session,
+    conversation_id: int | None,
+    dataset_id: int | None,
+    response: dict[str, Any],
+) -> PendingClarification | None:
+    """查找当前会话最近一个待处理术语澄清。"""
+    if not conversation_id:
+        return None
+    query = db.query(PendingClarification).filter(
+        PendingClarification.conversation_id == conversation_id,
+        PendingClarification.clarification_type == "term_conflict",
+        PendingClarification.status == "pending",
+    )
+    if dataset_id is not None:
+        query = query.filter(
+            (PendingClarification.dataset_id == dataset_id)
+            | (PendingClarification.dataset_id.is_(None))
+        )
+    clarification_id = response.get("clarification_id")
+    if clarification_id is not None:
+        query = query.filter(PendingClarification.id == int(clarification_id))
+    return query.order_by(PendingClarification.created_at.desc()).first()
+
+
+def _format_term_clarification_answer(candidates: list[dict], prefix: str) -> str:
+    """生成术语澄清提示文案。"""
+    parts = []
+    for candidate in candidates:
+        label = candidate.get("display_name") or candidate.get("name") or candidate.get("term_id")
+        definition = candidate.get("definition")
+        parts.append(
+            f"{candidate.get('index')}. {label}" + (f"（{definition}）" if definition else "")
+        )
+    return f"{prefix}请回复序号或术语名称：{'；'.join(parts)}"
+
+
+def clarification_resolution_node(db: Session):
+    """解析用户对 pending 澄清的回复，成功后恢复原问题继续 QueryGraph。"""
+
+    def _node(state: AgentState) -> Dict[str, Any]:
+        response = _parse_clarification_response(state.get("clarification_response"))
+        conversation_id = state.get("conversation_id")
+        dataset_id = state.get("dataset_id")
+        question = state.get("question") or ""
+        pending = _latest_pending_clarification(db, conversation_id, dataset_id, response)
+        has_response = bool(response) or bool(pending)
+
+        if not pending:
+            if response:
+                return {
+                    "entry_intent": "clarification",
+                    "entry_route": "clarify",
+                    "entry_reason": "没有找到待处理的术语澄清态。",
+                    "answer": "没有找到待处理的术语澄清，请重新提出完整问题。",
+                    "route_payload": {"kind": "term_conflict_missing"},
+                    "clarification_resolution": {"status": "missing"},
+                    "should_retry": False,
+                }
+            return {"clarification_resolution": {"status": "none"}}
+
+        now = datetime.utcnow()
+        if pending.expires_at and pending.expires_at <= now:
+            pending.status = "expired"
+            db.commit()
+            return {
+                "entry_intent": "clarification",
+                "entry_route": "clarify",
+                "entry_reason": "术语澄清态已过期。",
+                "answer": "术语澄清已过期，请重新提出完整问题。",
+                "route_payload": {
+                    "kind": "term_conflict_expired",
+                    "clarification_id": pending.id,
+                },
+                "clarification_resolution": {
+                    "status": "expired",
+                    "clarification_id": pending.id,
+                },
+                "should_retry": False,
+            }
+
+        candidates = pending.candidates or []
+        selected = _resolve_clarification_candidate(candidates, response, question)
+        if not selected:
+            answer = _format_term_clarification_answer(
+                candidates,
+                "我还不能确认你要使用哪个术语口径。",
+            )
+            return {
+                "entry_intent": "clarification",
+                "entry_route": "clarify",
+                "entry_reason": "用户澄清回复未能匹配候选术语。",
+                "answer": answer,
+                "route_payload": {
+                    "kind": "term_conflict_clarification",
+                    "clarification_id": pending.id,
+                    "candidates": candidates,
+                    "expires_at": pending.expires_at.isoformat() if pending.expires_at else None,
+                },
+                "clarification_resolution": {
+                    "status": "unresolved",
+                    "clarification_id": pending.id,
+                },
+                "should_retry": False,
+            }
+
+        selected_payload = {
+            "term_id": selected.get("term_id"),
+            "index": selected.get("index"),
+            "name": selected.get("name"),
+            "display_name": selected.get("display_name"),
+            "source": "structured" if response else "natural_language",
+            "response_text": response.get("selected_text") or question,
+        }
+        pending.status = "resolved"
+        pending.resolved_at = now
+        pending.selected_payload = selected_payload
+        db.commit()
+        logger.info(
+            "术语澄清解析成功: clarification_id=%s, term_id=%s",
+            pending.id,
+            selected_payload["term_id"],
+        )
+        return {
+            "question": pending.original_question,
+            "selected_term_id": int(selected["term_id"]),
+            "answer": None,
+            "entry_intent": None,
+            "entry_route": None,
+            "entry_reason": None,
+            "route_payload": {
+                "kind": "term_conflict_resolved",
+                "clarification_id": pending.id,
+                "selected_term_id": int(selected["term_id"]),
+                "selected_term": selected_payload,
+            },
+            "clarification_resolution": {
+                "status": "resolved",
+                "clarification_id": pending.id,
+                "selected_term": selected_payload,
+            },
+        }
+
+    return _node
+
+
 def term_normalize_node(state: AgentState) -> Dict[str, Any]:
     """将业务术语、同义词和冲突信息注入 QueryGraph。
 
@@ -1054,6 +1354,7 @@ def term_normalize_node(state: AgentState) -> Dict[str, Any]:
     structured = state.get("schema_structured") or {}
     terms = structured.get("terms") or []
     entities = dict(state.get("entities") or {})
+    selected_term_id = state.get("selected_term_id")
     logger.info("term_normalize 开始: terms=%s", len(terms))
 
     matches = [
@@ -1061,13 +1362,28 @@ def term_normalize_node(state: AgentState) -> Dict[str, Any]:
     ]
     matches.sort(key=lambda item: item.get("confidence", 0), reverse=True)
     conflicts = _build_term_conflicts(matches)
+
+    selected_matches: list[dict] = []
+    if selected_term_id is not None:
+        selected_matches = [
+            match
+            for match in matches
+            if int(match.get("term_id") or 0) == int(selected_term_id)
+        ]
+        if selected_matches:
+            matches = selected_matches
+            conflicts = []
+
     term_normalization = {
         "matched_terms": matches,
         "conflicts": conflicts,
         "has_conflict": bool(conflicts),
+        "selected_term_id": int(selected_term_id) if selected_matches else None,
+        "resolved_by": "clarification" if selected_matches else None,
     }
 
     if conflicts:
+        candidates = _clarification_candidates_from_conflicts(conflicts)
         names = "、".join(
             sorted(
                 {
@@ -1088,6 +1404,7 @@ def term_normalize_node(state: AgentState) -> Dict[str, Any]:
             "route_payload": {
                 "kind": "term_conflict_clarification",
                 "conflicts": conflicts,
+                "candidates": candidates,
             },
             "should_retry": False,
         }
@@ -1902,9 +2219,17 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
         valid_names = {m["name"] for m in structured.get("metrics", [])}
         valid_names.update({d["name"] for d in structured.get("dimensions", [])})
         valid_names.update({f["name"] for f in structured.get("fields", [])})
+        valid_term_names, valid_term_ids = _structured_asset_index(structured, "terms")
+        valid_blueprint_names, valid_blueprint_ids = _structured_asset_index(
+            structured, "blueprints"
+        )
     else:
         # fallback: 从文本中提取
         valid_names = set()
+        valid_term_names = set()
+        valid_term_ids = set()
+        valid_blueprint_names = set()
+        valid_blueprint_ids = set()
         for line in schema.split("\n"):
             m = re.match(r"-\s+(\w+)\s+\([^)]+\):", line)
             if m:
@@ -1929,6 +2254,16 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
         field = _dsl_field_name(f.get("field"))
         if field and field not in valid_names:
             errors.append(f"过滤字段 '{field}' 不在语义层定义中")
+    unknown_terms = _dsl_unknown_assets(
+        dsl.get("terms", []), valid_term_names, valid_term_ids
+    )
+    for term in unknown_terms:
+        errors.append(f"业务术语 '{term}' 不在语义层定义中")
+    unknown_blueprints = _dsl_unknown_assets(
+        dsl.get("blueprints", []), valid_blueprint_names, valid_blueprint_ids
+    )
+    for blueprint in unknown_blueprints:
+        errors.append(f"分析蓝图 '{blueprint}' 不在语义层定义中")
 
     if errors:
         logger.warning(f"DSL校验失败: {'; '.join(errors)}")

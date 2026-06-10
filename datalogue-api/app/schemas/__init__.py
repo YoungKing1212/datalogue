@@ -35,6 +35,8 @@ from .dataset import (
     BusinessTermAssetLinkPayload,
     BusinessTermDiscoverOut,
     BusinessTermConflictOut,
+    SemanticValidationCaseCreate,
+    SemanticValidationCaseOut,
     BlueprintCreate,
     BlueprintUpdate,
     BlueprintOut,
@@ -54,7 +56,7 @@ from .conversation import (
     ConversationCreate,
     ConversationRename,
 )
-from .chat import ChatRequest, ChatFeedback
+from .chat import ChatRequest, ChatFeedback, ClarificationResponse
 
 __all__ = [
     "DatasourceCreate",
@@ -82,6 +84,8 @@ __all__ = [
     "BusinessTermAssetLinkPayload",
     "BusinessTermDiscoverOut",
     "BusinessTermConflictOut",
+    "SemanticValidationCaseCreate",
+    "SemanticValidationCaseOut",
     "BlueprintCreate",
     "BlueprintUpdate",
     "BlueprintOut",
@@ -100,4 +104,5 @@ __all__ = [
     "ConversationRename",
     "ChatRequest",
     "ChatFeedback",
+    "ClarificationResponse",
 ]

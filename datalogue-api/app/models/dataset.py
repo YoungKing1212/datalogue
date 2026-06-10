@@ -52,6 +52,9 @@ class SemanticDataset(Base, TimestampMixin):
     blueprints = relationship(
         "AnalysisBlueprint", back_populates="dataset", cascade="all, delete-orphan"
     )
+    validation_cases = relationship(
+        "SemanticValidationCase", back_populates="dataset", cascade="all, delete-orphan"
+    )
     # 显式覆盖 DatasetSourceTable.dataset 的 backref，启用 ORM 级联删除，
     # 否则 SQLAlchemy 默认 SET NULL，会与 NOT NULL 约束冲突。
     selected_tables = relationship(
@@ -259,6 +262,29 @@ class BusinessTermChangeLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     term = relationship("BusinessTerm", back_populates="change_logs")
+
+
+class SemanticValidationCase(Base, TimestampMixin):
+    __tablename__ = "semantic_validation_case"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(
+        Integer, ForeignKey("semantic_dataset.id", ondelete="CASCADE"), nullable=False
+    )
+    question = Column(Text, nullable=False)
+    status = Column(String(20), default="unknown", nullable=False)
+    route_type = Column(String(50))
+    entry_intent = Column(String(50))
+    entry_route = Column(String(50))
+    blueprint_id = Column(Integer, ForeignKey("analysis_blueprint.id", ondelete="SET NULL"))
+    sql = Column(Text)
+    answer = Column(Text)
+    error = Column(Text)
+    report = Column(JSON, default=dict)
+    created_by = Column(String(50))
+
+    dataset = relationship("SemanticDataset", back_populates="validation_cases")
+    blueprint = relationship("AnalysisBlueprint")
 
 
 class AnalysisBlueprint(Base, TimestampMixin):

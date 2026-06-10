@@ -18,7 +18,7 @@
 import asyncio
 import json
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
@@ -285,6 +285,241 @@ class TestLangGraphNodes:
         assert result["route_payload"]["kind"] == "term_conflict_clarification"
         assert result["term_normalization"]["has_conflict"] is True
         assert {t["id"] for t in result["route_payload"]["conflicts"][0]["terms"]} == {1, 2}
+        assert {t["term_id"] for t in result["route_payload"]["candidates"]} == {1, 2}
+
+    def test_term_normalize_selected_term_resolves_conflict(self):
+        """术语归一化：澄清后的 selected_term_id 会压掉同义词冲突。"""
+        from app.graph.nodes import term_normalize_node
+
+        state = {
+            "question": "销售额是多少",
+            "entities": {"metrics": [], "dimensions": []},
+            "selected_term_id": 2,
+            "schema_structured": {
+                "terms": [
+                    {
+                        "id": 1,
+                        "name": "gmv",
+                        "display_name": "GMV",
+                        "aliases": ["销售额"],
+                    },
+                    {
+                        "id": 2,
+                        "name": "paid_amount",
+                        "display_name": "实付金额",
+                        "aliases": ["销售额"],
+                    },
+                ]
+            },
+        }
+        result = term_normalize_node(state)
+
+        assert result["term_normalization"]["has_conflict"] is False
+        assert result["term_normalization"]["selected_term_id"] == 2
+        assert [m["term_id"] for m in result["term_normalization"]["matched_terms"]] == [2]
+        assert result["entities"]["terms"] == ["销售额"]
+
+    def _create_pending_term_clarification(self, db_session, sample_dataset, **overrides):
+        """创建一个术语冲突澄清态，供澄清解析测试复用。"""
+        from app.models.conversation import Conversation, PendingClarification
+
+        conv = Conversation(
+            title="术语澄清测试",
+            thread_id="thread-term-conflict",
+            dataset_id=sample_dataset.id,
+        )
+        db_session.add(conv)
+        db_session.flush()
+        candidates = [
+            {
+                "index": 1,
+                "term_id": 1,
+                "name": "gmv",
+                "display_name": "GMV",
+                "definition": "商品交易总额",
+                "aliases": ["成交额"],
+            },
+            {
+                "index": 2,
+                "term_id": 2,
+                "name": "paid_amount",
+                "display_name": "实付金额",
+                "definition": "用户实际支付金额",
+                "aliases": ["支付金额"],
+            },
+        ]
+        expires_at = overrides.pop("expires_at", datetime.utcnow() + timedelta(minutes=30))
+        pending = PendingClarification(
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            clarification_type="term_conflict",
+            status="pending",
+            original_question="销售额是多少",
+            conflict_payload={"kind": "term_conflict_clarification"},
+            candidates=candidates,
+            expires_at=expires_at,
+            **overrides,
+        )
+        db_session.add(pending)
+        db_session.commit()
+        db_session.refresh(conv)
+        db_session.refresh(pending)
+        return conv, pending
+
+    def test_chat_stream_conflict_creates_pending_clarification(
+        self, db_session, sample_dataset
+    ):
+        """聊天流：术语冲突 final payload 会创建 pending_clarification。"""
+        from app.api.chat import _ensure_pending_term_clarification
+        from app.models.conversation import Conversation, PendingClarification
+
+        conv = Conversation(title="冲突会话", thread_id="thread-conflict", dataset_id=sample_dataset.id)
+        db_session.add(conv)
+        db_session.commit()
+        payload = {
+            "kind": "term_conflict_clarification",
+            "conflicts": [
+                {
+                    "token": "销售额",
+                    "terms": [
+                        {"id": 1, "name": "gmv", "display_name": "GMV"},
+                        {"id": 2, "name": "paid_amount", "display_name": "实付金额"},
+                    ],
+                }
+            ],
+        }
+
+        enriched = _ensure_pending_term_clarification(
+            db_session,
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            question="销售额是多少",
+            route_payload=payload,
+        )
+
+        assert enriched["clarification_id"]
+        assert {c["term_id"] for c in enriched["candidates"]} == {1, 2}
+        pending = db_session.query(PendingClarification).filter_by(conversation_id=conv.id).one()
+        assert pending.original_question == "销售额是多少"
+        assert pending.status == "pending"
+
+    def test_clarification_resolution_selected_term_id(self, db_session, sample_dataset):
+        """澄清解析：结构化 selected_term_id 可恢复原问题。"""
+        from app.graph.nodes import clarification_resolution_node
+        from app.models.conversation import PendingClarification
+
+        conv, pending = self._create_pending_term_clarification(db_session, sample_dataset)
+        result = clarification_resolution_node(db_session)(
+            {
+                "question": "选择 GMV",
+                "conversation_id": conv.id,
+                "dataset_id": sample_dataset.id,
+                "clarification_response": {
+                    "clarification_id": pending.id,
+                    "selected_term_id": 1,
+                },
+            }
+        )
+
+        assert result["question"] == "销售额是多少"
+        assert result["selected_term_id"] == 1
+        assert result["clarification_resolution"]["status"] == "resolved"
+        db_session.refresh(pending)
+        assert pending.status == "resolved"
+        assert pending.selected_payload["term_id"] == 1
+
+    def test_clarification_resolution_ordinal_reply(self, db_session, sample_dataset):
+        """澄清解析：自然语言“第一个”可匹配候选序号。"""
+        from app.graph.nodes import clarification_resolution_node
+
+        conv, pending = self._create_pending_term_clarification(db_session, sample_dataset)
+        result = clarification_resolution_node(db_session)(
+            {
+                "question": "第一个",
+                "conversation_id": conv.id,
+                "dataset_id": sample_dataset.id,
+                "clarification_response": None,
+            }
+        )
+
+        assert result["selected_term_id"] == 1
+        assert result["question"] == pending.original_question
+
+    def test_clarification_resolution_name_reply(self, db_session, sample_dataset):
+        """澄清解析：自然语言术语展示名可匹配候选。"""
+        from app.graph.nodes import clarification_resolution_node
+
+        conv, _ = self._create_pending_term_clarification(db_session, sample_dataset)
+        result = clarification_resolution_node(db_session)(
+            {
+                "question": "实付金额",
+                "conversation_id": conv.id,
+                "dataset_id": sample_dataset.id,
+                "clarification_response": None,
+            }
+        )
+
+        assert result["selected_term_id"] == 2
+        assert result["clarification_resolution"]["selected_term"]["display_name"] == "实付金额"
+
+    def test_clarification_resolution_invalid_reply(self, db_session, sample_dataset):
+        """澄清解析：无效回复继续提示候选并保持 pending。"""
+        from app.graph.nodes import clarification_resolution_node
+
+        conv, pending = self._create_pending_term_clarification(db_session, sample_dataset)
+        result = clarification_resolution_node(db_session)(
+            {
+                "question": "都不是",
+                "conversation_id": conv.id,
+                "dataset_id": sample_dataset.id,
+                "clarification_response": None,
+            }
+        )
+
+        assert result["entry_route"] == "clarify"
+        assert result["route_payload"]["kind"] == "term_conflict_clarification"
+        assert result["clarification_resolution"]["status"] == "unresolved"
+        db_session.refresh(pending)
+        assert pending.status == "pending"
+
+    def test_clarification_resolution_missing_state(self, db_session, sample_dataset):
+        """澄清解析：结构化回复找不到 pending 时提示重新提问。"""
+        from app.graph.nodes import clarification_resolution_node
+
+        result = clarification_resolution_node(db_session)(
+            {
+                "question": "第一个",
+                "conversation_id": 99999,
+                "dataset_id": sample_dataset.id,
+                "clarification_response": {"selected_index": 1},
+            }
+        )
+
+        assert result["route_payload"]["kind"] == "term_conflict_missing"
+        assert result["clarification_resolution"]["status"] == "missing"
+
+    def test_clarification_resolution_expired_state(self, db_session, sample_dataset):
+        """澄清解析：过期 pending 惰性标记 expired。"""
+        from app.graph.nodes import clarification_resolution_node
+
+        conv, pending = self._create_pending_term_clarification(
+            db_session,
+            sample_dataset,
+            expires_at=datetime.utcnow() - timedelta(minutes=1),
+        )
+        result = clarification_resolution_node(db_session)(
+            {
+                "question": "第一个",
+                "conversation_id": conv.id,
+                "dataset_id": sample_dataset.id,
+                "clarification_response": None,
+            }
+        )
+
+        assert result["route_payload"]["kind"] == "term_conflict_expired"
+        assert result["clarification_resolution"]["status"] == "expired"
+        db_session.refresh(pending)
+        assert pending.status == "expired"
 
     def test_term_normalization_router_blocks_conflict(self):
         """工作流路由：术语冲突时不继续进入 DSL 生成链路。"""
@@ -790,6 +1025,62 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         assert result["dsl"]["version"] == "2.0"
         assert result["dsl"]["metrics"][0]["name"] == "gmv"
         assert result["dsl"]["metrics"][0]["asset_type"] == "metric"
+
+    def test_dsl_validate_terms_and_blueprints_valid(self):
+        """语义验证：DSL 中引用的业务术语和分析蓝图必须存在于语义层。"""
+        from app.graph.nodes import dsl_validate_node
+
+        state = {
+            "dsl": {
+                "metrics": ["gmv"],
+                "terms": [{"name": "净销售额", "asset_type": "term", "asset_id": 10}],
+                "blueprints": [
+                    {"name": "门店经营分析", "asset_type": "blueprint", "asset_id": 20}
+                ],
+            },
+            "schema_structured": {
+                "metrics": [{"id": 1, "name": "gmv"}],
+                "dimensions": [],
+                "fields": [],
+                "terms": [{"id": 10, "name": "净销售额"}],
+                "blueprints": [{"id": 20, "name": "门店经营分析"}],
+            },
+            "schema_context": "【语义层】",
+        }
+
+        result = dsl_validate_node(state)
+
+        assert result["dsl_valid"] is True
+        assert result["error"] is None
+        assert result["dsl"]["terms"][0]["asset_type"] == "term"
+        assert result["dsl"]["blueprints"][0]["asset_type"] == "blueprint"
+
+    def test_dsl_validate_terms_and_blueprints_unknown(self):
+        """语义验证：未知术语或蓝图引用要提前拦截，避免验证报告误判。"""
+        from app.graph.nodes import dsl_validate_node
+
+        state = {
+            "dsl": {
+                "metrics": ["gmv"],
+                "terms": [{"name": "不存在术语", "asset_type": "term", "asset_id": 99}],
+                "blueprints": ["不存在蓝图"],
+            },
+            "schema_structured": {
+                "metrics": [{"id": 1, "name": "gmv"}],
+                "dimensions": [],
+                "fields": [],
+                "terms": [{"id": 10, "name": "净销售额"}],
+                "blueprints": [{"id": 20, "name": "门店经营分析"}],
+            },
+            "schema_context": "【语义层】",
+        }
+
+        result = dsl_validate_node(state)
+
+        assert result["dsl_valid"] is False
+        assert "业务术语 '不存在术语#99' 不在语义层定义中" in result["error"]
+        assert "分析蓝图 '不存在蓝图' 不在语义层定义中" in result["error"]
+        assert result["should_retry"] is True
 
     def test_dsl_compiler_semantic_asset_refs(self, db_session):
         """DSL 编译器：v2 资产引用对象应与旧字符串 DSL 等价编译。"""

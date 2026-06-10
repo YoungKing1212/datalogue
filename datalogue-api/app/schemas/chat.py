@@ -11,15 +11,23 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
+
+
+class ClarificationResponse(BaseModel):
+    clarification_id: Optional[int] = None
+    selected_term_id: Optional[int] = None
+    selected_index: Optional[int] = None
+    selected_text: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
     question: str
     conversation_id: Optional[int] = None
     dataset_id: Optional[int] = None
+    clarification_response: Optional[ClarificationResponse | dict[str, Any]] = None
 
 
 class ChatFeedback(BaseModel):

@@ -887,6 +887,61 @@ def check_term_conflicts(ds_id: int, db: Session = Depends(get_db)):
     return {"conflicts": _term_conflicts(terms)}
 
 
+# ── Semantic Validation Cases ────────────────────────
+
+
+@router.get(
+    "/{ds_id}/validation-cases",
+    response_model=List[schemas.SemanticValidationCaseOut],
+)
+def list_validation_cases(ds_id: int, limit: int = 20, db: Session = Depends(get_db)):
+    """列出数据集最近保存的语义验证用例。"""
+    _ensure_dataset(ds_id, db)
+    safe_limit = max(1, min(int(limit or 20), 100))
+    return (
+        db.query(models.SemanticValidationCase)
+        .filter(models.SemanticValidationCase.dataset_id == ds_id)
+        .order_by(models.SemanticValidationCase.created_at.desc())
+        .limit(safe_limit)
+        .all()
+    )
+
+
+@router.post(
+    "/{ds_id}/validation-cases",
+    response_model=schemas.SemanticValidationCaseOut,
+)
+def create_validation_case(
+    ds_id: int,
+    payload: schemas.SemanticValidationCaseCreate,
+    db: Session = Depends(get_db),
+):
+    """保存一次语义验证结果，作为后续回放和评测用例。"""
+    _ensure_dataset(ds_id, db)
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="验证问题不能为空")
+    status = payload.status if payload.status in {"passed", "failed", "unknown"} else "unknown"
+    case = models.SemanticValidationCase(
+        dataset_id=ds_id,
+        question=question,
+        status=status,
+        route_type=payload.route_type,
+        entry_intent=payload.entry_intent,
+        entry_route=payload.entry_route,
+        blueprint_id=payload.blueprint_id,
+        sql=payload.sql,
+        answer=payload.answer,
+        error=payload.error,
+        report=_make_json_serializable(payload.report or {}),
+        created_by=payload.created_by,
+    )
+    db.add(case)
+    db.commit()
+    db.refresh(case)
+    return case
+
+
 # ── Analysis Blueprints ──────────────────────────────
 
 

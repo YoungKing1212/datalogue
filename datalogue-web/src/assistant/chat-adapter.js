@@ -115,11 +115,23 @@ export function makeChatAdapter({ datasetIdRef }) {
 
       const convId = unstable_threadId ? Number(unstable_threadId) : null;
       const datasetId = datasetIdRef?.current ?? null;
+      const clarificationResponse =
+        typeof window !== 'undefined'
+          ? window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ || null
+          : null;
+      if (clarificationResponse && typeof window !== 'undefined') {
+        window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = null;
+      }
 
       let stream;
       try {
         stream = streamChatEvents(
-          { question, conversation_id: convId, dataset_id: datasetId },
+          {
+            question,
+            conversation_id: convId,
+            dataset_id: datasetId,
+            clarification_response: clarificationResponse,
+          },
           { signal: abortSignal },
         );
       } catch (err) {
@@ -207,6 +219,15 @@ export function makeChatAdapter({ datasetIdRef }) {
               sqlRetryTrace: finalPayload.sql_retry_trace || null,
               answerExplanation: finalPayload.answer_explanation || null,
               dsl: finalPayload.dsl || null,
+              routePayload: finalPayload.route_payload || null,
+              clarification: finalPayload.route_payload?.kind === 'term_conflict_clarification'
+                ? {
+                    clarificationId: finalPayload.route_payload.clarification_id,
+                    candidates: finalPayload.route_payload.candidates || [],
+                    expiresAt: finalPayload.route_payload.expires_at || null,
+                  }
+                : null,
+              clarificationResolution: finalPayload.clarification_resolution || null,
               termNormalization: finalPayload.term_normalization || null,
               semanticAssetResolution: finalPayload.semantic_asset_resolution || null,
               metricResolution: finalPayload.metric_resolution || null,

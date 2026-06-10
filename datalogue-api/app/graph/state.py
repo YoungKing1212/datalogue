@@ -24,6 +24,8 @@ class AgentState(TypedDict):
     dataset_id: Optional[int]  # 指定数据集（可选）
     conversation_id: Optional[int]  # 当前会话 ID，用于诊断日志关联
     history: Optional[List[dict]]  # 历史对话消息（最近 N 轮）
+    clarification_response: Optional[dict]  # 用户对上一轮澄清的结构化回复
+    clarification_resolution: Optional[dict]  # 澄清解析结果和 pending 状态
 
     # 意图识别层
     intent: Optional[str]  # query | chitchat | function
@@ -39,6 +41,7 @@ class AgentState(TypedDict):
     blueprint_match: Optional[dict]  # 蓝图匹配详情 {"name": str, "score": int, ...}
     blueprint_context: Optional[str]  # 手动语义蓝图注入 QueryGraph 的业务计划上下文
     knowledge_term_id: Optional[int]  # 命中的知识库业务术语 ID
+    selected_term_id: Optional[int]  # 澄清后确认使用的业务术语 ID
     # 非 QueryGraph 路由需要返回给前端的结构化数据
     route_payload: Optional[dict[str, Any]]
 
