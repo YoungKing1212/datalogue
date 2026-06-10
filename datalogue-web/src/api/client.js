@@ -204,6 +204,11 @@ export function listDatasources() {
   return get('/api/datasource');
 }
 
+/** 获取数据源类型能力 */
+export function listDatasourceCapabilities() {
+  return get('/api/datasource/capabilities');
+}
+
 /** 创建数据源 */
 export function createDatasource(data) {
   return post('/api/datasource', data);

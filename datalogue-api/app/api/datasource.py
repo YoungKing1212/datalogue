@@ -23,7 +23,15 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import encrypt_password
 from app import schemas, models
-from app.services.datasource import test_connection, get_schema, get_schemas, sync_source_tables
+from app.services.datasource import (
+    enrich_datasource_defaults,
+    get_capabilities,
+    get_schema,
+    get_schemas,
+    preview_table,
+    sync_source_tables,
+    test_connection,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -38,11 +46,17 @@ def list_datasources(db: Session = Depends(get_db)):
     return result
 
 
+@router.get("/capabilities", response_model=List[schemas.DatasourceCapabilityOut])
+def list_datasource_capabilities():
+    """获取当前系统注册的数据源类型能力。"""
+    return get_capabilities()
+
+
 @router.post("", response_model=schemas.DatasourceOut)
 def create_datasource(payload: schemas.DatasourceCreate, db: Session = Depends(get_db)):
     """创建新数据源，密码自动加密存储。"""
     logger.info(f"创建数据源: name={payload.name}, type={payload.db_type}")
-    data = payload.model_dump()
+    data = enrich_datasource_defaults(payload.model_dump())
     data["password_enc"] = encrypt_password(data.pop("password"))
     ds = models.Datasource(**data)
     db.add(ds)
@@ -72,6 +86,8 @@ def update_datasource(ds_id: int, payload: schemas.DatasourceUpdate, db: Session
         logger.warning(f"数据源不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据源不存在")
     data = payload.model_dump(exclude_unset=True)
+    if "db_type" in data:
+        data = enrich_datasource_defaults(data)
     if "password" in data:
         pwd = data.pop("password")
         if pwd:
@@ -107,12 +123,14 @@ def test_datasource(ds_id: int, db: Session = Depends(get_db)):
         logger.warning(f"数据源不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据源不存在")
     result = test_connection(ds)
-    if not result["ok"]:
-        logger.error(f"数据源连接失败: ds_id={ds_id}, error={result['message']}")
-        raise HTTPException(status_code=400, detail=result["message"])
-    # 连接成功则更新状态
-    ds.status = "connected"  # type: ignore[assignment]
+    ds.last_test_result = result  # type: ignore[assignment]
+    ds.last_error_code = result.get("code")  # type: ignore[assignment]
+    ds.last_error_message = None if result.get("ok") else result.get("message")  # type: ignore[assignment]
+    ds.status = "connected" if result.get("ok") else "disconnected"  # type: ignore[assignment]
     db.commit()
+    if not result.get("ok"):
+        logger.error(f"数据源连接失败: ds_id={ds_id}, error={result.get('message')}")
+        return result
     logger.info(f"数据源连接成功: ds_id={ds_id}, version={result.get('version')}")
     return result
 
@@ -129,7 +147,7 @@ def get_datasource_schemas(ds_id: int, db: Session = Depends(get_db)):
         schemas = get_schemas(ds)
     except Exception as e:
         logger.error(f"获取Schema列表失败: ds_id={ds_id}, error={e}")
-        raise HTTPException(status_code=400, detail=f"获取 Schema 列表失败: {e}")
+        raise HTTPException(status_code=400, detail={"message": "获取 Schema 列表失败", "diagnostic": str(e)})
     logger.info(f"返回 {len(schemas)} 个schema")
     return {"schemas": schemas}
 
@@ -146,7 +164,7 @@ def get_datasource_schema(ds_id: int, schema: str = None, db: Session = Depends(
         tables = get_schema(ds, schema_name=schema)
     except Exception as e:
         logger.error(f"获取Schema失败: ds_id={ds_id}, error={e}")
-        raise HTTPException(status_code=400, detail=f"获取 Schema 失败: {e}")
+        raise HTTPException(status_code=400, detail={"message": "获取 Schema 失败", "diagnostic": str(e)})
     logger.info(f"返回 {len(tables)} 张表")
     return {"tables": tables}
 
@@ -163,7 +181,7 @@ def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
         result = sync_source_tables(ds)
     except Exception as e:
         logger.error(f"同步表结构失败: ds_id={ds_id}, error={e}")
-        raise HTTPException(status_code=400, detail=f"同步表结构失败: {e}")
+        raise HTTPException(status_code=400, detail={"message": "同步表结构失败", "diagnostic": str(e)})
 
     tables_data = result["tables"]
     synced_at = result["synced_at"]
@@ -274,6 +292,8 @@ def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
         "created": created_count,
         "updated": updated_count,
         "total_tables": len(tables_data),
+        "skipped": result.get("skipped", []),
+        "errors": result.get("errors", []),
     }
 
 
@@ -383,33 +403,14 @@ def preview_datasource_table(ds_id: int, payload: dict, db: Session = Depends(ge
         logger.warning(f"数据源不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据源不存在")
 
-    from app.services.datasource import create_engine_for_datasource
-    from sqlalchemy import text
-
     schema = payload.get("schema", "public")
     table = payload.get("table")
     limit = payload.get("limit", 5)
     if not table:
         raise HTTPException(status_code=400, detail="table 字段不能为空")
 
-    engine = create_engine_for_datasource(ds)
-    db_type = ds.db_type.lower()
     try:
-        with engine.connect() as conn:
-            if db_type in ("postgres", "postgresql"):
-                q = text(f'SELECT * FROM "{schema}"."{table}" LIMIT :limit')
-            elif db_type == "mysql":
-                q = text(f"SELECT * FROM `{table}` LIMIT :limit")
-            elif db_type == "sqlite":
-                q = text(f'SELECT * FROM "{table}" LIMIT :limit')
-            else:
-                q = text(f'SELECT * FROM "{table}" LIMIT :limit')
-            result = conn.execute(q, {"limit": limit})
-            columns = list(result.keys())
-            rows = [dict(zip(columns, row)) for row in result.fetchall()]
-            return {"columns": columns, "rows": rows}
+        return preview_table(ds, schema, table, limit)
     except Exception as e:
         logger.error(f"预览查询失败: ds_id={ds_id}, error={e}")
-        raise HTTPException(status_code=400, detail=f"查询失败: {e}")
-    finally:
-        engine.dispose()
+        raise HTTPException(status_code=400, detail={"message": "查询失败", "diagnostic": str(e)})

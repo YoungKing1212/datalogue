@@ -34,6 +34,7 @@ from app.models.dataset import (
 )
 from app.utils.query_constraints import normalize_query_constraints, render_query_constraints_instruction
 from app.utils.schema_formatter import ROLE_CODE, UNUSED_ROLES, estimate_tokens, _is_enum_dim
+from app.services.datasource import build_datasource_context
 
 logger = logging.getLogger(__name__)
 
@@ -585,6 +586,7 @@ def build_dataset_query_context(
                 "error": "DATASET_NOT_FOUND",
                 "token_budget": token_budget,
             },
+            "datasource_context": None,
         }
 
     metrics = db.query(SemanticMetric).filter(SemanticMetric.dataset_id == dataset.id).all()
@@ -600,6 +602,23 @@ def build_dataset_query_context(
         .all()
     )
     selected_links, source_columns = _selected_source_columns(db, dataset.id)
+    selected_table_names = [
+        link.source_table.table_name
+        for link in selected_links
+        if link.source_table and link.source_table.table_name
+    ]
+    datasource_context = build_datasource_context(
+        dataset.datasource,
+        allowed_tables=selected_table_names,
+        schema_version=max(
+            [
+                table.synced_at.isoformat()
+                for table in (link.source_table for link in selected_links)
+                if table and table.synced_at
+            ],
+            default=None,
+        ),
+    )
     query_constraints = normalize_query_constraints(dataset.query_constraints)
     matched_ref_keys = _matched_ref_keys(matched_assets)
 
@@ -643,6 +662,7 @@ def build_dataset_query_context(
             "status": "not_configured",
             "description": "当前未配置数据集级权限策略；按数据集绑定数据源和已选表范围执行。",
         },
+        "datasource_context": datasource_context,
     }
 
     debug = {
@@ -670,6 +690,7 @@ def build_dataset_query_context(
             for entry in retained_entries
             if entry.pinned
         ],
+        "datasource_context": datasource_context,
         **trim_debug,
     }
     logger.info(
@@ -688,6 +709,7 @@ def build_dataset_query_context(
         "query_constraints": query_constraints,
         "dataset_prompt_instructions": prompt_instructions or None,
         "dataset_context_debug": debug,
+        "datasource_context": datasource_context,
         "schema_tokens": estimate_tokens(schema_context),
     }
 

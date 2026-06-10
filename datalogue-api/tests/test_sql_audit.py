@@ -79,7 +79,7 @@ def _mock_llm_response(content: str, usage: dict | None = None):
 def _patch_get_llm(monkeypatch, response: MagicMock):
     """monkeypatch get_llm：让 nodes.get_llm 返回一个 invoke 直接给 response 的对象。"""
 
-    def _fake_get_llm(temperature=0.0):
+    def _fake_get_llm(temperature=0.0, **kwargs):
         llm = MagicMock()
         llm.invoke.return_value = response
         return llm
@@ -307,7 +307,7 @@ class TestSqlAuditNode:
     def test_llm_raises_exception_fallback_fixable(self, monkeypatch):
         from app.graph.nodes import sql_audit_node
 
-        def _exploding_get_llm(temperature=0.0):
+        def _exploding_get_llm(temperature=0.0, **kwargs):
             llm = MagicMock()
             llm.invoke.side_effect = RuntimeError("LLM 服务不可用")
             return llm

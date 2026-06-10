@@ -11,7 +11,12 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-from .datasource import DatasourceCreate, DatasourceUpdate, DatasourceOut
+from .datasource import (
+    DatasourceCapabilityOut,
+    DatasourceCreate,
+    DatasourceUpdate,
+    DatasourceOut,
+)
 from .dataset import (
     DatasetCreate,
     DatasetUpdate,
@@ -57,11 +62,20 @@ from .conversation import (
     ConversationRename,
 )
 from .chat import ChatRequest, ChatFeedback, ClarificationResponse
+from .llm import (
+    LLMModelConfigCreate,
+    LLMModelConfigUpdate,
+    LLMModelConfigOut,
+    LLMRoleBindingOut,
+    LLMRoleBindingsUpdate,
+    LLMTestResultOut,
+)
 
 __all__ = [
     "DatasourceCreate",
     "DatasourceUpdate",
     "DatasourceOut",
+    "DatasourceCapabilityOut",
     "DatasetCreate",
     "DatasetUpdate",
     "DatasetOut",
@@ -105,4 +119,10 @@ __all__ = [
     "ChatRequest",
     "ChatFeedback",
     "ClarificationResponse",
+    "LLMModelConfigCreate",
+    "LLMModelConfigUpdate",
+    "LLMModelConfigOut",
+    "LLMRoleBindingOut",
+    "LLMRoleBindingsUpdate",
+    "LLMTestResultOut",
 ]

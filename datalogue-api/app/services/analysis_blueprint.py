@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.models.dataset import AnalysisBlueprint, BlueprintUsageLog, SemanticDataset
 from app.models.datasource import Datasource
-from app.services.datasource import create_engine_for_datasource
+from app.services.datasource import build_datasource_context, create_engine_for_datasource
 from app.utils.sql_guard import guard_readonly_sql
 
 logger = logging.getLogger(__name__)
@@ -158,7 +158,8 @@ def _mask_blueprint_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
 
 def _datasource_dialect(datasource: Datasource) -> str:
     """获取数据源方言标识。"""
-    value = getattr(datasource, "type", None) or getattr(datasource, "db_type", None) or ""
+    context = build_datasource_context(datasource)
+    value = (context or {}).get("dialect") or getattr(datasource, "db_type", None) or ""
     return str(value).lower()
 
 
@@ -433,6 +434,11 @@ def execute_analysis_blueprint(
         sql,
         dialect=_datasource_dialect(datasource),
         query_constraints=getattr(dataset, "query_constraints", None),
+        allowed_tables=[
+            link.source_table.table_name
+            for link in (getattr(dataset, "selected_tables", None) or [])
+            if link.source_table and link.source_table.table_name
+        ],
     )
     if not guard_result.ok:
         validation_error = guard_result.error or "SQL 安全校验未通过"

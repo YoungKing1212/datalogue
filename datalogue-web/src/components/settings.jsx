@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Icon } from './icons';
+import { del as apiDelete, get, post, put } from '../api/client';
 
 // Settings — account, workspace, model, integrations, API keys.
 
@@ -325,24 +326,470 @@ function DatasourcesSection() {
   );
 }
 
+const LLM_ROLES = [
+  { id: 'default', label: '默认模型', hint: '未单独绑定角色时使用' },
+  { id: 'intent', label: '意图理解 & 路由', hint: '低延迟，处理用户问题分类' },
+  { id: 'dsl', label: 'SQL / DSL 生成', hint: '精度优先，处理复杂查询' },
+  { id: 'sql_audit', label: 'SQL 诊断', hint: '分析执行错误并判断是否重试' },
+  { id: 'report', label: '解释 & 洞察', hint: '流式输出最终回答' },
+  { id: 'annotation', label: '字段自动标注', hint: '生成表和字段业务描述' },
+  { id: 'blueprint', label: '分析蓝图', hint: '理解 SQL 草稿和业务场景' },
+];
+
+const LLM_PRESETS = [
+  {
+    id: 'litellm_proxy',
+    label: 'LiteLLM Proxy',
+    provider: 'litellm',
+    base_url: 'http://localhost:4000/v1',
+    description: '通过 LiteLLM Proxy 统一接入多厂商模型',
+    request_timeout_seconds: 60,
+    models: ['datalogue-intent', 'datalogue-sql', 'datalogue-report', 'datalogue-blueprint'],
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    provider: 'openai',
+    base_url: 'https://api.openai.com/v1',
+    description: 'OpenAI 官方 OpenAI-compatible API',
+    request_timeout_seconds: 60,
+    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'],
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    provider: 'deepseek',
+    base_url: 'https://api.deepseek.com/v1',
+    description: 'DeepSeek OpenAI-compatible API',
+    request_timeout_seconds: 60,
+    models: ['deepseek-chat', 'deepseek-reasoner'],
+  },
+  {
+    id: 'qwen',
+    label: '通义千问 DashScope',
+    provider: 'qwen',
+    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    description: '阿里云 DashScope OpenAI-compatible API',
+    request_timeout_seconds: 60,
+    models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen-long'],
+  },
+  {
+    id: 'minimax',
+    label: 'MiniMax',
+    provider: 'minimax',
+    base_url: 'https://api.minimaxi.com/v1',
+    description: 'MiniMax OpenAI-compatible API',
+    request_timeout_seconds: 60,
+    models: ['MiniMax-M1', 'abab6.5s-chat', 'abab6.5g-chat'],
+  },
+  {
+    id: 'claude_litellm',
+    label: 'Claude via LiteLLM',
+    provider: 'litellm',
+    base_url: 'http://localhost:4000/v1',
+    description: '通过 LiteLLM Proxy 接入 Anthropic Claude',
+    request_timeout_seconds: 60,
+    models: ['claude-sonnet-4', 'claude-3-5-sonnet', 'claude-3-5-haiku'],
+  },
+  {
+    id: 'custom',
+    label: '自定义 OpenAI-compatible',
+    provider: '',
+    base_url: '',
+    description: '',
+    request_timeout_seconds: 60,
+    models: [],
+  },
+];
+
+const LLM_PROVIDER_OPTIONS = [
+  { value: 'litellm', label: 'LiteLLM' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'qwen', label: '通义千问' },
+  { value: 'minimax', label: 'MiniMax' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'custom', label: '自定义' },
+];
+
+const emptyModelForm = {
+  id: null,
+  name: '',
+  provider: 'litellm',
+  base_url: '',
+  model: '',
+  preset_id: 'litellm_proxy',
+  model_choice: 'datalogue-intent',
+  custom_provider: '',
+  name_auto: true,
+  api_key: '',
+  status: 'active',
+  description: '',
+  request_timeout_seconds: 60,
+};
+
+function findPreset(presetId) {
+  return LLM_PRESETS.find(preset => preset.id === presetId) || LLM_PRESETS[0];
+}
+
+function autoModelName(preset, model) {
+  const suffix = model || 'custom-model';
+  return `${preset.label} · ${suffix}`;
+}
+
+function getModelChoice(preset, model) {
+  if (!model) return preset.models[0] || 'custom';
+  return preset.models.includes(model) ? model : 'custom';
+}
+
+function inferPreset(model) {
+  const byModel = LLM_PRESETS.find(preset => preset.models.includes(model.model));
+  if (byModel) return byModel;
+  const byBaseUrl = LLM_PRESETS.find(preset => (
+    preset.id !== 'custom'
+    && preset.provider === model.provider
+    && preset.base_url === model.base_url
+  ));
+  if (byBaseUrl) return byBaseUrl;
+  return LLM_PRESETS.find(preset => preset.id === 'custom');
+}
+
+function buildFormFromPreset(presetId, currentForm = emptyModelForm) {
+  const preset = findPreset(presetId);
+  const nextModel = preset.models[0] || '';
+  const provider = preset.provider || currentForm.provider || 'custom';
+  const nextName = currentForm.name_auto === false && currentForm.name
+    ? currentForm.name
+    : autoModelName(preset, nextModel);
+  return {
+    ...currentForm,
+    preset_id: preset.id,
+    model_choice: nextModel || 'custom',
+    provider,
+    custom_provider: provider === 'custom' ? currentForm.custom_provider : '',
+    base_url: preset.base_url || currentForm.base_url,
+    model: nextModel,
+    name: nextName,
+    name_auto: currentForm.name_auto !== false,
+    description: preset.description || currentForm.description,
+    request_timeout_seconds: preset.request_timeout_seconds || currentForm.request_timeout_seconds || 60,
+  };
+}
+
 function ModelsSection() {
+  const [models, setModels] = useState([]);
+  const [bindings, setBindings] = useState({});
+  const [form, setForm] = useState(() => buildFormFromPreset('litellm_proxy'));
+  const [saving, setSaving] = useState(false);
+  const [testingId, setTestingId] = useState(null);
+  const [message, setMessage] = useState('');
+
+  const activeModels = models.filter(m => m.status === 'active');
+  const selectedPreset = findPreset(form.preset_id);
+  const isTestingCurrentModel = form.id != null && testingId === form.id;
+  const providerChoices = LLM_PROVIDER_OPTIONS.some(item => item.value === form.provider)
+    ? LLM_PROVIDER_OPTIONS
+    : [...LLM_PROVIDER_OPTIONS, { value: form.provider, label: form.provider }];
+
+  const loadConfig = async () => {
+    const [modelRows, bindingRows] = await Promise.all([
+      get('/api/llm/models'),
+      get('/api/llm/role-bindings'),
+    ]);
+    setModels(modelRows);
+    setBindings(Object.fromEntries(bindingRows.map(item => [item.role, item.model_config_id || ''])));
+  };
+
+  useEffect(() => {
+    loadConfig().catch(err => setMessage(`加载模型配置失败：${err.message}`));
+  }, []);
+
+  const startEdit = (model) => {
+    const preset = inferPreset(model);
+    const modelChoice = getModelChoice(preset, model.model);
+    const isKnownProvider = LLM_PROVIDER_OPTIONS.some(item => item.value === model.provider);
+    setForm({
+      id: model.id,
+      name: model.name,
+      provider: model.provider,
+      base_url: model.base_url,
+      model: model.model,
+      preset_id: preset.id,
+      model_choice: modelChoice,
+      custom_provider: isKnownProvider ? '' : model.provider,
+      name_auto: false,
+      api_key: '',
+      status: model.status,
+      description: model.description || '',
+      request_timeout_seconds: model.request_timeout_seconds || 60,
+    });
+  };
+
+  const resetForm = () => setForm(buildFormFromPreset('litellm_proxy'));
+
+  const changePreset = (presetId) => {
+    setForm(current => buildFormFromPreset(presetId, {
+      ...current,
+      name: current.name_auto === false ? '' : current.name,
+      name_auto: true,
+    }));
+  };
+
+  const changeProvider = (provider) => {
+    setForm(current => ({
+      ...current,
+      provider,
+      custom_provider: provider === 'custom' ? current.custom_provider : '',
+    }));
+  };
+
+  const changeModelChoice = (modelChoice) => {
+    setForm(current => {
+      const preset = findPreset(current.preset_id);
+      const modelName = modelChoice === 'custom' ? '' : modelChoice;
+      return {
+        ...current,
+        model_choice: modelChoice,
+        model: modelName,
+        name: current.name_auto ? autoModelName(preset, modelName) : current.name,
+      };
+    });
+  };
+
+  const changeModelName = (modelName) => {
+    setForm(current => ({
+      ...current,
+      model: modelName,
+      name: current.name_auto ? autoModelName(findPreset(current.preset_id), modelName) : current.name,
+    }));
+  };
+
+  const saveModel = async () => {
+    setSaving(true);
+    setMessage('');
+    const provider = form.provider === 'custom'
+      ? form.custom_provider.trim()
+      : form.provider.trim();
+    const payload = {
+      name: form.name.trim(),
+      provider: provider || 'litellm',
+      base_url: form.base_url.trim(),
+      model: form.model.trim(),
+      status: form.status,
+      description: form.description.trim() || null,
+      request_timeout_seconds: Number(form.request_timeout_seconds) || 60,
+    };
+    if (form.api_key.trim()) payload.api_key = form.api_key.trim();
+    try {
+      if (!payload.name || !payload.base_url || !payload.model) {
+        throw new Error('请填写名称、Base URL 和模型名');
+      }
+      if (form.id) {
+        await put(`/api/llm/models/${form.id}`, payload);
+      } else {
+        await post('/api/llm/models', payload);
+      }
+      resetForm();
+      await loadConfig();
+      setMessage('模型配置已保存');
+    } catch (err) {
+      setMessage(`保存失败：${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleStatus = async (model) => {
+    await put(`/api/llm/models/${model.id}`, {
+      status: model.status === 'active' ? 'disabled' : 'active',
+    });
+    await loadConfig();
+  };
+
+  const testModel = async (model) => {
+    setTestingId(model.id);
+    setMessage('');
+    try {
+      const result = await post(`/api/llm/models/${model.id}/test`, {});
+      await loadConfig();
+      setMessage(result.message);
+    } catch (err) {
+      setMessage(`测试失败：${err.message}`);
+    } finally {
+      setTestingId(null);
+    }
+  };
+
+  const testCurrentModel = () => {
+    if (!form.id) {
+      setMessage('请先保存模型配置，再测试 LLM 连通性');
+      return;
+    }
+    const model = models.find(item => item.id === form.id) || { id: form.id };
+    testModel(model);
+  };
+
+  const removeModel = async (model) => {
+    await apiDelete(`/api/llm/models/${model.id}`);
+    if (form.id === model.id) resetForm();
+    await loadConfig();
+  };
+
+  const saveBindings = async () => {
+    const payload = {};
+    LLM_ROLES.forEach(role => {
+      const value = bindings[role.id];
+      payload[role.id] = value ? Number(value) : null;
+    });
+    await put('/api/llm/role-bindings', { bindings: payload });
+    await loadConfig();
+    setMessage('角色绑定已保存');
+  };
+
   return (
-    <SetSection title="LLM 模型" desc="不同任务可以使用不同模型。所有调用都会记录到审计日志。">
-      <div className="st-form">
-        <SetRow label="意图理解 & 路由" hint="低延迟，处理用户问题分类" control={
-          <select className="st-input"><option>Claude Haiku 4.5</option><option>GPT-4o-mini</option></select>} />
-        <SetRow label="SQL 生成" hint="精度优先，处理复杂归因" control={
-          <select className="st-input"><option>Claude Sonnet 4.5</option><option>DeepSeek-Coder-V3</option></select>} />
-        <SetRow label="解释 & 洞察" hint="文本输出，可读性优先" control={
-          <select className="st-input"><option>Claude Sonnet 4.5</option><option>Qwen-2.5-72B</option></select>} />
-        <SetRow label="Embedding" hint="用于指标/列匹配" control={
-          <select className="st-input"><option>bge-large-zh-v1.5</option><option>text-embedding-3-large</option></select>} />
-        <SetRow label="脱敏调用" hint="向云端模型发送前掩码业务字段"
-          control={<Toggle value={true} />} />
-        <SetRow label="温度" control={
-          <div className="st-slider-wrap"><input type="range" min="0" max="100" defaultValue="20" /><span className="mono">0.20</span></div>} />
-      </div>
-    </SetSection>
+    <>
+      <SetSection title="LLM 模型" desc="通过 OpenAI-compatible 协议接入 LiteLLM Proxy 或其他模型网关。">
+        {message && <div className="st-inline-alert">{message}</div>}
+
+        <div className="st-llm-layout">
+          <div className="st-form">
+            {LLM_ROLES.map(role => (
+              <SetRow key={role.id} label={role.label} hint={role.hint} control={
+                <select
+                  className="st-input"
+                  value={bindings[role.id] || ''}
+                  onChange={e => setBindings({ ...bindings, [role.id]: e.target.value })}
+                >
+                  <option value="">环境变量兜底</option>
+                  {activeModels.map(model => (
+                    <option key={model.id} value={model.id}>{model.name} · {model.model}</option>
+                  ))}
+                </select>} />
+            ))}
+            <div className="st-row">
+              <div className="st-row-l">
+                <div className="st-row-label">角色绑定</div>
+                <div className="st-row-hint">未绑定的角色会先回退默认模型，再回退 .env</div>
+              </div>
+              <div className="st-row-r">
+                <button className="btn primary" onClick={saveBindings}><Icon name="check" />保存绑定</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="st-form llm-editor">
+            <SetRow label={form.id ? '编辑模型' : '新增模型'} hint={form.id ? `ID ${form.id}` : '每条配置独立保存 Base URL、模型名和 Key'} control={
+              <button className="btn ghost" onClick={resetForm}><Icon name="plus" />新建</button>} />
+            <SetRow label="接入模板" hint="选择后自动填充供应商、Base URL 和默认模型" control={
+              <select className="st-input" aria-label="接入模板" value={form.preset_id} onChange={e => changePreset(e.target.value)}>
+                {LLM_PRESETS.map(preset => (
+                  <option key={preset.id} value={preset.id}>{preset.label}</option>
+                ))}
+              </select>} />
+            <SetRow label="名称" control={
+              <input className="st-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value, name_auto: false })} placeholder="MiniMax via LiteLLM" />} />
+            <SetRow label="供应商" control={
+              <div className="llm-field-stack">
+                <select className="st-input" aria-label="供应商" value={form.provider} onChange={e => changeProvider(e.target.value)}>
+                  {providerChoices.map(provider => (
+                    <option key={provider.value} value={provider.value}>{provider.label}</option>
+                  ))}
+                </select>
+                {form.provider === 'custom' && (
+                  <input
+                    className="st-input"
+                    value={form.custom_provider}
+                    onChange={e => setForm({ ...form, custom_provider: e.target.value })}
+                    placeholder="输入供应商标识，如 volcengine"
+                  />
+                )}
+              </div>} />
+            <SetRow label="Base URL" control={
+              <input className="st-input" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="http://localhost:4000/v1" />} />
+            <SetRow label="模型名" hint="常用模型可直接选择，自定义网关可手动填写" control={
+              <div className="llm-field-stack">
+                <select className="st-input" aria-label="模型名" value={form.model_choice} onChange={e => changeModelChoice(e.target.value)}>
+                  {selectedPreset.models.map(model => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                  <option value="custom">自定义模型</option>
+                </select>
+                {form.model_choice === 'custom' && (
+                  <input
+                    className="st-input"
+                    value={form.model}
+                    onChange={e => changeModelName(e.target.value)}
+                    placeholder="输入模型名，如 datalogue-sql"
+                  />
+                )}
+              </div>} />
+            <SetRow label="API Key" hint={form.id ? '留空则不覆盖已保存密钥' : '保存后不再展示明文'} control={
+              <input className="st-input" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={form.id ? '不覆盖' : 'sk-...'} />} />
+            <SetRow label="状态" control={
+              <select className="st-input" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
+                <option value="active">启用</option>
+                <option value="disabled">停用</option>
+              </select>} />
+            <SetRow label="超时" control={
+              <input className="st-input" type="number" min="1" value={form.request_timeout_seconds} onChange={e => setForm({ ...form, request_timeout_seconds: e.target.value })} />} />
+            <SetRow label="描述" control={
+              <textarea className="st-input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="用途、供应商或路由说明" />} />
+            <div className="st-row">
+              <div className="st-row-l">
+                <div className="st-row-label">保存配置</div>
+                <div className="st-row-hint">密钥会加密写入数据库</div>
+              </div>
+              <div className="st-row-r">
+                <div className="llm-form-actions">
+                  <button
+                    className="btn ghost"
+                    disabled={isTestingCurrentModel}
+                    onClick={testCurrentModel}
+                  >
+                    <Icon name="beaker" />{isTestingCurrentModel ? '测试中' : '测试连接'}
+                  </button>
+                  <button className="btn primary" disabled={saving} onClick={saveModel}><Icon name="check" />{saving ? '保存中' : '保存'}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </SetSection>
+
+      <SetSection title="模型配置列表">
+        <div className="st-table">
+          <div className="st-th llm-models">
+            <span>模型</span><span>Base URL</span><span>状态</span><span>测试</span><span></span>
+          </div>
+          {models.length === 0 && (
+            <div className="st-empty-row">暂无模型配置</div>
+          )}
+          {models.map(model => (
+            <div className="st-tr llm-models" key={model.id}>
+              <span>
+                <div className="st-row-label">{model.name}</div>
+                <div className="st-row-hint mono">{model.provider} · {model.model} · {model.api_key_set ? 'Key 已保存' : '无 Key'}</div>
+              </span>
+              <span className="mono text-3">{model.base_url}</span>
+              <span>
+                <span className={'st-ds-status ' + (model.status === 'active' ? 'connected' : 'error')}>
+                  <span className="dot" />{model.status === 'active' ? '启用' : '停用'}
+                </span>
+              </span>
+              <span className="text-3">
+                {model.last_test_result?.ok ? `通过 · ${model.last_test_result.latency_ms}ms` : model.last_error_message || '未测试'}
+              </span>
+              <span className="st-llm-actions">
+                <button className="icon-btn" title="测试连接" disabled={testingId === model.id} onClick={() => testModel(model)}><Icon name="beaker" /></button>
+                <button className="icon-btn" title="编辑" onClick={() => startEdit(model)}><Icon name="edit" /></button>
+                <button className="icon-btn" title={model.status === 'active' ? '停用' : '启用'} onClick={() => toggleStatus(model)}><Icon name={model.status === 'active' ? 'pause' : 'play'} /></button>
+                <button className="icon-btn danger" title="删除" onClick={() => removeModel(model)}><Icon name="trash" /></button>
+              </span>
+            </div>
+          ))}
+        </div>
+      </SetSection>
+    </>
   );
 }
 

@@ -177,7 +177,7 @@ def _annotate_table_description(
         lines.append(f"字段: {c.column_name} | 类型: {c.data_type} | 注释: {comment}")
 
     try:
-        llm = get_llm(temperature=0.2)
+        llm = get_llm(temperature=0.2, role="annotation", db=db)
         response = llm.invoke(
             [
                 SystemMessage(content=TABLE_ANNOTATION_PROMPT),
@@ -282,7 +282,7 @@ def annotate_table_columns(
         )
 
     try:
-        llm = get_llm(temperature=0.2)
+        llm = get_llm(temperature=0.2, role="annotation", db=db)
         response = llm.invoke(
             [
                 SystemMessage(content=ANNOTATION_SYSTEM_PROMPT),

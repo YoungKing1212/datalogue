@@ -122,3 +122,28 @@ def test_guard_oracle_uses_fetch_first():
 
     assert result.ok is True
     assert result.normalized_sql == "SELECT id FROM users FETCH FIRST 20 ROWS ONLY"
+
+
+def test_guard_blocks_tables_outside_dataset_whitelist():
+    """开启表白名单后，不允许查询当前数据集未选择的表。"""
+    result = guard_readonly_sql(
+        "SELECT id FROM payroll",
+        dialect="mysql",
+        allowed_tables=["orders", "customers"],
+    )
+
+    assert result.ok is False
+    assert result.code == "SQL_GUARD_BLOCKED"
+    assert "payroll" in result.error
+
+
+def test_guard_allows_tables_inside_dataset_whitelist():
+    """SQL 只访问授权表时允许继续规范化。"""
+    result = guard_readonly_sql(
+        "SELECT id FROM orders",
+        dialect="postgres",
+        allowed_tables=["orders"],
+    )
+
+    assert result.ok is True
+    assert result.normalized_sql == "SELECT id FROM orders LIMIT 100"

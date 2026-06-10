@@ -55,6 +55,8 @@ def test_dataset_query_context_trims_large_dataset_and_keeps_matched_metric(
     assert "关键收入" in result["schema_context"]
     assert result["dataset_context_debug"]["dropped_entries"] > 0
     assert result["dataset_context_debug"]["pinned_retained"] >= 1
+    assert result["datasource_context"]["db_type"] == "sqlite"
+    assert result["datasource_context"]["dialect"] == "sqlite"
     assert result["dataset_context_debug"]["asset_counts"]["metrics"] >= 83
     assert result["dataset_context_debug"]["retained_counts"]["metrics"] < result[
         "dataset_context_debug"
@@ -90,6 +92,8 @@ def test_dataset_query_context_empty_assets_returns_minimal_context(
     assert result["schema_structured"]["metrics"] == []
     assert result["schema_structured"]["dimensions"] == []
     assert result["schema_structured"]["fields"] == []
+    assert result["schema_structured"]["datasource_context"]["db_type"] == "sqlite"
+    assert result["datasource_context"]["default_schema"] == "main"
     assert result["dataset_context_debug"]["asset_counts"] == {
         "metrics": 0,
         "dimensions": 0,

@@ -50,19 +50,14 @@ def fetch_sample_rows(
         lines.append("（无关联表，无需样例）")
         return "\n".join(lines)
 
-    # 解析 datasource
     if datasource is None:
-        # 兜底：尝试从 db 拿一个 connected 数据源
-        from app.models.datasource import Datasource
-
-        datasource = db.query(Datasource).filter(Datasource.status == "connected").first()
-    if datasource is None:
-        lines.append("（无已连接的数据源，跳过样例查询）")
+        lines.append("（未绑定数据源，跳过样例查询）")
         return "\n".join(lines)
 
-    from app.services.datasource import create_engine_for_datasource
+    from app.services.datasource import create_engine_for_datasource, quote_identifier, normalize_db_type
 
     engine = create_engine_for_datasource(datasource)
+    db_type = normalize_db_type(getattr(datasource, "db_type", None))
     try:
         with engine.connect() as conn:
             for table_name in table_names:
@@ -70,9 +65,8 @@ def fetch_sample_rows(
                     continue
                 try:
                     # 表名来自数据源白名单，不拼接用户输入；这里仍用 quoting 保证安全
-                    rows = conn.execute(
-                        text(f'SELECT * FROM "{table_name}" LIMIT {int(per_table)}')
-                    )
+                    table_ref = quote_identifier(table_name, db_type)
+                    rows = conn.execute(text(f"SELECT * FROM {table_ref} LIMIT {int(per_table)}"))
                     columns = list(rows.keys())
                     fetched: list[dict] = []
                     for r in rows:

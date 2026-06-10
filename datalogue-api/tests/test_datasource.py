@@ -43,6 +43,8 @@ class TestDatasourceAPI:
         assert data["db_type"] == "mysql"
         assert data["host"] == "192.168.1.10"
         assert data["port"] == 3306
+        assert data["dialect"] == "mysql"
+        assert data["driver"] == "pymysql"
         assert data["id"] is not None
         # 密码不应返回
         assert "password" not in data
@@ -138,3 +140,48 @@ class TestDatasourceAPI:
         assert len(data) == 3
         # 默认按 id desc 排序
         assert data[0]["name"] == "DB 2"
+
+    def test_list_datasource_capabilities(self, client):
+        """能力接口应返回已注册的数据源类型。"""
+        resp = client.get("/api/datasource/capabilities")
+        assert resp.status_code == 200
+        items = resp.json()
+        db_types = {item["db_type"] for item in items}
+        assert {"mysql", "postgres", "sqlite", "oracle", "hive"}.issubset(db_types)
+        sqlite = next(item for item in items if item["db_type"] == "sqlite")
+        assert sqlite["driver_status"] == "builtin"
+        oracle = next(item for item in items if item["db_type"] == "oracle")
+        assert oracle["driver_module"] == "oracledb"
+        assert oracle["driver_status"] in {"installed", "missing"}
+        if oracle["driver_status"] == "missing":
+            assert "wheelhouse" in oracle["install_hint"]
+
+    def test_test_connection_returns_driver_missing_diagnostic(self, client, monkeypatch):
+        """可选驱动缺失时连接测试返回结构化诊断，不抛 500。"""
+        from app.services import datasource as datasource_service
+
+        monkeypatch.setattr(
+            datasource_service.ADAPTERS["oracle"],
+            "driver_available",
+            lambda: False,
+        )
+        created = client.post(
+            "/api/datasource",
+            json={
+                "name": "Oracle",
+                "db_type": "oracle",
+                "host": "127.0.0.1",
+                "port": 1521,
+                "database_name": "ORCLPDB1",
+                "username": "user",
+                "password": "pass",
+                "connection_options": {"service_name": "ORCLPDB1"},
+            },
+        ).json()
+
+        resp = client.post(f"/api/datasource/{created['id']}/test")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["code"] == "DRIVER_MISSING"
+        assert data["diagnostic"]["category"] == "driver"

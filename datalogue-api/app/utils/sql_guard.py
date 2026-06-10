@@ -42,6 +42,9 @@ DIALECT_ALIASES = {
     "postgresql": "postgres",
     "pgsql": "postgres",
     "mariadb": "mysql",
+    "sqlserver": "tsql",
+    "mssql": "tsql",
+    "presto": "trino",
 }
 
 FORBIDDEN_STATEMENT_KEYWORDS = (
@@ -227,6 +230,8 @@ def _parse_with_sqlglot(sql: str, dialect: str) -> list[exp.Expression] | SQLGua
         return sqlglot.parse(sql, read=dialect)
     except (ParseError, SqlglotError) as exc:
         return _fail("PARSE_ERROR", f"SQL 解析失败，无法确认安全性：{exc}")
+    except ValueError as exc:
+        return _fail("DIALECT_UNSUPPORTED", f"当前 SQL 方言暂不支持：{exc}")
 
 
 def _forbidden_expression(expression: exp.Expression) -> str | None:
@@ -245,6 +250,37 @@ def _dangerous_function_from_ast(expression: exp.Expression) -> str | None:
             name = str(node.name or "").lower()
             if name in dangerous:
                 return name
+    return None
+
+
+def _sql_table_names(expression: exp.Expression) -> set[str]:
+    """从 SQLGlot AST 中提取查询涉及的物理表名。"""
+    names: set[str] = set()
+    for table in expression.find_all(exp.Table):
+        name = table.name
+        if name:
+            names.add(str(name).strip("`\"[]").lower())
+    return names
+
+
+def _check_allowed_tables(
+    expression: exp.Expression,
+    allowed_tables: list[str] | None,
+) -> SQLGuardResult | None:
+    """校验 SQL 只能访问当前数据集授权表。"""
+    if not allowed_tables:
+        return None
+    allowed = {str(name).split(".")[-1].strip("`\"[]").lower() for name in allowed_tables if name}
+    if not allowed:
+        return None
+    used_tables = _sql_table_names(expression)
+    blocked = sorted(name for name in used_tables if name not in allowed)
+    if blocked:
+        return _fail(
+            "SQL_GUARD_BLOCKED",
+            f"SQL 引用了当前数据集未授权的表：{', '.join(blocked)}",
+            blocked[0],
+        )
     return None
 
 
@@ -293,6 +329,7 @@ def guard_readonly_sql(
     *,
     dialect: str | None = None,
     query_constraints: dict[str, Any] | None = None,
+    allowed_tables: list[str] | None = None,
 ) -> SQLGuardResult:
     """校验并规范化只读 SQL。
 
@@ -345,6 +382,10 @@ def guard_readonly_sql(
         return _fail("NOT_READONLY", "SQL 只允许 SELECT/WITH 只读查询", first or None)
     if not isinstance(expression, exp.Query):
         return _fail("NOT_READONLY", "SQL 只允许 SELECT/WITH 只读查询", type(expression).__name__)
+
+    allowed_table_error = _check_allowed_tables(expression, allowed_tables)
+    if allowed_table_error:
+        return allowed_table_error
 
     dangerous_function = _contains_dangerous_function(masked)
     if dangerous_function:

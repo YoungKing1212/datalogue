@@ -12,7 +12,7 @@
 # ============================================================
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -25,6 +25,12 @@ class DatasourceCreate(BaseModel):
     database_name: str
     username: str
     password: str
+    dialect: Optional[str] = None
+    driver: Optional[str] = None
+    default_schema: Optional[str] = None
+    connection_options: Optional[dict[str, Any]] = None
+    connect_timeout_seconds: Optional[int] = 10
+    query_timeout_seconds: Optional[int] = 30
 
 
 class DatasourceUpdate(BaseModel):
@@ -35,6 +41,12 @@ class DatasourceUpdate(BaseModel):
     database_name: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    dialect: Optional[str] = None
+    driver: Optional[str] = None
+    default_schema: Optional[str] = None
+    connection_options: Optional[dict[str, Any]] = None
+    connect_timeout_seconds: Optional[int] = None
+    query_timeout_seconds: Optional[int] = None
 
 
 class DatasourceOut(BaseModel):
@@ -46,6 +58,31 @@ class DatasourceOut(BaseModel):
     database_name: str
     username: str
     status: Optional[str] = None
+    dialect: Optional[str] = None
+    driver: Optional[str] = None
+    default_schema: Optional[str] = None
+    connection_options: Optional[dict[str, Any]] = None
+    connect_timeout_seconds: Optional[int] = None
+    query_timeout_seconds: Optional[int] = None
+    last_test_result: Optional[dict[str, Any]] = None
+    last_error_code: Optional[str] = None
+    last_error_message: Optional[str] = None
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DatasourceCapabilityOut(BaseModel):
+    db_type: str
+    label: str
+    dialect: str
+    driver: Optional[str] = None
+    driver_module: Optional[str] = None
+    driver_status: str = "builtin"
+    install_hint: Optional[str] = None
+    default_port: int
+    default_schema: Optional[str] = None
+    stable: bool = False
+    required_options: list[str] = []
+    optional_options: list[str] = []
+    supports_sqlalchemy: bool = True

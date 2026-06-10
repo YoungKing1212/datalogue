@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Icon } from './icons';
-import { listDatasources, createDatasource, updateDatasource, deleteDatasource, testDatasource, getDatasourceSchemas, getDatasourceSchema } from '../api/client';
+import {
+  listDatasources,
+  listDatasourceCapabilities,
+  createDatasource,
+  updateDatasource,
+  deleteDatasource,
+  testDatasource,
+  getDatasourceSchemas,
+  getDatasourceSchema,
+  syncDatasourceTables,
+} from '../api/client';
 
 // DatasourcesScreen — 数据源管理完整功能
 
@@ -14,6 +24,7 @@ function DatasourcesScreen() {
   const [testingId, setTestingId] = useState(null);
   const [testResult, setTestResult] = useState(null);
   const [schemas, setSchemas] = useState([]);
+  const [capabilities, setCapabilities] = useState([]);
   const [selectedSchema, setSelectedSchema] = useState(null);
   const [schema, setSchema] = useState([]);
   const [schemaLoading, setSchemaLoading] = useState(false);
@@ -21,18 +32,37 @@ function DatasourcesScreen() {
   const [expandedTable, setExpandedTable] = useState(null); // 展开的行索引
   const [tableSearch, setTableSearch] = useState('');
   const [tablePage, setTablePage] = useState(1);
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncing, setSyncing] = useState(false);
   const TABLE_PAGE_SIZE = 10;
 
   // 新建/编辑表单
 
   // 新建/编辑表单
-  const [form, setForm] = useState({
-    name: '', db_type: 'postgres', host: '', port: 5432,
-    database_name: '', username: '', password: ''
-  });
+  const defaultForm = useCallback((dbType = 'postgres') => {
+    const cap = capabilities.find(c => c.db_type === dbType);
+    return {
+      name: '',
+      db_type: dbType,
+      host: '',
+      port: cap?.default_port ?? 5432,
+      database_name: '',
+      username: '',
+      password: '',
+      dialect: cap?.dialect || dbType,
+      driver: cap?.driver || '',
+      default_schema: cap?.default_schema || '',
+      connection_options: {},
+      connect_timeout_seconds: 10,
+      query_timeout_seconds: 30,
+    };
+  }, [capabilities]);
+
+  const [form, setForm] = useState(defaultForm());
 
   useEffect(() => {
     loadDatasources();
+    listDatasourceCapabilities().then(setCapabilities).catch(err => console.error('加载数据源能力失败:', err));
   }, []);
 
   const loadDatasources = useCallback(() => {
@@ -55,6 +85,7 @@ function DatasourcesScreen() {
     setSelectedSchema(null);
     setSchema([]);
     setTestResult(null);
+    setSyncResult(null);
     setTableSearch('');
     setTablePage(1);
     setExpandedTable(null);
@@ -100,9 +131,16 @@ function DatasourcesScreen() {
     setTestResult(null);
     try {
       const res = await testDatasource(id);
-      setTestResult({ ok: true, msg: res.message || `连接成功! 版本: ${res.version || '未知'}` });
-      setDatasources(prev => prev.map(ds => ds.id === id ? { ...ds, status: 'connected' } : ds));
-      if (selectedDs?.id === id) setSelectedDs(prev => prev ? { ...prev, status: 'connected' } : prev);
+      const diagnostic = res.diagnostic || res;
+      setTestResult({
+        ok: !!res.ok,
+        msg: res.ok
+          ? (res.message || `连接成功! 版本: ${res.version || '未知'}`)
+          : `${diagnostic.code || 'CONNECTION_FAILED'}：${diagnostic.message || res.message || '连接失败'}${diagnostic.suggested_action ? `。建议：${diagnostic.suggested_action}` : ''}`,
+      });
+      const nextStatus = res.ok ? 'connected' : 'disconnected';
+      setDatasources(prev => prev.map(ds => ds.id === id ? { ...ds, status: nextStatus, last_test_result: res, last_error_code: diagnostic.code, last_error_message: diagnostic.message } : ds));
+      if (selectedDs?.id === id) setSelectedDs(prev => prev ? { ...prev, status: nextStatus, last_test_result: res, last_error_code: diagnostic.code, last_error_message: diagnostic.message } : prev);
     } catch (err) {
       setTestResult({ ok: false, msg: err.message || '连接失败' });
     } finally {
@@ -112,7 +150,7 @@ function DatasourcesScreen() {
 
   const handleOpenCreate = () => {
     setEditingDs(null);
-    setForm({ name: '', db_type: 'postgres', host: '', port: 5432, database_name: '', username: '', password: '' });
+    setForm(defaultForm());
     setShowDrawer(true);
   };
 
@@ -125,9 +163,28 @@ function DatasourcesScreen() {
       port: ds.port,
       database_name: ds.database_name,
       username: ds.username,
-      password: ''
+      password: '',
+      dialect: ds.dialect || ds.db_type,
+      driver: ds.driver || '',
+      default_schema: ds.default_schema || '',
+      connection_options: ds.connection_options || {},
+      connect_timeout_seconds: ds.connect_timeout_seconds || 10,
+      query_timeout_seconds: ds.query_timeout_seconds || 30,
     });
     setShowDrawer(true);
+  };
+
+  const handleDbTypeChange = (dbType) => {
+    const cap = capabilities.find(c => c.db_type === dbType);
+    setForm({
+      ...form,
+      db_type: dbType,
+      port: cap?.default_port ?? form.port,
+      dialect: cap?.dialect || dbType,
+      driver: cap?.driver || '',
+      default_schema: cap?.default_schema || '',
+      connection_options: {},
+    });
   };
 
   const handleSave = async () => {
@@ -169,6 +226,21 @@ function DatasourcesScreen() {
     }
   };
 
+  const handleSyncTables = async () => {
+    if (!selectedDs) return;
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const res = await syncDatasourceTables(selectedDs.id);
+      setSyncResult(res);
+      await handleSelectDs(selectedDs);
+    } catch (err) {
+      setSyncResult({ ok: false, message: err.message || '同步失败' });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const totalTables = schema.length;
   const statusColor = (s) => {
     if (s === 'connected') return 'var(--pos)';
@@ -179,7 +251,30 @@ function DatasourcesScreen() {
   const totalPages = Math.max(1, Math.ceil(filteredTables.length / TABLE_PAGE_SIZE));
   const paginatedTables = filteredTables.slice((tablePage - 1) * TABLE_PAGE_SIZE, tablePage * TABLE_PAGE_SIZE);
 
-  const DB_ICON = { postgres: '🐘', mysql: '🐬', clickhouse: '🪶', bigquery: '☁️', oracle: '🔶', sqlite: '📄' };
+  const DB_ICON = { postgres: '🐘', mysql: '🐬', clickhouse: '🪶', bigquery: '☁️', oracle: '🔶', sqlite: '📄', hive: '⬢', sqlserver: '▣', trino: '△', presto: '◇' };
+  const dbTypeOptions = capabilities.length
+    ? capabilities.map(c => ({ value: c.db_type, label: `${c.label}${c.stable ? '' : '（可选驱动）'}` }))
+    : ['postgres', 'mysql', 'sqlite'].map(v => ({ value: v, label: v }));
+  const activeCapability = capabilities.find(c => c.db_type === form.db_type);
+  const selectedCapability = capabilities.find(c => c.db_type === selectedDs?.db_type);
+  const optionValue = (key) => form.connection_options?.[key] || '';
+  const setOptionValue = (key, value) => {
+    setForm({
+      ...form,
+      connection_options: { ...(form.connection_options || {}), [key]: value },
+    });
+  };
+  const driverStatusLabel = (status) => {
+    if (status === 'installed') return '驱动已安装';
+    if (status === 'builtin') return '内置驱动';
+    if (status === 'missing') return '驱动未安装';
+    return '驱动未知';
+  };
+  const driverStatusColor = (status) => {
+    if (status === 'installed' || status === 'builtin') return 'var(--pos)';
+    if (status === 'missing') return 'var(--warn)';
+    return 'var(--text-3)';
+  };
 
   return (
     <div className="ds-wrap" style={{padding: 24}}>
@@ -299,7 +394,7 @@ function DatasourcesScreen() {
                   {[
                     { label: '数据库类型', val: selectedDs.db_type?.toUpperCase() || '—' },
                     { label: '表数量', val: schema.length + ' 张' },
-                    { label: '状态', val: selectedDs.status === 'connected' ? '已连接' : selectedDs.status === 'syncing' ? '同步中' : '未连接' },
+                    { label: '驱动状态', val: driverStatusLabel(selectedCapability?.driver_status) },
                   ].map(s => (
                     <div key={s.label} style={{padding: 12, background: 'var(--surface)', border: '1px solid var(--hairline)', borderRadius: 6}}>
                       <div style={{fontSize: 11, color: 'var(--text-3)', marginBottom: 4}}>{s.label}</div>
@@ -313,8 +408,15 @@ function DatasourcesScreen() {
                     <span style={{color: 'var(--text-3)'}}>主机地址</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--accent)'}}>{selectedDs.host}:{selectedDs.port}</code>
                     <span style={{color: 'var(--text-3)'}}>数据库名</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--accent)'}}>{selectedDs.database_name}</code>
                     <span style={{color: 'var(--text-3)'}}>用户名</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--text)'}}>{selectedDs.username}</code>
+                    <span style={{color: 'var(--text-3)'}}>方言</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--text)'}}>{selectedDs.dialect || selectedCapability?.dialect || selectedDs.db_type}</code>
+                    <span style={{color: 'var(--text-3)'}}>驱动</span><span style={{color: driverStatusColor(selectedCapability?.driver_status)}}>{selectedCapability?.driver || selectedDs.driver || '内置'} · {driverStatusLabel(selectedCapability?.driver_status)}</span>
                     <span style={{color: 'var(--text-3)'}}>创建时间</span><span style={{fontFamily: 'var(--font-mono)', color: 'var(--text-3)'}}>{selectedDs.created_at ? new Date(selectedDs.created_at).toLocaleString('zh-CN') : '—'}</span>
                   </div>
+                  {selectedCapability?.driver_status === 'missing' && (
+                    <div style={{marginTop: 12, padding: 10, borderRadius: 6, background: 'var(--warn-soft)', color: 'var(--warn)', fontSize: 12, lineHeight: 1.6}}>
+                      {selectedCapability.install_hint || '当前环境未安装该数据源驱动，请先安装企业驱动离线包。'}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -415,6 +517,18 @@ function DatasourcesScreen() {
             {/* DDL 同步 Tab */}
             {dsTab === 'ddl' && (
               <div>
+                <div style={{display: 'flex', justifyContent: 'flex-end', marginBottom: 12}}>
+                  <button className="btn primary" onClick={handleSyncTables} disabled={syncing}>
+                    <Icon name="refresh" /> {syncing ? '同步中…' : '同步表结构'}
+                  </button>
+                </div>
+                {syncResult && (
+                  <div style={{padding: 10, borderRadius: 6, marginBottom: 12, background: syncResult.ok === false ? 'var(--neg-soft)' : 'var(--pos-soft)', color: syncResult.ok === false ? 'var(--neg)' : 'var(--pos)', fontSize: 13}}>
+                    {syncResult.ok === false
+                      ? (syncResult.message || '同步失败')
+                      : `同步完成：新增 ${syncResult.created || 0}，更新 ${syncResult.updated || 0}，总表 ${syncResult.total_tables || 0}，跳过 ${(syncResult.skipped || []).length}，错误 ${(syncResult.errors || []).length}`}
+                  </div>
+                )}
                 {schema.length > 0 ? (
                   <div>
                     <div style={{display: 'flex', alignItems: 'center', gap: 12, padding: 16, background: 'var(--surface)', border: '1px solid var(--hairline)', borderRadius: 8, marginBottom: 16}}>
@@ -435,7 +549,7 @@ function DatasourcesScreen() {
                       <div style={{fontSize: 11, color: 'var(--text-3)', marginTop: 4}}>全部 {schema.length} 张表已同步</div>
                     </div>
                     <div style={{fontSize: 12, color: 'var(--text-3)', lineHeight: 1.6}}>
-                      DDL 同步会自动将数据源的表结构同步到语义层，供指标和维度定义使用。如需重新扫描，请点击「测试连接」后自动触发。
+                      DDL 同步会将数据源的表结构写入语义层，供指标、维度、字段召回和 SQL Guard 使用；字段样例采集失败会计入跳过项，不阻断表字段同步。
                     </div>
                   </div>
                 ) : (
@@ -454,7 +568,7 @@ function DatasourcesScreen() {
                 <div style={{fontSize: 13, fontWeight: 500, marginBottom: 14}}>连接配置</div>
                 <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12}}>
                   <FormField label="名称" value={form.name} onChange={v => setForm({...form, name: v})} placeholder="如: electric_dwh" />
-                  <FormField label="类型" type="select" value={form.db_type} options={['postgres', 'mysql', 'clickhouse', 'bigquery', 'oracle', 'sqlite']} onChange={v => setForm({...form, db_type: v})} />
+                  <FormField label="类型" type="select" value={form.db_type} options={dbTypeOptions} onChange={handleDbTypeChange} />
                   <FormField label="主机地址" value={form.host} onChange={v => setForm({...form, host: v})} placeholder="如: localhost" />
                   <FormField label="端口" type="number" value={form.port} onChange={v => setForm({...form, port: parseInt(v) || 0})} />
                   <FormField label="数据库名" value={form.database_name} onChange={v => setForm({...form, database_name: v})} />
@@ -463,7 +577,7 @@ function DatasourcesScreen() {
                 <FormField label="密码" type="password" value={form.password} onChange={v => setForm({...form, password: v})} placeholder={editingDs ? '留空则不修改' : '输入密码'} />
                 <div style={{display: 'flex', gap: 8, marginTop: 16}}>
                   <button className="btn primary" onClick={handleSave}>保存配置</button>
-                  <button className="btn ghost" onClick={() => { setForm({ name: selectedDs.name, db_type: selectedDs.db_type, host: selectedDs.host, port: selectedDs.port, database_name: selectedDs.database_name, username: selectedDs.username, password: '' }); }}>重置</button>
+                  <button className="btn ghost" onClick={() => handleOpenEdit(selectedDs)}>重置</button>
                 </div>
               </div>
             )}
@@ -487,12 +601,61 @@ function DatasourcesScreen() {
             </div>
             <div style={{flex: 1}}>
               <FormField label="名称 *" value={form.name} onChange={v => setForm({...form, name: v})} placeholder="如: electric_dwh" />
-              <FormField label="数据库类型" type="select" value={form.db_type} options={['postgres', 'mysql', 'clickhouse', 'bigquery', 'oracle', 'sqlite']} onChange={v => setForm({...form, db_type: v})} />
+              <FormField label="数据库类型" type="select" value={form.db_type} options={dbTypeOptions} onChange={handleDbTypeChange} />
+              {activeCapability && (
+                <div style={{margin: '-6px 0 14px', padding: 10, borderRadius: 6, background: activeCapability.driver_status === 'missing' ? 'var(--warn-soft)' : 'var(--surface)', border: '1px solid var(--hairline)', fontSize: 12, lineHeight: 1.6}}>
+                  <span style={{color: driverStatusColor(activeCapability.driver_status), fontWeight: 600}}>
+                    {driverStatusLabel(activeCapability.driver_status)}
+                  </span>
+                  <span style={{color: 'var(--text-3)'}}> · {activeCapability.driver || 'Python 内置'} · 方言 {activeCapability.dialect}</span>
+                  {activeCapability.driver_status === 'missing' && (
+                    <div style={{color: 'var(--warn)', marginTop: 4}}>
+                      {activeCapability.install_hint}
+                    </div>
+                  )}
+                </div>
+              )}
               <FormField label="主机地址 *" value={form.host} onChange={v => setForm({...form, host: v})} placeholder="如: localhost 或 192.168.1.100" />
               <FormField label="端口" type="number" value={form.port} onChange={v => setForm({...form, port: parseInt(v) || 0})} />
               <FormField label="数据库名 *" value={form.database_name} onChange={v => setForm({...form, database_name: v})} placeholder="如: electric_dwh" />
+              <FormField label="默认 Schema" value={form.default_schema} onChange={v => setForm({...form, default_schema: v})} placeholder={activeCapability?.default_schema || '可选'} />
               <FormField label="用户名" value={form.username} onChange={v => setForm({...form, username: v})} />
               <FormField label={editingDs ? '密码（留空不修改）' : '密码 *'} type="password" value={form.password} onChange={v => setForm({...form, password: v})} />
+              {form.db_type === 'oracle' && (
+                <>
+                  <FormField label="Service Name" value={optionValue('service_name')} onChange={v => setOptionValue('service_name', v)} placeholder="如: ORCLPDB1" />
+                  <FormField label="SID" value={optionValue('sid')} onChange={v => setOptionValue('sid', v)} placeholder="使用 SID 时填写" />
+                </>
+              )}
+              {form.db_type === 'hive' && (
+                <>
+                  <FormField label="认证方式" type="select" value={optionValue('auth')} options={[{ value: '', label: '默认' }, { value: 'NONE', label: 'NONE' }, { value: 'LDAP', label: 'LDAP' }, { value: 'KERBEROS', label: 'KERBEROS' }]} onChange={v => setOptionValue('auth', v)} />
+                  <FormField label="Kerberos Service" value={optionValue('kerberos_service_name')} onChange={v => setOptionValue('kerberos_service_name', v)} placeholder="如: hive" />
+                </>
+              )}
+              {['trino', 'presto'].includes(form.db_type) && (
+                <>
+                  <FormField label="Catalog" value={optionValue('catalog')} onChange={v => setOptionValue('catalog', v)} placeholder="如: hive" />
+                  <FormField label="Schema" value={optionValue('schema')} onChange={v => setOptionValue('schema', v)} placeholder="如: default" />
+                </>
+              )}
+              {form.db_type === 'sqlserver' && (
+                <>
+                  <FormField label="ODBC Driver" value={optionValue('driver_name')} onChange={v => setOptionValue('driver_name', v)} placeholder="如: ODBC Driver 18 for SQL Server" />
+                  <FormField label="Instance" value={optionValue('instance')} onChange={v => setOptionValue('instance', v)} placeholder="可选实例名" />
+                </>
+              )}
+              {form.db_type === 'bigquery' && (
+                <>
+                  <FormField label="Project" value={optionValue('project')} onChange={v => setOptionValue('project', v)} />
+                  <FormField label="Dataset" value={optionValue('dataset')} onChange={v => setOptionValue('dataset', v)} />
+                  <FormField label="Credentials Path" value={optionValue('credentials_path')} onChange={v => setOptionValue('credentials_path', v)} />
+                </>
+              )}
+              <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12}}>
+                <FormField label="连接超时（秒）" type="number" value={form.connect_timeout_seconds} onChange={v => setForm({...form, connect_timeout_seconds: parseInt(v) || 10})} />
+                <FormField label="查询超时（秒）" type="number" value={form.query_timeout_seconds} onChange={v => setForm({...form, query_timeout_seconds: parseInt(v) || 30})} />
+              </div>
             </div>
             <div style={{display: 'flex', gap: 10, marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--hairline)'}}>
               <button className="btn ghost" style={{flex: 1}} onClick={() => setShowDrawer(false)}>取消</button>
@@ -513,7 +676,11 @@ function FormField({ label, type = 'text', value, onChange, options = [], placeh
       <label style={{display: 'block', fontSize: 12, color: 'var(--text-2)', marginBottom: 4}}>{label}</label>
       {type === 'select' ? (
         <select value={value} onChange={e => onChange(e.target.value)} style={{width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13}}>
-          {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          {options.map(opt => {
+            const optionValueText = typeof opt === 'string' ? opt : opt.value;
+            const label = typeof opt === 'string' ? opt : opt.label;
+            return <option key={optionValueText} value={optionValueText}>{label}</option>;
+          })}
         </select>
       ) : (
         <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13}} />

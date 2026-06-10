@@ -34,6 +34,16 @@ dev = [
     "ruff==0.4.8",
     "mypy==1.10.0",
 ]
+enterprise = [
+    "oracledb==2.5.1",
+    "PyHive[hive_pure_sasl,presto]==0.7.0",
+    "trino==0.333.0",
+    "pyodbc==5.2.0",
+    "clickhouse-sqlalchemy==0.3.2",
+    "clickhouse-driver==0.2.9",
+    "sqlalchemy-bigquery==1.12.1",
+    "google-cloud-bigquery-storage==2.26.0",
+]
 
 [build-system]
 requires = ["hatchling"]

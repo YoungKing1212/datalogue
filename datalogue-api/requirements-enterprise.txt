@@ -1,0 +1,28 @@
+# 企业数据源可选驱动依赖
+#
+# 用途：
+# - 纯内网部署前，在有网构建机下载这些 wheel 包，随制品进入内网。
+# - 运行环境按实际启用的数据源选择安装，不要求基础开发环境全部安装。
+#
+# 离线安装示例：
+#   pip install --no-index --find-links ./wheelhouse -r requirements-enterprise.txt
+
+# Oracle
+oracledb==2.5.1
+
+# Hive / Presto
+PyHive[hive_pure_sasl,presto]==0.7.0
+
+# Trino
+trino==0.333.0
+
+# SQL Server
+pyodbc==5.2.0
+
+# ClickHouse
+clickhouse-sqlalchemy==0.3.2
+clickhouse-driver==0.2.9
+
+# BigQuery
+sqlalchemy-bigquery==1.12.1
+google-cloud-bigquery-storage==2.26.0

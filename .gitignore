@@ -25,6 +25,8 @@ env/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+wheelhouse/
+datalogue-api/wheelhouse/
 
 # IDE
 .idea/

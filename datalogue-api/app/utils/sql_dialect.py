@@ -21,13 +21,14 @@ from sqlalchemy.orm import Session
 
 from app.models.dataset import SemanticDataset
 from app.models.datasource import Datasource
+from app.services.datasource import build_datasource_context, normalize_db_type
 
 logger = logging.getLogger(__name__)
 
 
 def resolve_dialect(db: Optional[Session], dataset_id: Optional[int]) -> str:
     """根据 dataset_id 查 Datasource.db_type 推断目标方言。
-    返回小写：postgres / mysql / oracle / sqlite；找不到时回退 postgres。"""
+    返回小写方言；找不到时回退 postgres。"""
     if not db or not dataset_id:
         return "postgres"
     try:
@@ -37,7 +38,10 @@ def resolve_dialect(db: Optional[Session], dataset_id: Optional[int]) -> str:
         datasource = db.get(Datasource, ds.datasource_id)
         if not datasource:
             return "postgres"
-        return (datasource.db_type or "postgres").lower()
+        context = build_datasource_context(datasource)
+        if context and context.get("dialect"):
+            return str(context["dialect"]).lower()
+        return normalize_db_type(datasource.db_type)
     except Exception as e:
         logger.warning(f"推断方言失败，回退 postgres: {e}")
         return "postgres"
@@ -50,8 +54,10 @@ def quote_ident(name: Optional[str], dialect: str) -> str:
     - name 为空 / None 时返回空串（调用方自行决定是否输出 AS）。"""
     if not name:
         return ""
-    if dialect in ("mysql", "sqlite"):
+    if dialect in ("mysql", "sqlite", "hive", "trino", "presto", "bigquery", "clickhouse"):
         return f"`{name}`"
+    if dialect in ("tsql", "sqlserver", "mssql"):
+        return f"[{name}]"
     return f'"{name}"'
 
 

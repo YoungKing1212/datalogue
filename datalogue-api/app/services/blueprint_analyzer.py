@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from sqlalchemy.orm import Session
 
 from app.graph.llm import get_llm
 from app.utils import safe_json_parse
@@ -947,7 +948,7 @@ def _manual_reference(payload: dict[str, Any], dataset_context: dict[str, Any] |
     }
 
 
-def analyze_sql_for_blueprint(sql: str) -> dict[str, Any]:
+def analyze_sql_for_blueprint(sql: str, db: Session | None = None) -> dict[str, Any]:
     """调用 AI 把 SQL 草稿转换为分析蓝图草案。"""
     total_started_at = time.perf_counter()
     preprocess_started_at = time.perf_counter()
@@ -961,7 +962,7 @@ def analyze_sql_for_blueprint(sql: str) -> dict[str, Any]:
     prompt_ms = int((time.perf_counter() - prompt_started_at) * 1000)
 
     llm_client_started_at = time.perf_counter()
-    llm = get_llm(temperature=0.1)
+    llm = get_llm(temperature=0.1, role="blueprint", db=db)
     llm_client_ms = int((time.perf_counter() - llm_client_started_at) * 1000)
 
     llm_invoke_started_at = time.perf_counter()
@@ -1011,6 +1012,7 @@ def analyze_sql_for_blueprint(sql: str) -> dict[str, Any]:
 def analyze_description_for_blueprint(
     payload: dict[str, Any],
     dataset_context: dict[str, Any] | None = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """调用 AI 把业务场景描述转换为分析蓝图草案。"""
     total_started_at = time.perf_counter()
@@ -1018,7 +1020,7 @@ def analyze_description_for_blueprint(
     messages = _description_analysis_prompt(payload, dataset_context)
 
     llm_client_started_at = time.perf_counter()
-    llm = get_llm(temperature=0.1)
+    llm = get_llm(temperature=0.1, role="blueprint", db=db)
     llm_client_ms = int((time.perf_counter() - llm_client_started_at) * 1000)
 
     llm_invoke_started_at = time.perf_counter()

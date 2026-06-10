@@ -181,7 +181,7 @@ def _patch_blueprint_ai(monkeypatch, payload: dict | None = None):
     mock_llm = MagicMock()
     mock_llm.invoke.return_value = _mock_llm_response(payload or _ai_blueprint_payload())
 
-    def _fake_get_llm(temperature=0.0):
+    def _fake_get_llm(temperature=0.0, **kwargs):
         return mock_llm
 
     monkeypatch.setattr("app.services.blueprint_analyzer.get_llm", _fake_get_llm)

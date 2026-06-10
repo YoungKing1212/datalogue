@@ -29,6 +29,7 @@ from .dataset import (
     BlueprintUsageLog,
 )
 from .conversation import Conversation, Message, SQLDiagnosisLog, PendingClarification
+from .llm import LLMModelConfig, LLMRoleBinding
 
 __all__ = [
     "Datasource",
@@ -50,4 +51,6 @@ __all__ = [
     "Message",
     "SQLDiagnosisLog",
     "PendingClarification",
+    "LLMModelConfig",
+    "LLMRoleBinding",
 ]

@@ -11,7 +11,7 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-from sqlalchemy import Column, Integer, String, Text
+from sqlalchemy import Column, Integer, String, Text, JSON
 
 from app.core.database import Base
 from app.models.base import TimestampMixin
@@ -29,3 +29,12 @@ class Datasource(Base, TimestampMixin):
     username = Column(String(100), nullable=False)
     password_enc = Column(Text, nullable=False)
     status = Column(String(20), default="disconnected", server_default="disconnected")
+    dialect = Column(String(50), nullable=True)
+    driver = Column(String(100), nullable=True)
+    default_schema = Column(String(100), nullable=True)
+    connection_options = Column(JSON, nullable=True)
+    connect_timeout_seconds = Column(Integer, nullable=True, default=10)
+    query_timeout_seconds = Column(Integer, nullable=True, default=30)
+    last_test_result = Column(JSON, nullable=True)
+    last_error_code = Column(String(50), nullable=True)
+    last_error_message = Column(Text, nullable=True)

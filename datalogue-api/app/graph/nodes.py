@@ -584,12 +584,12 @@ def _match_business_term(db: Session, dataset_id: int | None, question: str) -> 
     return None
 
 
-def intent_recognition_node(state: AgentState) -> Dict[str, Any]:
+def intent_recognition_node(state: AgentState, db: Session | None = None) -> Dict[str, Any]:
     """识别用户意图，判断是数据查询、闲聊还是功能操作。"""
     question = state["question"]
     logger.info(f"意图识别节点开始: question={question[:50]}...")
     history = state.get("history", [])
-    llm = get_llm(temperature=0.0)
+    llm = get_llm(temperature=0.0, role="intent", db=db)
 
     system = SystemMessage(content=INTENT_RECOGNITION_SYSTEM)
 
@@ -1832,7 +1832,7 @@ def metric_resolution_node(state: AgentState) -> Dict[str, Any]:
 # ── 节点 3: DSL / SQL 生成 ──────────────────────────────────
 
 
-def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
+def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str, Any]:
     """三条路径：
     1. 【语义层】→ LLM 生成结构化 DSL JSON
     2. 【数据源真实表结构】→ LLM 直接生成 SQL
@@ -1860,7 +1860,7 @@ def dsl_generate_node(state: AgentState) -> Dict[str, Any]:
         semantic_time_rule = "3. 时间范围只在用户明确提出时设置，不要自行添加默认时间范围\n"
         semantic_limit_rule = "5. 用户明确要求返回条数时再设置 limit；否则可以省略或设为 null\n"
 
-    llm = get_llm(temperature=0.1)
+    llm = get_llm(temperature=0.1, role="dsl", db=db)
 
     has_semantic = bool(schema and "【语义层】" in schema)
     has_real_schema = bool(schema and "【数据源真实表结构】" in schema)
@@ -2297,9 +2297,11 @@ def dsl_compiler_node(db: Session):
         structured = state.get("schema_structured")
         query_constraints = normalize_query_constraints(state.get("query_constraints"))
 
-        # 推断方言（从 dataset_id 查 Datasource.db_type）
+        datasource_context = state.get("datasource_context") or {}
+        allowed_tables = datasource_context.get("allowed_tables") or []
+        # 推断方言（优先使用 schema_recall 生成的数据源上下文）
         dataset_id = state.get("dataset_id")
-        dialect = _resolve_dialect(db, dataset_id)
+        dialect = datasource_context.get("dialect") or _resolve_dialect(db, dataset_id)
         logger.info(f"DSL编译方言: {dialect} (dataset_id={dataset_id})")
 
         # direct_sql 模式
@@ -2316,6 +2318,7 @@ def dsl_compiler_node(db: Session):
                 sql,
                 dialect=dialect,
                 query_constraints=query_constraints,
+                allowed_tables=allowed_tables,
             )
             if not guard_result.ok:
                 logger.error("direct_sql模式: SQL Guard 拦截: %s", guard_result.error)
@@ -2352,6 +2355,7 @@ def dsl_compiler_node(db: Session):
                 sql,
                 dialect=dialect,
                 query_constraints=query_constraints,
+                allowed_tables=allowed_tables,
             )
             if not guard_result.ok:
                 logger.error("真实Schema模式: SQL Guard 拦截: %s", guard_result.error)
@@ -2663,13 +2667,20 @@ def dsl_compiler_node(db: Session):
                 limit = min(int(limit), query_constraints["max_limit"])
             except (TypeError, ValueError):
                 limit = query_constraints["default_limit"]
-            sql_parts.append(f"LIMIT {limit}")
+            if str(dialect).lower() == "oracle":
+                sql_parts.append(f"FETCH FIRST {limit} ROWS ONLY")
+            elif str(dialect).lower() in {"tsql", "sqlserver", "mssql"}:
+                # SQL Server TOP 由 SQL Guard/SQLGlot 统一补齐，避免手写破坏 SELECT 列表。
+                pass
+            else:
+                sql_parts.append(f"LIMIT {limit}")
         sql = "\n".join(sql_parts)
 
         guard_result = _guard_readonly_sql(
             sql,
             dialect=dialect,
             query_constraints=query_constraints,
+            allowed_tables=allowed_tables,
         )
         if not guard_result.ok:
             logger.error("DSL编译: SQL Guard 拦截: %s", guard_result.error)
@@ -2710,6 +2721,7 @@ def sql_execute_node(db: Session):
             return {"sql_result": None, "error": "SQL 为空", "should_retry": True}
 
         dataset_id = state.get("dataset_id")
+        datasource_context = state.get("datasource_context") or {}
         datasource = None
         if dataset_id:
             dataset = db.get(SemanticDataset, dataset_id)
@@ -2717,21 +2729,19 @@ def sql_execute_node(db: Session):
                 datasource = db.get(Datasource, dataset.datasource_id)
 
         if not datasource:
-            datasource = db.query(Datasource).filter(Datasource.status == "connected").first()
-
-        if not datasource:
             logger.error("无可用数据源")
             return {
                 "sql_result": None,
-                "error": "无可用数据源，请先在数据源管理中测试连接",
+                "error": "当前问数未绑定可执行数据集或数据源，请先选择数据集并测试连接",
                 "should_retry": False,
             }
 
-        dialect = (getattr(datasource, "db_type", None) or "postgres").lower()
+        dialect = datasource_context.get("dialect") or (getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "postgres").lower()
         guard_result = _guard_readonly_sql(
             sql,
             dialect=dialect,
             query_constraints=state.get("query_constraints"),
+            allowed_tables=datasource_context.get("allowed_tables") or [],
         )
         if not guard_result.ok:
             logger.error("SQL执行: SQL Guard 拦截: %s", guard_result.error)
@@ -2769,7 +2779,12 @@ def sql_execute_node(db: Session):
                     "column_labels": _build_column_labels(db, dataset_id),
                 }
                 logger.info(f"SQL执行成功: 返回 {len(rows)} 行")
-                output = {"sql_result": result, "error": None, "should_retry": False}
+                output = {
+                    "sql_result": result,
+                    "error": None,
+                    "should_retry": False,
+                    "datasource_dialect": dialect,
+                }
                 retry_trace = _finish_latest_sql_retry_trace(
                     state,
                     status="success",
@@ -2900,7 +2915,8 @@ def sql_audit_node(db: Session):
         dataset_id = state.get("dataset_id")
         retry_count = state.get("retry_count", 0)
         max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
-        datasource_dialect = state.get("datasource_dialect")
+        datasource_context = state.get("datasource_context") or {}
+        datasource_dialect = state.get("datasource_dialect") or datasource_context.get("dialect")
 
         # 解析 datasource（sample data 查询需要）
         datasource = None
@@ -2908,10 +2924,12 @@ def sql_audit_node(db: Session):
             ds = db.get(SemanticDataset, dataset_id)
             if ds:
                 datasource = db.get(Datasource, ds.datasource_id)
-        if datasource is None:
-            datasource = db.query(Datasource).filter(Datasource.status == "connected").first()
         if datasource_dialect is None and datasource is not None:
-            datasource_dialect = (getattr(datasource, "db_type", None) or "").lower() or None
+            datasource_dialect = (
+                getattr(datasource, "dialect", None)
+                or getattr(datasource, "db_type", None)
+                or ""
+            ).lower() or None
 
         # 收集审计相关的表名
         table_names = _collect_audit_table_names(dsl, structured, sql)
@@ -2942,7 +2960,7 @@ def sql_audit_node(db: Session):
         )
 
         # 调 LLM（审计是确定性判断，temperature=0）
-        llm = get_llm(temperature=0.0)
+        llm = get_llm(temperature=0.0, role="sql_audit", db=db)
         system = SystemMessage(content=SQL_AUDIT_SYSTEM)
 
         human_lines = [
@@ -3051,7 +3069,10 @@ def sql_audit_node(db: Session):
 # ── 节点 7: 报告生成 ──────────────────────────────────
 
 
-async def report_generator_node(state: AgentState) -> Dict[str, Any]:
+async def report_generator_node(
+    state: AgentState,
+    db: Session | None = None,
+) -> Dict[str, Any]:
     """根据 SQL 结果生成自然语言回答和图表推荐。
     使用 astream() 实现真正的 token 级流式，供 astream_events 捕获。"""
     logger.info("报告生成节点开始")
@@ -3071,7 +3092,7 @@ async def report_generator_node(state: AgentState) -> Dict[str, Any]:
 
     result_text = "\n".join(summary_lines)
 
-    llm = get_llm(temperature=0.3)
+    llm = get_llm(temperature=0.3, role="report", db=db)
     dataset_prompt = state.get("dataset_prompt_instructions") or ""
     system = SystemMessage(content=build_report_system(dataset_prompt))
     human = HumanMessage(content=f"用户问题: {question}\n\n查询结果:\n{result_text}")

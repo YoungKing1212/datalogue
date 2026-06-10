@@ -150,19 +150,22 @@ def build_workflow(db: Session) -> Any:
 
     # 注册节点
     workflow.add_node("clarification_resolution", clarification_resolution_node(db))
-    workflow.add_node("intent_recognition", intent_recognition_node)
+    workflow.add_node("intent_recognition", lambda state: intent_recognition_node(state, db=db))
     workflow.add_node("entry_intent_classification", entry_intent_classification_node(db))
     workflow.add_node("analysis_blueprint_execute", analysis_blueprint_execute_node(db))
     workflow.add_node("schema_recall", schema_recall_node(db))
     workflow.add_node("term_normalize_node", term_normalize_node)
     workflow.add_node("semantic_asset_resolution_node", semantic_asset_resolution_node)
-    workflow.add_node("dsl_generate", dsl_generate_node)
+    workflow.add_node("dsl_generate", lambda state: dsl_generate_node(state, db=db))
     workflow.add_node("dsl_validate", dsl_validate_node)
     # dsl_compiler 现在是工厂函数（接 db 以查 Datasource.db_type 推断方言）
     workflow.add_node("dsl_compiler", dsl_compiler_node(db))
     workflow.add_node("sql_execute", sql_execute_node(db))
     workflow.add_node("sql_audit", sql_audit_node(db))
-    workflow.add_node("report_generator", report_generator_node)
+    async def _report_generator_with_db(state: AgentState) -> dict:
+        return await report_generator_node(state, db=db)
+
+    workflow.add_node("report_generator", _report_generator_with_db)
     workflow.add_node("increment_retry", _increment_retry)
     logger.info("工作流节点注册完成")
 

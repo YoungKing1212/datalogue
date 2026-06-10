@@ -16,7 +16,7 @@
 ```bash
 # 复制环境变量
 cp .env.example .env
-# 编辑 .env 填入你的数据库地址和 LLM API Key
+# 编辑 .env 填入你的数据库地址和 LLM API Key 兜底配置
 ```
 
 ### 2. 安装依赖
@@ -24,6 +24,20 @@ cp .env.example .env
 ```bash
 pip install -r requirements.txt
 ```
+
+企业数据源驱动（Oracle、Hive、SQL Server、Trino、Presto、ClickHouse、BigQuery）不默认装入基础依赖。纯内网部署前，先在有网构建机准备离线 wheel 包：
+
+```bash
+scripts/download_enterprise_wheels.sh ./wheelhouse
+```
+
+内网安装：
+
+```bash
+python3 -m pip install --no-index --find-links ./wheelhouse -r requirements-enterprise.txt
+```
+
+详细说明见 [企业数据源驱动离线部署](docs/企业数据源驱动离线部署.md)。
 
 ### 3. 数据库迁移
 
@@ -42,6 +56,12 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 访问 http://localhost:8000/docs 查看自动生成的 API 文档。
+
+### LLM 多模型配置
+
+系统支持在前端“系统设置 / LLM 模型”中维护 OpenAI-compatible / LiteLLM Proxy 模型配置，并按任务角色绑定模型。数据库配置优先；未配置时回退 `.env` 中的 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`LLM_MODEL`。
+
+详细说明见 [LiteLLM 多模型接入说明](docs/LiteLLM多模型接入说明.md)。
 
 ## 项目结构
 

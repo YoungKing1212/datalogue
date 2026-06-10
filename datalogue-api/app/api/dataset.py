@@ -1022,6 +1022,7 @@ def _apply_blueprint_snapshot(bp: models.AnalysisBlueprint, snapshot: dict[str, 
 def _run_blueprint_analysis_task(
     task_id: str,
     sql: str,
+    db: Session,
     diff_base: dict[str, Any] | None = None,
 ) -> None:
     """执行分析蓝图 AI 分析，并写入任务状态便于日志和兼容查询。"""
@@ -1036,7 +1037,7 @@ def _run_blueprint_analysis_task(
         len(sql or ""),
     )
     try:
-        result = analyze_sql_for_blueprint(sql)
+        result = analyze_sql_for_blueprint(sql, db=db)
         result["creation_source"] = "sql_ai_analysis"
         result["ai_generated"] = True
         result["ai_generation_type"] = "sql_analysis"
@@ -1097,6 +1098,7 @@ def _run_blueprint_analysis_task(
 
 def _execute_blueprint_analysis_request(
     sql: str,
+    db: Session,
     diff_base: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """同步执行分析任务，避免前端轮询造成高频请求。"""
@@ -1117,7 +1119,7 @@ def _execute_blueprint_analysis_request(
         len(sql or ""),
         bool(diff_base),
     )
-    _run_blueprint_analysis_task(task_id, sql, diff_base)
+    _run_blueprint_analysis_task(task_id, sql, db, diff_base)
     BLUEPRINT_ANALYZE_TASKS[task_id].pop("_queued_perf", None)
     return BLUEPRINT_ANALYZE_TASKS[task_id]
 
@@ -1180,6 +1182,7 @@ def _dataset_blueprint_context(ds_id: int, db: Session) -> dict[str, Any]:
 def _execute_blueprint_description_request(
     payload: schemas.BlueprintAnalyzeDescriptionPayload,
     dataset_context: dict[str, Any],
+    db: Session,
 ) -> dict[str, Any]:
     """同步执行业务场景蓝图分析，返回兼容任务结构。"""
     task_id = str(uuid.uuid4())
@@ -1197,7 +1200,7 @@ def _execute_blueprint_description_request(
         len(payload.business_scenario or ""),
     )
     try:
-        result = analyze_description_for_blueprint(payload.model_dump(), dataset_context)
+        result = analyze_description_for_blueprint(payload.model_dump(), dataset_context, db=db)
         result["creation_source"] = "manual_ai_draft"
         result["ai_generated"] = True
         result["ai_generation_type"] = "description_analysis"
@@ -1274,7 +1277,7 @@ def analyze_blueprint_sql(
     _ensure_dataset(ds_id, db)
     if not payload.sql.strip():
         raise HTTPException(status_code=400, detail="sql 不能为空")
-    return _execute_blueprint_analysis_request(payload.sql)
+    return _execute_blueprint_analysis_request(payload.sql, db)
 
 
 @router.post(
@@ -1290,7 +1293,7 @@ def analyze_blueprint_description(
     if not payload.business_scenario.strip():
         raise HTTPException(status_code=400, detail="业务场景不能为空")
     dataset_context = _dataset_blueprint_context(ds_id, db)
-    return _execute_blueprint_description_request(payload, dataset_context)
+    return _execute_blueprint_description_request(payload, dataset_context, db)
 
 
 @router.get(
@@ -1515,6 +1518,7 @@ def re_analyze_blueprint_sql(
         raise HTTPException(status_code=400, detail="sql 不能为空")
     return _execute_blueprint_analysis_request(
         payload.sql,
+        db,
         {
             "name": bp.name,
             "parameter_count": len(bp.parameters or []),
