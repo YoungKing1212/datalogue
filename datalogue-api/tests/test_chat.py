@@ -63,10 +63,26 @@ class TestChatAPI:
             # SSE 流式在同步 TestClient 中可能有问题，跳过
             pytest.skip("SSE stream not fully supported in sync TestClient")
 
-    def test_chat_feedback(self, client):
+    def test_chat_feedback(self, client, db_session):
         """人工反馈接口"""
+        from app import models
+
+        conv = models.Conversation(title="反馈测试", thread_id="feedback-test", user_id=1)
+        db_session.add(conv)
+        db_session.commit()
+        db_session.refresh(conv)
+        msg = models.Message(
+            conversation_id=conv.id,
+            role="assistant",
+            content="回答内容",
+            response_metadata={"langfuse": {"trace_id": "trace-test", "session_id": "session-test"}},
+        )
+        db_session.add(msg)
+        db_session.commit()
+        db_session.refresh(msg)
+
         payload = {
-            "message_id": 1,
+            "message_id": msg.id,
             "action": "approve",
             "comment": "回答正确",
         }
@@ -75,6 +91,7 @@ class TestChatAPI:
         data = resp.json()
         assert data["ok"] is True
         assert data["status"] == "approve"
+        assert data["message_id"] == msg.id
 
 
 class TestLangGraphNodes:
@@ -423,7 +440,7 @@ class TestLangGraphNodes:
 
         assert result["question"] == "销售额是多少"
         assert result["selected_term_id"] == 1
-        assert result["clarification_resolution"]["status"] == "resolved"
+        assert result["clarification_resolution_result"]["status"] == "resolved"
         db_session.refresh(pending)
         assert pending.status == "resolved"
         assert pending.selected_payload["term_id"] == 1
@@ -460,7 +477,7 @@ class TestLangGraphNodes:
         )
 
         assert result["selected_term_id"] == 2
-        assert result["clarification_resolution"]["selected_term"]["display_name"] == "实付金额"
+        assert result["clarification_resolution_result"]["selected_term"]["display_name"] == "实付金额"
 
     def test_clarification_resolution_invalid_reply(self, db_session, sample_dataset):
         """澄清解析：无效回复继续提示候选并保持 pending。"""
@@ -478,7 +495,7 @@ class TestLangGraphNodes:
 
         assert result["entry_route"] == "clarify"
         assert result["route_payload"]["kind"] == "term_conflict_clarification"
-        assert result["clarification_resolution"]["status"] == "unresolved"
+        assert result["clarification_resolution_result"]["status"] == "unresolved"
         db_session.refresh(pending)
         assert pending.status == "pending"
 
@@ -496,7 +513,7 @@ class TestLangGraphNodes:
         )
 
         assert result["route_payload"]["kind"] == "term_conflict_missing"
-        assert result["clarification_resolution"]["status"] == "missing"
+        assert result["clarification_resolution_result"]["status"] == "missing"
 
     def test_clarification_resolution_expired_state(self, db_session, sample_dataset):
         """澄清解析：过期 pending 惰性标记 expired。"""
@@ -517,7 +534,7 @@ class TestLangGraphNodes:
         )
 
         assert result["route_payload"]["kind"] == "term_conflict_expired"
-        assert result["clarification_resolution"]["status"] == "expired"
+        assert result["clarification_resolution_result"]["status"] == "expired"
         db_session.refresh(pending)
         assert pending.status == "expired"
 

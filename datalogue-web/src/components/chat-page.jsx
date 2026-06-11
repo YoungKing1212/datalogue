@@ -182,6 +182,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
   const [generationMode, setGenerationMode] = useState(null);
   const [sqlText, setSqlText] = useState('');
   const [sqlResult, setSqlResult] = useState(null);
+  const [traceMeta, setTraceMeta] = useState(null);
 
   // composer 文本设置回调（供 WelcomeHero 快捷词条调用）
   const setComposerTextRef = useRef(() => {});
@@ -275,6 +276,12 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
           });
         }
       } else if (ev.type === 'final') {
+        setTraceMeta({
+          traceId: ev.langfuse_trace_id || null,
+          sessionId: ev.langfuse_session_id || null,
+          messageId: ev.message_id || null,
+          observability: ev.observability || null,
+        });
         if (ev.sql) setSqlText(ev.sql);
         if (ev.sql_result) {
           setSqlResult({
@@ -299,6 +306,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
     setGenerationMode(null);
     setSqlText('');
     setSqlResult(null);
+    setTraceMeta(null);
   }, [mainThreadId]);
 
   // 开始新 run 时清空 trace
@@ -310,10 +318,18 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
       setGenerationMode(null);
       setSqlText('');
       setSqlResult(null);
+      setTraceMeta(null);
     };
     window.addEventListener('datalogue:run-start', onRunStart);
     return () => window.removeEventListener('datalogue:run-start', onRunStart);
   }, []);
+
+  // 历史消息里的“查看链路”按钮会主动打开右侧 Trace 面板。
+  useEffect(() => {
+    const onOpenTracePanel = () => setTraceOpen(true);
+    window.addEventListener('datalogue:trace-panel-open', onOpenTracePanel);
+    return () => window.removeEventListener('datalogue:trace-panel-open', onOpenTracePanel);
+  }, [setTraceOpen]);
 
   // 监听标题自动更新事件（首条消息后端写入 title 后）— 触发 thread list 重新拉取
   const aui = useAui();
@@ -371,6 +387,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
           generationMode={generationMode}
           sql={sqlText}
           sqlResult={sqlResult}
+          traceMeta={traceMeta}
         />
       </div>
     </>

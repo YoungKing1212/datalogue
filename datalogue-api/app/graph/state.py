@@ -25,7 +25,7 @@ class AgentState(TypedDict):
     conversation_id: Optional[int]  # 当前会话 ID，用于诊断日志关联
     history: Optional[List[dict]]  # 历史对话消息（最近 N 轮）
     clarification_response: Optional[dict]  # 用户对上一轮澄清的结构化回复
-    clarification_resolution: Optional[dict]  # 澄清解析结果和 pending 状态
+    clarification_resolution_result: Optional[dict]  # 澄清解析结果和 pending 状态（节点名 clarification_resolution 与此字段不同名，符合 LangGraph 要求）
 
     # 意图识别层
     intent: Optional[str]  # query | chitchat | function

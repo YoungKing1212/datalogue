@@ -836,6 +836,79 @@ input:focus, textarea:focus, button:focus { outline: none; }
 .msg-actions .save-card:hover { color: var(--text); background: var(--surface); }
 .msg-actions .save-card .icon { width: 13px; height: 13px; }
 
+.message-trace-link {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 26px 26px;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 2px;
+  padding: 7px;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+.message-trace-main {
+  min-width: 0;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.message-trace-main:hover {
+  color: var(--text);
+  border-color: var(--hairline);
+}
+.message-trace-main .icon {
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.message-trace-main em {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-style: normal;
+}
+.message-trace-link code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.message-trace-btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.message-trace-btn:hover {
+  color: var(--text);
+  background: var(--bg-1);
+}
+.message-trace-btn .icon {
+  width: 12px;
+  height: 12px;
+}
+
 /* chat composer (fixed at bottom) */
 .composer-wrap {
   padding: 14px 0 22px;
@@ -1056,6 +1129,105 @@ input:focus, textarea:focus, button:focus { outline: none; }
   color: var(--text-3);
   text-transform: uppercase;
   margin-bottom: 8px;
+}
+
+/* Langfuse Trace 概览 */
+.trace-summary {
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+.trace-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+.trace-status {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--hairline);
+  color: var(--text-2);
+  background: var(--surface-2);
+}
+.trace-status.active {
+  color: var(--pos);
+  border-color: color-mix(in srgb, var(--pos) 38%, transparent);
+  background: color-mix(in srgb, var(--pos) 12%, transparent);
+}
+.trace-status.local {
+  color: oklch(0.58 0.16 65);
+  border-color: oklch(0.58 0.16 65 / 0.35);
+  background: oklch(0.58 0.16 65 / 0.1);
+}
+.trace-status.disabled {
+  color: var(--text-3);
+}
+.trace-action {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.trace-action:hover {
+  color: var(--text);
+  background: var(--bg-1);
+}
+.trace-action .icon {
+  width: 12px;
+  height: 12px;
+}
+.trace-kv {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.trace-kv span,
+.trace-id-row span {
+  color: var(--text-3);
+}
+.trace-kv strong {
+  min-width: 0;
+  color: var(--text-2);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-id-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.trace-id-row code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  background: var(--bg-1);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 2px 5px;
 }
 
 /* 步骤列表 */

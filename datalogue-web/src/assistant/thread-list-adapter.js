@@ -119,7 +119,13 @@ function messagesFromBackend(detail) {
       status: m.role === 'assistant' ? { type: 'complete', reason: 'stop' } : undefined,
       metadata: {
         custom: {
+          routePayload: m.response_metadata?.route_payload || null,
           answerExplanation: m.response_metadata?.answer_explanation || null,
+          messageId: m.id || null,
+          langfuseTraceId: m.response_metadata?.langfuse?.trace_id || null,
+          langfuseSessionId: m.response_metadata?.langfuse?.session_id || null,
+          observability: m.response_metadata?.observability || m.response_metadata?.langfuse || null,
+          feedback: m.response_metadata?.feedback || null,
         },
       },
     });

@@ -13,7 +13,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, Integer, String, Text, JSON, ForeignKey, DateTime, func
+from sqlalchemy import Boolean, Column, Float, Integer, String, Text, JSON, ForeignKey, DateTime, func
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -84,3 +84,34 @@ class PendingClarification(Base):
     resolved_at = Column(DateTime)
     selected_payload = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ObservabilityTraceIndex(Base):
+    __tablename__ = "observability_trace_index"
+
+    id = Column(Integer, primary_key=True, index=True)
+    langfuse_trace_id = Column(String(120), nullable=False, index=True)
+    langfuse_session_id = Column(String(120), nullable=False, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversation.id"), nullable=True, index=True)
+    message_id = Column(Integer, ForeignKey("message.id"), nullable=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
+    entry_route = Column(String(60), index=True)
+    status = Column(String(30), nullable=False, default="success", server_default="success", index=True)
+    total_tokens = Column(Integer, nullable=False, default=0, server_default="0")
+    total_cost = Column(Float, nullable=False, default=0, server_default="0")
+    metadata_json = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class TraceAnnotationCandidate(Base):
+    __tablename__ = "trace_annotation_candidate"
+
+    id = Column(Integer, primary_key=True, index=True)
+    langfuse_trace_id = Column(String(120), nullable=False, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversation.id"), nullable=True, index=True)
+    message_id = Column(Integer, ForeignKey("message.id"), nullable=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
+    reason = Column(String(100), nullable=False, index=True)
+    status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
+    payload = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

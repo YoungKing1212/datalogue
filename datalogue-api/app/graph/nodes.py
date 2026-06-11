@@ -36,6 +36,8 @@ from app.prompts.dsl_generate import (
 )
 from app.prompts.sql_audit import SQL_AUDIT_SYSTEM
 from app.prompts.report_generate import build_report_system
+from app.services.observability.prompts import get_prompt_manager
+from app.services.observability.tracer import get_observability_tracer
 from app.models.dataset import (
     AnalysisBlueprint,
     BusinessTerm,
@@ -75,7 +77,17 @@ def _safe_llm_invoke(llm, messages: list, path: str = ""):
     返回 (response, error_str)，正常时 error_str 为 None。
     """
     try:
-        return llm.invoke(messages), None
+        response = llm.invoke(messages)
+        usage = _extract_token_usage(response)
+        get_observability_tracer().record_generation(
+            name=f"llm.{path or 'invoke'}",
+            model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
+            messages=messages,
+            output=getattr(response, "content", response),
+            usage=usage,
+            metadata={"path": path},
+        )
+        return response, None
     except Exception as e:
         err_str = str(e)
         logger.error(f"LLM 调用失败 path={path}: {err_str[:300]}")
@@ -1254,10 +1266,10 @@ def clarification_resolution_node(db: Session):
                     "entry_reason": "没有找到待处理的术语澄清态。",
                     "answer": "没有找到待处理的术语澄清，请重新提出完整问题。",
                     "route_payload": {"kind": "term_conflict_missing"},
-                    "clarification_resolution": {"status": "missing"},
+                    "clarification_resolution_result": {"status": "missing"},
                     "should_retry": False,
                 }
-            return {"clarification_resolution": {"status": "none"}}
+            return {"clarification_resolution_result": {"status": "none"}}
 
         now = datetime.utcnow()
         if pending.expires_at and pending.expires_at <= now:
@@ -1272,7 +1284,7 @@ def clarification_resolution_node(db: Session):
                     "kind": "term_conflict_expired",
                     "clarification_id": pending.id,
                 },
-                "clarification_resolution": {
+                "clarification_resolution_result": {
                     "status": "expired",
                     "clarification_id": pending.id,
                 },
@@ -1297,7 +1309,7 @@ def clarification_resolution_node(db: Session):
                     "candidates": candidates,
                     "expires_at": pending.expires_at.isoformat() if pending.expires_at else None,
                 },
-                "clarification_resolution": {
+                "clarification_resolution_result": {
                     "status": "unresolved",
                     "clarification_id": pending.id,
                 },
@@ -1334,7 +1346,7 @@ def clarification_resolution_node(db: Session):
                 "selected_term_id": int(selected["term_id"]),
                 "selected_term": selected_payload,
             },
-            "clarification_resolution": {
+            "clarification_resolution_result": {
                 "status": "resolved",
                 "clarification_id": pending.id,
                 "selected_term": selected_payload,
@@ -2961,7 +2973,11 @@ def sql_audit_node(db: Session):
 
         # 调 LLM（审计是确定性判断，temperature=0）
         llm = get_llm(temperature=0.0, role="sql_audit", db=db)
-        system = SystemMessage(content=SQL_AUDIT_SYSTEM)
+        sql_audit_prompt = get_prompt_manager().get_text_prompt(
+            "sql_audit",
+            fallback=SQL_AUDIT_SYSTEM,
+        )
+        system = SystemMessage(content=sql_audit_prompt.content)
 
         human_lines = [
             "【当前任务】",
@@ -3000,7 +3016,9 @@ def sql_audit_node(db: Session):
         response = None
         result: dict[str, Any] = {}
         try:
-            response = llm.invoke([system, human])
+            response, llm_err = _safe_llm_invoke(llm, [system, human], path="sql_audit")
+            if llm_err:
+                raise RuntimeError(llm_err)
             result = _safe_json_parse(str(response.content))
         except Exception as e:
             logger.error("SQL审计: LLM 调用失败，使用确定性诊断兜底: %s", e)
@@ -3094,7 +3112,11 @@ async def report_generator_node(
 
     llm = get_llm(temperature=0.3, role="report", db=db)
     dataset_prompt = state.get("dataset_prompt_instructions") or ""
-    system = SystemMessage(content=build_report_system(dataset_prompt))
+    report_prompt = get_prompt_manager().get_text_prompt(
+        "report_generate",
+        fallback=build_report_system(dataset_prompt),
+    )
+    system = SystemMessage(content=report_prompt.content)
     human = HumanMessage(content=f"用户问题: {question}\n\n查询结果:\n{result_text}")
 
     full_content = ""
@@ -3121,6 +3143,14 @@ async def report_generator_node(
 
     current_usage = state.get("token_usage") or {}
     merged = _merge_token_usage(current_usage, token_usage or {})
+    get_observability_tracer().record_generation(
+        name="llm.report_generator",
+        model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
+        messages=[system, human],
+        output=answer,
+        usage=token_usage or {},
+        metadata={"path": "report_generator"},
+    )
 
     logger.info("报告生成完成")
     return {"answer": answer, "token_usage": merged}

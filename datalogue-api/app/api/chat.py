@@ -29,6 +29,12 @@ from app.graph.workflow import build_workflow
 from app.services.answer_explanation import (
     build_answer_explanation,
 )
+from app.services.observability.context import (
+    current_observability_context,
+    set_observability_context,
+)
+from app.services.observability.feedback import submit_message_feedback
+from app.services.observability.tracer import get_observability_tracer
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -65,7 +71,7 @@ _STATE_OUTPUT_KEYS = {
     "knowledge_term_id",
     "route_payload",
     "clarification_response",
-    "clarification_resolution",
+    "clarification_resolution_result",
     "selected_term_id",
     "schema_context",
     "query_constraints",
@@ -272,7 +278,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "conversation_id": conv_id,
         "history": history,
         "clarification_response": jsonable_encoder(payload.clarification_response),
-        "clarification_resolution": None,
+        "clarification_resolution_result": None,
         "intent": None,
         "entities": None,
         "entry_intent": None,
@@ -315,6 +321,20 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     app_graph = build_workflow(db)
     final_state: dict = dict(initial_state)
     node_start_times: dict[str, float] = {}
+    tracer = get_observability_tracer()
+    trace_context = tracer.create_trace_context(
+        conversation_id=conv_id,
+        dataset_id=effective_dataset_id,
+        user_id=str(conv.user_id or 1),
+        tenant_id="default",
+        question=payload.question,
+        metadata={
+            "thread_id": conv.thread_id,
+            "title": conv.title,
+        },
+    )
+    obs_context_manager = set_observability_context(trace_context.request_context())
+    obs_context_manager.__enter__()
 
     try:
         logger.info("[_stream_chat] 开始 astream_events 工作流...")
@@ -345,6 +365,16 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     "status": "running",
                 }
                 logger.info(f"[_stream_chat] step running: {lg_node}")
+                tracer.start_span(
+                    trace_context,
+                    node=lg_node,
+                    display_name=_NODE_DISPLAY_NAMES[lg_node],
+                    input_payload={
+                        "question": payload.question,
+                        "dataset_id": effective_dataset_id,
+                        "conversation_id": conv_id,
+                    },
+                )
                 yield _sse_data(sse_payload)
 
             # ── 节点完成（每节点只报一次）────────────────────
@@ -370,7 +400,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     sse_payload["entities"] = final_state.get("entities") or {}
                 elif lg_node == "clarification_resolution":
                     sse_payload["clarification_resolution"] = (
-                        final_state.get("clarification_resolution") or {}
+                        final_state.get("clarification_resolution_result") or {}
                     )
                     sse_payload["route_payload"] = final_state.get("route_payload") or {}
                 elif lg_node == "entry_intent_classification":
@@ -426,6 +456,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     sse_payload["sql_retry_trace"] = final_state.get("sql_retry_trace") or []
                 step_traces.append(sse_payload)
                 logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
+                tracer.end_span(
+                    trace_context,
+                    node=lg_node,
+                    output_payload=sse_payload,
+                    elapsed_ms=elapsed_ms,
+                    error=final_state.get("error") if lg_node == "sql_audit" else None,
+                )
                 yield _sse_data(sse_payload)
 
             # ── 图级结束事件：兜底合并完整最终状态 ───────────────
@@ -451,6 +488,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
 
     except Exception as e:
         logger.exception(f"[_stream_chat] 工作流异常: {e}")
+        tracer.update_trace_output(trace_context, output=f"处理出错：{e}", metadata={"status": "failed"})
+        tracer.close_trace(trace_context)
+        obs_context_manager.__exit__(None, None, None)
         yield _sse_data({"type": "step", "node": "error", "display_name": "错误", "status": "done"})
         yield _sse_data({"type": "final", "sql": None, "sql_list": [], "answer": f"处理出错：{e}"})
         return
@@ -508,6 +548,95 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
 
     sql = final_state.get("sql")
     sql_list = final_state.get("sql_list") or []
+    token_usage = final_state.get("token_usage")
+    execution_path = (
+        final_state.get("entry_route")
+        or final_state.get("entry_intent")
+        or trace_context.execution_path
+        or "unknown"
+    )
+    trace_context.execution_path = execution_path
+    active_obs_context = current_observability_context.get()
+    if active_obs_context:
+        trace_context.prompt_versions.update(active_obs_context.prompt_versions)
+    trace_metadata = {
+        "status": "failed" if error else "success",
+        "execution_path": execution_path,
+        "entry_intent": final_state.get("entry_intent"),
+        "entry_route": final_state.get("entry_route"),
+        "blueprint_id": final_state.get("blueprint_id"),
+        "knowledge_term_id": final_state.get("knowledge_term_id"),
+        "selected_term_id": final_state.get("selected_term_id"),
+        "prompt_versions": trace_context.prompt_versions,
+    }
+    tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
+
+    # jsonable_encoder 把 datetime / Decimal 等转为 JSON 安全类型，再存 JSON 列
+    assistant_message = models.Message(
+        conversation_id=conv_id,
+        role="assistant",
+        content=answer,
+        sql_list=sql_list,
+        token_usage=jsonable_encoder(token_usage),
+        step_trace=jsonable_encoder(step_traces),
+        response_metadata=jsonable_encoder({
+            "answer_explanation": answer_explanation,
+            "route_payload": final_state.get("route_payload"),
+            "clarification_resolution": final_state.get("clarification_resolution_result"),
+            "langfuse": {
+                "trace_id": trace_context.trace_id,
+                "session_id": trace_context.session_id,
+                "release": trace_context.release,
+                "environment": trace_context.environment,
+                "prompt_label": trace_context.prompt_label,
+                "base_url": trace_context.base_url,
+                "project_id": trace_context.project_id,
+                "trace_url": trace_context.trace_url,
+                "enabled": trace_context.enabled,
+                "active": trace_context.active,
+                "prompt_versions": trace_context.prompt_versions,
+            },
+            "observability": trace_context.observability_payload(),
+        }),
+    )
+    db.add(assistant_message)
+    db.commit()
+    db.refresh(assistant_message)
+
+    total_tokens = 0
+    if isinstance(token_usage, dict):
+        total_tokens = int(token_usage.get("total_tokens") or 0)
+    if trace_context.trace_id:
+        db.add(
+            models.ObservabilityTraceIndex(
+                langfuse_trace_id=trace_context.trace_id,
+                langfuse_session_id=trace_context.session_id,
+                conversation_id=conv_id,
+                message_id=assistant_message.id,
+                dataset_id=effective_dataset_id,
+                entry_route=execution_path,
+                status="failed" if error else "success",
+                total_tokens=total_tokens,
+                total_cost=0,
+                metadata_json=jsonable_encoder(trace_metadata),
+            )
+        )
+        if error or sql_retry_trace:
+            db.add(
+                models.TraceAnnotationCandidate(
+                    langfuse_trace_id=trace_context.trace_id,
+                    conversation_id=conv_id,
+                    message_id=assistant_message.id,
+                    dataset_id=effective_dataset_id,
+                    reason="sql_failure" if error else "sql_retry",
+                    payload=jsonable_encoder({
+                        "error": error,
+                        "sql_retry_trace": sql_retry_trace,
+                        "sql_diagnosis": sql_diagnosis,
+                    }),
+                )
+            )
+        db.commit()
 
     final_payload = {
         "type": "final",
@@ -522,7 +651,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "knowledge_term_id": final_state.get("knowledge_term_id"),
         "selected_term_id": final_state.get("selected_term_id"),
         "route_payload": final_state.get("route_payload"),
-        "clarification_resolution": final_state.get("clarification_resolution"),
+        "clarification_resolution": final_state.get("clarification_resolution_result"),
         "term_normalization": final_state.get("term_normalization"),
         "semantic_asset_resolution": final_state.get("semantic_asset_resolution"),
         "metric_resolution": final_state.get("metric_resolution"),
@@ -537,31 +666,18 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "answer_explanation": answer_explanation,
         "schema_tokens": final_state.get("schema_tokens"),
         "conversation_id": conv_id,
+        "message_id": assistant_message.id,
         "title": conv.title,
+        "langfuse_trace_id": trace_context.trace_id,
+        "langfuse_session_id": trace_context.session_id,
+        "observability": trace_context.observability_payload(),
     }
     logger.info(
         f"[_stream_chat] final: answer_len={len(answer)}, sql={sql}, error={error}, mode={generation_mode}"
     )
     yield _sse_data(final_payload)
-
-    token_usage = final_state.get("token_usage")
-    # jsonable_encoder 把 datetime / Decimal 等转为 JSON 安全类型，再存 JSON 列
-    db.add(
-        models.Message(
-            conversation_id=conv_id,
-            role="assistant",
-            content=answer,
-            sql_list=sql_list,
-            token_usage=jsonable_encoder(token_usage),
-            step_trace=jsonable_encoder(step_traces),
-            response_metadata=jsonable_encoder({
-                "answer_explanation": answer_explanation,
-                "route_payload": final_state.get("route_payload"),
-                "clarification_resolution": final_state.get("clarification_resolution"),
-            }),
-        )
-    )
-    db.commit()
+    tracer.close_trace(trace_context)
+    obs_context_manager.__exit__(None, None, None)
 
 
 @router.post("/stream")
@@ -576,5 +692,11 @@ def chat_stream(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
 @router.post("/feedback")
 def chat_feedback(payload: schemas.ChatFeedback, db: Session = Depends(get_db)):
     """人工反馈接口，对接 LangGraph HumanFeedback 节点（Phase 3 完善）。"""
-    # TODO: Phase 3 接入 HumanFeedback 节点的 approve/reject 逻辑
-    return {"ok": True, "status": payload.action}
+    return submit_message_feedback(
+        db,
+        message_id=payload.message_id,
+        action=payload.action,
+        comment=payload.comment,
+        trace_id=payload.trace_id,
+        reason=payload.reason,
+    )

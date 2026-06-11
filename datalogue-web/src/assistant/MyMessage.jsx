@@ -13,6 +13,7 @@ import {
 import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
 import MessageContent from '../components/message-content';
+import { submitMessageFeedback } from '../api/client';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
@@ -288,6 +289,66 @@ function TermClarificationCard({ clarification, routePayload, onSelect }) {
   );
 }
 
+function TraceLinkCard({ traceId, sessionId, observability }) {
+  if (!traceId && !sessionId) return null;
+
+  const baseUrl = observability?.base_url || observability?.baseUrl || null;
+  const projectId = observability?.project_id || observability?.projectId || null;
+  const traceUrl = observability?.trace_url || observability?.traceUrl || (
+    baseUrl && projectId && traceId
+      ? `${baseUrl.replace(/\/$/, '')}/project/${encodeURIComponent(projectId)}/traces/${encodeURIComponent(traceId)}`
+      : null
+  );
+  const enabled = observability?.enabled;
+  const active = observability?.active;
+  const statusText = enabled === false ? '未启用' : active === false ? '本地记录' : '可追踪';
+  const environment = observability?.environment || '—';
+  const release = observability?.release || '—';
+
+  const copyTrace = (event) => {
+    event.stopPropagation();
+    if (!traceId) return;
+    navigator.clipboard.writeText(traceId).catch(console.error);
+  };
+  const openAuditPage = (event) => {
+    event.stopPropagation();
+    if (!traceId) return;
+    window.location.href = `/audit-query?trace_id=${encodeURIComponent(traceId)}`;
+  };
+  const showInPanel = () => {
+    const panelObservability = observability
+      ? { ...observability, trace_url: traceUrl || observability.trace_url || observability.traceUrl || null }
+      : { trace_url: traceUrl, base_url: baseUrl, project_id: projectId };
+    const detail = {
+      type: 'final',
+      langfuse_trace_id: traceId || null,
+      langfuse_session_id: sessionId || null,
+      observability: panelObservability,
+    };
+    window.dispatchEvent(new CustomEvent('datalogue:trace', { detail }));
+    window.dispatchEvent(new CustomEvent('datalogue:trace-panel-open', { detail }));
+  };
+
+  return (
+    <div className="message-trace-link">
+      <button type="button" className="message-trace-main" onClick={openAuditPage}>
+        <Icon name="trace" />
+        <span>查看链路</span>
+        <em>{statusText} · {environment} · {release}</em>
+      </button>
+      <code title={traceId || sessionId}>{traceId || sessionId}</code>
+      {traceId && (
+        <button type="button" className="message-trace-btn" onClick={copyTrace} title="复制 Trace ID">
+          <Icon name="copy" />
+        </button>
+      )}
+      <button type="button" className="message-trace-btn" onClick={showInPanel} title="在右侧面板查看">
+        <Icon name="branch" />
+      </button>
+    </div>
+  );
+}
+
 /**
  * AIMessage — 助理消息气泡
  * - 用 MessagePrimitive.Parts 把 reasoning / text 分开渲染
@@ -302,6 +363,7 @@ export function AIMessage({ showSql = true }) {
   const [resultOpen, setResultOpen] = useState(false);
   const [sqlCopied, setSqlCopied] = useState(false);
   const [showActions, setShowActions] = useState(false);
+  const [feedbackState, setFeedbackState] = useState(null);
 
   const isStreaming = message?.status?.type === 'running';
   const custom = message?.metadata?.custom || {};
@@ -315,6 +377,11 @@ export function AIMessage({ showSql = true }) {
   const answerExplanation = custom.answerExplanation || null;
   const routePayload = custom.routePayload || null;
   const clarification = custom.clarification || null;
+  const messageId = custom.messageId || null;
+  const langfuseTraceId = custom.langfuseTraceId || null;
+  const langfuseSessionId = custom.langfuseSessionId || null;
+  const observability = custom.observability || null;
+  const savedFeedback = custom.feedback || null;
 
   const handleSelectClarification = (candidate, optionIndex, label) => {
     const clarificationId =
@@ -334,6 +401,23 @@ export function AIMessage({ showSql = true }) {
       .map((p) => p.text)
       .join('');
     navigator.clipboard.writeText(text).catch(console.error);
+  };
+
+  const handleFeedback = async (action) => {
+    if (!messageId) {
+      setFeedbackState('当前消息暂不支持反馈');
+      return;
+    }
+    setFeedbackState('提交中...');
+    try {
+      await submitMessageFeedback(messageId, {
+        action,
+        trace_id: langfuseTraceId,
+      });
+      setFeedbackState(action === 'approve' ? '已点赞' : '已点踩');
+    } catch (_e) {
+      setFeedbackState('反馈失败');
+    }
   };
 
   const handleRegenerate = () => {
@@ -387,6 +471,12 @@ export function AIMessage({ showSql = true }) {
         clarification={clarification}
         routePayload={routePayload}
         onSelect={handleSelectClarification}
+      />
+
+      <TraceLinkCard
+        traceId={langfuseTraceId}
+        sessionId={langfuseSessionId}
+        observability={observability}
       />
 
       {/* SQL 执行结果表格 */}
@@ -532,10 +622,10 @@ export function AIMessage({ showSql = true }) {
           <button className="action-btn" title="复制回答" onClick={handleCopy}>
             <Icon name="copy" />
           </button>
-          <button className="action-btn" title="点赞">
+          <button className="action-btn" title={feedbackState || savedFeedback?.action || '点赞'} onClick={() => handleFeedback('approve')}>
             <Icon name="thumbs_up" />
           </button>
-          <button className="action-btn" title="点踩">
+          <button className="action-btn" title={feedbackState || savedFeedback?.action || '点踩'} onClick={() => handleFeedback('reject')}>
             <Icon name="thumbs_down" />
           </button>
           <button className="action-btn" title="重新生成" onClick={handleRegenerate}>

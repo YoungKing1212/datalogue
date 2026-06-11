@@ -13,6 +13,7 @@ import { Icon } from './icons';
 //   generationMode   'semantic'|'inferred'|null  DSL 生成模式
 //   sql              string              生成的 SQL（null = 未就绪）
 //   sqlResult        {rows, columns, elapsed_ms}  执行摘要（null = 未就绪）
+//   traceMeta        {traceId, sessionId, messageId, observability} Langfuse 观测元数据
 
 // ── 步骤列表 ──────────────────────────────────────────────
 function StepList({ steps }) {
@@ -33,6 +34,75 @@ function StepList({ steps }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Langfuse Trace 概览 ───────────────────────────────────
+function TraceSummary({ traceMeta }) {
+  if (!traceMeta) return null;
+
+  const observability = traceMeta.observability || {};
+  const hasTrace = Boolean(traceMeta.traceId || traceMeta.sessionId);
+  const disabled = observability.enabled === false;
+  const active = observability.active === true;
+  const statusText = disabled ? '未启用' : active ? '已上报' : hasTrace ? '可追踪' : '本地记录';
+  const statusClass = disabled ? 'disabled' : active ? 'active' : 'local';
+
+  const copy = (value) => {
+    if (!value) return;
+    navigator.clipboard.writeText(value).catch(console.error);
+  };
+  const openAuditTrace = () => {
+    if (!traceMeta.traceId) return;
+    window.location.href = `/audit-query?trace_id=${encodeURIComponent(traceMeta.traceId)}`;
+  };
+
+  return (
+    <div>
+      <div className="agent-section-label">Langfuse Trace</div>
+      <div className="trace-summary">
+        <div className="trace-summary-head">
+          <span className={`trace-status ${statusClass}`}>{statusText}</span>
+          {traceMeta.traceId && (
+            <button className="trace-action" type="button" onClick={openAuditTrace} title="打开查询审计">
+              <Icon name="log" />
+            </button>
+          )}
+        </div>
+
+        <div className="trace-kv">
+          <span>环境</span>
+          <strong>{observability.environment || '—'}</strong>
+        </div>
+        <div className="trace-kv">
+          <span>版本</span>
+          <strong>{observability.release || '—'}</strong>
+        </div>
+        <div className="trace-kv">
+          <span>Prompt</span>
+          <strong>{observability.prompt_label || '—'}</strong>
+        </div>
+
+        <div className="trace-id-row">
+          <span>Trace ID</span>
+          <code>{traceMeta.traceId || '—'}</code>
+          {traceMeta.traceId && (
+            <button className="trace-action" type="button" onClick={() => copy(traceMeta.traceId)} title="复制 Trace ID">
+              <Icon name="copy" />
+            </button>
+          )}
+        </div>
+        <div className="trace-id-row">
+          <span>Session</span>
+          <code>{traceMeta.sessionId || '—'}</code>
+          {traceMeta.sessionId && (
+            <button className="trace-action" type="button" onClick={() => copy(traceMeta.sessionId)} title="复制 Session ID">
+              <Icon name="copy" />
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -170,7 +240,17 @@ function ResultSummary({ sqlResult }) {
 }
 
 // ── 主组件 ────────────────────────────────────────────────
-function AgentPanel({ open, onClose, steps = [], intent = null, metricResolution = null, generationMode = null, sql = null, sqlResult = null }) {
+function AgentPanel({
+  open,
+  onClose,
+  steps = [],
+  intent = null,
+  metricResolution = null,
+  generationMode = null,
+  sql = null,
+  sqlResult = null,
+  traceMeta = null,
+}) {
   if (!open) return null;
 
   return (
@@ -183,11 +263,12 @@ function AgentPanel({ open, onClose, steps = [], intent = null, metricResolution
         </button>
       </div>
       <div className="agent-panel-body">
+        <TraceSummary traceMeta={traceMeta} />
         <StepList steps={steps} />
         <IntentCard intent={intent} metricResolution={metricResolution} generationMode={generationMode} />
         <SqlPreview sql={sql} />
         <ResultSummary sqlResult={sqlResult} />
-        {steps.length === 0 && !intent && !sql && !sqlResult && (
+        {steps.length === 0 && !intent && !sql && !sqlResult && !traceMeta && (
           <div style={{ color: 'var(--text-3)', fontSize: 12, textAlign: 'center', paddingTop: 32 }}>
             发问后此处显示 Agent 执行详情
           </div>

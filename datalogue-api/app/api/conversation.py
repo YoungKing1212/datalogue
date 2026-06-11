@@ -16,10 +16,62 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.database import get_db
+from app.services.observability.tracer import build_langfuse_trace_url
 from app import schemas, models
 
 router = APIRouter()
+
+
+def _with_observability_links(message: models.Message) -> models.Message:
+    """为历史消息动态补齐 Langfuse trace 深链，不回写数据库。"""
+
+    metadata = dict(message.response_metadata or {})
+    langfuse = dict(metadata.get("langfuse") or {})
+    trace_id = langfuse.get("trace_id")
+    if not trace_id:
+        return message
+
+    settings = get_settings()
+    base_url = (
+        langfuse.get("base_url")
+        or metadata.get("observability", {}).get("base_url")
+        or settings.LANGFUSE_BASE_URL
+        or settings.LANGFUSE_HOST
+    )
+    project_id = (
+        langfuse.get("project_id")
+        or metadata.get("observability", {}).get("project_id")
+        or settings.LANGFUSE_PROJECT_ID
+    )
+    trace_url = (
+        langfuse.get("trace_url")
+        or metadata.get("observability", {}).get("trace_url")
+        or build_langfuse_trace_url(
+            base_url=base_url,
+            project_id=project_id,
+            trace_id=trace_id,
+        )
+    )
+    langfuse.update({
+        "base_url": base_url,
+        "project_id": project_id,
+        "trace_url": trace_url,
+    })
+    metadata["langfuse"] = langfuse
+    observability = dict(metadata.get("observability") or {})
+    observability.update({
+        "base_url": base_url,
+        "project_id": project_id,
+        "trace_url": trace_url,
+        "environment": observability.get("environment") or langfuse.get("environment"),
+        "release": observability.get("release") or langfuse.get("release"),
+        "prompt_label": observability.get("prompt_label") or langfuse.get("prompt_label"),
+    })
+    metadata["observability"] = observability
+    message.response_metadata = metadata
+    return message
 
 
 @router.get("", response_model=List[schemas.ConversationOut])
@@ -65,6 +117,7 @@ def get_conversation(conv_id: int, db: Session = Depends(get_db)):
         .order_by(models.Message.created_at)
         .all()
     )
+    messages = [_with_observability_links(message) for message in messages]
     return {"conversation": conv, "messages": messages}
 
 

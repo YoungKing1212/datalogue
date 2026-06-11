@@ -34,3 +34,5 @@ class ChatFeedback(BaseModel):
     message_id: int
     action: str  # approve / reject / modify
     comment: Optional[str] = None
+    trace_id: Optional[str] = None
+    reason: Optional[str] = None

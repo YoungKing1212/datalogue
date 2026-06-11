@@ -32,6 +32,20 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
 
+    LANGFUSE_ENABLED: bool = False
+    # Langfuse Python SDK v4 使用 base_url；保留 HOST 兼容旧配置和文档。
+    LANGFUSE_BASE_URL: Optional[str] = "http://localhost:3000"
+    LANGFUSE_HOST: Optional[str] = None
+    LANGFUSE_PROJECT_ID: Optional[str] = None
+    LANGFUSE_PUBLIC_KEY: Optional[str] = None
+    LANGFUSE_SECRET_KEY: Optional[str] = None
+    LANGFUSE_ENVIRONMENT: str = "dev"
+    LANGFUSE_RELEASE: str = "local"
+    LANGFUSE_PROMPT_LABEL: str = "production"
+    LANGFUSE_SAMPLE_RATE: float = 1.0
+    LANGFUSE_FLUSH_AT_END: bool = True
+    LANGFUSE_MAX_TEXT_LENGTH: int = 4000
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

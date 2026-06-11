@@ -194,6 +194,28 @@ export function getConversation(id) {
   return get(`/api/conversation/${id}`);
 }
 
+/** 查询审计 trace 列表 */
+export function listObservabilityTraces({ status = 'all', datasetId = null, limit = 50 } = {}) {
+  const params = new URLSearchParams();
+  if (status && status !== 'all') params.set('status', status);
+  if (datasetId != null) params.set('dataset_id', String(datasetId));
+  params.set('limit', String(limit));
+  return get(`/api/observability/traces?${params.toString()}`);
+}
+
+/** 查询审计 trace 详情 */
+export function getObservabilityTrace(traceId) {
+  return get(`/api/observability/traces/${encodeURIComponent(traceId)}`);
+}
+
+/** 提交 assistant 消息反馈 */
+export function submitMessageFeedback(messageId, data) {
+  return post(`/api/messages/${messageId}/feedback`, {
+    message_id: messageId,
+    ...data,
+  });
+}
+
 /** 删除对话 */
 export function deleteConversation(id) {
   return del(`/api/conversation/${id}`);

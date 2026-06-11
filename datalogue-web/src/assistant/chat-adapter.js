@@ -187,6 +187,8 @@ export function makeChatAdapter({ datasetIdRef }) {
       }
 
       if (finalPayload) {
+        emitTrace(finalPayload);
+
         // 收敛：text 用 final.answer 兜底（report_generator token 可能没全到）
         const finalText = finalPayload.answer || accText;
 
@@ -233,6 +235,10 @@ export function makeChatAdapter({ datasetIdRef }) {
               metricResolution: finalPayload.metric_resolution || null,
               generationMode: finalPayload.generation_mode || null,
               intent: finalPayload.intent || null,
+              messageId: finalPayload.message_id || null,
+              langfuseTraceId: finalPayload.langfuse_trace_id || null,
+              langfuseSessionId: finalPayload.langfuse_session_id || null,
+              observability: finalPayload.observability || null,
             },
           },
         };

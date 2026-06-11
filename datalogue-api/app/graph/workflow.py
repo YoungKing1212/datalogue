@@ -51,7 +51,7 @@ def _should_continue(state: AgentState) -> str:
 
 def _clarification_resolution_router(state: AgentState) -> str:
     """澄清回复解析后决定恢复查询、进入普通入口或直接结束。"""
-    status = (state.get("clarification_resolution") or {}).get("status")
+    status = (state.get("clarification_resolution_result") or {}).get("status")
     if status == "resolved":
         return "schema_recall"
     if status in {"missing", "expired", "unresolved"}:

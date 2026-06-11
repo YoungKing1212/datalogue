@@ -28,7 +28,14 @@ from .dataset import (
     BlueprintVersion,
     BlueprintUsageLog,
 )
-from .conversation import Conversation, Message, SQLDiagnosisLog, PendingClarification
+from .conversation import (
+    Conversation,
+    Message,
+    ObservabilityTraceIndex,
+    PendingClarification,
+    SQLDiagnosisLog,
+    TraceAnnotationCandidate,
+)
 from .llm import LLMModelConfig, LLMRoleBinding
 
 __all__ = [
@@ -49,8 +56,10 @@ __all__ = [
     "BlueprintUsageLog",
     "Conversation",
     "Message",
+    "ObservabilityTraceIndex",
     "SQLDiagnosisLog",
     "PendingClarification",
+    "TraceAnnotationCandidate",
     "LLMModelConfig",
     "LLMRoleBinding",
 ]
