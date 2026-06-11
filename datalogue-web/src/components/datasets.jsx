@@ -260,6 +260,9 @@ function DatasetsScreen() {
   const [termCandidates, setTermCandidates] = useState([]);
   const [termConflicts, setTermConflicts] = useState([]);
   const [termBusy, setTermBusy] = useState(false);
+  const [termStatusMessage, setTermStatusMessage] = useState('');
+  const [termDetailOpen, setTermDetailOpen] = useState(false);
+  const termRowRefs = useRef({});
   const [activeCapabilityTab, setActiveCapabilityTab] = useState(() => {
     try {
       return localStorage.getItem('datalogue.dataset.capabilityTab.v2') || 'blueprints';
@@ -923,11 +926,14 @@ function DatasetsScreen() {
   const handleDiscoverTerms = async () => {
     if (!activeDsId) return;
     setTermBusy(true);
+    setTermStatusMessage('正在从指标、维度和字段标注中检查可沉淀的别名。');
     try {
       const result = await discoverBusinessTerms(activeDsId);
-      setTermCandidates(result.candidates || []);
+      const candidates = result.candidates || [];
+      setTermCandidates(candidates);
+      setTermStatusMessage(candidates.length ? `发现 ${candidates.length} 个候选别名，可按需纳入语义词典。` : '未发现新的候选别名，当前词典不影响问数。');
     } catch (err) {
-      alert('AI 发现术语失败: ' + (err.message || '未知错误'));
+      setTermStatusMessage('候选别名生成失败，不影响主路径配置。' + (err.message ? ` ${err.message}` : ''));
     } finally {
       setTermBusy(false);
     }
@@ -954,22 +960,41 @@ function DatasetsScreen() {
       }
       setTermCandidates(prev => prev.filter(item => item.name !== candidate.name));
       setSelectedTermId(saved.id);
+      setTermStatusMessage(`已将“${candidate.display_name || candidate.name}”纳入语义词典。`);
       await loadDsMeta(activeDsId);
     } catch (err) {
-      alert('纳入术语失败: ' + (err.message || '未知错误'));
+      setTermStatusMessage('纳入候选失败。若已存在同名词条，请在语义词典中复用已有词条。' + (err.message ? ` ${err.message}` : ''));
     } finally {
       setTermBusy(false);
     }
   };
 
+  const handleSelectTerm = (termId) => {
+    setSelectedTermId(termId);
+    setTermDetailOpen(true);
+  };
+
+  const closeTermDetail = () => {
+    const termId = selectedTerm?.id;
+    setTermDetailOpen(false);
+    window.requestAnimationFrame(() => {
+      if (termId && termRowRefs.current[termId]) {
+        termRowRefs.current[termId].focus();
+      }
+    });
+  };
+
   const handleCheckTermConflicts = async () => {
     if (!activeDsId) return;
     setTermBusy(true);
+    setTermStatusMessage('正在检测同义词重叠、禁用词和同名冲突。');
     try {
       const result = await checkBusinessTermConflicts(activeDsId);
-      setTermConflicts(result.conflicts || []);
+      const conflicts = result.conflicts || [];
+      setTermConflicts(conflicts);
+      setTermStatusMessage(conflicts.length ? `发现 ${conflicts.length} 条冲突，请在右侧逐项处理。` : '当前未发现术语冲突。');
     } catch (err) {
-      alert('冲突检测失败: ' + (err.message || '未知错误'));
+      setTermStatusMessage('冲突检测失败，语义词典列表仍可继续使用。' + (err.message ? ` ${err.message}` : ''));
     } finally {
       setTermBusy(false);
     }
@@ -1122,19 +1147,21 @@ function DatasetsScreen() {
   // ── 当前数据集 ──
   const activeDs = datasets.find(d => d.id === activeDsId) || datasets[0];
   const currentDsId = activeDsId || activeDs?.id;
-  const capabilityTabs = [
+  const primaryCapabilityTabs = [
     { id: 'tables', label: '数据表', count: allSourceTables.length, icon: 'table', stage: '资产', desc: '同步表结构并选择进入语义层的物理表。' },
     { id: 'fields', label: '字段标注', count: selectedColumns.length, icon: 'string', stage: '标注', desc: '审核字段语义、描述和时间/枚举等角色。' },
     { id: 'metrics', label: '指标', count: metrics.length, icon: 'formula', stage: '口径', desc: '维护可复用指标口径和聚合规则。' },
     { id: 'dimensions', label: '维度', count: dimensions.length, icon: 'layers', stage: '口径', desc: '维护分析维度、枚举和值域解释。' },
-    { id: 'terms', label: '业务术语', count: businessTerms.length, icon: 'book', stage: '知识', desc: '沉淀业务别名、同义词和解释入口。' },
     { id: 'blueprints', label: '分析蓝图', count: null, icon: 'branch', stage: '路径', desc: '把复杂 SQL 和业务步骤固化为可触发的分析能力。' },
-    { id: 'scenarios', label: '分析场景', count: 0, icon: 'insight', stage: '场景', desc: '组织高频问数场景和运营分析任务。' },
     { id: 'validation', label: '语义验证', count: null, icon: 'beaker', stage: '验收', desc: '用真实问法验证语义层召回和 SQL 生成效果。' },
+  ];
+  const advancedGovernanceTabs = [
+    { id: 'terms', label: '语义词典', count: businessTerms.length, icon: 'book', stage: '治理', desc: '治理跨资产别名、冲突和解释口径。' },
+    { id: 'scenarios', label: '分析场景', count: 0, icon: 'insight', stage: '场景', desc: '组织高频问数场景和运营分析任务。' },
     { id: 'permissions', label: '权限', count: null, icon: 'shield', stage: '治理', desc: '控制数据集、指标和蓝图的可见范围。' },
     { id: 'versions', label: '版本历史', count: null, icon: 'history', stage: '治理', desc: '追踪语义资产变更和发布记录。' },
   ];
-  const activeCapability = capabilityTabs.find(t => t.id === activeCapabilityTab) || capabilityTabs[0];
+  const capabilityTabs = [...primaryCapabilityTabs, ...advancedGovernanceTabs];
   const selectedTableNames = [...new Set(selectedColumns.map(c => c.table_name).filter(Boolean))];
   const selectedPreviewTables = allSourceTables.filter(t => selectedTableIds.has(t.id));
   const activePreviewTable = previewTableId
@@ -1640,18 +1667,23 @@ function DatasetsScreen() {
     <div className="semantic-tab-panel">
       <div className="tab-panel-head">
         <div>
-          <div className="tab-panel-kicker"><Icon name="book" />业务术语</div>
-          <h3>沉淀业务词表、别名和口径解释</h3>
-          <p>统一维护业务词、同义词、定义和关联语义资产，减少同名不同义、同义不同口径造成的问数误解。</p>
+          <div className="tab-panel-kicker"><Icon name="book" />高级治理</div>
+          <h3>语义词典 / 别名与口径</h3>
+          <p>治理跨资产别名、同词多义冲突和解释口径。普通问数主路径不依赖先建词典，蓝图、指标和维度可顺手沉淀别名。</p>
         </div>
         <div className="tab-panel-actions">
           <button className="btn ghost" onClick={handleCheckTermConflicts} disabled={termBusy || !activeDsId}><Icon name="warn" />冲突检测</button>
-          <button className="btn ghost" onClick={handleDiscoverTerms} disabled={termBusy || !activeDsId}><Icon name="brain" />AI 发现术语</button>
-          <button className="btn primary" onClick={resetTermForm} disabled={!activeDsId}><Icon name="plus" />新建术语</button>
+          <button className="btn ghost" onClick={handleDiscoverTerms} disabled={termBusy || !activeDsId}><Icon name="brain" />建议别名</button>
+          <button className="btn primary" onClick={resetTermForm} disabled={!activeDsId}><Icon name="plus" />新建词条</button>
         </div>
       </div>
+      {termStatusMessage && (
+        <div className="term-muted-box" role="status" style={{ marginBottom: 12 }}>
+          {termStatusMessage}
+        </div>
+      )}
       <div className="semantic-stats">
-        <StatCard label="术语总数" value={businessTerms.length} hint="当前数据集" />
+        <StatCard label="词条总数" value={businessTerms.length} hint="当前数据集" />
         <StatCard label="已启用" value={activeTermsCount} hint="可用于问数解释" />
         <StatCard label="有同义词" value={aliasedTermsCount} hint="支持别名召回" />
         <StatCard label="有关联资产" value={linkedTermsCount} hint="字段/指标/维度/蓝图" />
@@ -1662,9 +1694,10 @@ function DatasetsScreen() {
             <div className="annotation-search">
               <Icon name="search" />
               <input
+                aria-label="搜索语义词典"
                 value={termSearch}
                 onChange={e => setTermSearch(e.target.value)}
-                placeholder="搜索术语、同义词、定义..."
+                placeholder="搜索词条、同义词、定义..."
               />
             </div>
             <select value={termTypeFilter} onChange={e => setTermTypeFilter(e.target.value)}>
@@ -1680,16 +1713,20 @@ function DatasetsScreen() {
             {filteredBusinessTerms.length === 0 ? (
               <GuidedEmpty
                 icon="book"
-                title="暂无业务术语"
-                desc="可以手动新建，也可以从现有指标、维度和字段标注中发现候选术语。"
-                actionLabel="AI 发现术语"
+                title={businessTerms.length === 0 ? '暂无语义词条' : '没有匹配的词条'}
+                desc={businessTerms.length === 0 ? '当前无词条不影响问数。建议优先在蓝图、指标和维度中沉淀别名；治理人员也可以在这里集中维护。' : '调整搜索或筛选条件后继续查看词条。'}
+                actionLabel={businessTerms.length === 0 ? '建议别名' : ''}
                 onAction={handleDiscoverTerms}
               />
             ) : filteredBusinessTerms.map(term => (
               <button
                 key={term.id}
+                ref={node => {
+                  if (node) termRowRefs.current[term.id] = node;
+                  else delete termRowRefs.current[term.id];
+                }}
                 className={'term-row ' + (selectedTerm?.id === term.id ? 'active' : '')}
-                onClick={() => setSelectedTermId(term.id)}
+                onClick={() => handleSelectTerm(term.id)}
               >
                 <span className="term-row-head">
                   <strong>{term.display_name || term.name}</strong>
@@ -1704,7 +1741,7 @@ function DatasetsScreen() {
             ))}
           </div>
         </section>
-        <section className="term-detail-panel">
+        <section className={'term-detail-panel ' + (termDetailOpen ? 'mobile-open' : '')} aria-label="语义词条详情">
           {selectedTerm ? (
             <>
               <div className="term-detail-head">
@@ -1714,6 +1751,7 @@ function DatasetsScreen() {
                   <code>{selectedTerm.name}</code>
                 </div>
                 <div className="asset-actions">
+                  <button className="icon-btn term-detail-close" title="关闭详情" onClick={closeTermDetail}><Icon name="x" /></button>
                   <button className="icon-btn" title="编辑" onClick={() => handleEditTerm(selectedTerm)}><Icon name="edit" /></button>
                   <button className="icon-btn danger" title="删除" onClick={() => handleDeleteTerm(selectedTerm.id)}><Icon name="trash" /></button>
                 </div>
@@ -1754,14 +1792,14 @@ function DatasetsScreen() {
               </div>
             </>
           ) : (
-            <GuidedEmpty icon="book" title="选择一个术语查看详情" desc="术语详情会展示定义、同义词、关联资产和示例问法。" />
+            <GuidedEmpty icon="book" title="选择一个词条查看详情" desc="词条详情会展示定义、同义词、关联资产和示例问法。" />
           )}
         </section>
         <aside className="term-side-panel">
           <div className="term-side-block">
             <div className="term-section-title">AI 候选术语</div>
             {termCandidates.length === 0 ? (
-              <div className="term-muted-box">点击“AI 发现术语”后，会从指标、维度和字段标注中提取候选。</div>
+              <div className="term-muted-box">点击“建议别名”后，会从指标、维度和字段标注中提取候选。未维护词条不会阻塞问数主路径。</div>
             ) : termCandidates.slice(0, 8).map(candidate => (
               <div key={`${candidate.source}-${candidate.name}`} className="term-candidate">
                 <div>
@@ -1813,7 +1851,7 @@ function DatasetsScreen() {
       </div>
 
       {/* ── 主体：左侧数据集 + 右侧三栏 ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '200px minmax(0, 1fr)', gap: 20 }}>
         {/* 左侧：数据集列表 */}
         <aside style={{ borderRight: '1px solid var(--hairline)', paddingRight: 12 }}>
           <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0 8px 8px', fontWeight: 500 }}>数据集</div>
@@ -1901,10 +1939,10 @@ function DatasetsScreen() {
               <div>
                 <div className="capability-eyebrow">语义能力工作区</div>
                 <div className="capability-title-row">
-                  <span className="capability-stage">{activeCapability.stage}</span>
-                  <h2>{activeCapability.label}</h2>
+                  <span className="capability-stage">工作台</span>
+                  <h2>数据集语义能力</h2>
                 </div>
-                <p>{activeCapability.desc}</p>
+                <p>按主路径配置数据资产、语义口径、分析蓝图和验证；高级治理用于语义词典、权限和版本。</p>
               </div>
               <div className="capability-route">
                 <span>表资产</span>
@@ -1915,7 +1953,7 @@ function DatasetsScreen() {
               </div>
             </div>
           <div className="ds-tabs capability-tabs">
-            {capabilityTabs.map(tab => (
+            {primaryCapabilityTabs.map(tab => (
               <button
                 key={tab.id}
                 className={'ds-tab ' + (activeCapabilityTab === tab.id ? 'active' : '')}
@@ -1930,19 +1968,42 @@ function DatasetsScreen() {
               </button>
             ))}
           </div>
+          <div className="capability-advanced-tabs">
+            <div className="capability-advanced-title">
+              <Icon name="shield" />
+              高级治理
+            </div>
+            <div className="ds-tabs capability-tabs secondary">
+              {advancedGovernanceTabs.map(tab => (
+                <button
+                  key={tab.id}
+                  className={'ds-tab ' + (activeCapabilityTab === tab.id ? 'active' : '')}
+                  onClick={() => setActiveCapabilityTab(tab.id)}
+                >
+                  <span className="tab-icon"><Icon name={tab.icon} /></span>
+                  <span className="tab-copy">
+                    <span className="tab-label">{tab.label}</span>
+                    <span className="tab-stage">{tab.stage}</span>
+                  </span>
+                  {tab.count != null && <span className="count">{tab.count}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
           </div>
 
-          {activeCapabilityTab === 'blueprints' && currentDsId ? (
-            <AnalysisBlueprintsPanel datasetId={currentDsId} />
-          ) : activeCapabilityTab === 'fields' ? (
-            renderFieldAnnotationPanel()
-          ) : activeCapabilityTab === 'metrics' ? (
-            renderMetricsPanel()
-          ) : activeCapabilityTab === 'dimensions' ? (
-            renderDimensionsPanel()
-          ) : activeCapabilityTab === 'terms' ? (
-            renderTermsPanel()
-          ) : activeCapabilityTab === 'tables' ? (
+          <div className="capability-page-slot">
+            {activeCapabilityTab === 'blueprints' && currentDsId ? (
+              <AnalysisBlueprintsPanel datasetId={currentDsId} />
+            ) : activeCapabilityTab === 'fields' ? (
+              renderFieldAnnotationPanel()
+            ) : activeCapabilityTab === 'metrics' ? (
+              renderMetricsPanel()
+            ) : activeCapabilityTab === 'dimensions' ? (
+              renderDimensionsPanel()
+            ) : activeCapabilityTab === 'terms' ? (
+              renderTermsPanel()
+            ) : activeCapabilityTab === 'tables' ? (
         <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 320px', gap: 16, minHeight: 480 }}>
           {/* 左栏：数据源表目录（带勾选 + 搜索） */}
           <div style={{ borderRight: '1px solid var(--hairline)', paddingRight: 12 }}>
@@ -2508,16 +2569,14 @@ function DatasetsScreen() {
             </button>
           </div>
         </div>
-          ) : activeCapabilityTab === 'validation' ? null : (
-            <CapabilityEmptyPane tab={capabilityTabs.find(t => t.id === activeCapabilityTab)} />
-          )}
-
-        </div>
-      </div>
+            ) : activeCapabilityTab === 'validation' ? null : (
+              <CapabilityEmptyPane tab={capabilityTabs.find(t => t.id === activeCapabilityTab)} />
+            )}
+          </div>
 
       {/* ── 底部：试问验证 ── */}
       {currentDsId && activeCapabilityTab === 'validation' && (
-        <div style={{ marginTop: 24, border: '1px solid var(--hairline)', borderRadius: 10, padding: 16 }}>
+        <div className="capability-validation-panel" style={{ border: '1px solid var(--hairline)', borderRadius: 10, padding: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
               <Icon name="beaker" style={{ width: 14, height: 14, color: 'var(--accent)' }} />
@@ -2569,7 +2628,7 @@ function DatasetsScreen() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
                   {[
                     ['路径', validationRouteLabel(testReport.entry_route)],
-                    ['术语命中', `${testReport.terms.length}`],
+                    ['词典证据', `${testReport.terms.length}`],
                     ['蓝图命中', `${testReport.blueprints.length}`],
                     ['置信度', testReport.confidence?.score != null ? `${Math.round(testReport.confidence.score * 100)}%` : '—'],
                   ].map(([label, value]) => (
@@ -2582,10 +2641,10 @@ function DatasetsScreen() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
                   <div>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 5 }}>业务术语</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 5 }}>语义词典证据</div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
                       {testReport.terms.length ? testReport.terms.map((term, idx) => (
-                        <span key={`${validationAssetLabel(term)}-${idx}`} style={{ padding: '3px 7px', borderRadius: 5, background: 'rgba(59,130,246,0.10)', color: 'var(--accent)', fontSize: 11 }}>
+                        <span key={`${validationAssetLabel(term)}-${idx}`} style={{ padding: '3px 7px', borderRadius: 5, background: 'var(--bg-2)', color: 'var(--text-2)', fontSize: 11 }}>
                           {validationAssetLabel(term)}
                         </span>
                       )) : <span style={{ color: 'var(--text-4)', fontSize: 12 }}>未命中</span>}
@@ -2670,6 +2729,9 @@ function DatasetsScreen() {
           </div>
         </div>
       )}
+
+        </div>
+      </div>
 
       {/* ── 弹窗：删除数据集（二次确认）── */}
       {confirmDelete && (
@@ -2844,14 +2906,14 @@ function DatasetsScreen() {
         </div>
       )}
 
-      {/* ── 弹窗：业务术语表单 ── */}
+      {/* ── 弹窗：语义词典表单 ── */}
       {showTermForm && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowTermForm(false)}>
           <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 560, border: '1px solid var(--hairline)', maxHeight: '90vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ margin: '0 0 16px' }}>{editingTermId ? '编辑业务术语' : '新建业务术语'}</h3>
+            <h3 style={{ margin: '0 0 16px' }}>{editingTermId ? '编辑语义词条' : '新建语义词条'}</h3>
             <FormField label="标准名称" value={termForm.name} onChange={v => setTermForm({ ...termForm, name: v })} placeholder="如: gmv" />
             <FormField label="显示名称" value={termForm.display_name} onChange={v => setTermForm({ ...termForm, display_name: v })} placeholder="如: 商品交易总额" />
-            <FormField label="术语类型" type="select" value={termForm.term_type} onChange={v => setTermForm({ ...termForm, term_type: v })} options={TERM_TYPE_OPTIONS} />
+            <FormField label="词条类型" type="select" value={termForm.term_type} onChange={v => setTermForm({ ...termForm, term_type: v })} options={TERM_TYPE_OPTIONS} />
             <FormField label="状态" type="select" value={termForm.status} onChange={v => setTermForm({ ...termForm, status: v })} options={TERM_STATUS_OPTIONS} />
             <FormField label="定义说明" type="textarea" rows={4} value={termForm.definition} onChange={v => setTermForm({ ...termForm, definition: v })} placeholder="说明业务含义、统计边界或适用场景…" />
             <FormField label="同义词 (逗号分隔)" value={termForm.aliases} onChange={v => setTermForm({ ...termForm, aliases: v })} placeholder="销售额, 成交额, 流水" />

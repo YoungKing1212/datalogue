@@ -150,6 +150,47 @@ THIS PLAN
 
 2026-06-11：用户确认选择 Approach B：保留模型和运行时，弱化一级入口。
 
+## Plan Design Review：Step 0 设计范围审计
+
+### Pre-review Findings
+
+- UI scope: 有明确 UI 范围，涉及数据集能力页、业务术语工作台、分析蓝图向导、语义验证报告和聊天术语澄清卡片。
+- `DESIGN.md`: 未发现项目级 `DESIGN.md`，本次评审按现有前端组件模式和通用可用性原则校准。
+- Design tooling: 当前环境未发现 gstack designer binary，因此暂不生成视觉 mockup；后续若工具可用，应补 3 个信息架构变体。
+- Existing patterns: 复用 `capabilityTabs`、`semantic-tab-panel`、`blueprint-wizard`、`GuidedEmpty`、`StatCard`、`btn`、`BlueprintWizardStepper` 等现有组件模式。
+- Retrospective signal: 近期提交包含语义验证、术语澄清和术语归一化链路，说明本计划不能只做页面隐藏，必须保留运行时可解释性和澄清闭环。
+- Prior design reviews: 未发现本项目 gstack `reviews.jsonl` 记录。
+
+### 0A. Initial Design Rating
+
+当前设计完整度：7/10。
+
+计划已经说明了“术语降级为语义基础设施”的产品判断，也列出了要调整的入口、文案和验证点；但还缺少更具体的信息架构落位、空状态、错误状态、移动端/窄屏行为、候选术语交互细节，以及高级治理入口如何被发现。
+
+达到 10/10 需要补齐：
+
+- 数据集能力 Tab 的最终分组方案：哪些是主路径，哪些进入高级治理。
+- “语义词典 / 别名与口径”入口的具体位置、名称和权限可见性。
+- 蓝图向导中“建议别名与口径”的出现时机、默认展开状态、接受/忽略/冲突状态。
+- 术语为空、候选重复、冲突检测失败、terms API 409、蓝图保存失败等状态。
+- 语义验证报告和聊天澄清卡片保留后的视觉层级，避免再次把术语变成主噪音。
+
+### 0B. DESIGN.md Status
+
+No design system found。建议后续单独沉淀 `DESIGN.md` 或产品设计规则；本轮先按现有 Datalogue 前端模式推进，不引入新的视觉语言。
+
+### 0C. Existing Design Leverage
+
+- 数据集能力页已经有 `capabilityTabs` 和 `capability-route`，适合改造成“主路径 + 高级治理”的信息架构，不需要新建独立导航。
+- 业务术语面板已经有冲突检测、AI 发现、搜索过滤、详情和空状态，适合整体迁入高级治理，而不是拆散重写。
+- 分析蓝图向导已有 4 步结构，最适合在第 2 步“确认 AI 生成的蓝图草稿”加入候选别名与口径，而不是在第 1 步增加输入负担。
+- 语义验证报告已经展示术语命中和蓝图命中，适合保留为调试/验收证据，而不是在主操作页强调。
+- 聊天侧已有术语澄清卡片，必须作为运行时用户补救路径保留。
+
+### 0D. Focus Gate
+
+下一步需要选择设计评审重点。推荐先评审全部 7 个维度，但重点压在信息架构、用户旅程、交互状态覆盖三个维度。
+
 ## CEO Review：最终产品判断
 
 ### 核心结论
@@ -263,6 +304,227 @@ THIS PLAN
 | 冲突检测 | 保留，放到语义验证或高级治理 | 这是术语保留的核心价值 |
 | 语义验证报告里的术语命中 | 保留 | 用于解释问数链路是否走对口径 |
 | 聊天里的术语澄清卡片 | 保留 | 这是运行时用户价值，不是后台管理噪音 |
+
+## Plan Design Review：完整 7 维评审
+
+### Review Classifier
+
+本次计划属于 APP UI：数据集治理、语义资产维护、蓝图配置和问数验收的工作台型界面。评审采用 App UI 规则：安静、可扫描、低装饰、主工作区清晰、导航能说明当前位置和下一步。
+
+### Pass 1：Information Architecture
+
+评分：5/10 -> 9/10。
+
+问题：当前 `capabilityTabs` 把 `业务术语` 与 `分析蓝图`、`指标`、`维度` 同级展示，会让用户误判术语也是主分析能力。一个 10/10 的方案必须明确“主路径”和“治理支撑”的层级。
+
+修正方案：
+
+```text
+数据集治理
+├── 主路径
+│   ├── 数据表
+│   ├── 字段标注
+│   ├── 指标
+│   ├── 维度
+│   ├── 分析蓝图
+│   └── 语义验证
+└── 高级治理
+    ├── 语义词典（原业务术语）
+    ├── 冲突检测
+    ├── 权限
+    └── 版本历史
+```
+
+实现要求：
+
+- `capabilityTabs` 默认只展示主路径，`terms` 不再作为普通一级 Tab。
+- 在能力页右上或尾部增加低噪音的 `高级治理` 入口，进入后可访问 `语义词典`。
+- `语义词典` 页面文案从“沉淀业务词表、别名和口径解释”收敛为“治理跨资产别名、冲突和解释口径”。
+- `数据集能力路线` 中不要把“知识”作为和“路径”并列的阶段；术语是支撑层，不是路线终点。
+
+### Pass 2：Interaction State Coverage
+
+评分：6/10 -> 9/10。
+
+问题：计划已经提到候选术语、冲突检测和运行时澄清，但缺少用户在每种状态下“看到什么”的规格。一个 10/10 方案要覆盖空、加载、成功、失败、部分成功和重复冲突。
+
+| Feature | Loading | Empty | Error | Success | Partial |
+|---|---|---|---|---|---|
+| 高级治理入口 | 按钮禁用并显示轻量 loading | 仍显示入口，但语义词典内解释“当前无词条，不影响问数” | toast 提示“治理信息加载失败，可重试” | 进入语义词典列表 | 词典加载成功但冲突检测失败时保留列表 |
+| 语义词典列表 | 列表骨架屏，不阻塞主路径 | 显示“暂无词条；可从蓝图、指标、维度中沉淀别名”，主 CTA 不再是“AI 发现术语” | 显示重试按钮和错误原因 | 显示搜索、筛选、详情 | 部分词条关联资产加载失败时标注“关联信息暂不可用” |
+| 蓝图向导候选别名 | 在第 2 步 AI 草稿后显示“正在检查别名和口径” | 显示“未发现需要沉淀的别名”，不制造任务 | 候选失败时显示“暂未生成建议，不影响蓝图保存” | 候选以可接受/忽略的行项展示 | 部分候选 409 重复时提示“已存在，建议复用” |
+| 候选术语接受 | 行内 spinner | 不适用 | 409 时转为“复用已有词条”操作 | 行状态变为“已沉淀” | 多选接受时失败项留在列表 |
+| 冲突检测 | 按钮 loading，不允许重复点击 | 无冲突时显示“当前未发现冲突” | 显示失败原因和重试 | 显示冲突组、影响资产和处理建议 | 部分术语无法检测时显示被跳过条目 |
+| 语义验证报告 | 保持现有测试 loading | 无术语命中时显示“本问法未依赖语义词典” | 测试失败仍展示 route、失败原因 | 显示术语命中、蓝图命中、SQL、回答 | 生成 SQL 成功但解释失败时仍展示命中资产 |
+| 聊天术语澄清卡片 | 发送后保留用户问题和等待状态 | 不适用 | 澄清提交失败可重试 | 选中术语后继续原问题 | 候选过多时折叠并提供搜索 |
+
+### Pass 3：User Journey & Emotional Arc
+
+评分：5/10 -> 9/10。
+
+问题：用户的目标是“让系统能回答/分析”，不是“维护术语表”。如果页面继续把术语摆在主路径，会制造“还要先建词典”的心理成本。
+
+| Step | User does | User feels | Plan specifies |
+|---|---|---|---|
+| 1 | 进入数据集治理页 | 想快速知道下一步该配置什么 | 默认看到数据表、字段、指标、维度、蓝图、验证这些主路径 |
+| 2 | 创建分析蓝图 | 期待把复杂分析沉淀成可用能力 | 4 步向导保持，术语不提前打断 |
+| 3 | 确认 AI 草稿 | 需要校准触发问法和口径 | 同屏显示“建议别名与口径”，可接受或忽略 |
+| 4 | 发现同词多义 | 担心问数走错口径 | 用冲突提示解释影响，并提供复用/新建/忽略 |
+| 5 | 发布蓝图并验证 | 希望确认链路真的可用 | 语义验证展示蓝图命中和术语命中作为证据 |
+| 6 | 普通问数中遇到歧义 | 需要快速恢复，而不是回后台配置 | 聊天澄清卡片继续作为运行时补救 |
+| 7 | 数据治理人员定期检查 | 需要集中治理冲突 | 高级治理保留完整语义词典和冲突检测 |
+
+时间尺度：
+
+- 5 秒：用户第一眼看到“分析蓝图/指标/维度/语义验证”才是主工作，而不是被术语分散。
+- 5 分钟：用户能完成一个蓝图草稿，并顺手处理候选别名。
+- 5 年：语义词典作为审计和解释资产保留，不因页面降级丢掉历史治理价值。
+
+### Pass 4：AI Slop Risk
+
+评分：7/10 -> 9/10。
+
+问题：现有页面容易滑向“每个能力都有 hero、统计卡、AI 按钮、列表详情”的功能堆叠。对于工作台型 UI，这会增加噪音。
+
+具体约束：
+
+- 不新增新的 hero 或宣传式卡片；术语降级只调整层级，不制造新的展示区。
+- 不把“建议别名与口径”做成大卡片网格；它应是蓝图草稿审核里的紧凑行项。
+- 不使用“AI 发现术语”作为主视觉 CTA；改为上下文动作“建议别名”。
+- 统计卡只保留在高级治理，不进入主路径首屏。
+- 文案使用工具语言：`建议别名`、`复用已有词条`、`忽略`、`冲突检测`、`已沉淀`，避免“智能沉淀语义资产”这类泛化表达。
+
+AI slop litmus：
+
+| Check | Result | Requirement |
+|---|---|---|
+| 产品第一屏是否清楚 | Yes after IA change | 主路径展示分析能力和验收 |
+| 是否有一个强视觉锚点 | Yes | 数据集能力路线 + 当前 Tab 状态 |
+| 仅扫标题能否理解 | Partial | Tab 文案必须从“业务术语”改为“高级治理/语义词典” |
+| 每个区域是否只有一个任务 | Partial | 蓝图候选别名区域只做建议确认，不做词典管理 |
+| 卡片是否必要 | Partial | 术语统计卡降级 |
+| 动效是否必要 | No | 不新增动效 |
+| 去掉装饰阴影后是否仍高级 | Yes if hierarchy clear | 依靠信息层级，不靠装饰 |
+
+### Pass 5：Design System Alignment
+
+评分：7/10 -> 8/10。
+
+问题：没有项目级 `DESIGN.md`，但代码里已有稳定组件和页面模式。本计划应复用这些模式，避免引入新的视觉体系。
+
+What already exists：
+
+- `capabilityTabs`：可改造成主路径 Tab。
+- `semantic-tab-panel`：可承载高级治理里的语义词典。
+- `term-workbench`：保留为高级治理详情区。
+- `GuidedEmpty`：复用空状态，但修改 CTA 和说明。
+- `StatCard`：保留在高级治理，不用于主路径。
+- `BlueprintWizardStepper`：蓝图向导继续使用，不改变步骤结构。
+- `blueprint-review-grid`：第 2 步新增候选别名区域应复用该双栏审核模式。
+- `TermClarificationCard`：聊天侧保留，不重新设计。
+
+待补设计系统债务：
+
+- 后续应新增 `DESIGN.md`，沉淀 Datalogue 的工作台信息架构、按钮层级、表单密度、空状态和移动端规则。
+
+### Pass 6：Responsive & Accessibility
+
+评分：6/10 -> 8/10。
+
+问题：当前术语工作台是列表 + 详情的较重布局，放在一级 Tab 会加重窄屏负担。降级后仍需定义高级治理和蓝图候选区域的响应式行为。
+
+响应式要求：
+
+| Viewport | Data governance page | Semantic dictionary | Blueprint candidate aliases |
+|---|---|---|---|
+| Desktop >= 1200px | 主路径 Tab 横向展示，高级治理作为次级入口 | 左列表右详情 | 第 2 步审核区内右侧或下方紧凑列表 |
+| Tablet 768-1199px | Tab 可横向滚动，高级治理保持可见 | 列表在上，详情在下 | 候选区域折叠为可展开面板 |
+| Mobile < 768px | 主路径使用可滚动分段控件，避免 10 个 Tab 全铺 | 先显示搜索和列表，点词条进入详情抽屉 | 默认折叠，只显示候选数量和冲突红点 |
+
+可访问性要求：
+
+- 所有“接受 / 忽略 / 复用已有词条”操作必须是 `<button>`，支持键盘聚焦。
+- 触摸目标不小于 44px；候选行的按钮不能只靠图标表达。
+- 冲突和失败状态不能只用颜色表示，必须有文本标签。
+- 语义词典搜索框保留可见 label 或 `aria-label`，不能只靠 placeholder。
+- 聊天澄清卡片候选项应支持方向键或 Tab 顺序选择。
+- 弹窗和抽屉关闭后焦点回到触发按钮。
+
+### Pass 7：Unresolved Design Decisions
+
+评分：4/10 -> 8/10。
+
+本轮选择 Approach B 后，以下设计决策已落地到计划：
+
+| Decision | Resolution | If deferred |
+|---|---|---|
+| 术语是否保留一级 Tab | 不保留；迁入高级治理/语义治理 | 用户继续误以为术语和蓝图并列 |
+| 原“业务术语”命名 | 改为“语义词典 / 别名与口径” | 页面仍像独立业务功能 |
+| 蓝图候选别名出现在哪一步 | 第 2 步 AI 草稿审核后 | 第 1 步输入负担过重，第 4 步太晚 |
+| 候选术语是否阻塞保存 | 不阻塞；可接受、忽略、复用 | 用户会把术语当必填治理任务 |
+| 冲突检测位置 | 高级治理或语义验证，不放主路径首屏 | 主页面继续被治理任务污染 |
+| 空词典状态 | 说明“不影响问数”，引导从蓝图/指标/维度沉淀 | 空态会诱导用户先造词表 |
+
+仍延后到后续的设计决策：
+
+- 是否要把 `权限`、`版本历史` 与 `语义词典` 合并为一个“高级治理” Tab，还是保留为次级菜单。
+- 是否为 Datalogue 新增项目级 `DESIGN.md`。
+- 是否需要用 `/design-shotgun` 生成三个信息架构视觉变体供用户比较。
+
+### Design Review Implementation Tasks
+
+Synthesized from this review's findings. Each task derives from a specific finding above. Run with Claude Code or Codex; checkbox as you ship.
+
+- [ ] **T1 (P1, human: ~2h / CC: ~15min)** — `datasets.jsx` — 将业务术语从普通一级能力 Tab 迁入高级治理入口
+  - Surfaced by: Pass 1 — `terms` 与 `blueprints` 同级造成主路径混乱
+  - Files: `datalogue-web/src/components/datasets.jsx`
+  - Verify: 进入数据集能力页，默认主路径不再突出“业务术语”，高级治理仍可打开语义词典
+- [ ] **T2 (P1, human: ~2h / CC: ~20min)** — `analysis-blueprints.jsx` — 在蓝图向导第 2 步加入建议别名与口径确认区
+  - Surfaced by: Pass 3 — 用户创建蓝图时应顺手处理别名，不应先维护术语库
+  - Files: `datalogue-web/src/components/analysis-blueprints.jsx`, `datalogue-web/src/api/client.js`
+  - Verify: 蓝图 AI 草稿后可看到候选别名，可接受、忽略，且不阻塞保存
+- [ ] **T3 (P1, human: ~1.5h / CC: ~15min)** — `datasets.jsx` — 补齐语义词典和候选别名的空、错、部分成功状态
+  - Surfaced by: Pass 2 — 计划需要说明用户在 loading/empty/error/success/partial 时看到什么
+  - Files: `datalogue-web/src/components/datasets.jsx`, `datalogue-web/src/components/analysis-blueprints.jsx`
+  - Verify: terms API 失败、409 重复、无候选、部分候选失败时都有明确 UI
+- [ ] **T4 (P2, human: ~1h / CC: ~10min)** — `datasets.jsx` — 调整语义验证报告中术语命中的视觉层级
+  - Surfaced by: Pass 4 — 保留术语观测价值，但避免它重新变成主噪音
+  - Files: `datalogue-web/src/components/datasets.jsx`
+  - Verify: 语义验证仍展示术语命中、蓝图命中、路径和失败原因
+- [ ] **T5 (P2, human: ~1h / CC: ~10min)** — frontend a11y — 为候选别名、语义词典和澄清卡片补键盘与可访问性约束
+  - Surfaced by: Pass 6 — 降级入口后仍需保证高级治理和澄清操作可访问
+  - Files: `datalogue-web/src/components/datasets.jsx`, `datalogue-web/src/components/analysis-blueprints.jsx`, `datalogue-web/src/assistant/MyMessage.jsx`
+  - Verify: Tab 键可完成候选接受/忽略，冲突不只靠颜色表达，移动端按钮触达尺寸足够
+- [ ] **T6 (P3, human: ~1h / CC: ~10min)** — docs — 新增 Datalogue 工作台设计规则文档
+  - Surfaced by: Pass 5 — 项目缺少 `DESIGN.md`
+  - Files: `DESIGN.md`
+  - Verify: 文档包含信息架构、按钮层级、空状态、响应式和 a11y 基线
+
+### Design Review Completion Summary
+
+```text
++====================================================================+
+|         DESIGN PLAN REVIEW — COMPLETION SUMMARY                    |
++====================================================================+
+| System Audit         | No DESIGN.md, UI scope confirmed             |
+| Step 0               | 7/10, focus all 7 dimensions                 |
+| Pass 1  (Info Arch)  | 5/10 -> 9/10 after fixes                     |
+| Pass 2  (States)     | 6/10 -> 9/10 after fixes                     |
+| Pass 3  (Journey)    | 5/10 -> 9/10 after fixes                     |
+| Pass 4  (AI Slop)    | 7/10 -> 9/10 after fixes                     |
+| Pass 5  (Design Sys) | 7/10 -> 8/10 after fixes                     |
+| Pass 6  (Responsive) | 6/10 -> 8/10 after fixes                     |
+| Pass 7  (Decisions)  | 6 resolved, 3 deferred                       |
++--------------------------------------------------------------------+
+| NOT in scope         | written                                      |
+| What already exists  | written                                      |
+| TODOS.md updates     | 0 written; 1 optional DESIGN.md task listed  |
+| Approved Mockups     | 0 generated; designer binary unavailable     |
+| Decisions made       | 6 added to plan                              |
+| Decisions deferred   | 3 listed                                     |
+| Overall design score | 7/10 -> 9/10                                 |
++====================================================================+
+```
 
 ## Engineering Review：架构与数据流
 
@@ -463,8 +725,8 @@ USER FLOWS
 
 ### Decisions Made
 
-- Total: 4
-- Auto-decided: 3
+- Total: 10
+- Auto-decided: 9
 - User-confirmed: 1
 - Taste choices: 0
 - User challenges: 0
@@ -472,7 +734,7 @@ USER FLOWS
 ### Review Scores
 
 - CEO: 9/10。方向清晰，核心是降级而不是删除。
-- Design: 8/10。需要具体调整信息架构和入口文案。
+- Design: 9/10。已补齐信息架构、交互状态、用户旅程、AI Slop 风险、现有组件复用、响应式与可访问性约束。
 - Eng: 8/10。后端应保持稳定，主要风险在前端重组和候选术语内嵌。
 - DX: skipped。该计划不是开发者安装/集成型能力。
 - Outside voices: unavailable。`codex exec` 因本地安全策略拒绝外部私有仓库审查，Claude subagent 工具不可用。
@@ -490,3 +752,17 @@ USER FLOWS
 - 完整知识库检索接入。
 - terms top-K 语义召回。
 - 术语来源细分审计。
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | documented in `/autoplan` body | CEO score 9/10; Approach B accepted |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | unavailable | External review blocked by local safety policy |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | documented in `/autoplan` body | Eng score 8/10; backend stable, frontend IA is main risk |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | clean | score: 7/10 -> 9/10, 6 decisions, 6 implementation tasks |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | skipped | Not a developer onboarding or integration plan |
+
+- **VERDICT:** DESIGN CLEARED — Approach B has enough UI/UX detail to implement; eng review remains the required shipping gate when code changes start.
+
+NO UNRESOLVED DECISIONS

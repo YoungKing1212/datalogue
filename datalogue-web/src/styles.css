@@ -1314,7 +1314,7 @@ input:focus, textarea:focus, button:focus { outline: none; }
 }
 
 /* ─── DATASETS ─── */
-.ds-wrap { padding: 28px 32px 60px; max-width: 1300px; margin: 0 auto; }
+.ds-wrap { width: 100%; box-sizing: border-box; padding: 28px 32px 60px; max-width: 1300px; margin: 0 auto; }
 .ds-grid { display: grid; grid-template-columns: 240px 1fr; gap: 28px; }
 .ds-sidebar { padding-top: 10px; }
 .ds-sidebar .group-title { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; padding: 0 8px 8px; }
@@ -1357,9 +1357,11 @@ input:focus, textarea:focus, button:focus { outline: none; }
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
+  min-height: 104px;
   padding: 16px 18px 12px;
   border-bottom: 1px solid var(--hairline);
   background: linear-gradient(180deg, var(--bg-2), var(--surface));
+  box-sizing: border-box;
 }
 .capability-eyebrow {
   font-size: 11px;
@@ -1372,6 +1374,7 @@ input:focus, textarea:focus, button:focus { outline: none; }
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 24px;
 }
 .capability-title-row h2 {
   margin: 0;
@@ -1394,6 +1397,7 @@ input:focus, textarea:focus, button:focus { outline: none; }
   color: var(--text-2);
   font-size: 13px;
   max-width: 560px;
+  line-height: 1.5;
 }
 .capability-route {
   display: flex;
@@ -1424,6 +1428,30 @@ input:focus, textarea:focus, button:focus { outline: none; }
   margin: 0;
   border-bottom: 0;
   overflow-x: auto;
+}
+.capability-advanced-tabs {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.capability-advanced-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.capability-advanced-title .icon {
+  width: 12px;
+  height: 12px;
+}
+.capability-tabs.secondary {
+  grid-template-columns: repeat(4, minmax(112px, 1fr));
+  padding: 0;
 }
 .capability-tabs .ds-tab {
   display: flex;
@@ -1481,6 +1509,9 @@ input:focus, textarea:focus, button:focus { outline: none; }
   place-items: center;
   border-radius: 999px;
   background: var(--surface-2);
+}
+.capability-page-slot {
+  min-width: 0;
 }
 
 .blueprint-panel {
@@ -2277,6 +2308,45 @@ input:focus, textarea:focus, button:focus { outline: none; }
   background: var(--surface);
 }
 .blueprint-example-panel {
+  padding: 12px;
+}
+.blueprint-term-suggestions-head {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.blueprint-term-suggestions-head > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.blueprint-term-suggestions-head small {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+}
+.blueprint-term-suggestions-head .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-3);
+  transition: transform 160ms ease;
+}
+.blueprint-term-suggestions.expanded .blueprint-term-suggestions-head .icon {
+  transform: rotate(180deg);
+}
+.blueprint-term-suggestions-body {
+  display: grid;
+  gap: 8px;
   padding: 12px;
 }
 .blueprint-example-head {
@@ -3494,6 +3564,9 @@ input:focus, textarea:focus, button:focus { outline: none; }
   color: var(--accent);
   font-size: 12px;
 }
+.term-detail-close {
+  display: none;
+}
 .term-definition {
   margin: 14px 0;
   padding: 12px;
@@ -3620,7 +3693,7 @@ input:focus, textarea:focus, button:focus { outline: none; }
   font-size: 11px;
 }
 .term-candidate .btn {
-  height: 26px;
+  min-height: 34px;
   padding: 0 9px;
   font-size: 11px;
 }
@@ -3892,7 +3965,8 @@ input:focus, textarea:focus, button:focus { outline: none; }
   }
   .semantic-two-col,
   .semantic-stats,
-  .term-board {
+  .term-board,
+  .term-workbench {
     grid-template-columns: 1fr 1fr;
   }
   .dataset-ai-suggestions {
@@ -3926,9 +4000,42 @@ input:focus, textarea:focus, button:focus { outline: none; }
   .semantic-two-col,
   .semantic-stats,
   .term-board,
+  .term-workbench,
   .field-card,
   .semantic-asset-row {
     grid-template-columns: 1fr;
+  }
+  .term-detail-panel {
+    display: none;
+  }
+  .term-detail-panel.mobile-open {
+    position: fixed;
+    z-index: 140;
+    inset: 10px;
+    display: block;
+    overflow: auto;
+    max-height: calc(100vh - 20px);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+  }
+  .term-detail-close {
+    display: inline-grid;
+  }
+  .term-side-panel {
+    order: 3;
+  }
+  .term-row,
+  .term-candidate .btn,
+  .blueprint-term-suggestions-head,
+  .blueprint-term-suggestion-row .btn {
+    min-height: 44px;
+  }
+  .term-candidate,
+  .blueprint-term-suggestion-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .blueprint-term-suggestions:not(.expanded) .blueprint-term-suggestions-body {
+    display: none;
   }
   .tab-panel-head {
     flex-direction: column;

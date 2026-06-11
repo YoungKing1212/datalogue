@@ -3,6 +3,7 @@ import { Icon } from './icons';
 import {
   analyzeBlueprintDescription,
   analyzeBlueprintSql,
+  createBusinessTerm,
   createAnalysisBlueprint,
   getAnalysisBlueprintUsageStats,
   listAnalysisBlueprints,
@@ -24,6 +25,17 @@ const SOURCE_META = {
   manual_ai_draft: { label: 'AI业务草稿', color: '#7c3aed', bg: '#ede9fe' },
   manual: { label: '手动填写', color: '#475569', bg: '#f1f5f9' },
 };
+
+const TERM_TYPE_LABELS = {
+  business_object: '业务对象',
+  metric_concept: '指标口径',
+  dimension_enum: '维度枚举',
+  status_enum: '状态枚举',
+  business_process: '业务流程',
+  org_scope: '组织口径',
+};
+
+const termTypeLabel = (type) => TERM_TYPE_LABELS[type] || type || '未分类';
 
 const emptyBlueprint = {
   name: '',
@@ -108,6 +120,58 @@ function arrayToLines(value) {
   return (value || []).join('\n');
 }
 
+function normalizeTermCandidateName(value) {
+  return String(value || '')
+    .replace(/[，。；;:：、,.!?！？()[\]{}"'`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48);
+}
+
+function buildBlueprintTermSuggestions({ blueprint, triggerKeywords, triggerExamples, businessRules }) {
+  const candidates = [];
+  const seen = new Set();
+  const addCandidate = (rawName, sourceLabel, termType = 'business_object', definition = '', aliases = []) => {
+    const name = normalizeTermCandidateName(rawName);
+    if (!name || name.length < 2) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({
+      id: `${sourceLabel}-${key}`,
+      name,
+      display_name: name,
+      term_type: termType,
+      definition,
+      aliases: aliases.filter(Boolean).slice(0, 5),
+      examples: [],
+      sourceLabel,
+      status: 'pending',
+      message: '',
+    });
+  };
+
+  addCandidate(blueprint.name, '蓝图名称', 'business_process', blueprint.description || blueprint.when_to_use || '');
+  (triggerKeywords || []).forEach(item => addCandidate(item, '触发关键词', 'business_object', blueprint.description || ''));
+  (triggerExamples || []).slice(0, 3).forEach(item => addCandidate(item, '触发问法', 'business_process', blueprint.when_to_use || '', [blueprint.name]));
+  (blueprint.parameters || []).forEach(param => {
+    const label = typeof param === 'string' ? param : (param.label || param.name || param.key);
+    addCandidate(label, '参数别名', 'dimension_enum', typeof param === 'string' ? '' : (param.description || ''), [typeof param === 'string' ? '' : param.name]);
+  });
+  (blueprint.output_schema || []).forEach(col => {
+    const label = typeof col === 'string' ? col : (col.label || col.name || col.column || col.key);
+    addCandidate(label, '输出口径', 'metric_concept', typeof col === 'string' ? '' : (col.description || ''), [typeof col === 'string' ? '' : col.name]);
+  });
+
+  const rules = String(businessRules || '').split(/[。\n；;]/).map(item => item.trim()).filter(Boolean);
+  rules.slice(0, 2).forEach(item => {
+    const shortName = item.length > 18 ? item.slice(0, 18) : item;
+    addCandidate(shortName, '口径约束', 'metric_concept', item);
+  });
+
+  return candidates.slice(0, 8);
+}
+
 function BlueprintStatusBadge({ status }) {
   const meta = STATUS_META[status] || STATUS_META.draft;
   return (
@@ -162,6 +226,9 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
   const [stepsText, setStepsText] = useState('[]');
   const [testParamsText, setTestParamsText] = useState('{}');
   const [lowConfidenceFields, setLowConfidenceFields] = useState([]);
+  const [termSuggestions, setTermSuggestions] = useState([]);
+  const [termSuggestionBusyId, setTermSuggestionBusyId] = useState('');
+  const [termSuggestionsOpen, setTermSuggestionsOpen] = useState(false);
   const stepLabels = mode === 'manual'
     ? ['描述场景', 'AI 草稿', '高级配置', '发布与测试']
     : ['上传 SQL', 'AI 审核', '精细配置', '触发与测试'];
@@ -215,6 +282,63 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
     setOutputSchemaText(formatJson(next.output_schema));
     setStepsText(formatJson(next.steps));
     setLowConfidenceFields(result.low_confidence_fields || []);
+    setTermSuggestions(buildBlueprintTermSuggestions({
+      blueprint: next,
+      triggerKeywords: next.trigger_keywords || [],
+      triggerExamples: next.trigger_examples || [],
+      businessRules,
+    }));
+    const defaultOpen = typeof window !== 'undefined'
+      ? window.matchMedia('(min-width: 761px)').matches
+      : true;
+    setTermSuggestionsOpen(defaultOpen);
+  };
+
+  const updateTermSuggestion = (id, patch) => {
+    setTermSuggestions(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)));
+  };
+
+  const handleAcceptTermSuggestion = async (suggestion) => {
+    setTermSuggestionBusyId(suggestion.id);
+    try {
+      const saved = await createBusinessTerm(datasetId, {
+        name: suggestion.name,
+        display_name: suggestion.display_name || suggestion.name,
+        term_type: suggestion.term_type || 'business_object',
+        definition: suggestion.definition || '',
+        aliases: suggestion.aliases || [],
+        examples: suggestion.examples || [],
+        status: 'draft',
+        source: 'blueprint_wizard',
+        extra_metadata: {
+          source: 'analysis_blueprint_wizard',
+          source_label: suggestion.sourceLabel,
+          blueprint_name: form.name || manualName || '',
+        },
+      });
+      updateTermSuggestion(suggestion.id, {
+        status: 'accepted',
+        termId: saved.id,
+        message: '已沉淀到语义词典',
+      });
+    } catch (err) {
+      const message = err.message || '未知错误';
+      updateTermSuggestion(suggestion.id, {
+        status: /409|同名|存在|duplicate/i.test(message) ? 'duplicate' : 'error',
+        message: /409|同名|存在|duplicate/i.test(message)
+          ? '已存在，建议复用已有词条'
+          : `保存失败，不影响蓝图继续：${message}`,
+      });
+    } finally {
+      setTermSuggestionBusyId('');
+    }
+  };
+
+  const handleIgnoreTermSuggestion = (suggestion) => {
+    updateTermSuggestion(suggestion.id, {
+      status: 'ignored',
+      message: '已忽略，不影响蓝图保存',
+    });
   };
 
   const handleAnalyze = async () => {
@@ -457,20 +581,85 @@ function BlueprintWizard({ datasetId, onClose, onSaved }) {
                     </div>
                   )}
                 </section>
-                <section className="blueprint-source-preview">
-                  <div className="blueprint-section-label">{mode === 'manual' ? '业务场景输入' : '原始 SQL，只读'}</div>
-                  <pre>
-                    {mode === 'manual'
-                      ? [
-                          manualName && `蓝图名称：${manualName}`,
-                          businessScenario && `业务场景：${businessScenario}`,
-                          manualQuestionsText && `用户可能问法：\n${manualQuestionsText}`,
-                          expectedOutput && `希望输出：${expectedOutput}`,
-                          businessRules && `数据口径约束：${businessRules}`,
-                        ].filter(Boolean).join('\n\n')
-                      : (sqlText || form.raw_sql)}
-                  </pre>
-                </section>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <section className="blueprint-source-preview">
+                    <div className="blueprint-section-label">{mode === 'manual' ? '业务场景输入' : '原始 SQL，只读'}</div>
+                    <pre>
+                      {mode === 'manual'
+                        ? [
+                            manualName && `蓝图名称：${manualName}`,
+                            businessScenario && `业务场景：${businessScenario}`,
+                            manualQuestionsText && `用户可能问法：\n${manualQuestionsText}`,
+                            expectedOutput && `希望输出：${expectedOutput}`,
+                            businessRules && `数据口径约束：${businessRules}`,
+                          ].filter(Boolean).join('\n\n')
+                        : (sqlText || form.raw_sql)}
+                    </pre>
+                  </section>
+                  <section className={'blueprint-source-preview blueprint-term-suggestions ' + (termSuggestionsOpen ? 'expanded' : '')} aria-label="建议别名与口径">
+                    <button
+                      type="button"
+                      className="blueprint-term-suggestions-head"
+                      onClick={() => setTermSuggestionsOpen(open => !open)}
+                      aria-expanded={termSuggestionsOpen}
+                    >
+                      <span>
+                        <span className="blueprint-section-label">建议别名与口径</span>
+                        <small>{termSuggestions.length ? `${termSuggestions.length} 个候选，可接受或忽略` : '未发现候选，不影响保存'}</small>
+                      </span>
+                      <Icon name="chev_down" />
+                    </button>
+                    <div className="blueprint-term-suggestions-body">
+                      {termSuggestions.length === 0 ? (
+                        <div style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.6 }}>
+                          未发现需要沉淀的别名。可以继续保存蓝图，语义词典不是必填项。
+                        </div>
+                      ) : termSuggestions.map(suggestion => (
+                        <div key={suggestion.id} className="term-candidate blueprint-term-suggestion-row" style={{ alignItems: 'flex-start' }}>
+                          <div>
+                            <strong>{suggestion.display_name || suggestion.name}</strong>
+                            <span>{suggestion.sourceLabel} · {termTypeLabel(suggestion.term_type)}</span>
+                            {suggestion.message && (
+                              <span style={{
+                                display: 'block',
+                                marginTop: 4,
+                                color: suggestion.status === 'error' ? 'var(--neg)' : suggestion.status === 'duplicate' ? 'var(--warn)' : 'var(--text-3)',
+                              }}>
+                                {suggestion.message}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                            {suggestion.status === 'pending' ? (
+                              <>
+                                <button
+                                  className="btn ghost"
+                                  onClick={() => handleIgnoreTermSuggestion(suggestion)}
+                                  disabled={Boolean(termSuggestionBusyId)}
+                                  type="button"
+                                >
+                                  忽略
+                                </button>
+                                <button
+                                  className="btn ghost"
+                                  onClick={() => handleAcceptTermSuggestion(suggestion)}
+                                  disabled={Boolean(termSuggestionBusyId)}
+                                  type="button"
+                                >
+                                  {termSuggestionBusyId === suggestion.id ? '保存中…' : '接受'}
+                                </button>
+                              </>
+                            ) : (
+                              <span className={'term-status ' + (suggestion.status === 'accepted' ? 'active' : 'draft')}>
+                                {suggestion.status === 'accepted' ? '已沉淀' : suggestion.status === 'ignored' ? '已忽略' : suggestion.status === 'duplicate' ? '可复用' : '失败'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                </div>
               </div>
             )}
 
