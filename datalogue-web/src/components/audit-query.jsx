@@ -1,205 +1,388 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Icon } from './icons';
+import { getObservabilityTrace, listObservabilityTraces } from '../api/client';
 
-// AuditQueryScreen — 查询审计：node 级执行 trace，可标记修正写入知识库
+const STATUS_LABEL = {
+  success: '成功',
+  failed: '失败',
+  unknown: '未知',
+};
 
-const AUDIT_NODES = [
-  { id: 'nl',     label: 'NL 输入',     icon: 'chat' },
-  { id: 'lead',   label: 'LeadAgent',  icon: 'brain' },
-  { id: 'intent', label: '意图识别',    icon: 'sparkle' },
-  { id: 'schema', label: 'Schema 召回', icon: 'database' },
-  { id: 'dsl',    label: 'DSL 生成',    icon: 'code' },
-  { id: 'verify', label: 'DSL 校验',    icon: 'check' },
-  { id: 'sql',    label: 'SQL 编译',    icon: 'code' },
-  { id: 'exec',   label: '执行',        icon: 'bolt' },
-  { id: 'report', label: '报告',        icon: 'chart_bar' },
-];
+const STATUS_CLASS = {
+  success: 'ok',
+  failed: 'err',
+  unknown: 'unknown',
+};
 
-const STATUS_COLOR = { done: 'var(--pos)', err: 'var(--neg)', retry: 'var(--warn)', clarify: 'var(--warn)', skipped: 'var(--text-3)' };
+function formatTime(value) {
+  if (!value) return '—';
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
+}
 
-function AuditQueryScreen() {
-  const [selected, setSelected] = useState(null);
-  const [filter, setFilter] = useState('all');
+function formatNumber(value) {
+  if (value == null) return '—';
+  return Number(value).toLocaleString();
+}
 
-  const logs = [
-    {
-      id: '#q-9b41', q: '分析华东区上月各品类销售额，和去年同期对比', user: 'Yan Lin', when: '今天 14:32', status: 'ok',
-      path: 'Simple', dataset: '交易数据集', total: 1186, rows: 6, ms: 1176,
-      trace: [
-        { id: 'nl',     status: 'done', ms: 0 },
-        { id: 'lead',   status: 'done', ms: 8,    note: '分类: Simple' },
-        { id: 'intent', status: 'done', ms: 12 },
-        { id: 'schema', status: 'done', ms: 38, hits: 4 },
-        { id: 'dsl',    status: 'done', ms: 820 },
-        { id: 'verify', status: 'done', ms: 2 },
-        { id: 'sql',    status: 'done', ms: 4 },
-        { id: 'exec',   status: 'done', ms: 302 },
-        { id: 'report', status: 'done', ms: 0 },
-      ],
-    },
-    {
-      id: '#q-9b40', q: '为什么华东订单量下降这么多？拆解到品类和子类', user: 'Yan Lin', when: '今天 14:28', status: 'ok',
-      path: 'Complex', dataset: '交易数据集', total: 4218, rows: 18, ms: 4222,
-      trace: [
-        { id: 'nl',     status: 'done', ms: 0 },
-        { id: 'lead',   status: 'done', ms: 18,  note: '拆解为 3 个子任务' },
-        { id: 'intent', status: 'done', ms: 28, sub: 3 },
-        { id: 'schema', status: 'done', ms: 92 },
-        { id: 'dsl',    status: 'done', ms: 1640, sub: 3 },
-        { id: 'verify', status: 'done', ms: 4 },
-        { id: 'sql',    status: 'done', ms: 12, sub: 3 },
-        { id: 'exec',   status: 'done', ms: 1820, note: '并行执行' },
-        { id: 'report', status: 'done', ms: 604, note: '综合解读' },
-      ],
-    },
-    {
-      id: '#q-9b3e', q: '明天库存不足的 SKU 有哪些', user: 'lisi', when: '今天 11:04', status: 'err',
-      path: 'Simple → Failed', dataset: '供应链数据集', total: 2402, rows: 0, ms: 2402, errMsg: 'DSL 校验失败：未来时间过滤词「明天」无法应用于历史事实表 t_inventory_daily',
-      trace: [
-        { id: 'nl',     status: 'done', ms: 0 },
-        { id: 'lead',   status: 'done', ms: 6 },
-        { id: 'intent', status: 'done', ms: 14 },
-        { id: 'schema', status: 'done', ms: 36 },
-        { id: 'dsl',    status: 'done', ms: 902 },
-        { id: 'verify', status: 'err',  ms: 12, note: '时间词与表性质不匹配' },
-        { id: 'sql',    status: 'skipped', ms: 0 },
-        { id: 'exec',   status: 'skipped', ms: 0 },
-        { id: 'report', status: 'skipped', ms: 0 },
-      ],
-    },
+function statusLabel(status) {
+  return STATUS_LABEL[status] || status || '未知';
+}
+
+function toJsonText(value) {
+  if (value == null || value === '') return '—';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function latencyText(ms) {
+  if (ms == null) return '—';
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  return `${ms}ms`;
+}
+
+function SummaryStrip({ summary }) {
+  const successRate = summary?.success_rate == null
+    ? '—'
+    : `${Math.round(summary.success_rate * 1000) / 10}%`;
+  const items = [
+    { label: '查询总数', value: formatNumber(summary?.total_traces || 0), icon: 'log' },
+    { label: '成功率', value: successRate, icon: 'check' },
+    { label: '失败数', value: formatNumber(summary?.failed_traces || 0), icon: 'warn', tone: 'warn' },
+    { label: 'Token', value: formatNumber(summary?.total_tokens || 0), icon: 'number' },
+    { label: '成本', value: `$${Number(summary?.total_cost || 0).toFixed(4)}`, icon: 'chart_line' },
   ];
+  return (
+    <div className="audit-kpis">
+      {items.map((item) => (
+        <div className="audit-kpi" key={item.label}>
+          <Icon name={item.icon} />
+          <div>
+            <span>{item.label}</span>
+            <strong className={item.tone || ''}>{item.value}</strong>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-  const filtered = filter === 'all' ? logs : logs.filter(l => l.status === filter.replace('err', 'err').replace('ok', 'ok'));
+function TraceList({ items, selectedId, onSelect }) {
+  if (!items.length) {
+    return (
+      <div className="audit-empty-list">
+        <Icon name="inbox" />
+        <span>暂无查询审计记录</span>
+      </div>
+    );
+  }
+  return (
+    <div className="audit-list">
+      {items.map((item) => {
+        const status = item.status || 'unknown';
+        return (
+          <button
+            key={`${item.trace_id}-${item.id}`}
+            type="button"
+            className={`audit-list-item ${selectedId === item.trace_id ? 'active' : ''}`}
+            onClick={() => onSelect(item.trace_id)}
+          >
+            <div className="audit-list-head">
+              <span className={`audit-status ${STATUS_CLASS[status] || 'unknown'}`}>
+                {statusLabel(status)}
+              </span>
+              <code>{item.trace_id}</code>
+            </div>
+            <strong>{item.question || item.conversation_title || '未记录问题'}</strong>
+            <p>{item.answer_preview || item.sql_preview || '暂无输出摘要'}</p>
+            <div className="audit-list-meta">
+              <span>{formatTime(item.created_at)}</span>
+              <span>{item.entry_route || 'unknown'}</span>
+              <span>{formatNumber(item.total_tokens)} tokens</span>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ObservationWaterfall({ detail }) {
+  const observations = detail?.observations || [];
+  const fallback = detail?.fallback_steps || [];
+  const rows = observations.length
+    ? observations.map((item) => ({
+        id: item.id,
+        name: item.name,
+        type: item.type || 'observation',
+        latency: item.latency_ms,
+        status: item.level || item.status_message || 'OK',
+        model: item.model,
+        input: item.input,
+        output: item.output,
+        metadata: item.metadata,
+      }))
+    : fallback.map((item) => ({
+        id: item.id,
+        name: item.name,
+        type: 'local_step',
+        latency: item.latency_ms,
+        status: item.status,
+        metadata: item.metadata,
+      }));
+
+  if (!rows.length) {
+    return (
+      <div className="audit-empty-panel">
+        <Icon name="trace" />
+        <span>暂无 observation，已保留 Trace ID，可继续用消息 metadata 审计。</span>
+      </div>
+    );
+  }
 
   return (
-    <div style={{padding: 24}}>
-      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24}}>
-        <div>
-          <h1 style={{margin: '0 0 6px', fontSize: 22, fontWeight: 500}}>查询审计</h1>
-          <p style={{color: 'var(--text-3)', fontSize: 13, margin: 0}}>NL → LeadAgent → 意图 → Schema → DSL → 校验 → SQL → 执行 → 报告 全链路追踪</p>
-        </div>
-      </div>
+    <div className="audit-waterfall">
+      {rows.map((row, index) => (
+        <details className="audit-observation" key={`${row.id || row.name}-${index}`}>
+          <summary>
+            <span className="audit-observation-index">{index + 1}</span>
+            <span className="audit-observation-name">{row.name || row.id}</span>
+            <span className="audit-observation-type">{row.type}</span>
+            {row.model && <span className="audit-observation-model">{row.model}</span>}
+            <span className="audit-observation-ms">{latencyText(row.latency)}</span>
+          </summary>
+          <div className="audit-observation-body">
+            <div>
+              <span>输入</span>
+              <pre>{toJsonText(row.input)}</pre>
+            </div>
+            <div>
+              <span>输出</span>
+              <pre>{toJsonText(row.output)}</pre>
+            </div>
+            <div>
+              <span>元数据</span>
+              <pre>{toJsonText(row.metadata)}</pre>
+            </div>
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
 
-      {/* KPI Strip */}
-      <div style={{display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 24}}>
-        {[
-          { label: '今日查询', val: '284', unit: '次' },
-          { label: '成功率', val: '96.8', unit: '%', pos: true },
-          { label: 'P95 延迟', val: '1.2', unit: 's' },
-          { label: '复杂拆解率', val: '18%', unit: '' },
-          { label: '待修正', val: '3', unit: '', warn: true },
-        ].map(s => (
-          <div key={s.label} style={{padding: 12, background: 'var(--surface)', border: '1px solid var(--hairline)', borderRadius: 8}}>
-            <div style={{fontSize: 11, color: 'var(--text-3)', marginBottom: 4}}>{s.label}</div>
-            <div style={{fontSize: 20, fontWeight: 600, fontFamily: 'var(--font-mono)', color: s.warn ? 'var(--warn)' : 'var(--text)'}}>{s.val}<span style={{fontSize: 11, color: 'var(--text-3)'}}>{s.unit}</span></div>
+function ScoresPanel({ scores }) {
+  if (!scores?.length) return null;
+  return (
+    <div className="audit-section">
+      <div className="audit-section-title">Scores</div>
+      <div className="audit-scores">
+        {scores.map((score) => (
+          <div className="audit-score" key={score.id || score.name}>
+            <span>{score.name || 'score'}</span>
+            <strong>{String(score.value ?? '—')}</strong>
+            {score.comment && <em>{score.comment}</em>}
           </div>
         ))}
       </div>
+    </div>
+  );
+}
 
-      <div style={{display: 'flex', gap: 20}}>
-        {/* 左侧: 列表 */}
-        <div style={{width: 360, flexShrink: 0}}>
-          {/* Filter tabs */}
-          <div style={{display: 'flex', gap: 4, marginBottom: 12}}>
-            {[
-              { id: 'all', label: '全部' },
-              { id: 'ok', label: '成功' },
-              { id: 'err', label: '失败' },
-              { id: 'complex', label: '复杂' },
-            ].map(f => (
-              <button key={f.id} onClick={() => setFilter(f.id)} style={{
-                padding: '4px 10px', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12,
-                background: filter === f.id ? 'var(--accent-soft)' : 'var(--surface)',
-                color: filter === f.id ? 'var(--accent)' : 'var(--text-2)',
-              }}>{f.label}</button>
+function DetailPanel({ detail, loading }) {
+  if (loading) {
+    return (
+      <div className="audit-detail-placeholder">
+        <Icon name="refresh" />
+        <span>正在加载 Trace 详情...</span>
+      </div>
+    );
+  }
+  if (!detail?.found) {
+    return (
+      <div className="audit-detail-placeholder">
+        <Icon name="search" />
+        <span>选择左侧查询记录查看链路详情</span>
+      </div>
+    );
+  }
+
+  const item = detail.item || {};
+  const trace = detail.trace || {};
+  return (
+    <div className="audit-detail">
+      <div className="audit-detail-head">
+        <div>
+          <div className="audit-detail-title">{item.question || trace.input || '查询链路'}</div>
+          <div className="audit-detail-meta">
+            <span>{item.trace_id}</span>
+            <span>{formatTime(item.created_at || trace.timestamp)}</span>
+            <span>{detail.source === 'langfuse' ? 'Langfuse + 本地索引' : '本地 fallback'}</span>
+          </div>
+        </div>
+        <span className={`audit-status ${STATUS_CLASS[item.status] || 'unknown'}`}>
+          {statusLabel(item.status)}
+        </span>
+      </div>
+
+      {detail.langfuse_error && (
+        <div className="audit-warning">
+          <Icon name="warn" />
+          <span>Langfuse trace 拉取失败，当前展示本地 fallback：{detail.langfuse_error}</span>
+        </div>
+      )}
+
+      <div className="audit-section">
+        <div className="audit-section-title">Trace Waterfall</div>
+        <ObservationWaterfall detail={detail} />
+      </div>
+
+      <div className="audit-grid">
+        <div className="audit-section">
+          <div className="audit-section-title">输入</div>
+          <pre className="audit-code">{toJsonText(trace.input || item.question)}</pre>
+        </div>
+        <div className="audit-section">
+          <div className="audit-section-title">输出</div>
+          <pre className="audit-code">{toJsonText(trace.output || item.answer_preview)}</pre>
+        </div>
+      </div>
+
+      <div className="audit-section">
+        <div className="audit-section-title">SQL</div>
+        <pre className="audit-code">{item.sql_preview || '本次未记录 SQL'}</pre>
+      </div>
+
+      {item.error && (
+        <div className="audit-error-box">
+          <Icon name="warn" />
+          <div>
+            <strong>失败原因</strong>
+            <p>{item.error}</p>
+          </div>
+        </div>
+      )}
+
+      <ScoresPanel scores={detail.scores} />
+    </div>
+  );
+}
+
+function AuditQueryScreen() {
+  const initialTraceId = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('trace_id');
+  }, []);
+  const [filter, setFilter] = useState('all');
+  const [data, setData] = useState({ summary: {}, items: [] });
+  const [selectedId, setSelectedId] = useState(initialTraceId);
+  const [detail, setDetail] = useState(null);
+  const [loadingList, setLoadingList] = useState(false);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingList(true);
+    setError('');
+    listObservabilityTraces({ status: filter, limit: 80 })
+      .then((result) => {
+        if (cancelled) return;
+        setData(result || { summary: {}, items: [] });
+        const firstId = result?.items?.[0]?.trace_id || null;
+        if (firstId) setSelectedId((current) => current || firstId);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(`查询审计列表加载失败：${err.message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingList(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filter]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setDetail(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoadingDetail(true);
+    setError('');
+    getObservabilityTrace(selectedId)
+      .then((result) => {
+        if (cancelled) return;
+        setDetail(result);
+        const url = new URL(window.location.href);
+        url.searchParams.set('trace_id', selectedId);
+        window.history.replaceState(null, '', url.toString());
+      })
+      .catch((err) => {
+        if (!cancelled) setError(`Trace 详情加载失败：${err.message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetail(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
+  const filters = [
+    { id: 'all', label: '全部' },
+    { id: 'success', label: '成功' },
+    { id: 'failed', label: '失败' },
+  ];
+
+  return (
+    <div className="audit-page">
+      <div className="audit-page-head">
+        <div>
+          <h1>查询审计</h1>
+          <p>在 Datalogue 内查看问数链路、Langfuse observations、scores、SQL 与本地 fallback。</p>
+        </div>
+        <button className="btn ghost" type="button" onClick={() => window.location.reload()}>
+          <Icon name="refresh" />
+          刷新
+        </button>
+      </div>
+
+      <SummaryStrip summary={data.summary} />
+      {error && <div className="audit-warning"><Icon name="warn" /><span>{error}</span></div>}
+
+      <div className="audit-layout">
+        <aside className="audit-sidebar">
+          <div className="audit-filters">
+            {filters.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={filter === item.id ? 'active' : ''}
+                onClick={() => setFilter(item.id)}
+              >
+                {item.label}
+              </button>
             ))}
           </div>
+          {loadingList ? (
+            <div className="audit-empty-list"><Icon name="refresh" /><span>正在加载...</span></div>
+          ) : (
+            <TraceList items={data.items || []} selectedId={selectedId} onSelect={setSelectedId} />
+          )}
+        </aside>
 
-          {filtered.map(log => (
-            <div key={log.id} onClick={() => setSelected(log)} style={{
-              padding: 12, background: 'var(--surface)', border: '1px solid var(--hairline)',
-              borderRadius: 8, marginBottom: 8, cursor: 'pointer',
-              borderColor: selected?.id === log.id ? 'var(--accent)' : 'var(--hairline)',
-            }}>
-              <div style={{display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6}}>
-                <span style={{fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-3)'}}>{log.id}</span>
-                <span style={{fontSize: 10, padding: '1px 6px', borderRadius: 4, background: log.status === 'ok' ? 'var(--pos-soft)' : 'var(--neg-soft)', color: log.status === 'ok' ? 'var(--pos)' : 'var(--neg)'}}>
-                  {log.status === 'ok' ? '成功' : '失败'}
-                </span>
-              </div>
-              <div style={{fontSize: 13, fontWeight: 500, marginBottom: 4}}>{log.q}</div>
-              <div style={{fontSize: 11, color: 'var(--text-3)'}}>{log.user} · {log.when} · {log.path} · {log.total} 结果 · {log.ms}ms</div>
-            </div>
-          ))}
-        </div>
-
-        {/* 右侧: 详情 */}
-        {selected ? (
-          <div style={{flex: 1, minWidth: 0}}>
-            <div style={{marginBottom: 16}}>
-              <h3 style={{margin: '0 0 8px', fontSize: 15}}>{selected.q}</h3>
-              <div style={{fontSize: 12, color: 'var(--text-3)'}}>{selected.user} · {selected.when} · {selected.dataset}</div>
-            </div>
-
-            {/* Trace Grid */}
-            <div style={{display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: 4, marginBottom: 20}}>
-              {selected.trace.map(node => {
-                const def = AUDIT_NODES.find(n => n.id === node.id);
-                return (
-                  <div key={node.id} style={{textAlign: 'center', padding: '8px 4px', background: 'var(--surface)', borderRadius: 6, border: '1px solid ' + (STATUS_COLOR[node.status] || 'var(--hairline)')}}>
-                    <div style={{fontSize: 16, marginBottom: 4, opacity: 0.6}}><Icon name={def?.icon || 'circle'} /></div>
-                    <div style={{fontSize: 10, fontWeight: 600, marginBottom: 2}}>{def?.label || node.id}</div>
-                    <div style={{fontSize: 11, color: STATUS_COLOR[node.status] || 'var(--text-3)'}}>
-                      {node.status === 'done' ? `${node.ms}ms` : node.status === 'err' ? '失败' : node.status === 'retry' ? '重试' : '跳过'}
-                    </div>
-                    {node.note && <div style={{fontSize: 9, color: 'var(--text-3)', marginTop: 2}}>{node.note}</div>}
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Error message if failed */}
-            {selected.errMsg && (
-              <div style={{padding: 12, background: 'var(--neg-soft)', border: '1px solid var(--neg)', borderRadius: 8, marginBottom: 16}}>
-                <div style={{fontSize: 12, fontWeight: 600, color: 'var(--neg)', marginBottom: 4}}>错误信息</div>
-                <div style={{fontSize: 12, color: 'var(--neg)'}}>{selected.errMsg}</div>
-                <button className="btn" style={{marginTop: 8, height: 28, fontSize: 12}}>
-                  <Icon name="book" /> 标记修正 → 写入知识库
-                </button>
-              </div>
-            )}
-
-            {/* Artifacts */}
-            <div style={{padding: 16, background: 'var(--surface)', border: '1px solid var(--hairline)', borderRadius: 8}}>
-              <div style={{fontSize: 13, fontWeight: 600, marginBottom: 12}}>NL → DSL → SQL</div>
-              <div style={{marginBottom: 12}}>
-                <div style={{fontSize: 11, color: 'var(--text-3)', marginBottom: 4}}>用户问题 (NL)</div>
-                <div style={{fontSize: 12, padding: 8, background: 'var(--bg-2)', borderRadius: 4}}>{selected.q}</div>
-              </div>
-              <div style={{marginBottom: 12}}>
-                <div style={{fontSize: 11, color: 'var(--text-3)', marginBottom: 4}}>DSL 语义</div>
-                <code style={{fontSize: 12, display: 'block', padding: 8, background: 'var(--bg-2)', borderRadius: 4, fontFamily: 'var(--font-mono)', color: 'var(--accent)'}}>
-                  {selected.path === 'Complex' ? 'multi_relation_split{ relations: [orders, order_items, products] }' : 'simple_agg{ metric: "sales", group_by: ["region", "category"] }'}
-                </code>
-              </div>
-              <div>
-                <div style={{fontSize: 11, color: 'var(--text-3)', marginBottom: 4}}>生成 SQL</div>
-                <code style={{fontSize: 12, display: 'block', padding: 8, background: 'var(--bg-2)', borderRadius: 4, fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', color: 'var(--text)'}}>
-                  {selected.status === 'err'
-                    ? '-- SQL 生成失败\n-- ' + (selected.errMsg || '未知错误')
-                    : selected.path === 'Complex'
-                    ? 'SELECT ... FROM orders o\nJOIN order_items oi ON o.id = oi.order_id\nJOIN products p ON oi.product_id = p.id\nGROUP BY o.region, p.category'
-                    : 'SELECT region, category, SUM(amount) FROM orders\nWHERE dt >= date_trunc(\'month\', NOW()) - interval \'1\' month\nGROUP BY region, category'}
-                </code>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div style={{flex: 1, padding: 48, textAlign: 'center', color: 'var(--text-3)', background: 'var(--surface)', borderRadius: 8, border: '1px dashed var(--hairline)'}}>
-            <Icon name="log" style={{fontSize: 32, marginBottom: 8, opacity: 0.4}} />
-            <div>选择左侧查询记录查看详情</div>
-          </div>
-        )}
+        <main className="audit-main">
+          <DetailPanel detail={detail} loading={loadingDetail} />
+        </main>
       </div>
     </div>
   );

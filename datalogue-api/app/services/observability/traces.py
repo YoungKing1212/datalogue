@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -141,7 +142,7 @@ def _trace_index_item(db: Session, index: models.ObservabilityTraceIndex) -> dic
         "message_id": index.message_id,
         "dataset_id": index.dataset_id,
         "question": question or conversation.title if conversation else question,
-        "answer_preview": _truncate(message.content if message else "", 160),
+        "answer_preview": _truncate(_strip_think(message.content if message else ""), 160),
         "sql_preview": _truncate(sql_list[0] if sql_list else "", 220),
         "entry_route": index.entry_route or "unknown",
         "status": index.status or "unknown",
@@ -351,6 +352,11 @@ def _latency_ms(observation: dict[str, Any]) -> int | None:
 def _truncate(text: Any, max_length: int) -> str:
     value = str(text or "")
     return value if len(value) <= max_length else value[:max_length] + "..."
+
+
+def _strip_think(text: Any) -> str:
+    value = str(text or "")
+    return re.sub(r"<think>.*?</think>", "", value, flags=re.DOTALL | re.IGNORECASE).strip()
 
 
 def _iso(value: Any) -> str | None:
