@@ -32,7 +32,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('message', sa.Column('step_trace', sa.JSON(), nullable=True))
+    op.add_column('message', sa.Column('step_trace', sa.JSON(), nullable=True, comment='LangGraph 工作流执行步骤轨迹'))
 
 
 def downgrade() -> None:

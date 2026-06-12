@@ -40,14 +40,14 @@ def table_exists(table_name):
 def upgrade() -> None:
     # source_table and source_column already exist in the database
     # (created manually in a previous session), so we only add columns here.
-    op.add_column('semantic_dimension', sa.Column('table_name', sa.String(length=100), nullable=True))
-    op.add_column('semantic_dimension', sa.Column('join_to', sa.String(length=100), nullable=True))
-    op.add_column('semantic_dimension', sa.Column('join_key', sa.String(length=100), nullable=True))
-    op.add_column('semantic_dimension', sa.Column('hierarchy', sa.JSON(), nullable=True))
-    op.add_column('semantic_metric', sa.Column('table_name', sa.String(length=100), nullable=True))
-    op.add_column('semantic_metric', sa.Column('time_field', sa.String(length=100), nullable=True))
-    op.add_column('semantic_metric', sa.Column('granularity', sa.String(length=20), nullable=True))
-    op.add_column('semantic_metric', sa.Column('format_str', sa.String(length=50), nullable=True))
+    op.add_column('semantic_dimension', sa.Column('table_name', sa.String(length=100), nullable=True, comment='维度所属物理表名'))
+    op.add_column('semantic_dimension', sa.Column('join_to', sa.String(length=100), nullable=True, comment='关联目标表名'))
+    op.add_column('semantic_dimension', sa.Column('join_key', sa.String(length=100), nullable=True, comment='关联键列名'))
+    op.add_column('semantic_dimension', sa.Column('hierarchy', sa.JSON(), nullable=True, comment='层级结构定义'))
+    op.add_column('semantic_metric', sa.Column('table_name', sa.String(length=100), nullable=True, comment='指标所属物理表名'))
+    op.add_column('semantic_metric', sa.Column('time_field', sa.String(length=100), nullable=True, comment='时间字段列名'))
+    op.add_column('semantic_metric', sa.Column('granularity', sa.String(length=20), nullable=True, comment='时间粒度（day/week/month等）'))
+    op.add_column('semantic_metric', sa.Column('format_str', sa.String(length=50), nullable=True, comment='数值格式化模板'))
 
 
 def downgrade() -> None:

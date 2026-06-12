@@ -15,14 +15,15 @@
 
 import json
 import re
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, Any
 
 import logging
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
 from app.graph.llm import get_llm
 from app.graph.state import AgentState
@@ -56,6 +57,117 @@ from app.utils.query_constraints import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_SQL_RETRY_COUNT = 3
+REPORT_RESULT_MAX_ROWS = 30
+REPORT_CELL_MAX_CHARS = 120
+
+
+def _strip_think_blocks(text: str) -> str:
+    """移除模型泄露的思考标签，避免最终回答和 trace 被推理草稿污染。"""
+
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text or "", flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def _llm_thinking_enabled(llm) -> bool:
+    """读取模型配置中的 Think 开关，未知客户端默认保留原始输出。"""
+
+    return bool(getattr(llm, "datalogue_thinking_enabled", True))
+
+
+def _clean_llm_content_if_needed(llm, content: Any) -> Any:
+    """Think 关闭时清理模型泄露的思考标签。"""
+
+    if _llm_thinking_enabled(llm) or not isinstance(content, str):
+        return content
+    return _strip_think_blocks(content)
+
+
+def _clean_llm_response_if_needed(llm, response):
+    """返回清理后的 LLM 响应，并尽量保留 usage/metadata。"""
+
+    content = getattr(response, "content", response)
+    cleaned = _clean_llm_content_if_needed(llm, content)
+    if cleaned == content:
+        return response
+    return AIMessage(
+        content=cleaned,
+        additional_kwargs=getattr(response, "additional_kwargs", {}) or {},
+        response_metadata=getattr(response, "response_metadata", {}) or {},
+        usage_metadata=getattr(response, "usage_metadata", None),
+        id=getattr(response, "id", None),
+        name=getattr(response, "name", None),
+    )
+
+
+def _compact_report_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """压缩报告生成输入，控制 LLM 上下文体量。"""
+
+    compact_rows = []
+    for row in rows[:REPORT_RESULT_MAX_ROWS]:
+        compact_row: dict[str, Any] = {}
+        for key, value in row.items():
+            text = str(value)
+            if len(text) > REPORT_CELL_MAX_CHARS:
+                text = text[:REPORT_CELL_MAX_CHARS] + "..."
+            compact_row[key] = text
+        compact_rows.append(compact_row)
+    return compact_rows, max(0, len(rows) - len(compact_rows))
+
+
+def _llm_perf_metadata(
+    *,
+    started_at: float,
+    ended_at: float,
+    first_token_at: float | None = None,
+    usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """生成 LLM 性能观测指标，供 Langfuse metadata 展示。"""
+
+    latency_ms = max(0, int((ended_at - started_at) * 1000))
+    output_tokens = int((usage or {}).get("completion_tokens") or (usage or {}).get("output_tokens") or 0)
+    metadata: dict[str, Any] = {"latency_ms": latency_ms}
+    if first_token_at is not None:
+        ttft_ms = max(0, int((first_token_at - started_at) * 1000))
+        decode_seconds = max(ended_at - first_token_at, 0.001)
+        metadata["ttft_ms"] = ttft_ms
+        metadata["tps"] = round(output_tokens / decode_seconds, 2) if output_tokens else 0
+    else:
+        total_seconds = max(ended_at - started_at, 0.001)
+        metadata["ttft_ms"] = None
+        metadata["tps"] = round(output_tokens / total_seconds, 2) if output_tokens else 0
+        metadata["ttft_source"] = "unavailable_non_streaming"
+    return metadata
+
+
+def _invoke_llm_with_metrics(llm, messages: list):
+    """优先用流式聚合调用 LLM，以便获取真实首 token 时间。"""
+
+    stream = getattr(llm, "stream", None)
+    if getattr(llm, "streaming", False) is True and callable(stream):
+        content_parts: list[str] = []
+        usage = None
+        response_metadata: dict[str, Any] = {}
+        first_token_at = None
+        first_token_wall = None
+        for chunk in stream(messages):
+            content = getattr(chunk, "content", "") or ""
+            if content and first_token_at is None:
+                first_token_at = time.perf_counter()
+                first_token_wall = datetime.now(timezone.utc)
+            content_parts.append(content)
+            chunk_usage = getattr(chunk, "usage_metadata", None)
+            if chunk_usage:
+                usage = chunk_usage
+            chunk_metadata = getattr(chunk, "response_metadata", None)
+            if isinstance(chunk_metadata, dict):
+                response_metadata.update(chunk_metadata)
+        response = AIMessage(
+            content=_clean_llm_content_if_needed(llm, "".join(content_parts)),
+            response_metadata=response_metadata,
+            usage_metadata=usage,
+        )
+        return response, first_token_at, first_token_wall
+    return _clean_llm_response_if_needed(llm, llm.invoke(messages)), None, None
 
 # 通用工具（json 解析 / token 计量 / prompt 构建 / 跨方言 SQL）拆到 app.utils
 from app.utils import (
@@ -76,20 +188,50 @@ def _safe_llm_invoke(llm, messages: list, path: str = ""):
     """统一封装 llm.invoke，捕获 API 级错误并转为结构化异常信息。
     返回 (response, error_str)，正常时 error_str 为 None。
     """
+    tracer = get_observability_tracer()
+    generation = tracer.start_generation(
+        name=f"llm.{path or 'invoke'}",
+        model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
+        messages=messages,
+        metadata={"path": path, "thinking_enabled": _llm_thinking_enabled(llm)},
+    )
+    started_at = time.perf_counter()
     try:
-        response = llm.invoke(messages)
-        usage = _extract_token_usage(response)
-        get_observability_tracer().record_generation(
-            name=f"llm.{path or 'invoke'}",
-            model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
-            messages=messages,
+        response, first_token_at, first_token_wall = _invoke_llm_with_metrics(llm, messages)
+        ended_at = time.perf_counter()
+        usage = _extract_token_usage(response, messages)
+        tracer.end_generation(
+            generation,
             output=getattr(response, "content", response),
             usage=usage,
-            metadata={"path": path},
+            completion_start_time=first_token_wall,
+            metadata={
+                "path": path,
+                "thinking_enabled": _llm_thinking_enabled(llm),
+                **_llm_perf_metadata(
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    first_token_at=first_token_at,
+                    usage=usage,
+                ),
+            },
         )
         return response, None
     except Exception as e:
+        ended_at = time.perf_counter()
         err_str = str(e)
+        tracer.end_generation(
+            generation,
+            output=f"LLM 调用失败: {err_str[:300]}",
+            usage=None,
+            metadata={
+                "path": path,
+                "thinking_enabled": _llm_thinking_enabled(llm),
+                "status": "error",
+                "error": err_str[:1000],
+                **_llm_perf_metadata(started_at=started_at, ended_at=ended_at),
+            },
+        )
         logger.error(f"LLM 调用失败 path={path}: {err_str[:300]}")
         # 敏感内容过滤（422 / new_sensitive）：不可重试
         if "new_sensitive" in err_str or "422" in err_str:
@@ -614,7 +756,16 @@ def intent_recognition_node(state: AgentState, db: Session | None = None) -> Dic
         human_text = f"【历史上下文】\n{ctx}\n\n【当前问题】\n{question}"
 
     human = HumanMessage(content=human_text)
-    response = llm.invoke([system, human])
+    tracer = get_observability_tracer()
+    generation = tracer.start_generation(
+        name="llm.intent_recognition",
+        model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
+        messages=[system, human],
+        metadata={"path": "intent_recognition", "thinking_enabled": _llm_thinking_enabled(llm)},
+    )
+    started_at = time.perf_counter()
+    response, first_token_at, first_token_wall = _invoke_llm_with_metrics(llm, [system, human])
+    ended_at = time.perf_counter()
     result = _safe_json_parse(str(response.content))
 
     intent = result.get("intent", "query")
@@ -623,7 +774,23 @@ def intent_recognition_node(state: AgentState, db: Session | None = None) -> Dic
 
     answer = direct_answer if intent == "chitchat" else None
     logger.info(f"意图识别结果: intent={intent}")
-    usage = _extract_token_usage(response)
+    usage = _extract_token_usage(response, [system, human])
+    tracer.end_generation(
+        generation,
+        output=getattr(response, "content", response),
+        usage=usage,
+        completion_start_time=first_token_wall,
+        metadata={
+            "path": "intent_recognition",
+            "thinking_enabled": _llm_thinking_enabled(llm),
+            **_llm_perf_metadata(
+                started_at=started_at,
+                ended_at=ended_at,
+                first_token_at=first_token_at,
+                usage=usage,
+            ),
+        },
+    )
     current_usage = state.get("token_usage") or {}
     merged = _merge_token_usage(current_usage, usage)
 
@@ -1900,7 +2067,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
             return {"dsl": {}, "sql": None, "sql_list": [], "error": llm_err, "should_retry": False}
         result = _safe_json_parse(str(response.content))
         sql = result.get("sql", "")
-        usage = _extract_token_usage(response)
+        usage = _extract_token_usage(response, [system, human])
         merged = _merge_token_usage(state.get("token_usage") or {}, usage)
         logger.debug(
             "【DSL生成 LLM 返回】路径=真实Schema\n[Raw]\n%s\n[Parsed]\n%s\n[Usage]\n%s\n---END OF DSL RESPONSE---",
@@ -1981,7 +2148,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
                 return {"dsl": {}, "sql": None, "sql_list": [], "generation_mode": "inferred", "error": llm_err, "should_retry": False}
             result = _safe_json_parse(str(response.content))
             sql = result.get("sql", "")
-            usage = _extract_token_usage(response)
+            usage = _extract_token_usage(response, [system, human])
             merged = _merge_token_usage(state.get("token_usage") or {}, usage)
             logger.debug(
                 "【DSL生成 LLM 返回】路径=语义层-推断\n[Raw]\n%s\n[Parsed]\n%s\n[Usage]\n%s\n---END OF DSL RESPONSE---",
@@ -2095,7 +2262,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         if llm_err:
             return {"dsl": {}, "sql": None, "sql_list": [], "generation_mode": "semantic", "error": llm_err, "should_retry": False}
         dsl = normalize_dsl(_safe_json_parse(str(response.content)))
-        usage = _extract_token_usage(response)
+        usage = _extract_token_usage(response, [system, human])
         merged = _merge_token_usage(state.get("token_usage") or {}, usage)
         logger.debug(
             "【DSL生成 LLM 返回】路径=语义层-确定性\n[Raw]\n%s\n[Parsed]\n%s\n[Usage]\n%s\n---END OF DSL RESPONSE---",
@@ -2133,7 +2300,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         return {"dsl": {}, "sql": None, "sql_list": [], "error": llm_err, "should_retry": False}
     result = _safe_json_parse(str(response.content))
     sql = result.get("sql", "")
-    usage = _extract_token_usage(response)
+    usage = _extract_token_usage(response, [system, human])
     merged = _merge_token_usage(state.get("token_usage") or {}, usage)
     logger.debug(
         "【DSL生成 LLM 返回】路径=无Schema\n[Raw]\n%s\n[Parsed]\n%s\n[Usage]\n%s\n---END OF DSL RESPONSE---",
@@ -2729,6 +2896,15 @@ def sql_execute_node(db: Session):
         sql = state.get("sql")
         logger.info(f"SQL执行节点开始: sql={sql[:80]}..." if sql else "SQL执行节点开始: SQL为空")
         if not sql:
+            upstream_error = state.get("error")
+            if upstream_error:
+                logger.warning("SQL为空，保留上游错误: %s", upstream_error)
+                return {
+                    "sql_result": None,
+                    "error": upstream_error,
+                    "should_retry": bool(state.get("should_retry")),
+                    "sql_guard": state.get("sql_guard"),
+                }
             logger.warning("SQL为空，跳过执行")
             return {"sql_result": None, "error": "SQL 为空", "should_retry": True}
 
@@ -3053,7 +3229,7 @@ def sql_audit_node(db: Session):
         # token 计量
         merged = state.get("token_usage")
         if response is not None:
-            usage = _extract_token_usage(response)
+            usage = _extract_token_usage(response, [system, human])
             merged = _merge_token_usage(state.get("token_usage") or {}, usage)
 
         _write_sql_diagnosis_log(db, state, diagnosis)
@@ -3103,10 +3279,13 @@ async def report_generator_node(
 
     rows = sql_result.get("rows", [])
 
-    summary_lines = [f"查询结果共 {len(rows)} 行："]
-    for row in rows:
+    report_rows, omitted_rows = _compact_report_rows(rows)
+    summary_lines = [f"查询结果共 {len(rows)} 行，以下展开前 {len(report_rows)} 行："]
+    for row in report_rows:
         parts = [f"{k}={v}" for k, v in row.items()]
         summary_lines.append("  " + ", ".join(parts))
+    if omitted_rows:
+        summary_lines.append(f"  （其余 {omitted_rows} 行未展开，请基于已展开样本和总行数总结趋势）")
 
     result_text = "\n".join(summary_lines)
 
@@ -3121,12 +3300,27 @@ async def report_generator_node(
 
     full_content = ""
     usage = None
+    tracer = get_observability_tracer()
+    generation = tracer.start_generation(
+        name="llm.report_generator",
+        model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
+        messages=[system, human],
+        metadata={"path": "report_generator", "thinking_enabled": _llm_thinking_enabled(llm)},
+    )
+    started_at = time.perf_counter()
+    first_token_at = None
+    first_token_wall = None
     async for chunk in llm.astream([system, human]):
-        full_content += chunk.content
+        content = chunk.content or ""
+        if content and first_token_at is None:
+            first_token_at = time.perf_counter()
+            first_token_wall = datetime.now(timezone.utc)
+        full_content += content
         if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
             usage = chunk.usage_metadata
 
-    answer = full_content.strip()
+    ended_at = time.perf_counter()
+    answer = _clean_llm_content_if_needed(llm, full_content)
 
     # 尝试从最后一个 chunk 的 usage_metadata 提取 token 用量
     if usage:
@@ -3139,17 +3333,28 @@ async def report_generator_node(
             "total_tokens": total,
         }
     else:
-        token_usage = None
+        token_usage = _extract_token_usage(
+            type("LLMResponse", (), {"content": answer, "usage_metadata": None})(),
+            [system, human],
+        )
 
     current_usage = state.get("token_usage") or {}
     merged = _merge_token_usage(current_usage, token_usage or {})
-    get_observability_tracer().record_generation(
-        name="llm.report_generator",
-        model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
-        messages=[system, human],
+    tracer.end_generation(
+        generation,
         output=answer,
         usage=token_usage or {},
-        metadata={"path": "report_generator"},
+        completion_start_time=first_token_wall,
+        metadata={
+            "path": "report_generator",
+            "thinking_enabled": _llm_thinking_enabled(llm),
+            **_llm_perf_metadata(
+                started_at=started_at,
+                ended_at=ended_at,
+                first_token_at=first_token_at,
+                usage=token_usage,
+            ),
+        },
     )
 
     logger.info("报告生成完成")

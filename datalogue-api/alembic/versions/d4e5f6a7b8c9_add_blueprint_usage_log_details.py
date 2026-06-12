@@ -32,8 +32,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("blueprint_usage_log", sa.Column("row_count", sa.Integer(), nullable=True))
-    op.add_column("blueprint_usage_log", sa.Column("diagnosis", sa.JSON(), nullable=True))
+    op.add_column("blueprint_usage_log", sa.Column("row_count", sa.Integer(), nullable=True, comment='本次执行返回的数据行数'))
+    op.add_column("blueprint_usage_log", sa.Column("diagnosis", sa.JSON(), nullable=True, comment='结构化失败诊断信息'))
 
 
 def downgrade() -> None:

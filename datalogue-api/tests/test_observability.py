@@ -14,7 +14,12 @@
 from app import models
 from app.core.config import Settings
 from app.services.observability.masking import sanitize_payload, sanitize_sql, sanitize_text
-from app.services.observability.tracer import DatalogueTracer, build_langfuse_trace_url
+from app.services.observability.tracer import (
+    DatalogueTracer,
+    ObservabilityTraceContext,
+    build_langfuse_trace_url,
+)
+from app.utils.token import extract_token_usage
 
 
 def test_masking_hides_sensitive_values():
@@ -57,6 +62,82 @@ def test_langfuse_trace_url_builder():
         == "http://localhost:3000/project/project%201/traces/trace%2F1"
     )
     assert build_langfuse_trace_url(base_url="http://localhost:3000", project_id=None, trace_id="t") is None
+
+
+def test_token_usage_estimates_when_provider_usage_missing():
+    """模型未返回 usage_metadata 时，本地估算 usage，避免观测里全是 0。"""
+
+    response = type("LLMResponse", (), {"content": "综合评分较高。", "usage_metadata": None})()
+    message = type("Message", (), {"type": "human", "content": "供应商综合评估与分级排名"})()
+
+    usage = extract_token_usage(response, [message])
+
+    assert usage["prompt_tokens"] > 0
+    assert usage["completion_tokens"] > 0
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+    assert usage["usage_source"] == "estimated"
+
+
+def test_langfuse_observation_names_are_chinese():
+    """Langfuse 展示名用中文，内部技术名保留在 metadata。"""
+
+    calls = []
+    updates = []
+
+    class DummyObservation:
+        def update(self, **kwargs):
+            updates.append(kwargs)
+
+    class DummyManager:
+        def __init__(self, kwargs):
+            self.kwargs = kwargs
+            self.observation = DummyObservation()
+
+        def __enter__(self):
+            calls.append(self.kwargs)
+            return self.observation
+
+        def __exit__(self, *_args):
+            return None
+
+    class DummyClient:
+        def start_as_current_observation(self, **kwargs):
+            return DummyManager(kwargs)
+
+    tracer = DatalogueTracer(
+        Settings(LANGFUSE_ENABLED=True),
+        client=DummyClient(),
+    )
+    ctx = ObservabilityTraceContext(
+        trace_id="trace-1",
+        session_id="session-1",
+        conversation_id=1,
+        dataset_id=2,
+        user_id="1",
+        tenant_id="default",
+        question="供应商综合评估",
+        active=True,
+        enabled=True,
+    )
+
+    tracer.start_span(ctx, node="dsl_generate", display_name="DSL 生成")
+    tracer.record_generation(
+        name="llm.sql_audit",
+        model="MiniMax-M3",
+        messages=[],
+        output="{}",
+        usage={"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+        metadata={"path": "sql_audit", "latency_ms": 1200, "ttft_ms": 300, "tps": 12.5},
+    )
+
+    assert calls[0]["name"] == "DSL 生成"
+    assert calls[0]["metadata"]["technical_name"] == "node.dsl_generate"
+    assert calls[1]["name"] == "LLM · SQL 诊断"
+    assert calls[1]["metadata"]["technical_name"] == "llm.sql_audit"
+    assert updates[0]["usage_details"] == {"input": 11, "output": 7, "total": 18}
+    assert updates[0]["metadata"]["usage_source"] == "provider"
+    assert updates[0]["metadata"]["ttft_ms"] == 300
+    assert updates[0]["metadata"]["tps"] == 12.5
 
 
 def test_message_feedback_updates_metadata(client, db_session, monkeypatch):

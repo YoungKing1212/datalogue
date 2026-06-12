@@ -44,23 +44,25 @@ def upgrade() -> None:
     if not table_exists:
         op.create_table(
             "sql_diagnosis_log",
-            sa.Column("id", sa.Integer(), nullable=False),
-            sa.Column("conversation_id", sa.Integer(), nullable=True),
-            sa.Column("dataset_id", sa.Integer(), nullable=True),
-            sa.Column("question", sa.Text(), nullable=True),
-            sa.Column("sql", sa.Text(), nullable=True),
-            sa.Column("error", sa.Text(), nullable=True),
-            sa.Column("diagnosis", sa.JSON(), nullable=True),
-            sa.Column("retry_count", sa.Integer(), server_default="0", nullable=False),
+            sa.Column("id", sa.Integer(), nullable=False, comment='主键'),
+            sa.Column("conversation_id", sa.Integer(), nullable=True, comment='关联的会话 ID'),
+            sa.Column("dataset_id", sa.Integer(), nullable=True, comment='关联的数据集 ID'),
+            sa.Column("question", sa.Text(), nullable=True, comment='触发 SQL 的用户问题'),
+            sa.Column("sql", sa.Text(), nullable=True, comment='执行失败的 SQL'),
+            sa.Column("error", sa.Text(), nullable=True, comment='数据库返回的错误信息'),
+            sa.Column("diagnosis", sa.JSON(), nullable=True, comment='结构化诊断结果'),
+            sa.Column("retry_count", sa.Integer(), server_default="0", nullable=False, comment='已重试次数'),
             sa.Column(
                 "created_at",
                 sa.DateTime(timezone=True),
                 server_default=sa.func.now(),
                 nullable=True,
+                comment='创建时间',
             ),
             sa.ForeignKeyConstraint(["conversation_id"], ["conversation.id"]),
             sa.ForeignKeyConstraint(["dataset_id"], ["semantic_dataset.id"]),
             sa.PrimaryKeyConstraint("id"),
+            comment='SQL 执行失败诊断日志表',
         )
     if "ix_sql_diagnosis_log_conversation_id" not in existing_indexes:
         op.create_index(

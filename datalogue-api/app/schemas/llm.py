@@ -26,6 +26,7 @@ class LLMModelConfigCreate(BaseModel):
     status: str = "active"
     description: Optional[str] = None
     request_timeout_seconds: float = Field(default=60.0, gt=0)
+    thinking_enabled: bool = False
 
 
 class LLMModelConfigUpdate(BaseModel):
@@ -37,6 +38,7 @@ class LLMModelConfigUpdate(BaseModel):
     status: Optional[str] = None
     description: Optional[str] = None
     request_timeout_seconds: Optional[float] = Field(default=None, gt=0)
+    thinking_enabled: Optional[bool] = None
 
 
 class LLMModelConfigOut(BaseModel):
@@ -48,6 +50,7 @@ class LLMModelConfigOut(BaseModel):
     status: str
     description: Optional[str] = None
     request_timeout_seconds: float
+    thinking_enabled: bool = False
     api_key_set: bool = False
     last_test_result: Optional[dict[str, Any]] = None
     last_error_message: Optional[str] = None

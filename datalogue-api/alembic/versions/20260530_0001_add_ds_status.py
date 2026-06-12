@@ -28,7 +28,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column('datasource', sa.Column('status', sa.String(length=20), nullable=True, default='disconnected'))
+    op.add_column('datasource', sa.Column('status', sa.String(length=20), nullable=True, default='disconnected', comment='连接状态（connected/disconnected）'))
 
 
 def downgrade() -> None:

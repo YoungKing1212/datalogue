@@ -35,7 +35,7 @@ def upgrade() -> None:
     inspector = inspect(op.get_bind())
     columns = {col["name"] for col in inspector.get_columns("semantic_dataset")}
     if "query_constraints" not in columns:
-        op.add_column("semantic_dataset", sa.Column("query_constraints", sa.JSON(), nullable=True))
+        op.add_column("semantic_dataset", sa.Column("query_constraints", sa.JSON(), nullable=True, comment='SQL 生成查询约束（默认时间范围、LIMIT 等）'))
 
 
 def downgrade() -> None:

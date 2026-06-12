@@ -255,11 +255,19 @@ def _dangerous_function_from_ast(expression: exp.Expression) -> str | None:
 
 def _sql_table_names(expression: exp.Expression) -> set[str]:
     """从 SQLGlot AST 中提取查询涉及的物理表名。"""
+    cte_names = {
+        str(cte.alias).strip("`\"[]").lower()
+        for cte in expression.find_all(exp.CTE)
+        if cte.alias
+    }
     names: set[str] = set()
     for table in expression.find_all(exp.Table):
         name = table.name
-        if name:
-            names.add(str(name).strip("`\"[]").lower())
+        if not name:
+            continue
+        normalized = str(name).strip("`\"[]").lower()
+        if normalized not in cte_names:
+            names.add(normalized)
     return names
 
 

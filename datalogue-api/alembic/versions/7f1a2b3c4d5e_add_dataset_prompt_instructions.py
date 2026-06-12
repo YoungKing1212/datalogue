@@ -36,7 +36,7 @@ def upgrade() -> None:
     # 拼到 schema_context，所有语义相关 LLM 节点可见。
     op.add_column(
         'semantic_dataset',
-        sa.Column('prompt_instructions', sa.Text(), nullable=True),
+        sa.Column('prompt_instructions', sa.Text(), nullable=True, comment='数据集级 LLM 约束指令，问数时拼入 schema_context'),
     )
 
 

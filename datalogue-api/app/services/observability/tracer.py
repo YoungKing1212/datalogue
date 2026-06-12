@@ -17,6 +17,7 @@ import logging
 import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 from urllib.parse import quote
@@ -25,8 +26,20 @@ from app.core.config import Settings, get_settings
 from app.services.observability.context import ObservabilityRequestContext
 from app.services.observability.fallback import LangfuseHealthCheck
 from app.services.observability.masking import sanitize_payload, sanitize_sql, sanitize_text
+from app.utils.token import estimate_messages_tokens, estimate_text_tokens
 
 logger = logging.getLogger(__name__)
+
+
+LLM_OBSERVATION_NAMES = {
+    "intent_recognition": "LLM · 意图识别",
+    "真实Schema": "LLM · 真实 Schema 生成",
+    "语义层-推断": "LLM · 语义层推断",
+    "语义层-确定性": "LLM · 语义层确定性",
+    "无Schema": "LLM · 无 Schema 生成",
+    "sql_audit": "LLM · SQL 诊断",
+    "report_generator": "LLM · 报告生成",
+}
 
 
 def build_langfuse_trace_url(
@@ -115,6 +128,16 @@ class ObservabilityTraceContext:
             project_id=self.project_id,
             trace_id=self.trace_id,
         )
+
+
+@dataclass
+class GenerationObservationHandle:
+    """Langfuse generation 上报句柄。"""
+
+    manager: AbstractContextManager
+    generation: Any
+    usage_source: str
+    technical_name: str
 
 
 class DatalogueTracer:
@@ -226,9 +249,13 @@ class DatalogueTracer:
             return
         try:
             manager = client.start_as_current_observation(
-                name=f"node.{node}",
+                name=display_name,
                 input=sanitize_payload(input_payload or {}),
-                metadata={"node": node, "display_name": display_name},
+                metadata={
+                    "node": node,
+                    "display_name": display_name,
+                    "technical_name": f"node.{node}",
+                },
             )
             handle = manager.__enter__()
             context.span_managers[node] = manager
@@ -278,30 +305,111 @@ class DatalogueTracer:
     ) -> None:
         """记录一次 LLM generation。依赖当前 Langfuse active observation。"""
 
+        handle = self.start_generation(
+            name=name,
+            model=model,
+            messages=messages,
+            output=output,
+            usage=usage,
+            metadata=metadata,
+        )
+        self.end_generation(
+            handle,
+            output=output,
+            usage=usage,
+            metadata=metadata,
+        )
+
+    def start_generation(
+        self,
+        *,
+        name: str,
+        model: str | None,
+        messages: list[Any],
+        output: Any = None,
+        usage: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> GenerationObservationHandle | None:
+        """开始记录一次 LLM generation，调用方应在模型返回后调用 end_generation。"""
+
         if not self.enabled:
-            return
+            return None
         client = self._get_client()
         if client is None:
-            return
+            return None
         try:
+            usage_details, usage_source = _langfuse_usage_details(
+                usage,
+                messages=messages,
+                output=output,
+            )
+            metadata_payload = sanitize_payload(
+                {
+                    "technical_name": name,
+                    "usage_source": usage_source,
+                    **(metadata or {}),
+                }
+            )
             manager = client.start_as_current_observation(
-                name=name,
+                name=_generation_display_name(name, metadata),
                 as_type="generation",
                 model=model,
                 input=sanitize_payload([_message_to_dict(m) for m in messages]),
-                metadata=sanitize_payload(metadata or {}),
+                metadata=metadata_payload,
+                usage_details=usage_details,
             )
             generation = manager.__enter__()
-            self._safe_call(
-                generation,
-                "update",
-                output=sanitize_text(output, max_length=self.settings.LANGFUSE_MAX_TEXT_LENGTH),
-                usage_details=usage or {},
+            return GenerationObservationHandle(
+                manager=manager,
+                generation=generation,
+                usage_source=usage_source,
+                technical_name=name,
             )
-            manager.__exit__(None, None, None)
         except Exception as exc:
-            logger.warning("Langfuse generation 记录失败 name=%s: %s", name, exc)
+            logger.warning("Langfuse generation 开始失败 name=%s: %s", name, exc)
             self._health.record_failure()
+            return None
+
+    def end_generation(
+        self,
+        handle: GenerationObservationHandle | None,
+        *,
+        output: Any,
+        usage: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        completion_start_time: datetime | None = None,
+    ) -> None:
+        """结束一次 LLM generation，并写入输出、usage 和性能指标。"""
+
+        if handle is None:
+            return
+        try:
+            usage_details, usage_source = _langfuse_usage_details(
+                usage,
+                output=output,
+            )
+            metadata_payload = {
+                "technical_name": handle.technical_name,
+                "usage_source": usage_source or handle.usage_source,
+                **(metadata or {}),
+            }
+            update_kwargs: dict[str, Any] = {
+                "output": sanitize_text(output, max_length=self.settings.LANGFUSE_MAX_TEXT_LENGTH),
+                "usage_details": usage_details,
+                "metadata": sanitize_payload(metadata_payload),
+            }
+            if completion_start_time is not None:
+                update_kwargs["completion_start_time"] = completion_start_time
+            self._safe_call(
+                handle.generation,
+                "update",
+                **update_kwargs,
+            )
+        except Exception as exc:
+            logger.warning("Langfuse generation 结束失败: %s", exc)
+            self._health.record_failure()
+        finally:
+            self._exit_manager(handle.manager)
 
     def update_trace_output(
         self,
@@ -439,6 +547,59 @@ def _message_to_dict(message: Any) -> dict[str, Any]:
     role = getattr(message, "type", None) or getattr(message, "role", None) or "message"
     content = getattr(message, "content", message)
     return {"role": role, "content": sanitize_text(content, max_length=4000)}
+
+
+def _generation_display_name(name: str, metadata: dict[str, Any] | None) -> str:
+    """把内部 LLM 调用名转换为 Langfuse 中更容易阅读的中文名称。"""
+
+    path = str((metadata or {}).get("path") or "")
+    if path in LLM_OBSERVATION_NAMES:
+        return LLM_OBSERVATION_NAMES[path]
+    if name.startswith("llm."):
+        suffix = name.removeprefix("llm.")
+        return LLM_OBSERVATION_NAMES.get(suffix, f"LLM · {suffix}")
+    return name
+
+
+def _langfuse_usage_details(
+    usage: dict[str, Any] | None,
+    *,
+    messages: list[Any] | None = None,
+    output: Any = None,
+) -> tuple[dict[str, int], str]:
+    """转换为 Langfuse UI 识别的 input/output/total usage 字段。"""
+
+    usage = usage or {}
+    input_tokens = (
+        usage.get("input")
+        or usage.get("input_tokens")
+        or usage.get("prompt_tokens")
+        or 0
+    )
+    output_tokens = (
+        usage.get("output")
+        or usage.get("output_tokens")
+        or usage.get("completion_tokens")
+        or 0
+    )
+    total_tokens = usage.get("total") or usage.get("total_tokens") or 0
+    source = str(usage.get("usage_source") or "")
+    if source not in {"provider", "estimated"}:
+        source = "provider" if input_tokens or output_tokens or total_tokens else "estimated"
+    if not input_tokens and messages is not None:
+        input_tokens = estimate_messages_tokens(messages)
+    if not output_tokens and output is not None:
+        output_tokens = estimate_text_tokens(output)
+    if not total_tokens:
+        total_tokens = int(input_tokens or 0) + int(output_tokens or 0)
+    return (
+        {
+            "input": int(input_tokens or 0),
+            "output": int(output_tokens or 0),
+            "total": int(total_tokens or 0),
+        },
+        source,
+    )
 
 
 def sanitize_trace_sql(sql: Any) -> Any:

@@ -30,7 +30,7 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         'conversation',
-        sa.Column('archived', sa.Boolean(), nullable=False, server_default=sa.text('false'))
+        sa.Column('archived', sa.Boolean(), nullable=False, server_default=sa.text('false'), comment='是否已归档')
     )
     op.create_index('ix_conversation_archived', 'conversation', ['archived'])
 

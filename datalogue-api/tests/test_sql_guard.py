@@ -147,3 +147,28 @@ def test_guard_allows_tables_inside_dataset_whitelist():
 
     assert result.ok is True
     assert result.normalized_sql == "SELECT id FROM orders LIMIT 100"
+
+
+def test_guard_does_not_treat_cte_names_as_unauthorized_tables():
+    """WITH 查询白名单校验时，CTE 名称不能被当作物理表误杀。"""
+    result = guard_readonly_sql(
+        """
+        WITH contract_stats AS (
+            SELECT hzdw, COUNT(*) AS contract_count
+            FROM project_contract_management
+            GROUP BY hzdw
+        ),
+        supplier_scored AS (
+            SELECT ps.GYSQC, cs.contract_count
+            FROM project_supplier ps
+            LEFT JOIN contract_stats cs ON ps.GYSQC = cs.hzdw
+        )
+        SELECT * FROM supplier_scored
+        """,
+        dialect="mysql",
+        query_constraints={"enabled": False},
+        allowed_tables=["project_contract_management", "project_supplier"],
+    )
+
+    assert result.ok is True
+    assert result.normalized_sql

@@ -55,15 +55,15 @@ def _columns(table_name: str) -> set[str]:
 def upgrade() -> None:
     existing = _columns("datasource")
     columns = {
-        "dialect": sa.Column("dialect", sa.String(length=50), nullable=True),
-        "driver": sa.Column("driver", sa.String(length=100), nullable=True),
-        "default_schema": sa.Column("default_schema", sa.String(length=100), nullable=True),
-        "connection_options": sa.Column("connection_options", sa.JSON(), nullable=True),
-        "connect_timeout_seconds": sa.Column("connect_timeout_seconds", sa.Integer(), nullable=True),
-        "query_timeout_seconds": sa.Column("query_timeout_seconds", sa.Integer(), nullable=True),
-        "last_test_result": sa.Column("last_test_result", sa.JSON(), nullable=True),
-        "last_error_code": sa.Column("last_error_code", sa.String(length=50), nullable=True),
-        "last_error_message": sa.Column("last_error_message", sa.Text(), nullable=True),
+        "dialect": sa.Column("dialect", sa.String(length=50), nullable=True, comment='SQL 方言（mysql/postgres/tsql等）'),
+        "driver": sa.Column("driver", sa.String(length=100), nullable=True, comment='数据库驱动名（pymysql/psycopg2等）'),
+        "default_schema": sa.Column("default_schema", sa.String(length=100), nullable=True, comment='默认 Schema 名称'),
+        "connection_options": sa.Column("connection_options", sa.JSON(), nullable=True, comment='扩展连接选项'),
+        "connect_timeout_seconds": sa.Column("connect_timeout_seconds", sa.Integer(), nullable=True, comment='连接超时秒数'),
+        "query_timeout_seconds": sa.Column("query_timeout_seconds", sa.Integer(), nullable=True, comment='查询超时秒数'),
+        "last_test_result": sa.Column("last_test_result", sa.JSON(), nullable=True, comment='最近连通性测试结果'),
+        "last_error_code": sa.Column("last_error_code", sa.String(length=50), nullable=True, comment='最近错误码'),
+        "last_error_message": sa.Column("last_error_message", sa.Text(), nullable=True, comment='最近错误信息'),
     }
     for name, column in columns.items():
         if name not in existing:

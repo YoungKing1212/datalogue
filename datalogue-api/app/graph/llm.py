@@ -15,6 +15,7 @@
 
 
 import logging
+from typing import Any
 
 import httpx
 from langchain_openai import ChatOpenAI
@@ -36,6 +37,23 @@ def _http_client(timeout_seconds: float) -> httpx.Client:
     if _settings.OPENAI_PROXY_URL:
         kwargs["proxy"] = _settings.OPENAI_PROXY_URL
     return httpx.Client(**kwargs)
+
+
+def build_llm_model_kwargs(config: Any) -> dict[str, Any]:
+    """按模型配置生成 OpenAI-compatible 扩展参数，默认尽量关闭 Think 输出。"""
+    if bool(getattr(config, "thinking_enabled", False)):
+        return {}
+
+    provider = str(getattr(config, "provider", "") or "").lower()
+    model = str(getattr(config, "model", "") or "").lower()
+    extra_body: dict[str, Any] = {}
+
+    if provider in {"qwen", "dashscope", "aliyun"} or "qwen" in model:
+        extra_body["enable_thinking"] = False
+    if provider == "anthropic" or "claude" in model:
+        extra_body["thinking"] = {"type": "disabled"}
+
+    return {"extra_body": extra_body} if extra_body else {}
 
 
 def get_llm(
@@ -65,12 +83,17 @@ def get_llm(
         bool(_settings.OPENAI_PROXY_URL),
         config.request_timeout_seconds,
     )
-    return ChatOpenAI(
+    model_kwargs = build_llm_model_kwargs(config)
+    llm = ChatOpenAI(
         model=config.model,
         api_key=config.api_key,  # type: ignore[arg-type]
         base_url=config.base_url,
         temperature=temperature,
+        model_kwargs=model_kwargs,
         streaming=True,  # 启用 token 级流式，供 astream_events 捕获
         http_client=_http_client(config.request_timeout_seconds),
         timeout=config.request_timeout_seconds,
     )
+    object.__setattr__(llm, "datalogue_thinking_enabled", config.thinking_enabled)
+    object.__setattr__(llm, "datalogue_thinking_request", model_kwargs)
+    return llm

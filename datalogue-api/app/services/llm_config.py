@@ -44,6 +44,7 @@ class ResolvedLLMConfig:
     model: str
     api_key: str
     request_timeout_seconds: float
+    thinking_enabled: bool
 
 
 def ensure_llm_role(role: str | None) -> str:
@@ -65,6 +66,7 @@ def model_config_to_dict(config: LLMModelConfig) -> dict:
         "status": config.status,
         "description": config.description,
         "request_timeout_seconds": config.request_timeout_seconds,
+        "thinking_enabled": bool(config.thinking_enabled),
         "api_key_set": bool(config.api_key_enc),
         "last_test_result": config.last_test_result,
         "last_error_message": config.last_error_message,
@@ -108,6 +110,7 @@ def resolve_llm_config(
             model=config.model,
             api_key=api_key,
             request_timeout_seconds=float(config.request_timeout_seconds or settings.LLM_TIMEOUT_SECONDS),
+            thinking_enabled=bool(config.thinking_enabled),
         )
 
     return ResolvedLLMConfig(
@@ -119,4 +122,5 @@ def resolve_llm_config(
         model=settings.LLM_MODEL,
         api_key=settings.OPENAI_API_KEY or "",
         request_timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
+        thinking_enabled=False,
     )

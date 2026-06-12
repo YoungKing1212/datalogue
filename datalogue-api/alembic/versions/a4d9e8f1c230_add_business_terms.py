@@ -45,25 +45,26 @@ def upgrade() -> None:
     if not has_table("business_term"):
         op.create_table(
         "business_term",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("dataset_id", sa.Integer(), nullable=False),
-        sa.Column("name", sa.String(length=100), nullable=False),
-        sa.Column("display_name", sa.String(length=100), nullable=False),
-        sa.Column("term_type", sa.String(length=30), nullable=False),
-        sa.Column("definition", sa.Text(), nullable=True),
-        sa.Column("aliases", sa.JSON(), nullable=True),
-        sa.Column("forbidden_aliases", sa.JSON(), nullable=True),
-        sa.Column("examples", sa.JSON(), nullable=True),
-        sa.Column("owner", sa.String(length=50), nullable=True),
-        sa.Column("status", sa.String(length=20), nullable=False),
-        sa.Column("source", sa.String(length=20), nullable=False),
-        sa.Column("confidence", sa.Float(), nullable=True),
-        sa.Column("extra_metadata", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True),
+        sa.Column("id", sa.Integer(), nullable=False, comment='主键'),
+        sa.Column("dataset_id", sa.Integer(), nullable=False, comment='所属数据集 ID'),
+        sa.Column("name", sa.String(length=100), nullable=False, comment='术语英文名'),
+        sa.Column("display_name", sa.String(length=100), nullable=False, comment='术语显示名称'),
+        sa.Column("term_type", sa.String(length=30), nullable=False, comment='术语类型（metric/dimension/entity等）'),
+        sa.Column("definition", sa.Text(), nullable=True, comment='术语定义说明'),
+        sa.Column("aliases", sa.JSON(), nullable=True, comment='同义词/别名列表'),
+        sa.Column("forbidden_aliases", sa.JSON(), nullable=True, comment='禁用别名列表'),
+        sa.Column("examples", sa.JSON(), nullable=True, comment='使用示例列表'),
+        sa.Column("owner", sa.String(length=50), nullable=True, comment='术语负责人'),
+        sa.Column("status", sa.String(length=20), nullable=False, comment='状态（active/deprecated等）'),
+        sa.Column("source", sa.String(length=20), nullable=False, comment='来源（manual/ai）'),
+        sa.Column("confidence", sa.Float(), nullable=True, comment='AI 生成置信度'),
+        sa.Column("extra_metadata", sa.JSON(), nullable=True, comment='扩展元数据'),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True, comment='创建时间'),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True, comment='更新时间'),
         sa.ForeignKeyConstraint(["dataset_id"], ["semantic_dataset.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("dataset_id", "name", name="uix_business_term_dataset_name"),
+        comment='业务术语表',
         )
     if not has_index("business_term", "ix_business_term_id"):
         op.create_index(op.f("ix_business_term_id"), "business_term", ["id"], unique=False)
@@ -78,17 +79,18 @@ def upgrade() -> None:
     if not has_table("business_term_asset_link"):
         op.create_table(
         "business_term_asset_link",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("term_id", sa.Integer(), nullable=False),
-        sa.Column("asset_type", sa.String(length=30), nullable=False),
-        sa.Column("asset_id", sa.Integer(), nullable=False),
-        sa.Column("asset_name", sa.String(length=150), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
+        sa.Column("id", sa.Integer(), nullable=False, comment='主键'),
+        sa.Column("term_id", sa.Integer(), nullable=False, comment='关联的业务术语 ID'),
+        sa.Column("asset_type", sa.String(length=30), nullable=False, comment='资产类型（metric/dimension）'),
+        sa.Column("asset_id", sa.Integer(), nullable=False, comment='资产主键 ID'),
+        sa.Column("asset_name", sa.String(length=150), nullable=True, comment='资产名称快照'),
+        sa.Column("created_at", sa.DateTime(), nullable=True, comment='创建时间'),
         sa.ForeignKeyConstraint(["term_id"], ["business_term.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "term_id", "asset_type", "asset_id", name="uix_business_term_asset_link"
         ),
+        comment='业务术语与语义资产关联表',
         )
     if not has_index("business_term_asset_link", "ix_business_term_asset_link_id"):
         op.create_index(
@@ -101,17 +103,18 @@ def upgrade() -> None:
     if not has_table("business_term_relation"):
         op.create_table(
         "business_term_relation",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("dataset_id", sa.Integer(), nullable=False),
-        sa.Column("source_term_id", sa.Integer(), nullable=False),
-        sa.Column("target_term_id", sa.Integer(), nullable=False),
-        sa.Column("relation_type", sa.String(length=30), nullable=False),
-        sa.Column("note", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
+        sa.Column("id", sa.Integer(), nullable=False, comment='主键'),
+        sa.Column("dataset_id", sa.Integer(), nullable=False, comment='所属数据集 ID'),
+        sa.Column("source_term_id", sa.Integer(), nullable=False, comment='源术语 ID'),
+        sa.Column("target_term_id", sa.Integer(), nullable=False, comment='目标术语 ID'),
+        sa.Column("relation_type", sa.String(length=30), nullable=False, comment='关系类型（synonym/broader/narrower等）'),
+        sa.Column("note", sa.Text(), nullable=True, comment='关系说明备注'),
+        sa.Column("created_at", sa.DateTime(), nullable=True, comment='创建时间'),
         sa.ForeignKeyConstraint(["dataset_id"], ["semantic_dataset.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["source_term_id"], ["business_term.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["target_term_id"], ["business_term.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
+        comment='业务术语关系表',
         )
     if not has_index("business_term_relation", "ix_business_term_relation_id"):
         op.create_index(
@@ -124,15 +127,16 @@ def upgrade() -> None:
     if not has_table("business_term_change_log"):
         op.create_table(
         "business_term_change_log",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("term_id", sa.Integer(), nullable=False),
-        sa.Column("action", sa.String(length=30), nullable=False),
-        sa.Column("before_snapshot", sa.JSON(), nullable=True),
-        sa.Column("after_snapshot", sa.JSON(), nullable=True),
-        sa.Column("actor", sa.String(length=50), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
+        sa.Column("id", sa.Integer(), nullable=False, comment='主键'),
+        sa.Column("term_id", sa.Integer(), nullable=False, comment='关联的业务术语 ID'),
+        sa.Column("action", sa.String(length=30), nullable=False, comment='操作类型（create/update/delete等）'),
+        sa.Column("before_snapshot", sa.JSON(), nullable=True, comment='变更前术语快照'),
+        sa.Column("after_snapshot", sa.JSON(), nullable=True, comment='变更后术语快照'),
+        sa.Column("actor", sa.String(length=50), nullable=True, comment='操作人'),
+        sa.Column("created_at", sa.DateTime(), nullable=True, comment='创建时间'),
         sa.ForeignKeyConstraint(["term_id"], ["business_term.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
+        comment='业务术语变更日志表',
         )
     if not has_index("business_term_change_log", "ix_business_term_change_log_id"):
         op.create_index(

@@ -39,7 +39,7 @@ def upgrade() -> None:
     if "dataset_id" not in columns:
         op.add_column(
             "conversation",
-            sa.Column("dataset_id", sa.Integer(), sa.ForeignKey("semantic_dataset.id"), nullable=True),
+            sa.Column("dataset_id", sa.Integer(), sa.ForeignKey("semantic_dataset.id"), nullable=True, comment='会话绑定的语义数据集 ID'),
         )
     if "ix_conversation_dataset_id" not in indexes:
         op.create_index("ix_conversation_dataset_id", "conversation", ["dataset_id"])

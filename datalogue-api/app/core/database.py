@@ -11,6 +11,8 @@
 # Created On  : 2026-06-05
 # ============================================================
 
+import json
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
@@ -25,6 +27,9 @@ engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
     echo=os.getenv("SQL_ECHO", "false").lower() in ("true", "1", "yes"),
+    # 默认 ensure_ascii=True 会把中文序列化为 \uXXXX 存入 JSON 列，
+    # 设为 False 直接存 UTF-8 明文，DB 工具中可读性更好。
+    json_serializer=lambda obj: json.dumps(obj, ensure_ascii=False),
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

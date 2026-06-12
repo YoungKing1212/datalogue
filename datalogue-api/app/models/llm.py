@@ -11,7 +11,7 @@
 # Created On  : 2026-06-10
 # ============================================================
 
-from sqlalchemy import Column, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -32,6 +32,7 @@ class LLMModelConfig(Base, TimestampMixin):
     status = Column(String(20), nullable=False, default="active", server_default="active")
     description = Column(Text, nullable=True)
     request_timeout_seconds = Column(Float, nullable=False, default=60.0, server_default="60")
+    thinking_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
     last_test_result = Column(JSON, nullable=True)
     last_error_message = Column(Text, nullable=True)
 

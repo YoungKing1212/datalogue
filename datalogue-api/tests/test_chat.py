@@ -36,6 +36,24 @@ class TestChatAPI:
         assert "sql_retry_trace" in _STATE_OUTPUT_KEYS
         assert "answer_explanation" in _STATE_OUTPUT_KEYS
 
+    def test_sql_execute_preserves_upstream_compile_error(self, db_session):
+        """上游 SQL 编译失败时，不应被 SQL 执行节点覆盖成笼统的 SQL 为空。"""
+        from app.graph.nodes import sql_execute_node
+
+        state = {
+            "sql": None,
+            "error": "SQL 引用了当前数据集未授权的表：contract_stats",
+            "should_retry": False,
+            "sql_guard": {"ok": False, "code": "SQL_GUARD_BLOCKED"},
+        }
+
+        result = sql_execute_node(db_session)(state)
+
+        assert result["sql_result"] is None
+        assert result["error"] == state["error"]
+        assert result["should_retry"] is False
+        assert result["sql_guard"] == state["sql_guard"]
+
     def test_chat_stream_basic(self, client, sample_dataset):
         """基础流式问数接口应返回 200"""
         payload = {
@@ -1468,6 +1486,59 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
             result = asyncio.run(report_generator_node(state))
             assert "100万元" in result["answer"]
             assert result["token_usage"]["total_tokens"] == 150
+
+    def test_report_generator_compacts_rows_and_strips_think(self):
+        """报告生成应压缩大结果集，并清理模型泄露的思考标签。"""
+        from app.graph.nodes import report_generator_node
+
+        captured = {}
+        with patch("app.graph.nodes.get_llm") as mock_get_llm:
+            mock_llm = MagicMock()
+            mock_llm.datalogue_thinking_enabled = False
+
+            async def _fake_astream(messages):
+                captured["human"] = messages[1].content
+                yield type("C", (), {"content": "<think>内部推理</think>结论：表现稳定。", "usage_metadata": None})()
+
+            mock_llm.astream = _fake_astream
+            mock_get_llm.return_value = mock_llm
+
+            rows = [{"name": f"供应商{i}", "desc": "x" * 200} for i in range(35)]
+            state = {
+                "question": "供应商综合评估",
+                "sql_result": {
+                    "columns": ["name", "desc"],
+                    "rows": rows,
+                    "row_count": len(rows),
+                },
+                "token_usage": None,
+            }
+
+            result = asyncio.run(report_generator_node(state))
+
+            assert "<think>" not in result["answer"]
+            assert "内部推理" not in result["answer"]
+            assert "结论：表现稳定。" in result["answer"]
+            assert "前 30 行" in captured["human"]
+            assert "其余 5 行未展开" in captured["human"]
+            assert "x" * 150 not in captured["human"]
+
+    def test_invoke_llm_with_metrics_strips_think_when_disabled(self):
+        """通用 LLM 调用在 Think 关闭时也应清理流式输出。"""
+        from app.graph.nodes import _invoke_llm_with_metrics
+
+        class FakeLLM:
+            streaming = True
+            datalogue_thinking_enabled = False
+
+            def stream(self, messages):
+                yield type("C", (), {"content": "<think>过程</think>", "usage_metadata": None})()
+                yield type("C", (), {"content": "最终答案", "usage_metadata": None})()
+
+        response, first_token_at, _ = _invoke_llm_with_metrics(FakeLLM(), [])
+
+        assert first_token_at is not None
+        assert response.content == "最终答案"
 
     def test_report_generator_no_result(self):
         """报告生成：无 SQL 结果时返回提示"""

@@ -32,21 +32,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # source_table
-    op.add_column('source_table', sa.Column('ai_description', sa.Text(), nullable=True))
-    op.add_column('source_table', sa.Column('user_description', sa.Text(), nullable=True))
-    op.add_column('source_table', sa.Column('effective_desc', sa.Text(), nullable=True))
-    op.add_column('source_table', sa.Column('desc_source', sa.String(length=20), nullable=True, server_default='unknown'))
-    op.add_column('source_table', sa.Column('annotated_at', sa.DateTime(), nullable=True))
+    op.add_column('source_table', sa.Column('ai_description', sa.Text(), nullable=True, comment='AI 生成的表描述'))
+    op.add_column('source_table', sa.Column('user_description', sa.Text(), nullable=True, comment='人工填写的表描述'))
+    op.add_column('source_table', sa.Column('effective_desc', sa.Text(), nullable=True, comment='最终生效的表描述（人工优先）'))
+    op.add_column('source_table', sa.Column('desc_source', sa.String(length=20), nullable=True, server_default='unknown', comment='描述来源（ai/user/unknown）'))
+    op.add_column('source_table', sa.Column('annotated_at', sa.DateTime(), nullable=True, comment='最近标注时间'))
 
     # source_column
-    op.add_column('source_column', sa.Column('ai_description', sa.Text(), nullable=True))
-    op.add_column('source_column', sa.Column('ai_semantic_role', sa.String(length=30), nullable=True))
-    op.add_column('source_column', sa.Column('ai_suggested_agg', sa.String(length=20), nullable=True))
-    op.add_column('source_column', sa.Column('user_description', sa.Text(), nullable=True))
-    op.add_column('source_column', sa.Column('user_semantic_role', sa.String(length=30), nullable=True))
-    op.add_column('source_column', sa.Column('effective_desc', sa.Text(), nullable=True))
-    op.add_column('source_column', sa.Column('desc_source', sa.String(length=20), nullable=True, server_default='unknown'))
-    op.add_column('source_column', sa.Column('annotated_at', sa.DateTime(), nullable=True))
+    op.add_column('source_column', sa.Column('ai_description', sa.Text(), nullable=True, comment='AI 生成的字段描述'))
+    op.add_column('source_column', sa.Column('ai_semantic_role', sa.String(length=30), nullable=True, comment='AI 建议的语义角色（metric/dimension/time等）'))
+    op.add_column('source_column', sa.Column('ai_suggested_agg', sa.String(length=20), nullable=True, comment='AI 建议的聚合方式（sum/count/avg等）'))
+    op.add_column('source_column', sa.Column('user_description', sa.Text(), nullable=True, comment='人工填写的字段描述'))
+    op.add_column('source_column', sa.Column('user_semantic_role', sa.String(length=30), nullable=True, comment='人工指定的语义角色'))
+    op.add_column('source_column', sa.Column('effective_desc', sa.Text(), nullable=True, comment='最终生效的字段描述（人工优先）'))
+    op.add_column('source_column', sa.Column('desc_source', sa.String(length=20), nullable=True, server_default='unknown', comment='描述来源（ai/user/unknown）'))
+    op.add_column('source_column', sa.Column('annotated_at', sa.DateTime(), nullable=True, comment='最近标注时间'))
 
 
 def downgrade() -> None:

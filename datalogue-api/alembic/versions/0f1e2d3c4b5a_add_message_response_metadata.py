@@ -36,7 +36,7 @@ def upgrade() -> None:
     inspector = inspect(op.get_bind())
     columns = {column["name"] for column in inspector.get_columns("message")}
     if "response_metadata" not in columns:
-        op.add_column("message", sa.Column("response_metadata", sa.JSON(), nullable=True))
+        op.add_column("message", sa.Column("response_metadata", sa.JSON(), nullable=True, comment='回答元数据（解释包、可视化提示等）'))
 
 
 def downgrade() -> None:

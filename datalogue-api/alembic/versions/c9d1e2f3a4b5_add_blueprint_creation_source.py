@@ -34,15 +34,15 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column(
         "analysis_blueprint",
-        sa.Column("creation_source", sa.String(length=30), server_default="manual", nullable=False),
+        sa.Column("creation_source", sa.String(length=30), server_default="manual", nullable=False, comment='创建来源（manual/ai_extract/ai_generate等）'),
     )
     op.add_column(
         "analysis_blueprint",
-        sa.Column("ai_generated", sa.Boolean(), server_default=sa.false(), nullable=False),
+        sa.Column("ai_generated", sa.Boolean(), server_default=sa.false(), nullable=False, comment='是否由 AI 生成'),
     )
     op.add_column(
         "analysis_blueprint",
-        sa.Column("ai_generation_type", sa.String(length=30), nullable=True),
+        sa.Column("ai_generation_type", sa.String(length=30), nullable=True, comment='AI 生成类型（extract/generate等）'),
     )
 
 

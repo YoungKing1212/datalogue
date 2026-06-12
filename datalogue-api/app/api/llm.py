@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app import models, schemas
 from app.core.database import get_db
 from app.core.security import encrypt_password, decrypt_password
+from app.graph.llm import build_llm_model_kwargs
 from app.services.llm_config import LLM_ROLES, ensure_llm_role, model_config_to_dict
 
 router = APIRouter()
@@ -70,6 +71,7 @@ def create_llm_model(payload: schemas.LLMModelConfigCreate, db: Session = Depend
         status=payload.status,
         description=payload.description,
         request_timeout_seconds=payload.request_timeout_seconds,
+        thinking_enabled=payload.thinking_enabled,
     )
     db.add(config)
     db.commit()
@@ -128,6 +130,7 @@ def test_llm_model(config_id: int, db: Session = Depends(get_db)):
             api_key=decrypt_password(config.api_key_enc) if config.api_key_enc else "",  # type: ignore[arg-type]
             base_url=config.base_url,
             temperature=0,
+            model_kwargs=build_llm_model_kwargs(config),
             timeout=config.request_timeout_seconds,
         )
         response = llm.invoke([HumanMessage(content="请回复 OK，用于连接测试。")])

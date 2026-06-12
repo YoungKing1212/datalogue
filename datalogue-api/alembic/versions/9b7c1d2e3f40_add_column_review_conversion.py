@@ -31,17 +31,17 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("source_column", sa.Column("ai_confidence", sa.Float(), nullable=True))
-    op.add_column("source_column", sa.Column("ai_reason", sa.Text(), nullable=True))
-    op.add_column("source_column", sa.Column("suggested_synonyms", sa.JSON(), nullable=True))
-    op.add_column("source_column", sa.Column("suggested_enum_values", sa.JSON(), nullable=True))
+    op.add_column("source_column", sa.Column("ai_confidence", sa.Float(), nullable=True, comment='AI 分析置信度'))
+    op.add_column("source_column", sa.Column("ai_reason", sa.Text(), nullable=True, comment='AI 分析理由'))
+    op.add_column("source_column", sa.Column("suggested_synonyms", sa.JSON(), nullable=True, comment='AI 建议的同义词列表'))
+    op.add_column("source_column", sa.Column("suggested_enum_values", sa.JSON(), nullable=True, comment='AI 建议的枚举值列表'))
     op.add_column(
         "source_column",
-        sa.Column("review_status", sa.String(length=30), nullable=True, server_default="pending_review"),
+        sa.Column("review_status", sa.String(length=30), nullable=True, server_default="pending_review", comment='审核状态（pending_review/approved/rejected等）'),
     )
-    op.add_column("source_column", sa.Column("converted_metric_id", sa.Integer(), nullable=True))
-    op.add_column("source_column", sa.Column("converted_dimension_id", sa.Integer(), nullable=True))
-    op.add_column("source_column", sa.Column("reviewed_at", sa.DateTime(), nullable=True))
+    op.add_column("source_column", sa.Column("converted_metric_id", sa.Integer(), nullable=True, comment='已转化的语义指标 ID'))
+    op.add_column("source_column", sa.Column("converted_dimension_id", sa.Integer(), nullable=True, comment='已转化的语义维度 ID'))
+    op.add_column("source_column", sa.Column("reviewed_at", sa.DateTime(), nullable=True, comment='审核完成时间'))
     op.create_foreign_key(
         "fk_source_column_converted_metric",
         "source_column",
