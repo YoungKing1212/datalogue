@@ -31,6 +31,10 @@ class AgentState(TypedDict):
     route_decision: Optional[dict[str, Any]]  # LeadAgent/Manifest 路由决策快照
     schema_status: Optional[dict[str, Any]]  # LeadAgent SchemaStatusTool schema stale 检查结果
     lead_agent_context: Optional[dict[str, Any]]  # LeadAgent 控制面工具完整上下文
+    skip_subagent_report: bool  # 是否跳过 SubAgent 报告生成，由 LeadAgent 接管最终报告
+    report_owner: str  # subagent | lead_agent
+    subagent_report_skipped: bool  # 本轮是否实际跳过了 SubAgent 报告节点
+    lead_agent_report: Optional[dict[str, Any]]  # LeadAgent 报告生成结果摘要
     conversation_id: Optional[int]  # 当前会话 ID，用于诊断日志关联
     history: Optional[List[dict]]  # 历史对话消息（最近 N 轮）
     clarification_response: Optional[dict]  # 用户对上一轮澄清的结构化回复

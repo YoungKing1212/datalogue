@@ -11,6 +11,7 @@
 # Created On  : 2026-06-12
 # ============================================================
 
+import json
 from datetime import datetime
 
 from app import models
@@ -232,7 +233,7 @@ def test_incomplete_planner_plan_uses_fallback(monkeypatch, db_session, sample_d
 
 
 def test_planner_records_langfuse_generation(monkeypatch, db_session):
-    """LeadAgent Planner 调用 LLM 时，应通过 tracer 记录 generation。"""
+    """LeadAgent Planner 应按 Skill -> Tool 两阶段渐进式披露并记录 generation。"""
 
     class FakePrompt:
         content = "planner prompt"
@@ -246,14 +247,35 @@ def test_planner_records_langfuse_generation(monkeypatch, db_session):
     class FakeLLM:
         model = "lead-model"
 
+        def __init__(self):
+            self.calls = 0
+
         def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": (
+                            '{"reasoning_summary":"先选择路由能力",'
+                            '"selected_skills":["ConversationContinuitySkill","DatasetRoutingSkill"]}'
+                        ),
+                        "usage_metadata": {
+                            "input_tokens": 8,
+                            "output_tokens": 4,
+                            "total_tokens": 12,
+                        },
+                    },
+                )()
             return type(
                 "Response",
                 (),
                 {
                     "content": (
-                        '{"reasoning_summary":"ok","selected_skills":["DatasetRoutingSkill"],'
-                        '"tool_calls":[{"tool":"thread_context","reason":"ctx"}]}'
+                        '{"reasoning_summary":"规划控制面工具","selected_skills":["DatasetRoutingSkill"],'
+                        '"tool_calls":[{"tool":"thread_context","reason":"ctx"},'
+                        '{"tool":"manifest_router","reason":"route"}]}'
                     ),
                     "usage_metadata": {
                         "input_tokens": 10,
@@ -280,21 +302,84 @@ def test_planner_records_langfuse_generation(monkeypatch, db_session):
         lambda _db: {"available": True, "reason": None},
     )
     monkeypatch.setattr("app.services.lead_agent.get_prompt_manager", lambda: FakePromptManager())
-    monkeypatch.setattr("app.services.lead_agent.get_llm", lambda **_kwargs: FakeLLM())
+    fake_llm = FakeLLM()
+    monkeypatch.setattr("app.services.lead_agent.get_llm", lambda **_kwargs: fake_llm)
 
     tracer = FakeTracer()
     plan = plan_tool_calls_with_llm(
         db_session,
         question="最近30日GMV趋势如何",
         conversation_summary={},
-        tool_policy={"allowed_tools": ["thread_context"], "blocked_tools": []},
-        skills=[{"name": "DatasetRoutingSkill"}],
+        tool_policy={
+            "allowed_tools": ["thread_context", "manifest_router"],
+            "blocked_tools": ["metric_resolution"],
+        },
+        skills=[
+            {
+                "name": "ConversationContinuitySkill",
+                "purpose": "会话上下文",
+                "allowed_tools": ["thread_context"],
+            },
+            {
+                "name": "DatasetRoutingSkill",
+                "purpose": "路由数据集",
+                "allowed_tools": ["manifest_router", "clarification"],
+            },
+        ],
         tracer=tracer,
         trace_context=object(),
     )
 
     assert plan["planner_fallback"] is False
-    assert tracer.started[0]["name"] == "llm.lead_agent_planner"
-    assert tracer.started[0]["metadata"]["prompt_name"] == "lead_agent_planner"
-    assert tracer.ended[0]["usage"]["total_tokens"] == 15
-    assert tracer.ended[0]["metadata"]["parse_ok"] is True
+    assert plan["progressive_disclosure"] is True
+    assert plan["disclosed_tools"] == ["thread_context", "manifest_router"]
+    assert tracer.started[0]["name"] == "llm.lead_agent_skill_selector"
+    assert tracer.started[0]["metadata"]["prompt_name"] == "lead_agent_skill_selector"
+    skill_input = json.loads(tracer.started[0]["messages"][1].content)
+    assert "tool_schemas" not in skill_input
+    assert tracer.started[1]["name"] == "llm.lead_agent_tool_planner"
+    assert tracer.started[1]["metadata"]["prompt_name"] == "lead_agent_tool_planner"
+    tool_input = json.loads(tracer.started[1]["messages"][1].content)
+    assert [item["name"] for item in tool_input["tool_schemas"]] == [
+        "thread_context",
+        "manifest_router",
+    ]
+    assert "metric_resolution" not in json.dumps(tool_input["tool_schemas"], ensure_ascii=False)
+    assert tracer.ended[0]["usage"]["total_tokens"] == 12
+    assert tracer.ended[1]["usage"]["total_tokens"] == 15
+    assert tracer.ended[1]["metadata"]["normalized_plan"]["tool_calls"]
+
+
+def test_lead_agent_records_complete_control_plane_span(db_session, sample_dataset):
+    """LeadAgent 应把最终控制面结果写入 Trace span，便于查看完整回复。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manual_fields())
+
+    class FakeTracer:
+        def __init__(self):
+            self.spans_started = []
+            self.spans_ended = []
+
+        def start_span(self, context, **kwargs):
+            self.spans_started.append({"context": context, **kwargs})
+
+        def end_span(self, context, **kwargs):
+            self.spans_ended.append({"context": context, **kwargs})
+
+    tracer = FakeTracer()
+    context = build_lead_agent_context(
+        db_session,
+        question="最近30日GMV趋势如何",
+        now=datetime(2026, 6, 12, 9, 30),
+        tracer=tracer,
+        trace_context=object(),
+    )
+
+    assert tracer.spans_started[0]["node"] == "lead_agent_control_plane"
+    output = tracer.spans_ended[0]["output_payload"]
+    assert output["original_question"] == "最近30日GMV趋势如何"
+    assert output["resolved_question"] == context["resolved_question"]
+    assert output["planned_tool_calls"]
+    assert output["executed_tool_calls"]
+    assert "system_inferred_tool_calls" in output
+    assert "policy_violations" in output

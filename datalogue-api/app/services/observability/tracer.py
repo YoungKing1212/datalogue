@@ -40,6 +40,9 @@ LLM_OBSERVATION_NAMES = {
     "sql_audit": "LLM · SQL 诊断",
     "report_generator": "LLM · 报告生成",
     "lead_agent_planner": "LLM · LeadAgent Planner",
+    "lead_agent_skill_selector": "LLM · LeadAgent Skill Selector",
+    "lead_agent_tool_planner": "LLM · LeadAgent Tool Planner",
+    "lead_agent_report_generator": "LLM · LeadAgent Report Generator",
 }
 
 

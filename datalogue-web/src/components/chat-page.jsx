@@ -256,6 +256,10 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
             planned_tool_calls: ev.planned_tool_calls || [],
             executed_tool_calls: ev.executed_tool_calls || [],
             system_inferred_tool_calls: ev.system_inferred_tool_calls || [],
+            progressive_disclosure: ev.progressive_disclosure,
+            disclosed_tools: ev.disclosed_tools || [],
+            skill_selection_reasoning_summary: ev.skill_selection_reasoning_summary,
+            tool_planning_reasoning_summary: ev.tool_planning_reasoning_summary,
             policy_violations: ev.policy_violations || [],
             planner_fallback: ev.planner_fallback,
           };

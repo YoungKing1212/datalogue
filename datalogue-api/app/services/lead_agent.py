@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.core.config import get_settings
 from app.graph.llm import get_llm
-from app.prompts.lead_agent import LEAD_AGENT_PLANNER_SYSTEM
+from app.prompts.lead_agent import LEAD_AGENT_SKILL_SELECTOR_SYSTEM, LEAD_AGENT_TOOL_PLANNER_SYSTEM
 from app.services.dataset_manifest import build_dataset_schema_version
 from app.services.dataset_router import route_dataset_for_question
 from app.services.llm_config import resolve_llm_config
@@ -37,7 +37,9 @@ from app.services.observability.prompts import get_prompt_manager
 from app.utils.json_utils import safe_json_parse
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
-LEAD_AGENT_PROMPT_NAME = "lead_agent_planner"
+LEAD_AGENT_SKILL_SELECTOR_PROMPT_NAME = "lead_agent_skill_selector"
+LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME = "lead_agent_tool_planner"
+LEAD_AGENT_PROMPT_NAME = LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME
 logger = logging.getLogger(__name__)
 
 ALLOWED_LEAD_TOOLS = (
@@ -176,62 +178,135 @@ def plan_tool_calls_with_llm(
     if not availability["available"]:
         return build_fallback_plan(reason=availability["reason"])
 
-    generation = None
-    planner_input = {
+    skill_generation = None
+    tool_generation = None
+    skill_input = {
         "question": question,
         "conversation": conversation_summary,
         "tool_policy": tool_policy,
         "skills": skills,
-        "tool_schemas": _tool_schemas(),
     }
     try:
-        prompt = get_prompt_manager().get_text_prompt(
-            LEAD_AGENT_PROMPT_NAME,
-            fallback=LEAD_AGENT_PLANNER_SYSTEM,
+        prompt_manager = get_prompt_manager()
+        skill_prompt = prompt_manager.get_text_prompt(
+            LEAD_AGENT_SKILL_SELECTOR_PROMPT_NAME,
+            fallback=LEAD_AGENT_SKILL_SELECTOR_SYSTEM,
         )
         llm = get_llm(temperature=0.1, role="lead_agent", db=db)
-        messages = [
-            SystemMessage(content=prompt.content),
+        skill_messages = [
+            SystemMessage(content=skill_prompt.content),
+            HumanMessage(content=json.dumps(skill_input, ensure_ascii=False, default=str)),
+        ]
+        if tracer is not None and trace_context is not None:
+            skill_generation = tracer.start_generation(
+                name="llm.lead_agent_skill_selector",
+                model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
+                messages=skill_messages,
+                metadata={
+                    "path": "lead_agent_skill_selector",
+                    "prompt_name": LEAD_AGENT_SKILL_SELECTOR_PROMPT_NAME,
+                    "prompt_version": skill_prompt.version,
+                    "prompt_source": skill_prompt.source,
+                    "progressive_disclosure": True,
+                    "disclosure_stage": "skill_selection",
+                    "tool_policy": tool_policy,
+                    "skills": [item.get("name") for item in skills],
+                    "tool_schemas_disclosed": [],
+                },
+            )
+        skill_response = llm.invoke(skill_messages)
+        skill_raw_content = str(getattr(skill_response, "content", "") or "")
+        skill_parsed = safe_json_parse(skill_raw_content)
+        skill_selection = _normalize_skill_selection(skill_parsed, skills)
+        if tracer is not None:
+            tracer.end_generation(
+                skill_generation,
+                output=skill_raw_content,
+                usage=getattr(skill_response, "usage_metadata", None),
+                metadata={
+                    "path": "lead_agent_skill_selector",
+                    "parse_ok": bool(skill_selection),
+                    "planner_fallback": not bool(skill_selection),
+                    "progressive_disclosure": True,
+                    "disclosure_stage": "skill_selection",
+                },
+            )
+        if not skill_selection:
+            return build_fallback_plan(reason="skill_selector_invalid_json")
+
+        selected_skill_names = skill_selection["selected_skills"]
+        selected_skill_payloads = _skill_payloads_by_name(skills, selected_skill_names)
+        disclosed_tool_schemas = _tool_schemas_for_skills(selected_skill_names, skills, tool_policy)
+        tool_prompt = prompt_manager.get_text_prompt(
+            LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME,
+            fallback=LEAD_AGENT_TOOL_PLANNER_SYSTEM,
+        )
+        planner_input = {
+            "question": question,
+            "conversation": conversation_summary,
+            "tool_policy": tool_policy,
+            "selected_skills": selected_skill_payloads,
+            "tool_schemas": disclosed_tool_schemas,
+        }
+        tool_messages = [
+            SystemMessage(content=tool_prompt.content),
             HumanMessage(content=json.dumps(planner_input, ensure_ascii=False, default=str)),
         ]
         if tracer is not None and trace_context is not None:
-            generation = tracer.start_generation(
-                name="llm.lead_agent_planner",
+            tool_generation = tracer.start_generation(
+                name="llm.lead_agent_tool_planner",
                 model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
-                messages=messages,
+                messages=tool_messages,
                 metadata={
-                    "path": "lead_agent_planner",
-                    "prompt_name": LEAD_AGENT_PROMPT_NAME,
-                    "prompt_version": prompt.version,
-                    "prompt_source": prompt.source,
+                    "path": "lead_agent_tool_planner",
+                    "prompt_name": LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME,
+                    "prompt_version": tool_prompt.version,
+                    "prompt_source": tool_prompt.source,
+                    "progressive_disclosure": True,
+                    "disclosure_stage": "tool_planning",
+                    "selected_skills": selected_skill_names,
+                    "disclosed_tools": [item.get("name") for item in disclosed_tool_schemas],
                     "tool_policy": tool_policy,
-                    "skills": [item.get("name") for item in skills],
                 },
             )
-        response = llm.invoke(messages)
-        raw_content = str(getattr(response, "content", "") or "")
-        parsed = safe_json_parse(raw_content)
+        tool_response = llm.invoke(tool_messages)
+        tool_raw_content = str(getattr(tool_response, "content", "") or "")
+        parsed = safe_json_parse(tool_raw_content)
         normalized = _normalize_planner_plan(parsed)
         if tracer is not None:
             tracer.end_generation(
-                generation,
-                output=raw_content,
-                usage=getattr(response, "usage_metadata", None),
+                tool_generation,
+                output=tool_raw_content,
+                usage=getattr(tool_response, "usage_metadata", None),
                 metadata={
-                    "path": "lead_agent_planner",
+                    "path": "lead_agent_tool_planner",
                     "parse_ok": bool(normalized),
                     "planner_fallback": not bool(normalized),
+                    "progressive_disclosure": True,
+                    "disclosure_stage": "tool_planning",
+                    "selected_skills": selected_skill_names,
+                    "disclosed_tools": [item.get("name") for item in disclosed_tool_schemas],
+                    "normalized_plan": normalized,
                 },
             )
         if not normalized:
             return build_fallback_plan(reason="planner_invalid_json")
         normalized["planner_fallback"] = False
         normalized["fallback_reason"] = None
+        normalized["selected_skills"] = selected_skill_names
+        normalized["skill_selection_reasoning_summary"] = skill_selection.get("reasoning_summary")
+        normalized["tool_planning_reasoning_summary"] = normalized.get("reasoning_summary")
+        normalized["reasoning_summary"] = _merge_reasoning_summary(
+            skill_selection.get("reasoning_summary"),
+            normalized.get("reasoning_summary"),
+        )
+        normalized["progressive_disclosure"] = True
+        normalized["disclosed_tools"] = [item.get("name") for item in disclosed_tool_schemas]
         return normalized
     except Exception as exc:
         if tracer is not None:
             tracer.end_generation(
-                generation,
+                tool_generation or skill_generation,
                 output=f"LeadAgent Planner 调用失败: {exc}",
                 usage=None,
                 metadata={
@@ -241,8 +316,8 @@ def plan_tool_calls_with_llm(
                     "error": str(exc),
                 },
             )
-        logger.warning("LeadAgent Planner 调用失败，使用安全降级计划: %s", exc)
-        return build_fallback_plan(reason="planner_llm_error")
+    logger.warning("LeadAgent Planner 调用失败，使用安全降级计划: %s", exc)
+    return build_fallback_plan(reason="planner_llm_error")
 
 
 def _conversation_summary(
@@ -298,6 +373,48 @@ def _normalize_planner_plan(value: dict[str, Any]) -> dict[str, Any] | None:
         "selected_skills": selected_skills,
         "tool_calls": tool_calls,
     }
+
+
+def _normalize_skill_selection(value: dict[str, Any], skills: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    available_names = {str(item.get("name")) for item in skills if item.get("name")}
+    selected_skills = [
+        str(item).strip()
+        for item in value.get("selected_skills") or []
+        if str(item).strip() in available_names
+    ]
+    if not selected_skills:
+        return None
+    return {
+        "reasoning_summary": str(value.get("reasoning_summary") or "").strip(),
+        "selected_skills": selected_skills,
+    }
+
+
+def _skill_payloads_by_name(skills: list[dict[str, Any]], names: list[str]) -> list[dict[str, Any]]:
+    selected = set(names)
+    return [item for item in skills if item.get("name") in selected]
+
+
+def _tool_schemas_for_skills(
+    skill_names: list[str],
+    skills: list[dict[str, Any]],
+    tool_policy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    selected = set(skill_names)
+    policy_allowed = set(tool_policy.get("allowed_tools") or [])
+    allowed_tools: set[str] = set()
+    for skill in skills:
+        if skill.get("name") in selected:
+            allowed_tools.update(skill.get("allowed_tools") or [])
+    disclosed_tools = allowed_tools & policy_allowed
+    return [schema for schema in _tool_schemas() if schema.get("name") in disclosed_tools]
+
+
+def _merge_reasoning_summary(skill_reason: str | None, tool_reason: str | None) -> str:
+    parts = [item for item in [skill_reason, tool_reason] if item]
+    return "；".join(parts)
 
 
 def _tool_schemas() -> list[dict[str, Any]]:
@@ -874,6 +991,19 @@ def build_lead_agent_context(
         payload_dataset_id=payload_dataset_id,
     )
     skills = available_lead_skills(tool_policy)
+    if tracer is not None and trace_context is not None and hasattr(tracer, "start_span"):
+        tracer.start_span(
+            trace_context,
+            node="lead_agent_control_plane",
+            display_name="LeadAgent 控制面",
+            input_payload={
+                "question": question,
+                "conversation": _conversation_summary(conversation, payload_dataset_id),
+                "tool_policy": tool_policy,
+                "available_skills": [item.get("name") for item in skills],
+                "progressive_disclosure": True,
+            },
+        )
     plan = plan_tool_calls_with_llm(
         db,
         question=question,
@@ -919,7 +1049,7 @@ def build_lead_agent_context(
         clarification = build_clarification(route_decision, schema_status)
     dispatch = execution.get("dispatch")
     effective_dataset_id = dispatch.get("dataset_id") if dispatch else None
-    return {
+    lead_agent_context = {
         "tool_policy": tool_policy,
         "skills": skills,
         "selected_skills": plan.get("selected_skills") or [],
@@ -927,6 +1057,10 @@ def build_lead_agent_context(
         "executed_tool_calls": execution.get("executed_tool_calls") or [],
         "system_inferred_tool_calls": execution.get("system_inferred_tool_calls") or [],
         "policy_violations": execution.get("policy_violations") or [],
+        "progressive_disclosure": bool(plan.get("progressive_disclosure")),
+        "disclosed_tools": plan.get("disclosed_tools") or [],
+        "skill_selection_reasoning_summary": plan.get("skill_selection_reasoning_summary"),
+        "tool_planning_reasoning_summary": plan.get("tool_planning_reasoning_summary"),
         "planner_fallback": bool(plan.get("planner_fallback")),
         "fallback_reason": plan.get("fallback_reason"),
         "planner_reasoning_summary": plan.get("reasoning_summary"),
@@ -945,6 +1079,13 @@ def build_lead_agent_context(
         "should_continue": dispatch is not None,
         "effective_dataset_id": effective_dataset_id,
     }
+    if tracer is not None and trace_context is not None and hasattr(tracer, "end_span"):
+        tracer.end_span(
+            trace_context,
+            node="lead_agent_control_plane",
+            output_payload=lead_agent_context,
+        )
+    return lead_agent_context
 
 
 def _normalize_now(now: datetime | None, timezone_name: str) -> datetime:

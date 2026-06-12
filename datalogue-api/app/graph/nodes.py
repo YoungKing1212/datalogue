@@ -49,6 +49,7 @@ from app.models.datasource import Datasource
 from app.services.analysis_blueprint import blueprint_params_from_time_context, execute_analysis_blueprint
 from app.services.dataset_context import build_dataset_query_context
 from app.services.datasource import create_engine_for_datasource
+from app.services.report_generation import generate_sql_result_report
 from app.utils.query_constraints import (
     normalize_query_constraints,
     render_query_constraints_instruction,
@@ -3279,92 +3280,11 @@ async def report_generator_node(
     """根据 SQL 结果生成自然语言回答和图表推荐。
     使用 astream() 实现真正的 token 级流式，供 astream_events 捕获。"""
     logger.info("报告生成节点开始")
-    question = state["question"]
-    sql_result = state.get("sql_result")
-
-    if not sql_result:
-        logger.warning("无SQL结果，返回默认提示")
-        return {"answer": "查询未返回结果，请检查语义层配置。"}
-
-    rows = sql_result.get("rows", [])
-
-    report_rows, omitted_rows = _compact_report_rows(rows)
-    summary_lines = [f"查询结果共 {len(rows)} 行，以下展开前 {len(report_rows)} 行："]
-    for row in report_rows:
-        parts = [f"{k}={v}" for k, v in row.items()]
-        summary_lines.append("  " + ", ".join(parts))
-    if omitted_rows:
-        summary_lines.append(f"  （其余 {omitted_rows} 行未展开，请基于已展开样本和总行数总结趋势）")
-
-    result_text = "\n".join(summary_lines)
-
-    llm = get_llm(temperature=0.3, role="report", db=db)
-    dataset_prompt = state.get("dataset_prompt_instructions") or ""
-    report_prompt = get_prompt_manager().get_text_prompt(
-        "report_generate",
-        fallback=build_report_system(dataset_prompt),
+    result = await generate_sql_result_report(
+        state,
+        db=db,
+        observation_name="llm.report_generator",
+        report_owner="subagent",
     )
-    system = SystemMessage(content=report_prompt.content)
-    human = HumanMessage(content=f"用户问题: {question}\n\n查询结果:\n{result_text}")
-
-    full_content = ""
-    usage = None
-    tracer = get_observability_tracer()
-    generation = tracer.start_generation(
-        name="llm.report_generator",
-        model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
-        messages=[system, human],
-        metadata={"path": "report_generator", "thinking_enabled": _llm_thinking_enabled(llm)},
-    )
-    started_at = time.perf_counter()
-    first_token_at = None
-    first_token_wall = None
-    async for chunk in llm.astream([system, human]):
-        content = chunk.content or ""
-        if content and first_token_at is None:
-            first_token_at = time.perf_counter()
-            first_token_wall = datetime.now(timezone.utc)
-        full_content += content
-        if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-            usage = chunk.usage_metadata
-
-    ended_at = time.perf_counter()
-    answer = _clean_llm_content_if_needed(llm, full_content)
-
-    # 尝试从最后一个 chunk 的 usage_metadata 提取 token 用量
-    if usage:
-        prompt = usage.get("input_tokens") or usage.get("prompt_tokens", 0)
-        completion = usage.get("output_tokens") or usage.get("completion_tokens", 0)
-        total = usage.get("total_tokens", prompt + completion)
-        token_usage = {
-            "prompt_tokens": prompt,
-            "completion_tokens": completion,
-            "total_tokens": total,
-        }
-    else:
-        token_usage = _extract_token_usage(
-            type("LLMResponse", (), {"content": answer, "usage_metadata": None})(),
-            [system, human],
-        )
-
-    current_usage = state.get("token_usage") or {}
-    merged = _merge_token_usage(current_usage, token_usage or {})
-    tracer.end_generation(
-        generation,
-        output=answer,
-        usage=token_usage or {},
-        completion_start_time=first_token_wall,
-        metadata={
-            "path": "report_generator",
-            "thinking_enabled": _llm_thinking_enabled(llm),
-            **_llm_perf_metadata(
-                started_at=started_at,
-                ended_at=ended_at,
-                first_token_at=first_token_at,
-                usage=token_usage,
-            ),
-        },
-    )
-
     logger.info("报告生成完成")
-    return {"answer": answer, "token_usage": merged}
+    return result

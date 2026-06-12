@@ -104,9 +104,12 @@ function formatLeadAgentToolsAsReasoning(ev) {
   const planned = ev.planned_tool_calls?.length ?? 0;
   const inferred = ev.system_inferred_tool_calls?.length ?? 0;
   const violations = ev.policy_violations?.length ?? 0;
+  const disclosed = ev.disclosed_tools?.length ?? 0;
   const details = [
     timeRange ? `时间=${timeRange}` : null,
     schemaStatus ? `Schema=${schemaStatus}` : null,
+    ev.progressive_disclosure ? '渐进式披露' : null,
+    disclosed ? `披露工具=${disclosed}` : null,
     planned ? `计划=${planned}` : null,
     inferred ? `系统补齐=${inferred}` : null,
     violations ? `策略拦截=${violations}` : null,

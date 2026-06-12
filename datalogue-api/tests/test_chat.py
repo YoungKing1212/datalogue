@@ -1544,7 +1544,7 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         """报告生成：有 SQL 结果时生成回答"""
         from app.graph.nodes import report_generator_node
 
-        with patch("app.graph.nodes.get_llm") as mock_get_llm:
+        with patch("app.services.report_generation.get_llm") as mock_get_llm:
             mock_llm = MagicMock()
 
             async def _fake_astream(messages):
@@ -1587,7 +1587,7 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         from app.graph.nodes import report_generator_node
 
         captured = {}
-        with patch("app.graph.nodes.get_llm") as mock_get_llm:
+        with patch("app.services.report_generation.get_llm") as mock_get_llm:
             mock_llm = MagicMock()
             mock_llm.datalogue_thinking_enabled = False
 
@@ -2096,12 +2096,36 @@ class TestChatStreamEvents:
             captured["state"] = state
             yield {
                 "event": "on_chain_end",
-                "name": "report_generator",
-                "data": {"output": {"answer": "查询完成", "sql": "SELECT 1"}},
-                "metadata": {"langgraph_node": "report_generator"},
+                "name": "sql_execute",
+                "data": {
+                    "output": {
+                        "sql": "SELECT 1",
+                        "sql_list": ["SELECT 1"],
+                        "sql_result": {
+                            "columns": ["gmv"],
+                            "rows": [{"gmv": 100}],
+                            "row_count": 1,
+                        },
+                        "should_retry": False,
+                    }
+                },
+                "metadata": {"langgraph_node": "sql_execute"},
             }
 
-        with patch("app.api.chat.build_workflow") as mock_wf:
+        async def fake_lead_report_stream(state, **kwargs):
+            captured["lead_report_state"] = state
+            captured["lead_report_kwargs"] = kwargs
+            yield {"type": "token", "content": "Lead"}
+            yield {
+                "type": "result",
+                "answer": "LeadAgent 汇总：GMV 为 100。",
+                "token_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            }
+
+        with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.stream_sql_result_report",
+            fake_lead_report_stream,
+        ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
             mock_wf.return_value = mock_graph
@@ -2127,6 +2151,20 @@ class TestChatStreamEvents:
         assert captured["state"]["manifest_version"] == "v1"
         assert captured["state"]["bound_schema_version"] == route_event["bound_schema_version"]
         assert captured["state"]["lead_agent_context"]["audit_trace"]["dispatched"] is True
+        assert captured["state"]["skip_subagent_report"] is True
+        assert captured["state"]["report_owner"] == "lead_agent"
+        assert captured["lead_report_kwargs"]["observation_name"] == "llm.lead_agent_report_generator"
+        assert captured["lead_report_kwargs"]["report_owner"] == "lead_agent"
+        assert not [event for event in events if event.get("node") == "report_generator"]
+        lead_report_step = [event for event in events if event.get("node") == "lead_agent_report_generator"]
+        assert {event["status"] for event in lead_report_step} == {"running", "done"}
+        assert events[-1]["answer"] == "LeadAgent 汇总：GMV 为 100。"
+        assert events[-1]["report_owner"] == "lead_agent"
+        assert events[-1]["subagent_report_skipped"] is True
+        assert events[-1]["lead_agent_report"] == {
+            "generated": True,
+            "reason": "auto_routed_manifest",
+        }
         assert events[-1]["route_decision"]["decision"] == "selected"
 
     def test_chat_stream_keeps_explicit_dataset_locked(
@@ -2210,6 +2248,10 @@ class TestChatStreamEvents:
         assert route_event["dataset_id"] == sample_dataset.id
         assert captured["state"]["dataset_id"] == sample_dataset.id
         assert captured["state"]["route_decision"]["decision"] == "locked"
+        assert captured["state"]["skip_subagent_report"] is False
+        assert captured["state"]["report_owner"] == "subagent"
+        assert events[-1]["report_owner"] == "subagent"
+        assert events[-1]["subagent_report_skipped"] is False
 
     def test_chat_stream_no_manifest_blocks_auto_route(self, db_session):
         """未传 dataset_id 且没有 current Manifest 时，不进入旧的无 schema 猜测路径。"""

@@ -36,6 +36,7 @@ from app.services.observability.context import (
 from app.services.observability.feedback import submit_message_feedback
 from app.services.observability.tracer import get_observability_tracer
 from app.services.lead_agent import build_lead_agent_context
+from app.services.report_generation import stream_sql_result_report
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ _NODE_DISPLAY_NAMES = {
     "sql_execute": "SQL 执行",
     "sql_audit": "SQL 诊断",
     "report_generator": "报告生成",
+    "lead_agent_report_generator": "LeadAgent 报告生成",
 }
 
 _STATE_OUTPUT_KEYS = {
@@ -70,6 +72,10 @@ _STATE_OUTPUT_KEYS = {
     "route_decision",
     "schema_status",
     "lead_agent_context",
+    "skip_subagent_report",
+    "report_owner",
+    "subagent_report_skipped",
+    "lead_agent_report",
     "intent",
     "entities",
     "entry_intent",
@@ -289,6 +295,32 @@ def _route_decision_event(route_decision: dict) -> dict:
     }
 
 
+def _report_control_for_route(route_decision: dict, payload_dataset_id: int | None) -> dict:
+    """根据路由来源决定报告生成归属。"""
+
+    auto_routed = route_decision.get("decision") == "selected" and payload_dataset_id is None
+    return {
+        "skip_subagent_report": auto_routed,
+        "report_owner": "lead_agent" if auto_routed else "subagent",
+        "subagent_report_skipped": False,
+        "lead_agent_report": {"generated": False},
+    }
+
+
+def _should_generate_lead_agent_report(final_state: dict) -> bool:
+    """工作流结束后判断是否由 LeadAgent 接管报告生成。"""
+
+    if final_state.get("report_owner") != "lead_agent":
+        return False
+    if not final_state.get("skip_subagent_report"):
+        return False
+    if final_state.get("answer"):
+        return False
+    if final_state.get("error"):
+        return False
+    return final_state.get("sql_result") is not None
+
+
 def _lead_agent_event(lead_agent_context: dict) -> dict:
     """整理 LeadAgent 控制面工具执行摘要，供前端调试和审计使用。"""
 
@@ -307,6 +339,10 @@ def _lead_agent_event(lead_agent_context: dict) -> dict:
         "planned_tool_calls": lead_agent_context.get("planned_tool_calls") or [],
         "executed_tool_calls": lead_agent_context.get("executed_tool_calls") or [],
         "system_inferred_tool_calls": lead_agent_context.get("system_inferred_tool_calls") or [],
+        "progressive_disclosure": lead_agent_context.get("progressive_disclosure"),
+        "disclosed_tools": lead_agent_context.get("disclosed_tools") or [],
+        "skill_selection_reasoning_summary": lead_agent_context.get("skill_selection_reasoning_summary"),
+        "tool_planning_reasoning_summary": lead_agent_context.get("tool_planning_reasoning_summary"),
         "policy_violations": lead_agent_context.get("policy_violations") or [],
         "planner_fallback": lead_agent_context.get("planner_fallback"),
         "fallback_reason": lead_agent_context.get("fallback_reason"),
@@ -547,6 +583,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
 
     # 构建初始状态
     resolved_question = lead_agent_context.get("resolved_question") or payload.question
+    report_control = _report_control_for_route(route_decision, payload.dataset_id)
     initial_state = {
         "question": resolved_question,
         "original_question": payload.question,
@@ -559,6 +596,10 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "route_decision": route_decision,
         "schema_status": lead_agent_context.get("schema_status"),
         "lead_agent_context": lead_agent_context,
+        "skip_subagent_report": report_control["skip_subagent_report"],
+        "report_owner": report_control["report_owner"],
+        "subagent_report_skipped": report_control["subagent_report_skipped"],
+        "lead_agent_report": report_control["lead_agent_report"],
         "conversation_id": conv_id,
         "history": history,
         "clarification_response": jsonable_encoder(payload.clarification_response),
@@ -781,6 +822,76 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         )
         final_state["route_payload"] = route_payload
 
+    if _should_generate_lead_agent_report(final_state):
+        final_state["subagent_report_skipped"] = True
+        final_state["lead_agent_report"] = {
+            "generated": False,
+            "reason": "auto_routed_manifest",
+        }
+        report_node = "lead_agent_report_generator"
+        report_started_at = time.monotonic()
+        running_payload = {
+            "type": "step",
+            "node": report_node,
+            "display_name": _NODE_DISPLAY_NAMES[report_node],
+            "status": "running",
+            "report_owner": "lead_agent",
+            "subagent_report_skipped": True,
+        }
+        tracer.start_span(
+            trace_context,
+            node=report_node,
+            display_name=_NODE_DISPLAY_NAMES[report_node],
+            input_payload={
+                "question": final_state.get("question"),
+                "original_question": final_state.get("original_question"),
+                "dataset_id": effective_dataset_id,
+                "sql": final_state.get("sql"),
+                "sql_result": final_state.get("sql_result"),
+                "route_decision": route_decision,
+                "reason": "auto_routed_manifest",
+            },
+        )
+        yield _sse_data(running_payload)
+        lead_report_result: dict | None = None
+        async for report_event in stream_sql_result_report(
+            final_state,
+            db=db,
+            observation_name="llm.lead_agent_report_generator",
+            report_owner="lead_agent",
+            metadata={"reason": "auto_routed_manifest"},
+        ):
+            if report_event.get("type") == "token":
+                yield _sse_data({"type": "token", "content": report_event.get("content") or ""})
+            elif report_event.get("type") == "result":
+                lead_report_result = report_event
+        if lead_report_result:
+            final_state["answer"] = lead_report_result.get("answer")
+            final_state["token_usage"] = lead_report_result.get("token_usage")
+            final_state["lead_agent_report"] = {
+                "generated": True,
+                "reason": "auto_routed_manifest",
+            }
+        report_elapsed_ms = int((time.monotonic() - report_started_at) * 1000)
+        done_payload = {
+            "type": "step",
+            "node": report_node,
+            "display_name": _NODE_DISPLAY_NAMES[report_node],
+            "status": "done",
+            "elapsed_ms": report_elapsed_ms,
+            "report_owner": "lead_agent",
+            "subagent_report_skipped": True,
+            "lead_agent_report": final_state.get("lead_agent_report") or {},
+        }
+        step_traces.append(done_payload)
+        tracer.end_span(
+            trace_context,
+            node=report_node,
+            output_payload=done_payload,
+            elapsed_ms=report_elapsed_ms,
+        )
+        yield _sse_data(done_payload)
+
     # 智能兜底：根据失败原因给出具体提示，而非生硬的"抱歉"
     raw_answer = final_state.get("answer")
     error = final_state.get("error")
@@ -849,6 +960,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "schema_status": lead_agent_context.get("schema_status"),
         "manifest_version": route_decision.get("manifest_version"),
         "bound_schema_version": route_decision.get("bound_schema_version"),
+        "report_owner": final_state.get("report_owner"),
+        "subagent_report_skipped": final_state.get("subagent_report_skipped"),
+        "lead_agent_report": final_state.get("lead_agent_report"),
         "prompt_versions": trace_context.prompt_versions,
     }
     tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
@@ -869,6 +983,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             "time_context": lead_agent_context.get("time_context"),
             "route_decision": route_decision,
             "schema_status": lead_agent_context.get("schema_status"),
+            "report_owner": final_state.get("report_owner"),
+            "subagent_report_skipped": final_state.get("subagent_report_skipped"),
+            "lead_agent_report": final_state.get("lead_agent_report"),
             "route_payload": final_state.get("route_payload"),
             "clarification_resolution": final_state.get("clarification_resolution_result"),
             "langfuse": {
@@ -946,6 +1063,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "schema_status": lead_agent_context.get("schema_status"),
         "manifest_version": route_decision.get("manifest_version"),
         "bound_schema_version": route_decision.get("bound_schema_version"),
+        "report_owner": final_state.get("report_owner"),
+        "subagent_report_skipped": final_state.get("subagent_report_skipped"),
+        "lead_agent_report": final_state.get("lead_agent_report"),
         "route_payload": final_state.get("route_payload"),
         "clarification_resolution": final_state.get("clarification_resolution_result"),
         "term_normalization": final_state.get("term_normalization"),

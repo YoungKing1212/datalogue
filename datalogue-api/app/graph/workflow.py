@@ -68,6 +68,16 @@ def _entry_classification_router(state: AgentState) -> str:
     return "end"
 
 
+def _should_skip_subagent_report(state: AgentState) -> bool:
+    """LeadAgent 自动路由场景由 LeadAgent 接管报告生成。"""
+
+    explicit = state.get("skip_subagent_report")
+    if explicit is not None:
+        return bool(explicit)
+    route_decision = state.get("route_decision") or (state.get("lead_agent_context") or {}).get("route_decision") or {}
+    return route_decision.get("decision") == "selected"
+
+
 def _analysis_blueprint_execution_router(state: AgentState) -> str:
     """分析蓝图执行后分流。
 
@@ -77,6 +87,8 @@ def _analysis_blueprint_execution_router(state: AgentState) -> str:
     if state.get("generation_mode") == "analysis_blueprint_semantic":
         return "schema_recall"
     if state.get("sql_result") is not None:
+        if _should_skip_subagent_report(state):
+            return "end"
         return "report"
     return "end"
 
@@ -113,6 +125,8 @@ def _sql_execution_router(state: AgentState) -> str:
     """
     if not state.get("should_retry"):
         if state.get("sql_result") is None:
+            return "end"
+        if _should_skip_subagent_report(state):
             return "end"
         return "report"
     # SQL 失败 → 进 sql_audit（不再直接 increment_retry，让 audit 决定）
