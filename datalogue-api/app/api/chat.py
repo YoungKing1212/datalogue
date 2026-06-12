@@ -35,6 +35,7 @@ from app.services.observability.context import (
 )
 from app.services.observability.feedback import submit_message_feedback
 from app.services.observability.tracer import get_observability_tracer
+from app.services.lead_agent import build_lead_agent_context
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -60,6 +61,15 @@ _NODE_DISPLAY_NAMES = {
 
 _STATE_OUTPUT_KEYS = {
     "conversation_id",
+    "original_question",
+    "resolved_question",
+    "manifest_version",
+    "bound_schema_version",
+    "time_context",
+    "thread_context",
+    "route_decision",
+    "schema_status",
+    "lead_agent_context",
     "intent",
     "entities",
     "entry_intent",
@@ -146,11 +156,58 @@ def _extract_node_output(event: dict, lg_node: str) -> dict:
     return _find_state_output(event.get("data", {}).get("output", {}) or {}, lg_node)
 
 
-def _term_conflict_candidates(route_payload: dict) -> list[dict]:
+def _term_candidate_display(candidate: dict, term: models.BusinessTerm | None = None) -> dict:
+    """归一化术语候选展示字段，兼容历史 payload 和前端字段命名。"""
+
+    name = (
+        candidate.get("name")
+        or candidate.get("term_name")
+        or candidate.get("termName")
+        or (term.name if term else None)
+    )
+    display_name = (
+        candidate.get("display_name")
+        or candidate.get("displayName")
+        or candidate.get("label")
+        or candidate.get("title")
+        or (term.display_name if term else None)
+        or name
+    )
+    return {
+        **candidate,
+        "name": name,
+        "display_name": display_name,
+        "definition": candidate.get("definition") or (term.definition if term else None),
+        "term_type": candidate.get("term_type") or candidate.get("termType") or (term.term_type if term else None),
+        "aliases": candidate.get("aliases") or (term.aliases if term else []),
+    }
+
+
+def _business_term_by_id(db: Session | None, term_id: object) -> models.BusinessTerm | None:
+    """按候选 term_id 回查业务术语，历史 payload 不合法时静默降级。"""
+
+    if not db or term_id is None:
+        return None
+    try:
+        return db.get(models.BusinessTerm, int(term_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _term_conflict_candidates(route_payload: dict, db: Session | None = None) -> list[dict]:
     """从术语冲突 payload 里整理可展示候选。"""
     existing = route_payload.get("candidates")
     if existing:
-        return existing
+        candidates: list[dict] = []
+        for index, candidate in enumerate(existing, start=1):
+            if not isinstance(candidate, dict):
+                continue
+            term_id = candidate.get("term_id") or candidate.get("id")
+            term = _business_term_by_id(db, term_id)
+            normalized = _term_candidate_display(candidate, term)
+            normalized["index"] = normalized.get("index") or index
+            candidates.append(normalized)
+        return candidates
     candidates: list[dict] = []
     seen: set[int] = set()
     for conflict in route_payload.get("conflicts") or []:
@@ -160,17 +217,21 @@ def _term_conflict_candidates(route_payload: dict) -> list[dict]:
             if term_id is None or term_id in seen:
                 continue
             seen.add(term_id)
+            db_term = _business_term_by_id(db, term_id)
             candidates.append(
-                {
-                    "index": len(candidates) + 1,
-                    "term_id": term_id,
-                    "name": term.get("name"),
-                    "display_name": term.get("display_name") or term.get("name"),
-                    "definition": term.get("definition"),
-                    "term_type": term.get("term_type"),
-                    "aliases": term.get("aliases") or [],
-                    "matched_text": token,
-                }
+                _term_candidate_display(
+                    {
+                        "index": len(candidates) + 1,
+                        "term_id": term_id,
+                        "name": term.get("name"),
+                        "display_name": term.get("display_name") or term.get("name"),
+                        "definition": term.get("definition"),
+                        "term_type": term.get("term_type"),
+                        "aliases": term.get("aliases") or [],
+                        "matched_text": token,
+                    },
+                    db_term,
+                )
             )
     return candidates
 
@@ -186,7 +247,7 @@ def _ensure_pending_term_clarification(
     """为术语冲突创建 pending clarification，并回填前端需要的字段。"""
     if route_payload.get("clarification_id"):
         return route_payload
-    candidates = _term_conflict_candidates(route_payload)
+    candidates = _term_conflict_candidates(route_payload, db)
     expires_at = datetime.utcnow() + timedelta(minutes=TERM_CLARIFICATION_TTL_MINUTES)
     pending = models.PendingClarification(
         conversation_id=conversation_id,
@@ -210,6 +271,110 @@ def _ensure_pending_term_clarification(
         }
     )
     return enriched
+
+
+def _route_decision_event(route_decision: dict) -> dict:
+    """整理路由决策 SSE 事件，供前端和审计复用。"""
+
+    return {
+        "type": "route_decision",
+        "decision": route_decision.get("decision"),
+        "dataset_id": route_decision.get("dataset_id"),
+        "dataset_name": route_decision.get("dataset_name"),
+        "manifest_version": route_decision.get("manifest_version"),
+        "bound_schema_version": route_decision.get("bound_schema_version"),
+        "score": route_decision.get("score"),
+        "candidates": route_decision.get("candidates") or [],
+        "reason": route_decision.get("reason"),
+    }
+
+
+def _lead_agent_event(lead_agent_context: dict) -> dict:
+    """整理 LeadAgent 控制面工具执行摘要，供前端调试和审计使用。"""
+
+    return {
+        "type": "lead_agent_tools",
+        "time_context": lead_agent_context.get("time_context"),
+        "thread_context": lead_agent_context.get("thread_context"),
+        "route_decision": lead_agent_context.get("route_decision"),
+        "schema_status": lead_agent_context.get("schema_status"),
+        "clarification": lead_agent_context.get("clarification"),
+        "audit_trace": lead_agent_context.get("audit_trace"),
+        "tool_policy": lead_agent_context.get("tool_policy"),
+        "original_question": lead_agent_context.get("original_question"),
+        "resolved_question": lead_agent_context.get("resolved_question"),
+        "selected_skills": lead_agent_context.get("selected_skills") or [],
+        "planned_tool_calls": lead_agent_context.get("planned_tool_calls") or [],
+        "executed_tool_calls": lead_agent_context.get("executed_tool_calls") or [],
+        "system_inferred_tool_calls": lead_agent_context.get("system_inferred_tool_calls") or [],
+        "policy_violations": lead_agent_context.get("policy_violations") or [],
+        "planner_fallback": lead_agent_context.get("planner_fallback"),
+        "fallback_reason": lead_agent_context.get("fallback_reason"),
+        "planner_reasoning_summary": lead_agent_context.get("planner_reasoning_summary"),
+        "should_continue": lead_agent_context.get("should_continue"),
+    }
+
+
+def _route_block_answer(route_decision: dict) -> str:
+    """路由不明确时生成可直接展示给用户的解释。"""
+
+    candidates = route_decision.get("candidates") or []
+    if route_decision.get("decision") == "ambiguous":
+        lines = ["我找到了多个可能的数据集，需要你先确认使用哪一个："]
+        for index, item in enumerate(candidates[:3], start=1):
+            name = item.get("dataset_name") or f"数据集 {item.get('dataset_id')}"
+            score = item.get("score", 0)
+            reason = "；".join((item.get("reasons") or [])[:2])
+            lines.append(f"{index}. {name}（得分 {score}）{('：' + reason) if reason else ''}")
+        lines.append("请选择数据集后再继续提问。")
+        return "\n".join(lines)
+
+    if candidates:
+        top = candidates[0]
+        name = top.get("dataset_name") or f"数据集 {top.get('dataset_id')}"
+        return (
+            "当前问题没有命中足够明确的 SubAgent Manifest，暂时不自动选择数据集。"
+            f"最接近的是 {name}（得分 {top.get('score', 0)}），但未达到自动路由阈值。"
+            "你可以手动选择数据集，或补充更具体的指标、维度、时间范围。"
+        )
+    return "当前没有可用于自动路由的 current SubAgent Manifest，请先选择数据集或发布 Manifest 后再提问。"
+
+
+def _save_route_block_message(
+    db: Session,
+    *,
+    conv: models.Conversation,
+    route_decision: dict,
+    lead_agent_context: dict,
+    answer: str,
+) -> models.Message:
+    """保存路由阻断场景的助手消息，保持会话历史完整。"""
+
+    assistant_message = models.Message(
+        conversation_id=conv.id,
+        role="assistant",
+        content=answer,
+        sql_list=[],
+        step_trace=[_lead_agent_event(lead_agent_context), _route_decision_event(route_decision)],
+        response_metadata=jsonable_encoder({
+            "lead_agent_context": lead_agent_context,
+            "original_question": lead_agent_context.get("original_question"),
+            "resolved_question": lead_agent_context.get("resolved_question"),
+            "route_decision": route_decision,
+            "time_context": lead_agent_context.get("time_context"),
+            "schema_status": lead_agent_context.get("schema_status"),
+            "route_payload": {
+                "kind": "manifest_route",
+                "decision": route_decision.get("decision"),
+                "candidates": route_decision.get("candidates") or [],
+                "reason": route_decision.get("reason"),
+            },
+        }),
+    )
+    db.add(assistant_message)
+    db.commit()
+    db.refresh(assistant_message)
+    return assistant_message
 
 
 async def _stream_chat(payload: schemas.ChatRequest, db: Session):
@@ -261,6 +426,115 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     )
     db.commit()
 
+    tracer = get_observability_tracer()
+    trace_context = tracer.create_trace_context(
+        conversation_id=conv_id,
+        dataset_id=effective_dataset_id,
+        user_id=str(conv.user_id or 1),
+        tenant_id="default",
+        question=payload.question,
+        metadata={
+            "thread_id": conv.thread_id,
+            "title": conv.title,
+            "phase": "lead_agent",
+        },
+    )
+    obs_context_manager = set_observability_context(trace_context.request_context())
+    obs_context_manager.__enter__()
+
+    lead_agent_context = build_lead_agent_context(
+        db,
+        question=payload.question,
+        conversation=conv,
+        payload_dataset_id=payload.dataset_id,
+        tracer=tracer,
+        trace_context=trace_context,
+    )
+    route_decision = lead_agent_context["route_decision"]
+    lead_event = _lead_agent_event(lead_agent_context)
+    route_event = _route_decision_event(route_decision)
+    yield _sse_data(lead_event)
+    yield _sse_data(route_event)
+
+    if lead_agent_context.get("should_continue"):
+        selected_dataset_id = lead_agent_context.get("effective_dataset_id")
+        if selected_dataset_id is not None:
+            effective_dataset_id = int(selected_dataset_id)
+            if conv.dataset_id != effective_dataset_id:
+                conv.dataset_id = effective_dataset_id
+                db.commit()
+                db.refresh(conv)
+    else:
+        answer = _route_block_answer(route_decision)
+        assistant_message = _save_route_block_message(
+            db,
+            conv=conv,
+            route_decision=route_decision,
+            lead_agent_context=lead_agent_context,
+            answer=answer,
+        )
+        trace_metadata = {
+            "status": "blocked",
+            "execution_path": "manifest_route",
+            "original_question": payload.question,
+            "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+            "entry_route": route_decision.get("decision"),
+            "lead_agent_context": lead_agent_context,
+            "route_decision": route_decision,
+            "schema_status": lead_agent_context.get("schema_status"),
+            "manifest_version": route_decision.get("manifest_version"),
+            "bound_schema_version": route_decision.get("bound_schema_version"),
+            "prompt_versions": trace_context.prompt_versions,
+        }
+        tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
+        if trace_context.trace_id:
+            db.add(
+                models.ObservabilityTraceIndex(
+                    langfuse_trace_id=trace_context.trace_id,
+                    langfuse_session_id=trace_context.session_id,
+                    conversation_id=conv_id,
+                    message_id=assistant_message.id,
+                    dataset_id=effective_dataset_id,
+                    entry_route=route_decision.get("decision") or "manifest_route",
+                    status="blocked",
+                    total_tokens=0,
+                    total_cost=0,
+                    metadata_json=jsonable_encoder(trace_metadata),
+                )
+            )
+            db.commit()
+        tracer.close_trace(trace_context)
+        obs_context_manager.__exit__(None, None, None)
+        yield _sse_data(
+            {
+                "type": "final",
+                "sql": None,
+                "sql_list": [],
+                "answer": answer,
+                "entry_intent": "manifest_route",
+                "entry_route": route_decision.get("decision"),
+                "entry_reason": route_decision.get("reason"),
+                "lead_agent_context": lead_agent_context,
+                "original_question": payload.question,
+                "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+                "time_context": lead_agent_context.get("time_context"),
+                "route_decision": route_decision,
+                "schema_status": lead_agent_context.get("schema_status"),
+                "clarification": lead_agent_context.get("clarification"),
+                "route_payload": {
+                    "kind": "manifest_route",
+                    "decision": route_decision.get("decision"),
+                    "candidates": route_decision.get("candidates") or [],
+                    "reason": route_decision.get("reason"),
+                },
+                "sql_result": None,
+                "conversation_id": conv.id,
+                "message_id": assistant_message.id,
+                "title": conv.title,
+            }
+        )
+        return
+
     # 查询历史消息（最近 6 轮，用于意图识别上下文）
     history_msgs = (
         db.query(models.Message)
@@ -272,9 +546,19 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
 
     # 构建初始状态
+    resolved_question = lead_agent_context.get("resolved_question") or payload.question
     initial_state = {
-        "question": payload.question,
+        "question": resolved_question,
+        "original_question": payload.question,
+        "resolved_question": resolved_question,
         "dataset_id": effective_dataset_id,
+        "manifest_version": route_decision.get("manifest_version"),
+        "bound_schema_version": route_decision.get("bound_schema_version"),
+        "time_context": lead_agent_context.get("time_context"),
+        "thread_context": lead_agent_context.get("thread_context"),
+        "route_decision": route_decision,
+        "schema_status": lead_agent_context.get("schema_status"),
+        "lead_agent_context": lead_agent_context,
         "conversation_id": conv_id,
         "history": history,
         "clarification_response": jsonable_encoder(payload.clarification_response),
@@ -321,20 +605,6 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     app_graph = build_workflow(db)
     final_state: dict = dict(initial_state)
     node_start_times: dict[str, float] = {}
-    tracer = get_observability_tracer()
-    trace_context = tracer.create_trace_context(
-        conversation_id=conv_id,
-        dataset_id=effective_dataset_id,
-        user_id=str(conv.user_id or 1),
-        tenant_id="default",
-        question=payload.question,
-        metadata={
-            "thread_id": conv.thread_id,
-            "title": conv.title,
-        },
-    )
-    obs_context_manager = set_observability_context(trace_context.request_context())
-    obs_context_manager.__enter__()
 
     try:
         logger.info("[_stream_chat] 开始 astream_events 工作流...")
@@ -373,6 +643,10 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                         "question": payload.question,
                         "dataset_id": effective_dataset_id,
                         "conversation_id": conv_id,
+                        "time_context": lead_agent_context.get("time_context"),
+                        "route_decision": route_decision,
+                        "schema_status": lead_agent_context.get("schema_status"),
+                        "lead_agent_audit": lead_agent_context.get("audit_trace"),
                     },
                 )
                 yield _sse_data(sse_payload)
@@ -502,7 +776,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             db,
             conversation_id=conv_id,
             dataset_id=effective_dataset_id,
-            question=final_state.get("question") or payload.question,
+            question=final_state.get("original_question") or payload.question,
             route_payload=route_payload,
         )
         final_state["route_payload"] = route_payload
@@ -562,11 +836,19 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     trace_metadata = {
         "status": "failed" if error else "success",
         "execution_path": execution_path,
+        "original_question": payload.question,
+        "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
         "entry_intent": final_state.get("entry_intent"),
         "entry_route": final_state.get("entry_route"),
         "blueprint_id": final_state.get("blueprint_id"),
         "knowledge_term_id": final_state.get("knowledge_term_id"),
         "selected_term_id": final_state.get("selected_term_id"),
+        "lead_agent_context": lead_agent_context,
+        "time_context": lead_agent_context.get("time_context"),
+        "route_decision": route_decision,
+        "schema_status": lead_agent_context.get("schema_status"),
+        "manifest_version": route_decision.get("manifest_version"),
+        "bound_schema_version": route_decision.get("bound_schema_version"),
         "prompt_versions": trace_context.prompt_versions,
     }
     tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
@@ -581,6 +863,12 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         step_trace=jsonable_encoder(step_traces),
         response_metadata=jsonable_encoder({
             "answer_explanation": answer_explanation,
+            "lead_agent_context": lead_agent_context,
+            "original_question": payload.question,
+            "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+            "time_context": lead_agent_context.get("time_context"),
+            "route_decision": route_decision,
+            "schema_status": lead_agent_context.get("schema_status"),
             "route_payload": final_state.get("route_payload"),
             "clarification_resolution": final_state.get("clarification_resolution_result"),
             "langfuse": {
@@ -650,6 +938,14 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "blueprint_match": final_state.get("blueprint_match"),
         "knowledge_term_id": final_state.get("knowledge_term_id"),
         "selected_term_id": final_state.get("selected_term_id"),
+        "lead_agent_context": lead_agent_context,
+        "original_question": payload.question,
+        "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+        "time_context": lead_agent_context.get("time_context"),
+        "route_decision": route_decision,
+        "schema_status": lead_agent_context.get("schema_status"),
+        "manifest_version": route_decision.get("manifest_version"),
+        "bound_schema_version": route_decision.get("bound_schema_version"),
         "route_payload": final_state.get("route_payload"),
         "clarification_resolution": final_state.get("clarification_resolution_result"),
         "term_normalization": final_state.get("term_normalization"),

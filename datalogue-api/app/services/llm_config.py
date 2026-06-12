@@ -29,6 +29,7 @@ LLM_ROLES = (
     "report",
     "annotation",
     "blueprint",
+    "lead_agent",
 )
 
 

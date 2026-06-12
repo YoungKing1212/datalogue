@@ -274,6 +274,32 @@ def test_extract_blueprint_params_from_chinese_month_range():
     assert params["end_date"] == "2024-02-29"
 
 
+def test_render_blueprint_sql_preview_replaces_bound_params():
+    """蓝图 SQL 预览应展示参数值，执行层仍保留绑定参数。"""
+    from app.services.analysis_blueprint import render_blueprint_sql_preview
+
+    sql = (
+        "SELECT * FROM plan_task_daily_record "
+        "WHERE person_name = :person_name "
+        "AND rzrq BETWEEN :start_date AND :end_date "
+        "AND amount > :min_amount"
+    )
+    preview = render_blueprint_sql_preview(
+        sql,
+        {
+            "person_name": "杨凯",
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "min_amount": 10,
+        },
+    )
+
+    assert ":person_name" not in preview
+    assert "person_name = '杨凯'" in preview
+    assert "BETWEEN '2024-01-01' AND '2024-12-31'" in preview
+    assert "amount > 10" in preview
+
+
 def test_create_and_list_blueprints(client, sample_dataset):
     resp = client.post(f"/api/dataset/{sample_dataset.id}/blueprints", json=_blueprint_payload())
     assert resp.status_code == 200
@@ -607,6 +633,9 @@ def test_blueprint_test_remains_optional_validation(client, sample_dataset):
     assert test_resp.json()["diagnosis"] is None
     assert test_resp.json()["masking_summary"] == {"masked_cells": 0, "masked_columns": []}
     assert test_resp.json()["rows"][0]["category"] == "电子"
+    assert ":start_date" not in test_resp.json()["sql_preview"]
+    assert "'2026-05-01'" in test_resp.json()["sql_preview"]
+    assert "'2026-05-31'" in test_resp.json()["sql_preview"]
 
 
 def test_rollback_creates_new_version(client, sample_dataset):

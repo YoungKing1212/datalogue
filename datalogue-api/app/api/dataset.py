@@ -30,6 +30,15 @@ from app.services.blueprint_analyzer import (
     analyze_description_for_blueprint,
     analyze_sql_for_blueprint,
 )
+from app.services.dataset_manifest import (
+    ManifestValidationError,
+    get_manifest_detail,
+    list_current_manifest_summaries,
+    mark_current_manifest_needs_review,
+    publish_manifest,
+    route_check_manifest,
+    save_manifest_draft,
+)
 from app.utils.query_constraints import normalize_query_constraints
 
 router = APIRouter()
@@ -54,6 +63,22 @@ TERM_TYPES = {
     "org_scope",
 }
 TERM_ASSET_TYPES = {"metric", "dimension", "column", "blueprint"}
+
+
+def _mark_manifest_stale_after_schema_change(db: Session, ds_id: int) -> None:
+    """语义结构变更后标记 current Manifest 需复核。"""
+
+    try:
+        mark_current_manifest_needs_review(db, ds_id)
+    except Exception as exc:
+        logger.warning("标记 Manifest 需复核失败: ds_id=%s error=%s", ds_id, exc)
+
+
+@router.get("/subagent-manifests/current")
+def list_current_subagent_manifests(db: Session = Depends(get_db)):
+    """返回所有 current SubAgent Manifest 摘要，供后续 LeadAgent 路由使用。"""
+
+    return list_current_manifest_summaries(db)
 
 
 @router.get("", response_model=List[schemas.DatasetOut])
@@ -106,6 +131,8 @@ def update_dataset(ds_id: int, payload: schemas.DatasetUpdate, db: Session = Dep
         setattr(ds, key, value)
     db.commit()
     db.refresh(ds)
+    if {"name", "tables_json", "query_constraints"} & set(data):
+        _mark_manifest_stale_after_schema_change(db, ds_id)
     logger.info(f"数据集更新成功: ds_id={ds_id}")
     return ds
 
@@ -144,6 +171,7 @@ def add_metric(ds_id: int, payload: schemas.MetricCreate, db: Session = Depends(
     db.add(m)
     db.commit()
     db.refresh(m)
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     logger.info(f"指标添加成功: id={m.id}")
     return m
 
@@ -162,6 +190,7 @@ def update_metric(
         setattr(m, key, value)
     db.commit()
     db.refresh(m)
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     logger.info(f"指标更新成功: mid={mid}")
     return m
 
@@ -182,6 +211,7 @@ def delete_metric(ds_id: int, mid: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="指标不存在")
     db.delete(m)
     db.commit()
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     logger.info(f"指标删除成功: mid={mid}")
     return {"ok": True}
 
@@ -200,6 +230,7 @@ def add_dimension(ds_id: int, payload: schemas.DimensionCreate, db: Session = De
     db.add(d)
     db.commit()
     db.refresh(d)
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     logger.info(f"维度添加成功: id={d.id}")
     return d
 
@@ -218,6 +249,7 @@ def update_dimension(
         setattr(d, key, value)
     db.commit()
     db.refresh(d)
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     logger.info(f"维度更新成功: did={did}")
     return d
 
@@ -242,6 +274,7 @@ def delete_dimension(ds_id: int, did: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="维度不存在")
     db.delete(d)
     db.commit()
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     logger.info(f"维度删除成功: did={did}")
     return {"ok": True}
 
@@ -403,6 +436,7 @@ def convert_column_to_metric(
     db.commit()
     db.refresh(metric)
     db.refresh(col)
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     return {
         "created": created,
         "existing": not created,
@@ -472,6 +506,7 @@ def convert_column_to_dimension(
     db.commit()
     db.refresh(dimension)
     db.refresh(col)
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     return {
         "created": created,
         "existing": not created,
@@ -942,6 +977,91 @@ def create_validation_case(
     return case
 
 
+# ── SubAgent Manifest ────────────────────────────────
+
+
+@router.get(
+    "/{ds_id}/subagent-manifest",
+    response_model=schemas.DatasetSubAgentManifestDetailOut,
+)
+def get_subagent_manifest(ds_id: int, db: Session = Depends(get_db)):
+    """获取数据集 SubAgent Manifest 治理详情。"""
+
+    _ensure_dataset(ds_id, db)
+    return get_manifest_detail(db, ds_id)
+
+
+@router.put(
+    "/{ds_id}/subagent-manifest",
+    response_model=schemas.DatasetSubAgentManifestOut,
+)
+def save_subagent_manifest(
+    ds_id: int,
+    payload: schemas.ManifestSavePayload,
+    db: Session = Depends(get_db),
+):
+    """保存 Manifest 人工维护字段草稿，不切换 current 版本。"""
+
+    _ensure_dataset(ds_id, db)
+    return save_manifest_draft(
+        db,
+        ds_id,
+        payload.manual_fields.model_dump(),
+        created_by=payload.created_by,
+    )
+
+
+@router.post(
+    "/{ds_id}/subagent-manifest/publish",
+    response_model=schemas.DatasetSubAgentManifestOut,
+)
+def publish_subagent_manifest(
+    ds_id: int,
+    payload: schemas.ManifestPublishPayload,
+    db: Session = Depends(get_db),
+):
+    """发布 Manifest 当前版本，发布校验失败时返回结构化 lint。"""
+
+    _ensure_dataset(ds_id, db)
+    try:
+        return publish_manifest(
+            db,
+            ds_id,
+            payload.manual_fields.model_dump() if payload.manual_fields else None,
+            created_by=payload.created_by,
+        )
+    except ManifestValidationError as exc:
+        raise HTTPException(status_code=400, detail={"lint": exc.issues}) from exc
+
+
+@router.post(
+    "/{ds_id}/subagent-manifest/route-check",
+    response_model=schemas.ManifestRouteCheckResponse,
+)
+def route_check_subagent_manifest(
+    ds_id: int,
+    payload: schemas.ManifestRouteCheckRequest,
+    db: Session = Depends(get_db),
+):
+    """用当前 manifest scorer 验证问题是否应路由到该数据集。"""
+
+    _ensure_dataset(ds_id, db)
+    questions = [question.strip() for question in payload.questions if question.strip()]
+    if not questions:
+        raise HTTPException(status_code=400, detail="questions 不能为空")
+    try:
+        return {
+            "results": route_check_manifest(
+                db,
+                ds_id,
+                questions,
+                expected=payload.expected,
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ── Analysis Blueprints ──────────────────────────────
 
 
@@ -1401,7 +1521,10 @@ def test_blueprint(
         "masking_summary": execute_result.get("masking_summary")
         or sql_result.get("masking_summary")
         or {"masked_cells": 0, "masked_columns": []},
-        "sql_preview": execute_result.get("sql") or bp.call_template or bp.raw_sql,
+        "sql_preview": execute_result.get("sql_preview")
+        or execute_result.get("sql")
+        or bp.call_template
+        or bp.raw_sql,
         "interpretation_preview": (
             f"{bp.name} 测试成功，返回 {row_count} 行 {len(columns)} 列。"
             "请确认结果和业务解读是否符合预期。"
@@ -1697,6 +1820,7 @@ def import_dataset_yaml(ds_id: int, payload: dict, db: Session = Depends(get_db)
                 imported_dims += 1
 
     db.commit()
+    _mark_manifest_stale_after_schema_change(db, ds_id)
     logger.info(f"YAML导入成功: metrics={imported_metrics}, dims={imported_dims}")
     return {
         "ok": True,
@@ -1803,6 +1927,7 @@ def select_tables_for_dataset(
             added_table_ids.append(st_id)
 
     db.commit()
+    _mark_manifest_stale_after_schema_change(db, ds_id)
 
     # 异步触发 AI 标注（只对新加入的表）
     if added_table_ids:
@@ -1833,6 +1958,7 @@ def deselect_table_from_dataset(ds_id: int, source_table_id: int, db: Session = 
     if link:
         db.delete(link)
         db.commit()
+        _mark_manifest_stale_after_schema_change(db, ds_id)
         logger.info(f"表移除成功: source_table_id={source_table_id}")
     return {"ok": True}
 

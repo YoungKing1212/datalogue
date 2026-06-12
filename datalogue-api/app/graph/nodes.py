@@ -46,7 +46,7 @@ from app.models.dataset import (
 )
 from app.models.conversation import PendingClarification, SQLDiagnosisLog
 from app.models.datasource import Datasource
-from app.services.analysis_blueprint import execute_analysis_blueprint
+from app.services.analysis_blueprint import blueprint_params_from_time_context, execute_analysis_blueprint
 from app.services.dataset_context import build_dataset_query_context
 from app.services.datasource import create_engine_for_datasource
 from app.utils.query_constraints import (
@@ -1013,23 +1013,28 @@ def analysis_blueprint_execute_node(db: Session):
             db,
             bp,
             question=question,
+            input_params=blueprint_params_from_time_context(bp, state.get("time_context")),
             require_active=True,
             count_usage=True,
         )
         if not result.get("ok"):
             missing = result.get("missing") or []
             answer = result.get("error") or "分析蓝图执行失败"
+            display_sql = result.get("sql_preview") or result.get("sql")
             route_payload = {
                 "kind": "clarification" if missing else "analysis_blueprint_error",
                 "blueprint_id": bp.id,
                 "params": result.get("params") or {},
+                "sql_template": result.get("sql"),
+                "original_question": state.get("original_question") or question,
+                "resolved_question": state.get("resolved_question") or question,
             }
             if missing:
                 route_payload["missing"] = missing
             return jsonable_encoder({
                 "sql_result": None,
-                "sql": result.get("sql"),
-                "sql_list": [result["sql"]] if result.get("sql") else [],
+                "sql": display_sql,
+                "sql_list": [display_sql] if display_sql else [],
                 "error": answer,
                 "answer": answer,
                 "route_payload": {
@@ -1038,9 +1043,10 @@ def analysis_blueprint_execute_node(db: Session):
                 "should_retry": False,
             })
 
+        display_sql = result.get("sql_preview") or result["sql"]
         return jsonable_encoder({
-            "sql": result["sql"],
-            "sql_list": [result["sql"]],
+            "sql": display_sql,
+            "sql_list": [display_sql],
             "sql_result": result["sql_result"],
             "generation_mode": "analysis_blueprint",
             "error": None,
@@ -1050,6 +1056,9 @@ def analysis_blueprint_execute_node(db: Session):
                 "blueprint_id": bp.id,
                 "name": bp.name,
                 "params": result["params"],
+                "sql_template": result["sql"],
+                "original_question": state.get("original_question") or question,
+                "resolved_question": state.get("resolved_question") or question,
                 "execution_time_ms": result["execution_time_ms"],
             },
         })

@@ -74,6 +74,7 @@ def test_role_bindings_round_trip(client):
     rows = {item["role"]: item["model_config_id"] for item in resp.json()}
     assert rows["report"] == model_id
     assert "default" in rows
+    assert "lead_agent" in rows
 
 
 def test_resolve_llm_config_role_and_default_fallback(db_session):

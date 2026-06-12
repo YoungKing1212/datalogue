@@ -24,6 +24,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -285,6 +286,25 @@ class SemanticValidationCase(Base, TimestampMixin):
 
     dataset = relationship("SemanticDataset", back_populates="validation_cases")
     blueprint = relationship("AnalysisBlueprint")
+
+
+class DatasetSubAgentManifest(Base, TimestampMixin):
+    __tablename__ = "dataset_subagent_manifest"
+
+    dataset_id = Column(
+        Integer,
+        ForeignKey("semantic_dataset.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    manifest_version = Column(String(40), primary_key=True, nullable=False)
+    bound_schema_version = Column(String(64), nullable=False)
+    manifest_json = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False)
+    is_current = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    review_status = Column(String(30), nullable=False, default="draft", server_default="draft")
+    created_by = Column(String(50))
+
+    dataset = relationship("SemanticDataset", backref="subagent_manifests")
 
 
 class AnalysisBlueprint(Base, TimestampMixin):

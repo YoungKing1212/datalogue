@@ -1,0 +1,146 @@
+# ============================================================
+# File Name   : dataset_router.py
+# Description:
+#   数据集 SubAgent Manifest 路由服务。
+#
+# Responsibilities:
+#   - 在未手动选择数据集时，根据 current Manifest 为问题选择数据集。
+#   - 在已手动选择数据集时，锁定该数据集并携带 Manifest 版本三元组。
+#   - 为聊天入口和后续 LeadAgent 接入提供稳定的路由决策结构。
+#
+# Author      : yangkai
+# Created On  : 2026-06-12
+# ============================================================
+
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app import models
+from app.services.dataset_manifest import score_manifest_question
+
+
+AUTO_SELECT_THRESHOLD = 0.65
+AUTO_SELECT_MARGIN = 0.12
+MAX_CANDIDATES = 3
+
+
+def route_dataset_for_question(
+    db: Session,
+    question: str,
+    *,
+    dataset_id: int | None = None,
+) -> dict[str, Any]:
+    """返回聊天入口的数据集路由决策。
+
+    已传 dataset_id 时不做自动改选，避免覆盖用户显式上下文；未传时仅在
+    current Manifest 证据足够明确时自动选择。
+    """
+
+    if dataset_id is not None:
+        return _locked_decision(db, dataset_id)
+
+    manifests = (
+        db.query(models.DatasetSubAgentManifest)
+        .filter(models.DatasetSubAgentManifest.is_current.is_(True))
+        .order_by(models.DatasetSubAgentManifest.dataset_id)
+        .all()
+    )
+    if not manifests:
+        return {
+            "decision": "no_match",
+            "dataset_id": None,
+            "manifest_version": None,
+            "bound_schema_version": None,
+            "score": 0,
+            "candidates": [],
+            "reason": "当前没有可用于自动路由的 current SubAgent Manifest。",
+        }
+
+    candidates = [_candidate_from_manifest(question, manifest) for manifest in manifests]
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    top = candidates[0]
+    second = candidates[1] if len(candidates) > 1 else None
+    margin = top["score"] - (second["score"] if second else 0)
+    visible_candidates = candidates[:MAX_CANDIDATES]
+
+    if top["score"] >= AUTO_SELECT_THRESHOLD and margin >= AUTO_SELECT_MARGIN:
+        return {
+            "decision": "selected",
+            "dataset_id": top["dataset_id"],
+            "manifest_version": top["manifest_version"],
+            "bound_schema_version": top["bound_schema_version"],
+            "score": top["score"],
+            "candidates": visible_candidates,
+            "reason": "Manifest 路由证据明确，自动选择得分最高的数据集。",
+        }
+
+    if top["score"] >= AUTO_SELECT_THRESHOLD:
+        return {
+            "decision": "ambiguous",
+            "dataset_id": None,
+            "manifest_version": None,
+            "bound_schema_version": None,
+            "score": top["score"],
+            "candidates": visible_candidates,
+            "reason": "多个数据集的 Manifest 得分接近，需要用户确认。",
+        }
+
+    return {
+        "decision": "no_match",
+        "dataset_id": None,
+        "manifest_version": None,
+        "bound_schema_version": None,
+        "score": top["score"],
+        "candidates": visible_candidates,
+        "reason": "没有 Manifest 达到自动路由阈值。",
+    }
+
+
+def _locked_decision(db: Session, dataset_id: int) -> dict[str, Any]:
+    manifest = (
+        db.query(models.DatasetSubAgentManifest)
+        .filter(
+            models.DatasetSubAgentManifest.dataset_id == dataset_id,
+            models.DatasetSubAgentManifest.is_current.is_(True),
+        )
+        .order_by(models.DatasetSubAgentManifest.created_at.desc())
+        .first()
+    )
+    dataset = db.get(models.SemanticDataset, dataset_id)
+    candidate = _candidate_from_manifest("", manifest) if manifest else None
+    return {
+        "decision": "locked",
+        "dataset_id": dataset_id,
+        "manifest_version": manifest.manifest_version if manifest else None,
+        "bound_schema_version": manifest.bound_schema_version if manifest else None,
+        "score": 1 if manifest else 0,
+        "candidates": [candidate] if candidate else [],
+        "reason": "用户已显式选择数据集，跳过自动改选。",
+        "dataset_name": dataset.name if dataset else None,
+    }
+
+
+def _candidate_from_manifest(
+    question: str,
+    manifest: models.DatasetSubAgentManifest,
+) -> dict[str, Any]:
+    score, reasons, negative_hit = score_manifest_question(question, manifest)
+    payload = manifest.manifest_json or {}
+    auto_fields = payload.get("auto_fields") or {}
+    manual_fields = payload.get("manual_fields") or {}
+    if negative_hit:
+        reasons = [*reasons, "命中负例，降低自动路由优先级。"]
+    return {
+        "dataset_id": manifest.dataset_id,
+        "dataset_name": auto_fields.get("name"),
+        "manifest_version": manifest.manifest_version,
+        "bound_schema_version": manifest.bound_schema_version,
+        "review_status": manifest.review_status,
+        "score": round(score, 2),
+        "negative_hit": negative_hit,
+        "business_domain": manual_fields.get("business_domain") or [],
+        "reasons": reasons,
+    }

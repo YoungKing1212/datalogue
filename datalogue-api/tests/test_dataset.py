@@ -21,6 +21,27 @@ from app import models
 class TestDatasetAPI:
     """测试 /api/dataset 路由"""
 
+    def _manifest_manual_fields(self):
+        return {
+            "description": (
+                "订单销售数据集用于分析门店订单在日、周、月范围内的GMV、订单数、地区和品类表现，"
+                "覆盖销售运营人员查看各区域成交趋势、品类结构、异常波动和门店经营质量，不覆盖库存、会员画像和售后工单。"
+            ),
+            "business_domain": ["销售运营"],
+            "sample_questions": [
+                "最近30日GMV趋势如何",
+                "按地区统计本月订单数",
+                "各品类销售额排名",
+                "华东区域订单量是多少",
+                "本周门店成交金额变化",
+            ],
+            "routing_negative_examples": [
+                "库存周转率是多少",
+                "会员画像年龄分布",
+                "售后工单处理时长",
+            ],
+        }
+
     def _create_selected_table_with_columns(self, db_session, sample_dataset, sample_datasource):
         table = models.SourceTable(
             datasource_id=sample_datasource.id,
@@ -100,6 +121,110 @@ class TestDatasetAPI:
         assert data["query_constraints"]["enabled"] is True
         assert data["query_constraints"]["default_time_range_days"] == 30
         assert data["query_constraints"]["default_limit"] == 100
+
+    def test_manifest_publish_requires_manual_quality_fields(self, client, sample_dataset):
+        """发布 Manifest 时必须补齐 B 类人工字段。"""
+        resp = client.post(
+            f"/api/dataset/{sample_dataset.id}/subagent-manifest/publish",
+            json={"manual_fields": {"description": "太短", "business_domain": []}},
+        )
+        assert resp.status_code == 400
+        lint = resp.json()["detail"]["lint"]
+        assert {item["code"] for item in lint} >= {
+            "description_length",
+            "business_domain_required",
+            "sample_questions_count",
+            "routing_negative_examples_count",
+        }
+
+    def test_manifest_publish_versions_and_keeps_history(self, client, sample_dataset):
+        """发布 Manifest 会递增版本、切 current，并保留历史版本。"""
+        manual = self._manifest_manual_fields()
+        draft_resp = client.put(
+            f"/api/dataset/{sample_dataset.id}/subagent-manifest",
+            json={"manual_fields": manual, "created_by": "tester"},
+        )
+        assert draft_resp.status_code == 200
+        assert draft_resp.json()["manifest_version"] == "draft"
+
+        first = client.post(
+            f"/api/dataset/{sample_dataset.id}/subagent-manifest/publish",
+            json={"created_by": "tester"},
+        )
+        assert first.status_code == 200
+        assert first.json()["manifest_version"] == "v1"
+        assert first.json()["is_current"] is True
+        assert first.json()["manifest_json"]["manual_fields"]["business_domain"] == ["销售运营"]
+
+        second_manual = {
+            **manual,
+            "sample_questions": [*manual["sample_questions"][:-1], "最近7日订单数趋势如何"],
+        }
+        second = client.post(
+            f"/api/dataset/{sample_dataset.id}/subagent-manifest/publish",
+            json={"manual_fields": second_manual, "created_by": "tester"},
+        )
+        assert second.status_code == 200
+        assert second.json()["manifest_version"] == "v2"
+
+        currents = client.get("/api/dataset/subagent-manifests/current")
+        assert currents.status_code == 200
+        assert [item["manifest_version"] for item in currents.json()] == ["v2"]
+
+    def test_manifest_marks_current_needs_review_after_schema_change(
+        self, client, sample_dataset
+    ):
+        """指标变更后 current Manifest 标记 needs_review，B 类字段不被改写。"""
+        manual = self._manifest_manual_fields()
+        published = client.post(
+            f"/api/dataset/{sample_dataset.id}/subagent-manifest/publish",
+            json={"manual_fields": manual},
+        )
+        assert published.status_code == 200
+        old_bound = published.json()["bound_schema_version"]
+
+        add_metric = client.post(
+            f"/api/dataset/{sample_dataset.id}/metric",
+            json={
+                "name": "refund_amount",
+                "display_name": "退款金额",
+                "expr": "SUM(o.refund_amount)",
+                "description": "退款金额合计",
+            },
+        )
+        assert add_metric.status_code == 200
+
+        detail = client.get(f"/api/dataset/{sample_dataset.id}/subagent-manifest")
+        assert detail.status_code == 200
+        data = detail.json()
+        assert data["stale"] is True
+        assert data["current_manifest"]["review_status"] == "needs_review"
+        assert data["current_manifest"]["bound_schema_version"] == old_bound
+        assert data["manual_fields"] == manual
+
+    def test_manifest_route_check_positive_and_negative(self, client, sample_dataset):
+        """route-check 对正例命中，对负例避让。"""
+        manual = self._manifest_manual_fields()
+        publish = client.post(
+            f"/api/dataset/{sample_dataset.id}/subagent-manifest/publish",
+            json={"manual_fields": manual},
+        )
+        assert publish.status_code == 200
+
+        positive = client.post(
+            f"/api/dataset/{sample_dataset.id}/subagent-manifest/route-check",
+            json={"questions": ["最近30日GMV趋势如何"], "expected": "positive"},
+        )
+        assert positive.status_code == 200
+        assert positive.json()["results"][0]["decision"] == "hit"
+        assert positive.json()["results"][0]["top_dataset_id"] == sample_dataset.id
+
+        negative = client.post(
+            f"/api/dataset/{sample_dataset.id}/subagent-manifest/route-check",
+            json={"questions": ["库存周转率是多少"], "expected": "negative"},
+        )
+        assert negative.status_code == 200
+        assert negative.json()["results"][0]["decision"] == "miss"
 
     def test_create_dataset_with_prompt_instructions(self, client, sample_datasource):
         """新建数据集时可填 prompt_instructions，后续 GET 能取回。"""

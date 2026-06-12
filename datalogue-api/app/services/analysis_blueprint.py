@@ -238,6 +238,32 @@ def _default_blueprint_param(default_expr: str | None) -> Any:
     return default_expr
 
 
+def _sql_literal(value: Any) -> str:
+    """把蓝图参数转成仅用于展示的 SQL 字面量。执行仍使用绑定参数。"""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float, Decimal)):
+        return str(value)
+    if isinstance(value, date):
+        return f"'{value.isoformat()}'"
+    text_value = str(value).replace("'", "''")
+    return f"'{text_value}'"
+
+
+def render_blueprint_sql_preview(sql: str, params: dict[str, Any]) -> str:
+    """渲染带参数值的 SQL 预览，缺失参数保留 :name 占位符。"""
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in params:
+            return match.group(0)
+        return _sql_literal(params[name])
+
+    return re.sub(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)", replace, sql or "")
+
+
 def _extract_date_range(question: str) -> tuple[str | None, str | None]:
     """从中文问题中提取常见年份/月度日期范围。"""
     text = question or ""
@@ -340,6 +366,32 @@ def extract_blueprint_params(
     return params, missing
 
 
+def blueprint_params_from_time_context(
+    bp: AnalysisBlueprint,
+    time_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """把 LeadAgent TimeTool 的结构化时间范围转换为蓝图显式参数。"""
+
+    detected = (time_context or {}).get("detected_time_range") or {}
+    start_date = detected.get("start_date")
+    end_date = detected.get("end_date")
+    if not start_date or not end_date:
+        return {}
+
+    params: dict[str, Any] = {}
+    for spec in bp.parameters or []:
+        if not isinstance(spec, dict):
+            continue
+        name = spec.get("name")
+        if not name or str(spec.get("type") or "").lower() != "date":
+            continue
+        if _is_start_date_param(name):
+            params[name] = start_date
+        elif _is_end_date_param(name):
+            params[name] = end_date
+    return params
+
+
 def validate_blueprint_sql(sql: str) -> str | None:
     """校验蓝图执行 SQL，只允许只读查询。"""
     guard_result = guard_readonly_sql(sql, query_constraints={"enabled": False})
@@ -406,6 +458,7 @@ def execute_analysis_blueprint(
 
     sql = (bp.call_template or bp.raw_sql or "").strip()
     params, missing = extract_blueprint_params(bp, question, input_params)
+    sql_preview = render_blueprint_sql_preview(sql, params)
     if missing:
         detail = "运行分析蓝图前还需要补充参数：" + "、".join(missing)
         diagnosis = _build_diagnosis("MISSING_PARAMS", detail)
@@ -426,6 +479,7 @@ def execute_analysis_blueprint(
             "params": params,
             "missing": missing,
             "sql": sql,
+            "sql_preview": sql_preview,
             "row_count": 0,
             "diagnosis": diagnosis,
         }
@@ -459,10 +513,12 @@ def execute_analysis_blueprint(
             "error": validation_error,
             "params": params,
             "sql": sql,
+            "sql_preview": sql_preview,
             "row_count": 0,
             "diagnosis": diagnosis,
         }
     sql = guard_result.normalized_sql or sql
+    sql_preview = render_blueprint_sql_preview(sql, params)
 
     engine = create_engine_for_datasource(datasource)
     started_at = time.monotonic()
@@ -503,6 +559,8 @@ def execute_analysis_blueprint(
             "blueprint_name": bp.name,
             "execution_time_ms": elapsed_ms,
             "params": params,
+            "sql_template": sql,
+            "sql_preview": sql_preview,
             "masking_summary": masking_summary,
         }
         if count_usage:
@@ -526,6 +584,7 @@ def execute_analysis_blueprint(
         return {
             "ok": True,
             "sql": sql,
+            "sql_preview": sql_preview,
             "sql_result": sql_result,
             "params": params,
             "execution_time_ms": elapsed_ms,
@@ -560,6 +619,7 @@ def execute_analysis_blueprint(
             "ok": False,
             "error": f"分析蓝图执行失败: {e}",
             "sql": sql,
+            "sql_preview": sql_preview,
             "params": params,
             "execution_time_ms": elapsed_ms,
             "row_count": 0,

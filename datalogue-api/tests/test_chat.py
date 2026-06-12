@@ -22,6 +22,48 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
+from app import models
+from app.schemas.chat import ChatRequest
+from app.services.dataset_manifest import publish_manifest
+
+
+def _manifest_manual_fields(*, domain="销售运营", subject="订单销售"):
+    return {
+        "description": (
+            f"{subject}数据集用于分析门店订单在日、周、月范围内的GMV、订单数、地区和品类表现，"
+            "覆盖销售运营人员查看各区域成交趋势、品类结构、异常波动和门店经营质量，不覆盖库存、会员画像和售后工单。"
+        ),
+        "business_domain": [domain],
+        "sample_questions": [
+            "最近30日GMV趋势如何",
+            "按地区统计本月订单数",
+            "各品类销售额排名",
+            "华东区域订单量是多少",
+            "本周门店成交金额变化",
+        ],
+        "routing_negative_examples": [
+            "库存周转率是多少",
+            "会员画像年龄分布",
+            "售后工单处理时长",
+        ],
+    }
+
+
+def _collect_stream_events(payload, db_session):
+    from app.api.chat import _stream_chat
+
+    async def _collect():
+        events = []
+        async for item in _stream_chat(ChatRequest(**payload), db_session):
+            events.append(json.loads(item["data"]))
+        return events
+
+    return asyncio.run(_collect())
+
+
+def _find_event(events, event_type):
+    return next(item for item in events if item.get("type") == event_type)
+
 
 class TestChatAPI:
     """测试 /api/chat 路由"""
@@ -438,6 +480,40 @@ class TestLangGraphNodes:
         assert pending.original_question == "销售额是多少"
         assert pending.status == "pending"
 
+    def test_chat_stream_conflict_enriches_existing_candidate_labels(
+        self, db_session, sample_dataset
+    ):
+        """已有候选只有 term_id 时，应回查业务术语补齐前端展示名。"""
+        from app.api.chat import _ensure_pending_term_clarification
+        from app.models.conversation import Conversation
+
+        term = models.BusinessTerm(
+            dataset_id=sample_dataset.id,
+            name="paid_amount",
+            display_name="实付金额",
+            term_type="metric",
+            definition="用户实际支付金额",
+            status="active",
+        )
+        conv = Conversation(title="候选补齐", thread_id="thread-candidate-label", dataset_id=sample_dataset.id)
+        db_session.add_all([term, conv])
+        db_session.commit()
+
+        enriched = _ensure_pending_term_clarification(
+            db_session,
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            question="销售额是多少",
+            route_payload={
+                "kind": "term_conflict_clarification",
+                "candidates": [{"index": 1, "term_id": term.id}],
+            },
+        )
+
+        assert enriched["candidates"][0]["display_name"] == "实付金额"
+        assert enriched["candidates"][0]["name"] == "paid_amount"
+        assert enriched["candidates"][0]["definition"] == "用户实际支付金额"
+
     def test_clarification_resolution_selected_term_id(self, db_session, sample_dataset):
         """澄清解析：结构化 selected_term_id 可恢复原问题。"""
         from app.graph.nodes import clarification_resolution_node
@@ -746,7 +822,18 @@ class TestLangGraphNodes:
         db_session.refresh(bp)
 
         state = {
-            "question": "为什么本月毛利下降",
+            "question": "为什么2025年毛利下降",
+            "original_question": "为什么去年毛利下降",
+            "resolved_question": "为什么2025年毛利下降",
+            "time_context": {
+                "detected_time_range": {
+                    "label": "去年",
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-12-31",
+                    "granularity": "year",
+                    "source": "relative_last_year",
+                }
+            },
             "dataset_id": sample_dataset.id,
             "blueprint_id": bp.id,
         }
@@ -756,6 +843,14 @@ class TestLangGraphNodes:
         assert result["sql_result"]["row_count"] == 1
         assert result["sql_result"]["rows"][0]["category"] == "电子"
         assert result["route_payload"]["blueprint_id"] == bp.id
+        assert ":start_date" not in result["sql"]
+        assert result["route_payload"]["params"]["start_date"] == "2025-01-01"
+        assert result["route_payload"]["params"]["end_date"] == "2025-12-31"
+        assert result["route_payload"]["original_question"] == "为什么去年毛利下降"
+        assert result["route_payload"]["resolved_question"] == "为什么2025年毛利下降"
+        assert "'" in result["sql"]
+        assert ":start_date" in result["route_payload"]["sql_template"]
+        assert "LIMIT 100" in result["route_payload"]["sql_template"]
         db_session.refresh(bp)
         assert bp.usage_count == 1
         assert db_session.query(BlueprintUsageLog).filter_by(blueprint_id=bp.id).count() == 1
@@ -1991,6 +2086,154 @@ class TestChatStreamEvents:
                 assert "node" in e
                 assert "status" in e
                 assert e["status"] in ("running", "done")
+
+    def test_chat_stream_auto_routes_by_current_manifest(self, db_session, sample_dataset):
+        """未传 dataset_id 时，应先用 current Manifest 自动选择数据集再进入工作流。"""
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+        captured = {}
+
+        async def fake_astream_events(state, version):
+            captured["state"] = state
+            yield {
+                "event": "on_chain_end",
+                "name": "report_generator",
+                "data": {"output": {"answer": "查询完成", "sql": "SELECT 1"}},
+                "metadata": {"langgraph_node": "report_generator"},
+            }
+
+        with patch("app.api.chat.build_workflow") as mock_wf:
+            mock_graph = MagicMock()
+            mock_graph.astream_events = fake_astream_events
+            mock_wf.return_value = mock_graph
+
+            events = _collect_stream_events({"question": "最近30日GMV趋势如何"}, db_session)
+
+        lead_event = _find_event(events, "lead_agent_tools")
+        route_event = _find_event(events, "route_decision")
+        assert lead_event["should_continue"] is True
+        assert "tool_policy" in lead_event
+        assert lead_event["planned_tool_calls"]
+        assert lead_event["executed_tool_calls"]
+        assert "policy_violations" in lead_event
+        assert "planner_fallback" in lead_event
+        assert lead_event["time_context"]["detected_time_range"]["label"] == "最近30日"
+        assert route_event["type"] == "route_decision"
+        assert route_event["decision"] == "selected"
+        assert route_event["dataset_id"] == sample_dataset.id
+        assert captured["state"]["original_question"] == "最近30日GMV趋势如何"
+        assert captured["state"]["resolved_question"] == captured["state"]["question"]
+        assert captured["state"]["resolved_question"] != captured["state"]["original_question"]
+        assert captured["state"]["dataset_id"] == sample_dataset.id
+        assert captured["state"]["manifest_version"] == "v1"
+        assert captured["state"]["bound_schema_version"] == route_event["bound_schema_version"]
+        assert captured["state"]["lead_agent_context"]["audit_trace"]["dispatched"] is True
+        assert events[-1]["route_decision"]["decision"] == "selected"
+
+    def test_chat_stream_keeps_explicit_dataset_locked(
+        self, db_session, sample_dataset, sample_datasource
+    ):
+        """已传 dataset_id 时，即使命中其他 Manifest，也不能自动改选。"""
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+        other = models.SemanticDataset(
+            name="供应商采购数据集",
+            datasource_id=sample_datasource.id,
+            tables_json={"tables": [{"name": "suppliers", "alias": "s"}]},
+            status="active",
+        )
+        db_session.add(other)
+        db_session.commit()
+        db_session.refresh(other)
+        db_session.add(
+            models.SemanticMetric(
+                dataset_id=other.id,
+                name="supplier_count",
+                display_name="供应商数量",
+                expr="COUNT(s.id)",
+                synonyms=["供应商数"],
+                description="供应商总数量",
+            )
+        )
+        db_session.add(
+            models.SemanticDimension(
+                dataset_id=other.id,
+                name="supplier_level",
+                display_name="供应商层级",
+                column_name="s.level",
+                synonyms=["层级"],
+            )
+        )
+        db_session.commit()
+        supplier_manual = _manifest_manual_fields(domain="采购管理", subject="供应商采购")
+        supplier_manual["description"] = (
+            "供应商采购数据集用于分析日、周、月范围内的供应商数量、供应商层级、地区和新增趋势表现，"
+            "覆盖采购管理人员查看供应商准入、层级结构、区域分布和异常波动，不覆盖订单销售、会员画像和售后工单。"
+        )
+        supplier_manual["sample_questions"] = [
+            "最近30日供应商数量趋势如何",
+            "按供应商层级统计本月供应商数量",
+            "各地区供应商数量排名",
+            "本周新增供应商数量是多少",
+            "供应商层级分布如何",
+        ]
+        supplier_manual["routing_negative_examples"] = [
+            "最近30日GMV趋势如何",
+            "售后工单处理时长",
+            "会员画像年龄分布",
+        ]
+        publish_manifest(db_session, other.id, supplier_manual)
+        captured = {}
+
+        async def fake_astream_events(state, version):
+            captured["state"] = state
+            yield {
+                "event": "on_chain_end",
+                "name": "report_generator",
+                "data": {"output": {"answer": "查询完成", "sql": "SELECT 1"}},
+                "metadata": {"langgraph_node": "report_generator"},
+            }
+
+        with patch("app.api.chat.build_workflow") as mock_wf:
+            mock_graph = MagicMock()
+            mock_graph.astream_events = fake_astream_events
+            mock_wf.return_value = mock_graph
+
+            events = _collect_stream_events(
+                {
+                    "question": "最近30日供应商数量趋势如何",
+                    "dataset_id": sample_dataset.id,
+                },
+                db_session,
+            )
+
+        route_event = _find_event(events, "route_decision")
+        assert route_event["decision"] == "locked"
+        assert route_event["dataset_id"] == sample_dataset.id
+        assert captured["state"]["dataset_id"] == sample_dataset.id
+        assert captured["state"]["route_decision"]["decision"] == "locked"
+
+    def test_chat_stream_no_manifest_blocks_auto_route(self, db_session):
+        """未传 dataset_id 且没有 current Manifest 时，不进入旧的无 schema 猜测路径。"""
+        with patch("app.api.chat.build_workflow") as mock_wf:
+            events = _collect_stream_events({"question": "最近30日GMV趋势如何"}, db_session)
+
+        lead_event = _find_event(events, "lead_agent_tools")
+        route_event = _find_event(events, "route_decision")
+        assert lead_event["should_continue"] is False
+        assert lead_event["clarification"]["kind"] == "dataset_missing"
+        assert lead_event["tool_policy"]["allowed_tools"]
+        assert lead_event["planned_tool_calls"]
+        assert lead_event["executed_tool_calls"]
+        assert route_event["type"] == "route_decision"
+        assert route_event["decision"] == "no_match"
+        assert events[-1]["type"] == "final"
+        assert events[-1]["entry_route"] == "no_match"
+        assert events[-1]["lead_agent_context"]["audit_trace"]["dispatched"] is False
+        assert "current SubAgent Manifest" in events[-1]["answer"]
+        trace_index = db_session.query(models.ObservabilityTraceIndex).one()
+        assert trace_index.status == "blocked"
+        assert trace_index.entry_route == "no_match"
+        assert trace_index.message_id == events[-1]["message_id"]
+        mock_wf.assert_not_called()
 
 
 class TestSchemaFormatter:

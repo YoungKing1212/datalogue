@@ -165,6 +165,16 @@ function ComposerTextSetter({ register }) {
       api.composer().setText(text);
     });
   }, [api, register]);
+  useEffect(() => {
+    const handler = (event) => {
+      const text = event.detail?.text || '';
+      if (!text) return;
+      api.composer().setText(text);
+      api.composer().send();
+    };
+    window.addEventListener('datalogue:composer-submit', handler);
+    return () => window.removeEventListener('datalogue:composer-submit', handler);
+  }, [api]);
   return null;
 }
 
@@ -233,7 +243,50 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
       const ev = e.detail;
       if (!ev) return;
 
-      if (ev.type === 'step' && ev.node && ev.node !== 'error') {
+      if (ev.type === 'lead_agent_tools') {
+        setTraceSteps((prev) => {
+          const toolStep = {
+            node: 'lead_agent_tools',
+            display_name: 'LeadAgent 工具',
+            status: ev.should_continue ? 'done' : 'blocked',
+            elapsed_ms: null,
+            audit_trace: ev.audit_trace,
+            schema_status: ev.schema_status,
+            selected_skills: ev.selected_skills || [],
+            planned_tool_calls: ev.planned_tool_calls || [],
+            executed_tool_calls: ev.executed_tool_calls || [],
+            system_inferred_tool_calls: ev.system_inferred_tool_calls || [],
+            policy_violations: ev.policy_violations || [],
+            planner_fallback: ev.planner_fallback,
+          };
+          const exists = prev.find((s) => s.node === 'lead_agent_tools');
+          return exists
+            ? prev.map((s) => (s.node === 'lead_agent_tools' ? { ...s, ...toolStep } : s))
+            : [toolStep, ...prev];
+        });
+      } else if (ev.type === 'route_decision') {
+        const datasetId = ev.dataset_id == null ? null : Number(ev.dataset_id);
+        if (ev.decision === 'selected' && datasetId != null) {
+          const matched = datasetList.find((item) => Number(item.id) === datasetId);
+          if (matched) setSelectedDs(matched);
+        }
+        setTraceSteps((prev) => {
+          const routeStep = {
+            node: 'manifest_route',
+            display_name: 'Manifest 路由',
+            status: 'done',
+            elapsed_ms: null,
+            decision: ev.decision,
+            dataset_id: ev.dataset_id,
+            dataset_name: ev.dataset_name,
+            score: ev.score,
+          };
+          const exists = prev.find((s) => s.node === 'manifest_route');
+          return exists
+            ? prev.map((s) => (s.node === 'manifest_route' ? { ...s, ...routeStep } : s))
+            : [routeStep, ...prev];
+        });
+      } else if (ev.type === 'step' && ev.node && ev.node !== 'error') {
         setTraceSteps((prev) => {
           const exists = prev.find((s) => s.node === ev.node);
           if (exists) {
@@ -295,7 +348,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
     };
     window.addEventListener('datalogue:trace', handler);
     return () => window.removeEventListener('datalogue:trace', handler);
-  }, []);
+  }, [datasetList]);
 
   // 切换 thread 时重置 trace 数据
   const mainThreadId = useAuiState((s) => s.threads?.mainThreadId);

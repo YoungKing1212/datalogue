@@ -39,6 +39,7 @@ LLM_OBSERVATION_NAMES = {
     "无Schema": "LLM · 无 Schema 生成",
     "sql_audit": "LLM · SQL 诊断",
     "report_generator": "LLM · 报告生成",
+    "lead_agent_planner": "LLM · LeadAgent Planner",
 }
 
 

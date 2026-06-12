@@ -12,7 +12,7 @@
 # ============================================================
 
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -313,6 +313,83 @@ class SemanticValidationCaseOut(BaseModel):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ManifestManualFields(BaseModel):
+    description: str = ""
+    business_domain: List[str] = []
+    sample_questions: List[str] = []
+    routing_negative_examples: List[str] = []
+
+
+class ManifestAutoFields(BaseModel):
+    dataset_id: int
+    name: str
+    manifest_version: str
+    bound_schema_version: str
+    key_metrics: List[Dict[str, Any]] = []
+    key_dimensions: List[Dict[str, Any]] = []
+    permission_scope: Dict[str, Any] = {}
+
+
+class ManifestLintIssue(BaseModel):
+    code: str
+    severity: Literal["warning", "error"]
+    message: str
+
+
+class DatasetSubAgentManifestOut(BaseModel):
+    dataset_id: int
+    manifest_version: str
+    bound_schema_version: str
+    manifest_json: Dict[str, Any]
+    is_current: bool
+    review_status: str
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DatasetSubAgentManifestDetailOut(BaseModel):
+    dataset_id: int
+    current_manifest: Optional[DatasetSubAgentManifestOut] = None
+    draft_manifest: Optional[DatasetSubAgentManifestOut] = None
+    auto_fields_preview: ManifestAutoFields
+    manual_fields: ManifestManualFields
+    lint: List[ManifestLintIssue] = []
+    stale: bool = False
+    review_status: str = "missing"
+
+
+class ManifestSavePayload(BaseModel):
+    manual_fields: ManifestManualFields
+    created_by: Optional[str] = None
+
+
+class ManifestPublishPayload(BaseModel):
+    manual_fields: Optional[ManifestManualFields] = None
+    created_by: Optional[str] = None
+
+
+class ManifestRouteCheckRequest(BaseModel):
+    questions: List[str]
+    expected: Optional[Literal["positive", "negative"]] = None
+
+
+class ManifestRouteCheckResult(BaseModel):
+    question: str
+    top_dataset_id: Optional[int] = None
+    matched_manifest_version: Optional[str] = None
+    score: float
+    decision: Literal["hit", "miss", "ambiguous"]
+    reasons: List[str] = []
+    suggestions: List[str] = []
+
+
+class ManifestRouteCheckResponse(BaseModel):
+    results: List[ManifestRouteCheckResult]
 
 
 class SelectTablesPayload(BaseModel):

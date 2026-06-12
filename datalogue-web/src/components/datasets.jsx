@@ -41,6 +41,10 @@ import {
   checkBusinessTermConflicts,
   listSemanticValidationCases,
   createSemanticValidationCase,
+  getDatasetSubAgentManifest,
+  saveDatasetSubAgentManifest,
+  publishDatasetSubAgentManifest,
+  routeCheckDatasetSubAgentManifest,
 } from '../api/client';
 
 // ── DatasetsScreen — 语义层配置（三栏式）────────────────────
@@ -76,6 +80,42 @@ const DEFAULT_QUERY_CONSTRAINTS = {
   default_limit: 100,
   max_limit: 1000,
 };
+
+const DEFAULT_MANIFEST_MANUAL_FIELDS = {
+  description: '',
+  business_domain: [],
+  sample_questions: [],
+  routing_negative_examples: [],
+};
+
+const MANIFEST_STATUS_LABEL = {
+  missing: '未发布',
+  draft: '草稿',
+  current: '当前有效',
+  needs_review: '需复核',
+  archived: '历史版本',
+};
+
+const splitManifestList = (value) => String(value || '')
+  .split(/[\n；;]+/)
+  .map(item => item.trim())
+  .filter(Boolean);
+
+const joinManifestList = (value) => (value || []).join('\n');
+
+const manifestManualFieldsFromForm = (form) => ({
+  description: String(form.description || '').trim(),
+  business_domain: splitManifestList(form.business_domain_text),
+  sample_questions: splitManifestList(form.sample_questions_text),
+  routing_negative_examples: splitManifestList(form.routing_negative_examples_text),
+});
+
+const manifestFormFromManualFields = (manual = DEFAULT_MANIFEST_MANUAL_FIELDS) => ({
+  description: manual.description || '',
+  business_domain_text: joinManifestList(manual.business_domain),
+  sample_questions_text: joinManifestList(manual.sample_questions),
+  routing_negative_examples_text: joinManifestList(manual.routing_negative_examples),
+});
 
 const normalizeQueryConstraints = (value) => {
   const raw = value || {};
@@ -326,6 +366,18 @@ function DatasetsScreen() {
   const [savingValidationCase, setSavingValidationCase] = useState(false);
   const testAbortRef = useRef(null);
 
+  // ── SubAgent Manifest 治理 ──
+  const [manifestDetail, setManifestDetail] = useState(null);
+  const [manifestForm, setManifestForm] = useState(() => manifestFormFromManualFields());
+  const [manifestLoading, setManifestLoading] = useState(false);
+  const [manifestSaving, setManifestSaving] = useState(false);
+  const [manifestPublishing, setManifestPublishing] = useState(false);
+  const [manifestRouteQuestions, setManifestRouteQuestions] = useState('');
+  const [manifestRouteExpected, setManifestRouteExpected] = useState('');
+  const [manifestRouteResults, setManifestRouteResults] = useState([]);
+  const [manifestRouteChecking, setManifestRouteChecking] = useState(false);
+  const [manifestMessage, setManifestMessage] = useState('');
+
   // ── 数据集列表：右键菜单 + 二次确认删除 ──
   const [ctxMenu, setCtxMenu] = useState(null); // {x, y, ds} | null
   const ctxMenuRef = useRef(null); // 菜单 DOM 引用，用于判断点击是否在菜单内
@@ -427,18 +479,26 @@ function DatasetsScreen() {
 
   const loadDsMeta = async (dsId) => {
     try {
-      const [ms, ds, terms, cases] = await Promise.all([
+      const [ms, ds, terms, cases, manifest] = await Promise.all([
         listDatasetMetrics(dsId),
         listDatasetDimensions(dsId),
         listBusinessTerms(dsId),
         listSemanticValidationCases(dsId),
+        getDatasetSubAgentManifest(dsId),
       ]);
       setMetrics(ms);
       setDimensions(ds);
       setBusinessTerms(terms);
       setValidationCases(cases);
+      setManifestDetail(manifest);
+      setManifestForm(manifestFormFromManualFields(manifest?.manual_fields));
+      setManifestRouteResults([]);
+      setManifestMessage('');
       setSelectedTermId(prev => (prev && terms.some(t => t.id === prev) ? prev : terms[0]?.id ?? null));
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      console.error(err);
+      setManifestDetail(null);
+    }
   };
 
   // 加载数据源所有表（目录）
@@ -1144,6 +1204,105 @@ function DatasetsScreen() {
     }
   };
 
+  const loadManifestDetail = async (dsId = currentDsId) => {
+    if (!dsId) return;
+    setManifestLoading(true);
+    try {
+      const detail = await getDatasetSubAgentManifest(dsId);
+      setManifestDetail(detail);
+      setManifestForm(manifestFormFromManualFields(detail?.manual_fields));
+      setManifestMessage('');
+    } catch (err) {
+      console.error(err);
+      setManifestMessage('Manifest 加载失败: ' + (err.message || '未知错误'));
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
+  const handleManifestSave = async () => {
+    if (!currentDsId) return;
+    setManifestSaving(true);
+    setManifestMessage('');
+    try {
+      await saveDatasetSubAgentManifest(currentDsId, manifestManualFieldsFromForm(manifestForm), 'yangkai');
+      await loadManifestDetail(currentDsId);
+      setManifestMessage('草稿已保存。');
+    } catch (err) {
+      setManifestMessage('保存失败: ' + (err.message || '未知错误'));
+    } finally {
+      setManifestSaving(false);
+    }
+  };
+
+  const handleManifestPublish = async () => {
+    if (!currentDsId) return;
+    setManifestPublishing(true);
+    setManifestMessage('');
+    try {
+      await publishDatasetSubAgentManifest(currentDsId, manifestManualFieldsFromForm(manifestForm), 'yangkai');
+      await loadManifestDetail(currentDsId);
+      setManifestMessage('Manifest 已发布为当前版本。');
+    } catch (err) {
+      const lint = err?.data?.detail?.lint || err?.detail?.lint;
+      if (Array.isArray(lint) && lint.length) {
+        setManifestMessage('发布失败: ' + lint.map(item => item.message).join('；'));
+      } else {
+        setManifestMessage('发布失败: ' + (err.message || '未知错误'));
+      }
+    } finally {
+      setManifestPublishing(false);
+    }
+  };
+
+  const handleManifestRouteCheck = async () => {
+    if (!currentDsId) return;
+    const questions = splitManifestList(manifestRouteQuestions);
+    if (!questions.length) {
+      setManifestMessage('请先输入至少一个测试问题。');
+      return;
+    }
+    setManifestRouteChecking(true);
+    setManifestMessage('');
+    try {
+      const data = await routeCheckDatasetSubAgentManifest(
+        currentDsId,
+        questions,
+        manifestRouteExpected || null
+      );
+      setManifestRouteResults(data.results || []);
+    } catch (err) {
+      setManifestMessage('路由自检失败: ' + (err.message || '未知错误'));
+    } finally {
+      setManifestRouteChecking(false);
+    }
+  };
+
+  const handleSaveManifestRouteCase = async (result) => {
+    if (!currentDsId || !result) return;
+    try {
+      await createSemanticValidationCase(currentDsId, {
+        question: result.question,
+        status: result.decision === 'hit' ? 'passed' : 'failed',
+        route_type: 'subagent_manifest',
+        entry_intent: 'manifest_route_check',
+        entry_route: result.decision,
+        answer: result.reasons.join(' '),
+        error: result.suggestions.join(' '),
+        report: {
+          source: 'subagent_manifest_route_check',
+          expected: manifestRouteExpected || null,
+          ...result,
+        },
+      });
+      const cases = await listSemanticValidationCases(currentDsId);
+      setValidationCases(cases);
+      setManifestMessage('路由自检用例已保存。');
+    } catch (err) {
+      setManifestMessage('保存自检用例失败: ' + (err.message || '未知错误'));
+    }
+  };
+
   // ── 当前数据集 ──
   const activeDs = datasets.find(d => d.id === activeDsId) || datasets[0];
   const currentDsId = activeDsId || activeDs?.id;
@@ -1156,6 +1315,7 @@ function DatasetsScreen() {
     { id: 'validation', label: '语义验证', count: null, icon: 'beaker', stage: '验收', desc: '用真实问法验证语义层召回和 SQL 生成效果。' },
   ];
   const advancedGovernanceTabs = [
+    { id: 'manifest', label: 'SubAgent Manifest', count: manifestDetail?.current_manifest ? 1 : 0, icon: 'brain', stage: manifestDetail?.stale ? '需复核' : '契约', desc: '维护数据集路由契约、版本和自检样例。' },
     { id: 'terms', label: '语义词典', count: businessTerms.length, icon: 'book', stage: '治理', desc: '治理跨资产别名、冲突和解释口径。' },
     { id: 'scenarios', label: '分析场景', count: 0, icon: 'insight', stage: '场景', desc: '组织高频问数场景和运营分析任务。' },
     { id: 'permissions', label: '权限', count: null, icon: 'shield', stage: '治理', desc: '控制数据集、指标和蓝图的可见范围。' },
@@ -1299,6 +1459,214 @@ function DatasetsScreen() {
       id_field: { label: 'ID', text: '标识字段', color: 'var(--text-3)', bg: 'var(--bg-2)' },
       unused: { label: '—', text: '未使用', color: 'var(--text-4)', bg: 'var(--bg-2)' },
     }[effectiveRole] || { label: '?', text: '待确认', color: 'var(--text-3)', bg: 'var(--bg-2)' };
+  };
+
+  const renderManifestPanel = () => {
+    const detail = manifestDetail || {};
+    const autoFields = detail.auto_fields_preview || {};
+    const current = detail.current_manifest;
+    const lint = detail.lint || [];
+    const lintErrors = lint.filter(item => item.severity === 'error');
+    const manual = manifestManualFieldsFromForm(manifestForm);
+    const status = detail.stale ? 'needs_review' : (current?.review_status || detail.review_status || 'missing');
+    return (
+      <div className="capability-manifest-panel" style={{ border: '1px solid var(--hairline)', borderRadius: 10, padding: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Icon name="brain" style={{ width: 14, height: 14, color: 'var(--accent)' }} />
+              SubAgent Manifest
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
+              数据集路由契约，当前不改聊天主路由；发布后的 current manifest 供后续 LeadAgent 使用。
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <span style={{ padding: '4px 8px', borderRadius: 6, fontSize: 12, background: detail.stale ? 'rgba(245,158,11,0.12)' : 'var(--surface)', color: detail.stale ? '#b45309' : 'var(--text-2)', border: '1px solid var(--hairline)' }}>
+              {MANIFEST_STATUS_LABEL[status] || status}
+            </span>
+            <button className="btn ghost" onClick={() => loadManifestDetail()} disabled={manifestLoading}>
+              <Icon name="refresh" />{manifestLoading ? '刷新中…' : '刷新'}
+            </button>
+            <button className="btn" onClick={handleManifestSave} disabled={manifestSaving}>
+              <Icon name="bookmark" />{manifestSaving ? '保存中…' : '保存草稿'}
+            </button>
+            <button className="btn primary" onClick={handleManifestPublish} disabled={manifestPublishing}>
+              <Icon name="check" />{manifestPublishing ? '发布中…' : '发布 current'}
+            </button>
+          </div>
+        </div>
+
+        {manifestMessage && (
+          <div style={{ marginBottom: 12, border: '1px solid var(--hairline)', borderRadius: 6, padding: 9, background: 'var(--surface)', color: manifestMessage.includes('失败') ? 'var(--neg)' : 'var(--text-2)', fontSize: 12 }}>
+            {manifestMessage}
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>自动派生字段</div>
+              <div style={{ display: 'grid', gap: 8, fontSize: 12 }}>
+                {[
+                  ['数据集', autoFields.name || activeDs?.name || '—'],
+                  ['Manifest 版本', current?.manifest_version || '未发布'],
+                  ['Schema 绑定', current?.bound_schema_version || autoFields.bound_schema_version || '—'],
+                  ['指标数', `${autoFields.key_metrics?.length || 0}`],
+                  ['维度数', `${autoFields.key_dimensions?.length || 0}`],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ color: 'var(--text-3)' }}>{label}</span>
+                    <span style={{ color: 'var(--text)', fontFamily: label.includes('Schema') ? 'var(--font-mono)' : undefined, textAlign: 'right' }}>{value}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                {(autoFields.key_metrics || []).slice(0, 6).map(item => (
+                  <span key={`m-${item.id || item.name}`} style={{ padding: '3px 7px', borderRadius: 5, background: 'var(--bg-2)', color: 'var(--text-2)', fontSize: 11 }}>
+                    {item.display_name || item.name}
+                  </span>
+                ))}
+                {(autoFields.key_dimensions || []).slice(0, 6).map(item => (
+                  <span key={`d-${item.id || item.name}`} style={{ padding: '3px 7px', borderRadius: 5, background: 'rgba(14,165,233,0.10)', color: 'var(--accent)', fontSize: 11 }}>
+                    {item.display_name || item.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>质量校验</div>
+              {lint.length ? (
+                <div style={{ display: 'grid', gap: 7 }}>
+                  {lint.map(item => (
+                    <div key={item.code} style={{ display: 'flex', gap: 7, alignItems: 'flex-start', fontSize: 12, color: item.severity === 'error' ? 'var(--neg)' : '#b45309' }}>
+                      <Icon name={item.severity === 'error' ? 'warn' : 'flag'} style={{ width: 13, height: 13, marginTop: 2 }} />
+                      <span>{item.message}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--pos)' }}>
+                  <Icon name="check" style={{ width: 13, height: 13 }} />
+                  当前字段满足发布校验。
+                </div>
+              )}
+              <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+                发布会阻断 error；草稿允许保存并保留校验提示。
+              </div>
+            </div>
+          </div>
+
+          <div style={{ border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>人工维护字段</div>
+              <div style={{ fontSize: 11, color: lintErrors.length ? 'var(--neg)' : 'var(--text-3)' }}>
+                正例 {manual.sample_questions.length}/5-10 · 负例 {manual.routing_negative_examples.length}/3-5
+              </div>
+            </div>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label style={{ display: 'grid', gap: 5, fontSize: 12 }}>
+                <span style={{ color: 'var(--text-2)' }}>description</span>
+                <textarea
+                  value={manifestForm.description}
+                  onChange={e => setManifestForm(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder="用途 + 核心实体 + 适合回答的问题类型 + 明确不覆盖的范围"
+                  rows={5}
+                  style={{ width: '100%', resize: 'vertical', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, lineHeight: 1.5 }}
+                />
+                <span style={{ color: 'var(--text-3)', fontSize: 11 }}>{manifestForm.description.length} 字，建议 80-200 字。</span>
+              </label>
+              <label style={{ display: 'grid', gap: 5, fontSize: 12 }}>
+                <span style={{ color: 'var(--text-2)' }}>business_domain</span>
+                <textarea
+                  value={manifestForm.business_domain_text}
+                  onChange={e => setManifestForm(prev => ({ ...prev, business_domain_text: e.target.value }))}
+                  placeholder="每行一个，例如：销售运营"
+                  rows={3}
+                  style={{ width: '100%', resize: 'vertical', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, lineHeight: 1.5 }}
+                />
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+                <label style={{ display: 'grid', gap: 5, fontSize: 12 }}>
+                  <span style={{ color: 'var(--text-2)' }}>sample_questions</span>
+                  <textarea
+                    value={manifestForm.sample_questions_text}
+                    onChange={e => setManifestForm(prev => ({ ...prev, sample_questions_text: e.target.value }))}
+                    placeholder="每行一个正例，5-10 条"
+                    rows={8}
+                    style={{ width: '100%', resize: 'vertical', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, lineHeight: 1.5 }}
+                  />
+                </label>
+                <label style={{ display: 'grid', gap: 5, fontSize: 12 }}>
+                  <span style={{ color: 'var(--text-2)' }}>routing_negative_examples</span>
+                  <textarea
+                    value={manifestForm.routing_negative_examples_text}
+                    onChange={e => setManifestForm(prev => ({ ...prev, routing_negative_examples_text: e.target.value }))}
+                    placeholder="每行一个易混淆负例，3-5 条"
+                    rows={8}
+                    style={{ width: '100%', resize: 'vertical', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, lineHeight: 1.5 }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14, border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>路由自检</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>输入测试问题，检查 manifest 是否稳定命中或避让。</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <select
+                value={manifestRouteExpected}
+                onChange={e => setManifestRouteExpected(e.target.value)}
+                style={{ padding: '7px 9px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }}
+              >
+                <option value="">不设预期</option>
+                <option value="positive">期望命中</option>
+                <option value="negative">期望避让</option>
+              </select>
+              <button className="btn primary" onClick={handleManifestRouteCheck} disabled={manifestRouteChecking}>
+                <Icon name="beaker" />{manifestRouteChecking ? '自检中…' : '运行自检'}
+              </button>
+            </div>
+          </div>
+          <textarea
+            value={manifestRouteQuestions}
+            onChange={e => setManifestRouteQuestions(e.target.value)}
+            placeholder="每行一个测试问题。可直接粘贴 sample_questions 或负例。"
+            rows={4}
+            style={{ width: '100%', resize: 'vertical', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, lineHeight: 1.5, marginBottom: 10 }}
+          />
+          {manifestRouteResults.length > 0 && (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {manifestRouteResults.map((result, idx) => (
+                <div key={`${result.question}-${idx}`} style={{ border: '1px solid var(--hairline)', borderRadius: 7, padding: 10, background: 'var(--bg)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{result.question}</div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{ padding: '2px 7px', borderRadius: 5, fontSize: 11, color: result.decision === 'hit' ? 'var(--pos)' : result.decision === 'miss' ? 'var(--neg)' : '#b45309', background: result.decision === 'hit' ? 'rgba(34,197,94,0.10)' : result.decision === 'miss' ? 'rgba(239,68,68,0.10)' : 'rgba(245,158,11,0.12)' }}>
+                        {result.decision} · {Math.round((result.score || 0) * 100)}%
+                      </span>
+                      <button className="btn ghost" onClick={() => handleSaveManifestRouteCase(result)}>
+                        <Icon name="bookmark" />保存用例
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 6 }}>
+                    {(result.reasons || []).join(' ')}
+                    {result.suggestions?.length ? ` 建议：${result.suggestions.join(' ')}` : ''}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
   };
 
   const renderFieldAnnotationPanel = () => (
@@ -2003,6 +2371,8 @@ function DatasetsScreen() {
               renderDimensionsPanel()
             ) : activeCapabilityTab === 'terms' ? (
               renderTermsPanel()
+            ) : activeCapabilityTab === 'manifest' ? (
+              renderManifestPanel()
             ) : activeCapabilityTab === 'tables' ? (
         <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 320px', gap: 16, minHeight: 480 }}>
           {/* 左栏：数据源表目录（带勾选 + 搜索） */}

@@ -109,7 +109,11 @@ export function streamChat(payload, { onToken, onEvent, onError, onDone }) {
           const data = JSON.parse(line.slice(5).trim());
           if (data.type === 'token') {
             onToken?.(data.content);
-          } else if (data.type === 'step') {
+          } else if (
+            data.type === 'step' ||
+            data.type === 'route_decision' ||
+            data.type === 'lead_agent_tools'
+          ) {
             onEvent?.(data);
           } else if (data.type === 'final') {
             onDone?.(data);
@@ -326,6 +330,40 @@ export function updateDimension(datasetId, dimId, data) {
 /** 更新数据集 */
 export function updateDataset(datasetId, data) {
   return put(`/api/dataset/${datasetId}`, data);
+}
+
+/** 获取当前数据集 SubAgent Manifest 治理详情 */
+export function getDatasetSubAgentManifest(datasetId) {
+  return get(`/api/dataset/${datasetId}/subagent-manifest`);
+}
+
+/** 保存当前数据集 SubAgent Manifest 草稿 */
+export function saveDatasetSubAgentManifest(datasetId, manualFields, createdBy = null) {
+  return put(`/api/dataset/${datasetId}/subagent-manifest`, {
+    manual_fields: manualFields,
+    created_by: createdBy,
+  });
+}
+
+/** 发布当前数据集 SubAgent Manifest */
+export function publishDatasetSubAgentManifest(datasetId, manualFields = null, createdBy = null) {
+  return post(`/api/dataset/${datasetId}/subagent-manifest/publish`, {
+    manual_fields: manualFields,
+    created_by: createdBy,
+  });
+}
+
+/** 当前数据集 SubAgent Manifest 路由自检 */
+export function routeCheckDatasetSubAgentManifest(datasetId, questions, expected = null) {
+  return post(`/api/dataset/${datasetId}/subagent-manifest/route-check`, {
+    questions,
+    expected,
+  });
+}
+
+/** 获取所有 current SubAgent Manifest 摘要 */
+export function listCurrentSubAgentManifests() {
+  return get('/api/dataset/subagent-manifests/current');
 }
 
 /** 同步数据源表结构 */

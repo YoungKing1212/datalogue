@@ -138,6 +138,53 @@ function sourceLabel(item) {
   return path || item.name || '';
 }
 
+function candidateValue(candidate, keys) {
+  for (const key of keys) {
+    const value = candidate?.[key];
+    if (value != null && String(value).trim()) return value;
+  }
+  return null;
+}
+
+function termCandidateId(candidate) {
+  return candidateValue(candidate, ['term_id', 'termId', 'id', 'asset_id', 'assetId']);
+}
+
+function termCandidateLabel(candidate, optionIndex) {
+  const nested = candidate?.term || candidate?.business_term || candidate?.businessTerm || {};
+  return (
+    candidateValue(candidate, [
+      'display_name',
+      'displayName',
+      'label',
+      'title',
+      'name',
+      'term_name',
+      'termName',
+      'asset_name',
+      'assetName',
+    ]) ||
+    candidateValue(nested, ['display_name', 'displayName', 'name', 'term_name', 'termName']) ||
+    (termCandidateId(candidate) ? `术语 ${termCandidateId(candidate)}` : `候选 ${optionIndex}`)
+  );
+}
+
+function termCandidateSubLabel(candidate, label) {
+  const nested = candidate?.term || candidate?.business_term || candidate?.businessTerm || {};
+  const name = candidateValue(candidate, ['name', 'term_name', 'termName']) ||
+    candidateValue(nested, ['name', 'term_name', 'termName']);
+  if (name && name !== label) return name;
+  return candidateValue(candidate, ['term_type', 'termType']) ||
+    candidateValue(nested, ['term_type', 'termType']) ||
+    '业务术语';
+}
+
+function termCandidateDefinition(candidate) {
+  const nested = candidate?.term || candidate?.business_term || candidate?.businessTerm || {};
+  return candidateValue(candidate, ['definition', 'description', 'desc']) ||
+    candidateValue(nested, ['definition', 'description', 'desc']);
+}
+
 function confidenceText(level) {
   if (level === 'high') return '高';
   if (level === 'medium') return '中';
@@ -262,10 +309,12 @@ function TermClarificationCard({ clarification, routePayload, onSelect }) {
       <div className="term-clarification-options">
         {candidates.map((candidate, index) => {
           const optionIndex = candidate.index || index + 1;
-          const label = candidate.display_name || candidate.name || `术语 ${optionIndex}`;
+          const label = termCandidateLabel(candidate, optionIndex);
+          const subLabel = termCandidateSubLabel(candidate, label);
+          const definition = termCandidateDefinition(candidate);
           return (
             <button
-              key={`${candidate.term_id || candidate.id || optionIndex}-${label}`}
+              key={`${termCandidateId(candidate) || optionIndex}-${label}`}
               type="button"
               className="term-clarification-option"
               onClick={() => onSelect(candidate, optionIndex, label)}
@@ -273,8 +322,8 @@ function TermClarificationCard({ clarification, routePayload, onSelect }) {
               <span className="term-clarification-index">{optionIndex}</span>
               <span className="term-clarification-body">
                 <strong>{label}</strong>
-                <em>{candidate.name && candidate.name !== label ? candidate.name : candidate.term_type || '业务术语'}</em>
-                {candidate.definition && <small>{candidate.definition}</small>}
+                <em>{subLabel}</em>
+                {definition && <small>{definition}</small>}
               </span>
             </button>
           );
@@ -388,11 +437,13 @@ export function AIMessage({ showSql = true }) {
       clarification?.clarificationId || routePayload?.clarification_id || null;
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
       clarification_id: clarificationId,
-      selected_term_id: candidate.term_id || candidate.id,
+      selected_term_id: termCandidateId(candidate),
       selected_index: optionIndex,
       selected_text: label,
     };
-    api.composer().setText(`选择：${label}`);
+    window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
+      detail: { text: `选择：${label}` },
+    }));
   };
 
   const handleCopy = () => {

@@ -78,6 +78,44 @@ function formatStepAsReasoning(ev) {
   return detail ? `${label}：${detail} ${elapsed}` : `${label} ${elapsed}`.trim();
 }
 
+function formatRouteDecisionAsReasoning(ev) {
+  const candidates = ev.candidates || [];
+  if (ev.decision === 'selected') {
+    const name = ev.dataset_name || candidates[0]?.dataset_name || `数据集 ${ev.dataset_id}`;
+    return `Manifest 路由：已选择 ${name}（得分 ${ev.score ?? 0}）`;
+  }
+  if (ev.decision === 'locked') {
+    const name = ev.dataset_name || candidates[0]?.dataset_name || `数据集 ${ev.dataset_id}`;
+    return `Manifest 路由：沿用已选数据集 ${name}`;
+  }
+  if (ev.decision === 'ambiguous') {
+    const names = candidates.map((item) => item.dataset_name || `数据集 ${item.dataset_id}`).slice(0, 3);
+    return `Manifest 路由：候选不唯一${names.length ? ' · ' + names.join(' / ') : ''}`;
+  }
+  return `Manifest 路由：未找到明确数据集`;
+}
+
+function formatLeadAgentToolsAsReasoning(ev) {
+  const tools = ev.executed_tool_calls?.length
+    ? ev.executed_tool_calls.map((item) => item.tool).filter(Boolean)
+    : ev.audit_trace?.tools || [];
+  const timeRange = ev.time_context?.detected_time_range?.label;
+  const schemaStatus = ev.schema_status?.status;
+  const planned = ev.planned_tool_calls?.length ?? 0;
+  const inferred = ev.system_inferred_tool_calls?.length ?? 0;
+  const violations = ev.policy_violations?.length ?? 0;
+  const details = [
+    timeRange ? `时间=${timeRange}` : null,
+    schemaStatus ? `Schema=${schemaStatus}` : null,
+    planned ? `计划=${planned}` : null,
+    inferred ? `系统补齐=${inferred}` : null,
+    violations ? `策略拦截=${violations}` : null,
+    ev.planner_fallback ? '降级计划' : null,
+    ev.audit_trace?.dispatched ? '已调度 SubAgent' : '等待澄清',
+  ].filter(Boolean);
+  return `LeadAgent 工具：${tools.length ? tools.join(' / ') : '控制面检查'}${details.length ? ' · ' + details.join(' · ') : ''}`;
+}
+
 /**
  * 把 user/assistant 消息数组的 content 拼成后端要的 question 字符串
  */
@@ -161,6 +199,22 @@ export function makeChatAdapter({ datasetIdRef }) {
         if (ev.type === 'token') {
           accText += ev.content || '';
           yield { content: buildContent() };
+        } else if (ev.type === 'route_decision') {
+          emitTrace(ev);
+          reasonings.push({
+            type: 'reasoning',
+            text: formatRouteDecisionAsReasoning(ev),
+            parentId: 'manifest_route',
+          });
+          yield { content: buildContent() };
+        } else if (ev.type === 'lead_agent_tools') {
+          emitTrace(ev);
+          reasonings.push({
+            type: 'reasoning',
+            text: formatLeadAgentToolsAsReasoning(ev),
+            parentId: 'lead_agent_tools',
+          });
+          yield { content: buildContent() };
         } else if (ev.type === 'step') {
           // 通知 AgentPanel（保持现有行为）
           emitTrace(ev);
@@ -220,6 +274,7 @@ export function makeChatAdapter({ datasetIdRef }) {
               sqlAuditResult: finalPayload.sql_audit_result || null,
               sqlRetryTrace: finalPayload.sql_retry_trace || null,
               answerExplanation: finalPayload.answer_explanation || null,
+              routeDecision: finalPayload.route_decision || null,
               dsl: finalPayload.dsl || null,
               routePayload: finalPayload.route_payload || null,
               clarification: finalPayload.route_payload?.kind === 'term_conflict_clarification'
