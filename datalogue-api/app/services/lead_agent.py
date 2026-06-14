@@ -94,17 +94,27 @@ def build_tool_policy(
     *,
     conversation: models.Conversation | None = None,
     payload_dataset_id: int | None = None,
+    active_dataset_id: int | None = None,
 ) -> dict[str, Any]:
     """ToolPolicy：生成 LeadAgent 本轮可用工具和硬性边界。"""
 
+    conversation_dataset_id = conversation.dataset_id if conversation else None
     locked_dataset_id = payload_dataset_id if payload_dataset_id is not None else (
-        conversation.dataset_id if conversation else None
+        active_dataset_id if active_dataset_id is not None else conversation_dataset_id
     )
+    dataset_lock_source = "none"
+    if payload_dataset_id is not None:
+        dataset_lock_source = "payload"
+    elif active_dataset_id is not None:
+        dataset_lock_source = "multiturn_active"
+    elif conversation_dataset_id is not None:
+        dataset_lock_source = "conversation"
     constraints = [
         "LeadAgent 只能使用控制面工具，不可读取指标、维度、术语、蓝图、SQL 或字段级 schema。",
         "ToolPolicy.blocked_tools 中的工具即使被 LLM 规划也不能执行。",
         "未确认 dataset 时不可执行 subagent_dispatch。",
         "显式选择数据集或会话已锁定数据集时，manifest_router 只能锁定该数据集，不可自动改选。",
+        "多轮 active_dataset_id 只作为 LeadAgent 控制面继承锁定，不代表用户本轮显式选择。",
         "schema stale 必须记录到 schema_status 和 audit_trace。",
     ]
     return {
@@ -114,6 +124,9 @@ def build_tool_policy(
         "constraints": constraints,
         "locked_dataset_id": locked_dataset_id,
         "explicit_dataset_locked": payload_dataset_id is not None,
+        "inherited_dataset_locked": dataset_lock_source == "multiturn_active",
+        "dataset_lock_source": dataset_lock_source,
+        "active_dataset_id": active_dataset_id,
         "conversation_dataset_id": conversation.dataset_id if conversation else None,
     }
 
@@ -214,9 +227,34 @@ def plan_tool_calls_with_llm(
                     "tool_schemas_disclosed": [],
                 },
             )
+        logger.info(
+            "LeadAgent Planner 调用: stage=skill_selector, prompt_name=%s, version=%s, "
+            "skills=%s, tool_policy_locked_dataset=%s",
+            LEAD_AGENT_SKILL_SELECTOR_PROMPT_NAME,
+            getattr(skill_prompt, "version", None),
+            [item.get("name") for item in skills],
+            tool_policy.get("locked_dataset_id"),
+        )
+        logger.debug(
+            "LeadAgent Planner skill_selector 请求: system=%s | human=%s",
+            skill_messages[0].content,
+            skill_messages[1].content,
+        )
         skill_response = llm.invoke(skill_messages)
         skill_raw_content = str(getattr(skill_response, "content", "") or "")
         skill_parsed = safe_json_parse(skill_raw_content)
+        logger.info(
+            "LeadAgent Planner skill_selector 返回: parse_ok=%s, selected=%s, reasoning=%s, "
+            "raw_len=%d",
+            bool(skill_parsed),
+            (skill_parsed or {}).get("selected_skills"),
+            (skill_parsed or {}).get("reasoning_summary"),
+            len(skill_raw_content),
+        )
+        logger.debug(
+            "LeadAgent Planner skill_selector 原始返回: %s",
+            skill_raw_content,
+        )
         skill_selection = _normalize_skill_selection(skill_parsed, skills)
         if tracer is not None:
             tracer.end_generation(
@@ -269,9 +307,34 @@ def plan_tool_calls_with_llm(
                     "tool_policy": tool_policy,
                 },
             )
+        logger.info(
+            "LeadAgent Planner 调用: stage=tool_planner, prompt_name=%s, version=%s, "
+            "selected_skills=%s, disclosed_tools=%s",
+            LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME,
+            getattr(tool_prompt, "version", None),
+            selected_skill_names,
+            [item.get("name") for item in disclosed_tool_schemas],
+        )
+        logger.debug(
+            "LeadAgent Planner tool_planner 请求: system=%s | human=%s",
+            tool_messages[0].content,
+            tool_messages[1].content,
+        )
         tool_response = llm.invoke(tool_messages)
         tool_raw_content = str(getattr(tool_response, "content", "") or "")
         parsed = safe_json_parse(tool_raw_content)
+        logger.info(
+            "LeadAgent Planner tool_planner 返回: parse_ok=%s, planned_tools=%s, "
+            "reasoning=%s, raw_len=%d",
+            bool(parsed),
+            [(p or {}).get("tool") for p in (parsed or {}).get("tool_calls") or []],
+            (parsed or {}).get("reasoning_summary"),
+            len(tool_raw_content),
+        )
+        logger.debug(
+            "LeadAgent Planner tool_planner 原始返回: %s",
+            tool_raw_content,
+        )
         normalized = _normalize_planner_plan(parsed)
         if tracer is not None:
             tracer.end_generation(
@@ -316,19 +379,26 @@ def plan_tool_calls_with_llm(
                     "error": str(exc),
                 },
             )
-    logger.warning("LeadAgent Planner 调用失败，使用安全降级计划: %s", exc)
+    logger.exception(
+        "LeadAgent Planner 调用失败，使用安全降级计划: %s",
+        exc,
+    )
     return build_fallback_plan(reason="planner_llm_error")
 
 
 def _conversation_summary(
     conversation: models.Conversation | None,
     payload_dataset_id: int | None,
+    multiturn_context: dict[str, Any] | None = None,
+    multiturn_classification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "conversation_id": conversation.id if conversation else None,
         "thread_id": conversation.thread_id if conversation else None,
         "conversation_dataset_id": conversation.dataset_id if conversation else None,
         "payload_dataset_id": payload_dataset_id,
+        "multiturn_context": multiturn_context or {},
+        "multiturn_classification": multiturn_classification or {},
     }
 
 
@@ -454,6 +524,7 @@ def resolve_time_context(
     *,
     timezone_name: str = DEFAULT_TIMEZONE,
     now: datetime | None = None,
+    prior_time_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """TimeTool：解析用户问题中的常见时间范围线索。"""
 
@@ -463,7 +534,7 @@ def resolve_time_context(
     if not detected:
         detected = _detect_chinese_month_or_year(question)
     if not detected:
-        detected = _detect_relative_range(question, today)
+        detected = _detect_relative_range(question, today, prior_time_context=prior_time_context)
 
     return {
         "tool": "time",
@@ -471,6 +542,10 @@ def resolve_time_context(
         "now": current.isoformat(),
         "today": today.isoformat(),
         "detected_time_range": detected,
+        "inherited_from_prior_time": bool(
+            detected and str(detected.get("source") or "").startswith("prior_")
+        ),
+        "prior_time_context": _time_context_summary(prior_time_context),
     }
 
 
@@ -478,11 +553,23 @@ def resolve_thread_context(
     *,
     conversation: models.Conversation | None = None,
     payload_dataset_id: int | None = None,
+    active_dataset_id: int | None = None,
+    inheritance_summary: str | None = None,
+    multiturn_classification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """ThreadContextTool：整理会话级锁定信息和本轮显式数据集选择。"""
 
     conversation_dataset_id = conversation.dataset_id if conversation else None
-    locked_dataset_id = payload_dataset_id if payload_dataset_id is not None else conversation_dataset_id
+    locked_dataset_id = payload_dataset_id if payload_dataset_id is not None else (
+        active_dataset_id if active_dataset_id is not None else conversation_dataset_id
+    )
+    dataset_lock_source = "none"
+    if payload_dataset_id is not None:
+        dataset_lock_source = "payload"
+    elif active_dataset_id is not None:
+        dataset_lock_source = "multiturn_active"
+    elif conversation_dataset_id is not None:
+        dataset_lock_source = "conversation"
     return {
         "tool": "thread_context",
         "conversation_id": conversation.id if conversation else None,
@@ -490,7 +577,11 @@ def resolve_thread_context(
         "user_id": conversation.user_id if conversation else None,
         "payload_dataset_id": payload_dataset_id,
         "conversation_dataset_id": conversation_dataset_id,
+        "active_dataset_id": active_dataset_id,
         "locked_dataset_id": locked_dataset_id,
+        "dataset_lock_source": dataset_lock_source,
+        "inheritance_summary": inheritance_summary,
+        "multiturn_classification": multiturn_classification or {},
         "manifest_locked": False,
         "manifest_lock_reason": "首期仅锁定显式数据集；manifest 会话级锁定待持久化字段落地。",
     }
@@ -606,6 +697,12 @@ def build_subagent_dispatch(
     dataset_id = route_decision.get("dataset_id")
     if dataset_id is None:
         return None
+    capsule = build_subagent_capsule(
+        dataset_id=int(dataset_id),
+        route_decision=route_decision,
+        thread_context=thread_context,
+        schema_status=schema_status,
+    )
     return {
         "tool": "subagent_dispatch",
         "question": question,
@@ -617,6 +714,41 @@ def build_subagent_dispatch(
         "thread_context": thread_context,
         "schema_status": schema_status,
         "route_decision": route_decision,
+        "capsule": capsule,
+        "subagent_capsule": capsule,
+    }
+
+
+def build_subagent_capsule(
+    *,
+    dataset_id: int,
+    route_decision: dict[str, Any],
+    thread_context: dict[str, Any],
+    schema_status: dict[str, Any],
+) -> dict[str, Any]:
+    """生成 SubAgent 数据集内状态胶囊，避免 LeadAgent 直接读写语义层内部资产。"""
+
+    multiturn_classification = thread_context.get("multiturn_classification") or {}
+    multiturn_intent = multiturn_classification.get("intent")
+    execution_mode = "interpret_result" if multiturn_intent == "interpret" else "query"
+    return {
+        "scope": "dataset",
+        "dataset_id": dataset_id,
+        "thread_id": thread_context.get("thread_id"),
+        "manifest_version": route_decision.get("manifest_version"),
+        "bound_schema_version": route_decision.get("bound_schema_version"),
+        "schema_status": schema_status.get("status"),
+        "active_dataset_id": thread_context.get("active_dataset_id"),
+        "dataset_lock_source": thread_context.get("dataset_lock_source"),
+        "inheritance_summary": thread_context.get("inheritance_summary"),
+        "multiturn_intent": multiturn_intent,
+        "multiturn_classification": multiturn_classification,
+        "execution_mode": execution_mode,
+        "should_generate_query": execution_mode != "interpret_result",
+        "interpretation_source": "prior_capsule.result_digest"
+        if execution_mode == "interpret_result"
+        else None,
+        "state_boundary": "LeadAgent 只持有跨轮控制面状态；SubAgent 只读写当前数据集内状态。",
     }
 
 
@@ -666,6 +798,10 @@ def execute_tool_plan(
     now: datetime | None,
     tool_policy: dict[str, Any],
     plan: dict[str, Any],
+    active_dataset_id: int | None = None,
+    inheritance_summary: str | None = None,
+    multiturn_classification: dict[str, Any] | None = None,
+    inherited_time_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """ToolExecutor：按计划执行允许的工具，并记录策略违规。"""
 
@@ -708,6 +844,10 @@ def execute_tool_plan(
                 question=question,
                 conversation=conversation,
                 payload_dataset_id=payload_dataset_id,
+                active_dataset_id=active_dataset_id,
+                inheritance_summary=inheritance_summary,
+                multiturn_classification=multiturn_classification,
+                inherited_time_context=inherited_time_context,
                 timezone_name=timezone_name,
                 now=now,
                 results=results,
@@ -797,25 +937,40 @@ def _execute_single_tool(
     question: str,
     conversation: models.Conversation | None,
     payload_dataset_id: int | None,
+    active_dataset_id: int | None,
+    inheritance_summary: str | None,
+    multiturn_classification: dict[str, Any] | None,
+    inherited_time_context: dict[str, Any] | None,
     timezone_name: str,
     now: datetime | None,
     results: dict[str, Any],
     policy_violations: list[dict[str, Any]],
 ) -> bool:
     if tool_name == "time":
-        results["time_context"] = resolve_time_context(question, timezone_name=timezone_name, now=now)
+        results["time_context"] = resolve_time_context(
+            question,
+            timezone_name=timezone_name,
+            now=now,
+            prior_time_context=inherited_time_context,
+        )
         results["resolved_question"] = build_resolved_question(question, results["time_context"])
         return True
     if tool_name == "thread_context":
         results["thread_context"] = resolve_thread_context(
             conversation=conversation,
             payload_dataset_id=payload_dataset_id,
+            active_dataset_id=active_dataset_id,
+            inheritance_summary=inheritance_summary,
+            multiturn_classification=multiturn_classification,
         )
         return True
     if tool_name == "manifest_router":
         thread_context = results["thread_context"] or resolve_thread_context(
             conversation=conversation,
             payload_dataset_id=payload_dataset_id,
+            active_dataset_id=active_dataset_id,
+            inheritance_summary=inheritance_summary,
+            multiturn_classification=multiturn_classification,
         )
         if results["thread_context"] is None:
             results["thread_context"] = thread_context
@@ -935,8 +1090,8 @@ def build_resolved_question(question: str, time_context: dict[str, Any] | None) 
         patterns = [r"今年|本年"]
     elif source == "relative_this_month":
         patterns = [r"本月"]
-    elif source == "relative_last_month":
-        patterns = [r"上月"]
+    elif source in {"relative_last_month", "prior_relative_last_month"}:
+        patterns = [r"上月|上个月"]
     elif source == "relative_this_week":
         patterns = [r"本周"]
     elif source == "relative_last_week":
@@ -959,6 +1114,178 @@ def build_resolved_question(question: str, time_context: dict[str, Any] | None) 
     return f"{question}（时间范围：{start_date}至{end_date}）"
 
 
+def normalize_multiturn_context(multiturn_context: dict[str, Any] | None) -> dict[str, Any]:
+    """归一化调用方传入的 LeadAgent 跨轮状态，只保留控制面字段。"""
+
+    if not isinstance(multiturn_context, dict):
+        return {
+            "active_dataset_id": None,
+            "inheritance_summary": None,
+            "last_question": None,
+            "last_resolved_question": None,
+            "raw": {},
+        }
+
+    active_dataset_id = _first_int(
+        multiturn_context,
+        "active_dataset_id",
+        "current_dataset_id",
+        "last_dataset_id",
+        "effective_dataset_id",
+        "dataset_id",
+    )
+    active_dataset = multiturn_context.get("active_dataset")
+    if active_dataset_id is None and isinstance(active_dataset, dict):
+        active_dataset_id = _coerce_int(active_dataset.get("id") or active_dataset.get("dataset_id"))
+
+    inheritance_summary = _string_or_none(
+        multiturn_context.get("inheritance_summary")
+        or multiturn_context.get("summary")
+        or multiturn_context.get("last_answer_summary")
+        or multiturn_context.get("topic_summary")
+    )
+    return {
+        "active_dataset_id": active_dataset_id,
+        "inheritance_summary": inheritance_summary,
+        "last_question": _string_or_none(multiturn_context.get("last_question")),
+        "last_resolved_question": _string_or_none(multiturn_context.get("last_resolved_question")),
+        "topic_anchor": _string_or_none(multiturn_context.get("topic_anchor")),
+        "resolved_time_context": _dict_or_none(multiturn_context.get("resolved_time_context")),
+        "raw": multiturn_context,
+    }
+
+
+def classify_multiturn_turn(
+    question: str,
+    *,
+    payload_dataset_id: int | None,
+    conversation: models.Conversation | None,
+    multiturn_context: dict[str, Any],
+) -> dict[str, Any]:
+    """LeadAgent 多轮分类 fallback：用确定性规则识别续问、切换、解释和闲聊。"""
+
+    normalized_question = re.sub(r"\s+", "", question or "").lower()
+    active_dataset_id = multiturn_context.get("active_dataset_id")
+    conversation_dataset_id = conversation.dataset_id if conversation else None
+
+    if _looks_like_chitchat(normalized_question):
+        intent = "chitchat"
+        confidence = 0.86
+        reason = "命中闲聊或礼貌用语，不应调度数据集 SubAgent。"
+    elif _looks_like_interpret_question(normalized_question):
+        intent = "interpret"
+        confidence = 0.78
+        reason = "命中解释上一轮结果的表达，优先继承 active_dataset_id。"
+    elif payload_dataset_id is not None and active_dataset_id is not None and payload_dataset_id != active_dataset_id:
+        intent = "switch"
+        confidence = 0.92
+        reason = "本轮显式选择的数据集与 active_dataset_id 不同。"
+    elif _looks_like_dataset_switch(normalized_question):
+        intent = "switch"
+        confidence = 0.74
+        reason = "命中切换或重新选择数据集的表达，不继承 active_dataset_id。"
+    elif active_dataset_id is not None and _looks_like_followup(normalized_question):
+        intent = "continue"
+        confidence = 0.8
+        reason = "命中续问表达，继承 active_dataset_id。"
+    elif active_dataset_id is not None and payload_dataset_id is None and conversation_dataset_id is None:
+        intent = "continue"
+        confidence = 0.62
+        reason = "存在 active_dataset_id 且本轮没有显式切换，按续问处理。"
+    else:
+        intent = "continue"
+        confidence = 0.55
+        reason = "未命中特殊多轮意图，按普通问数轮次处理。"
+
+    should_inherit_dataset = (
+        intent in {"continue", "interpret"}
+        and payload_dataset_id is None
+        and active_dataset_id is not None
+    )
+    return {
+        "intent": intent,
+        "label": intent,
+        "confidence": confidence,
+        "source": "heuristic",
+        "reason": reason,
+        "active_dataset_id": active_dataset_id,
+        "conversation_dataset_id": conversation_dataset_id,
+        "payload_dataset_id": payload_dataset_id,
+        "should_inherit_dataset": should_inherit_dataset,
+        "inheritance_summary": multiturn_context.get("inheritance_summary"),
+    }
+
+
+def _looks_like_chitchat(normalized_question: str) -> bool:
+    if not normalized_question:
+        return True
+    return bool(
+        re.fullmatch(
+            r"(你好|您好|hi|hello|谢谢|感谢|辛苦了|好的|好|ok|收到|再见|拜拜)[!！。.]?",
+            normalized_question,
+        )
+    )
+
+
+def _looks_like_interpret_question(normalized_question: str) -> bool:
+    return bool(
+        re.search(r"(解释|说明|解读|什么意思|怎么看|为什么|原因|上面.*结果|刚才.*结果)", normalized_question)
+    )
+
+
+def _looks_like_dataset_switch(normalized_question: str) -> bool:
+    return bool(re.search(r"(切换|换到|改用|重新选择|选择.*数据集|使用.*数据集|换.*数据集)", normalized_question))
+
+
+def _looks_like_followup(normalized_question: str) -> bool:
+    if len(normalized_question) <= 18:
+        return True
+    return bool(re.search(r"(继续|刚才|上面|上一轮|这个|那个|这些|再看|拆分|细分|换成|改成|同比|环比)", normalized_question))
+
+
+def _first_int(payload: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = _coerce_int(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _dict_or_none(value: Any) -> dict[str, Any] | None:
+    return value if isinstance(value, dict) else None
+
+
+def _time_context_summary(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    detected = value.get("detected_time_range")
+    if not isinstance(detected, dict):
+        return None
+    return {
+        "label": detected.get("label"),
+        "start_date": detected.get("start_date"),
+        "end_date": detected.get("end_date"),
+        "granularity": detected.get("granularity"),
+        "source": detected.get("source"),
+    }
+
+
 def _time_range_replacement(detected: dict[str, Any]) -> str:
     start_date = str(detected.get("start_date") or "")
     end_date = str(detected.get("end_date") or "")
@@ -979,6 +1306,7 @@ def build_lead_agent_context(
     question: str,
     conversation: models.Conversation | None = None,
     payload_dataset_id: int | None = None,
+    multiturn_context: dict[str, Any] | None = None,
     timezone_name: str = DEFAULT_TIMEZONE,
     now: datetime | None = None,
     tracer: Any | None = None,
@@ -986,11 +1314,30 @@ def build_lead_agent_context(
 ) -> dict[str, Any]:
     """LeadAgent：按 ToolPolicy + Skills + Planner 执行控制面工具。"""
 
+    normalized_multiturn_context = normalize_multiturn_context(multiturn_context)
+    multiturn_classification = classify_multiturn_turn(
+        question,
+        payload_dataset_id=payload_dataset_id,
+        conversation=conversation,
+        multiturn_context=normalized_multiturn_context,
+    )
+    inherited_active_dataset_id = (
+        normalized_multiturn_context.get("active_dataset_id")
+        if multiturn_classification.get("should_inherit_dataset")
+        else None
+    )
     tool_policy = build_tool_policy(
         conversation=conversation,
         payload_dataset_id=payload_dataset_id,
+        active_dataset_id=inherited_active_dataset_id,
     )
     skills = available_lead_skills(tool_policy)
+    conversation_summary = _conversation_summary(
+        conversation,
+        payload_dataset_id,
+        normalized_multiturn_context,
+        multiturn_classification,
+    )
     if tracer is not None and trace_context is not None and hasattr(tracer, "start_span"):
         tracer.start_span(
             trace_context,
@@ -998,16 +1345,39 @@ def build_lead_agent_context(
             display_name="LeadAgent 控制面",
             input_payload={
                 "question": question,
-                "conversation": _conversation_summary(conversation, payload_dataset_id),
+                "conversation": conversation_summary,
                 "tool_policy": tool_policy,
                 "available_skills": [item.get("name") for item in skills],
+                "multiturn_context": normalized_multiturn_context,
+                "multiturn_classification": multiturn_classification,
                 "progressive_disclosure": True,
             },
         )
+    if multiturn_classification.get("intent") == "chitchat":
+        lead_agent_context = _build_chitchat_lead_agent_context(
+            question=question,
+            conversation=conversation,
+            payload_dataset_id=payload_dataset_id,
+            active_dataset_id=normalized_multiturn_context.get("active_dataset_id"),
+            inheritance_summary=normalized_multiturn_context.get("inheritance_summary"),
+            multiturn_context=normalized_multiturn_context,
+            multiturn_classification=multiturn_classification,
+            tool_policy=tool_policy,
+            skills=skills,
+            timezone_name=timezone_name,
+            now=now,
+        )
+        if tracer is not None and trace_context is not None and hasattr(tracer, "end_span"):
+            tracer.end_span(
+                trace_context,
+                node="lead_agent_control_plane",
+                output_payload=lead_agent_context,
+            )
+        return lead_agent_context
     plan = plan_tool_calls_with_llm(
         db,
         question=question,
-        conversation_summary=_conversation_summary(conversation, payload_dataset_id),
+        conversation_summary=conversation_summary,
         tool_policy=tool_policy,
         skills=skills,
         tracer=tracer,
@@ -1022,6 +1392,10 @@ def build_lead_agent_context(
         now=now,
         tool_policy=tool_policy,
         plan=plan,
+        active_dataset_id=inherited_active_dataset_id,
+        inheritance_summary=normalized_multiturn_context.get("inheritance_summary"),
+        multiturn_classification=multiturn_classification,
+        inherited_time_context=normalized_multiturn_context.get("resolved_time_context"),
     )
     if execution.get("requires_fallback") and not plan.get("planner_fallback"):
         fallback_plan = build_fallback_plan(reason="planner_incomplete_execution")
@@ -1034,6 +1408,10 @@ def build_lead_agent_context(
             now=now,
             tool_policy=tool_policy,
             plan=fallback_plan,
+            active_dataset_id=inherited_active_dataset_id,
+            inheritance_summary=normalized_multiturn_context.get("inheritance_summary"),
+            multiturn_classification=multiturn_classification,
+            inherited_time_context=normalized_multiturn_context.get("resolved_time_context"),
         )
         fallback_execution["policy_violations"] = [
             *(execution.get("policy_violations") or []),
@@ -1069,6 +1447,10 @@ def build_lead_agent_context(
             question,
             execution.get("time_context"),
         ),
+        "multiturn_context": normalized_multiturn_context,
+        "multiturn_classification": multiturn_classification,
+        "active_dataset_id": normalized_multiturn_context.get("active_dataset_id"),
+        "inheritance_summary": normalized_multiturn_context.get("inheritance_summary"),
         "time_context": execution.get("time_context"),
         "thread_context": execution.get("thread_context"),
         "route_decision": route_decision,
@@ -1086,6 +1468,104 @@ def build_lead_agent_context(
             output_payload=lead_agent_context,
         )
     return lead_agent_context
+
+
+def _build_chitchat_lead_agent_context(
+    *,
+    question: str,
+    conversation: models.Conversation | None,
+    payload_dataset_id: int | None,
+    active_dataset_id: int | None,
+    inheritance_summary: str | None,
+    multiturn_context: dict[str, Any],
+    multiturn_classification: dict[str, Any],
+    tool_policy: dict[str, Any],
+    skills: list[dict[str, Any]],
+    timezone_name: str,
+    now: datetime | None,
+) -> dict[str, Any]:
+    """闲聊轮次不进入数据集路由，防止误把 active_dataset_id 当成查询请求。"""
+
+    time_context = resolve_time_context(question, timezone_name=timezone_name, now=now)
+    thread_context = resolve_thread_context(
+        conversation=conversation,
+        payload_dataset_id=payload_dataset_id,
+        active_dataset_id=None,
+        inheritance_summary=inheritance_summary,
+        multiturn_classification=multiturn_classification,
+    )
+    route_decision = {
+        "decision": "chitchat",
+        "dataset_id": None,
+        "manifest_version": None,
+        "bound_schema_version": None,
+        "score": 0,
+        "candidates": [],
+        "reason": "LeadAgent 多轮分类识别为闲聊，本轮不进行数据集路由。",
+        "tool": "manifest_router",
+    }
+    schema_status = {
+        "tool": "schema_status",
+        "status": "not_selected",
+        "stale": False,
+        "dataset_id": None,
+        "manifest_version": None,
+        "bound_schema_version": None,
+        "latest_schema_version": None,
+        "reason": "闲聊轮次不选定数据集，跳过 schema 状态检查。",
+    }
+    clarification = {
+        "tool": "clarification",
+        "kind": "chitchat",
+        "message": "本轮是闲聊或礼貌表达，不需要调度数据集 SubAgent。",
+        "reason": multiturn_classification.get("reason"),
+    }
+    executed_tool_calls = [
+        {"tool": "time", "reason": "记录本轮时间上下文。"},
+        {"tool": "thread_context", "reason": "记录多轮上下文但不继承为查询。"},
+        {"tool": "audit_trace", "reason": "系统审计"},
+    ]
+    audit_trace = build_audit_trace(
+        route_decision=route_decision,
+        schema_status=schema_status,
+        clarification=clarification,
+        dispatch=None,
+        selected_skills=[],
+        planned_tool_calls=[],
+        executed_tool_calls=executed_tool_calls,
+        planner_fallback=True,
+    )
+    return {
+        "tool_policy": tool_policy,
+        "skills": skills,
+        "selected_skills": [],
+        "planned_tool_calls": [],
+        "executed_tool_calls": executed_tool_calls,
+        "system_inferred_tool_calls": [],
+        "policy_violations": [],
+        "progressive_disclosure": False,
+        "disclosed_tools": [],
+        "skill_selection_reasoning_summary": None,
+        "tool_planning_reasoning_summary": None,
+        "planner_fallback": True,
+        "fallback_reason": "multiturn_chitchat",
+        "planner_reasoning_summary": "LeadAgent 多轮分类识别为闲聊，跳过工具规划。",
+        "original_question": question,
+        "resolved_question": question,
+        "multiturn_context": multiturn_context,
+        "multiturn_classification": multiturn_classification,
+        "active_dataset_id": active_dataset_id,
+        "inheritance_summary": inheritance_summary,
+        "time_context": time_context,
+        "thread_context": thread_context,
+        "route_decision": route_decision,
+        "schema_status": schema_status,
+        "clarification": clarification,
+        "dispatch": None,
+        "audit_trace": audit_trace,
+        "should_continue": False,
+        "effective_dataset_id": None,
+    }
 
 
 def _normalize_now(now: datetime | None, timezone_name: str) -> datetime:
@@ -1158,7 +1638,17 @@ def _detect_chinese_month_or_year(question: str) -> dict[str, str] | None:
     return None
 
 
-def _detect_relative_range(question: str, today) -> dict[str, str] | None:
+def _detect_relative_range(
+    question: str,
+    today,
+    *,
+    prior_time_context: dict[str, Any] | None = None,
+) -> dict[str, str] | None:
+    prior_detected = _prior_detected_time_range(prior_time_context)
+    prior_month = _relative_prior_month(question, prior_detected)
+    if prior_month:
+        return prior_month
+
     recent_match = re.search(r"(最近|近)\s*(?P<days>\d{1,3})\s*[天日]", question)
     if recent_match:
         days = max(1, int(recent_match.group("days")))
@@ -1214,7 +1704,7 @@ def _detect_relative_range(question: str, today) -> dict[str, str] | None:
             granularity="month",
             source="relative_this_month",
         )
-    if "上月" in question:
+    if "上月" in question or "上个月" in question:
         this_month_start = today.replace(day=1)
         last_month_end = this_month_start - timedelta(days=1)
         return _range_payload(
@@ -1242,6 +1732,35 @@ def _detect_relative_range(question: str, today) -> dict[str, str] | None:
             source="relative_last_year",
         )
     return None
+
+
+def _prior_detected_time_range(prior_time_context: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(prior_time_context, dict):
+        return None
+    detected = prior_time_context.get("detected_time_range")
+    return detected if isinstance(detected, dict) else None
+
+
+def _relative_prior_month(question: str, prior_detected: dict[str, Any] | None) -> dict[str, str] | None:
+    """基于上一轮时间范围解析“再看上个月”，避免始终按今天倒推。"""
+
+    if not prior_detected or not re.search(r"上月|上个月", question):
+        return None
+    start_text = str(prior_detected.get("start_date") or "")
+    try:
+        start_date = datetime.strptime(start_text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    current_month_start = start_date.replace(day=1)
+    prior_month_end = current_month_start - timedelta(days=1)
+    prior_month_start = prior_month_end.replace(day=1)
+    return _range_payload(
+        label="上个月",
+        start_date=prior_month_start,
+        end_date=prior_month_end,
+        granularity="month",
+        source="prior_relative_last_month",
+    )
 
 
 def _mark_manifest_needs_review(

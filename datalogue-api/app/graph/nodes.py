@@ -13,6 +13,7 @@
 
 # LangGraph 工作流节点实现 — NL2DSL2SQL 核心链路
 
+import copy
 import json
 import re
 import time
@@ -25,6 +26,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
+from app.core.config import get_settings
 from app.graph.llm import get_llm
 from app.graph.state import AgentState
 from app.schemas.dsl import get_dsl_asset_id, get_dsl_item_name, normalize_dsl
@@ -413,11 +415,599 @@ _AMBIGUOUS_PATTERNS = (
     "看一下",
     "查一下",
 )
+_CONTINUE_PATTERNS = (
+    "继续",
+    "再",
+    "也",
+    "换成",
+    "改成",
+    "改为",
+    "只看",
+    "仅看",
+    "筛选",
+    "按",
+    "拆分",
+    "分组",
+    "排名",
+    "上面",
+    "刚才",
+    "这个",
+    "那个",
+    "同比",
+    "环比",
+)
+_TIME_DELTA_PATTERNS = (
+    "今天",
+    "昨天",
+    "本周",
+    "上周",
+    "本月",
+    "上月",
+    "上个月",
+    "今年",
+    "去年",
+    "最近",
+    "近",
+)
 
 
 def _normalized_text(text: str) -> str:
     """归一化问题文本，便于做确定性入口路由匹配。"""
     return re.sub(r"\s+", "", (text or "").lower())
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """把未知状态片段安全收敛为 dict，避免多轮胶囊污染主状态。"""
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    """把未知状态片段安全收敛为 list。"""
+    return value if isinstance(value, list) else []
+
+
+def _dedupe_jsonable(items: list[Any]) -> list[Any]:
+    """对 JSON 友好对象做稳定去重，保留首次出现顺序。"""
+    output: list[Any] = []
+    seen: set[str] = set()
+    for item in items:
+        key = json.dumps(jsonable_encoder(item), ensure_ascii=False, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(item)
+    return output
+
+
+def _prior_query_context(prior_capsule: dict[str, Any]) -> dict[str, Any]:
+    """从上一轮 SubAgent capsule 中提取可继续追问的查询上下文。"""
+    for key in ("query_context", "merged_query_context", "dsl"):
+        value = prior_capsule.get(key)
+        if isinstance(value, dict):
+            return copy.deepcopy(value)
+    multiturn = _as_dict(prior_capsule.get("multiturn_context"))
+    value = multiturn.get("merged_query_context")
+    return copy.deepcopy(value) if isinstance(value, dict) else {}
+
+
+def _prior_question(prior_capsule: dict[str, Any], query_context: dict[str, Any]) -> str:
+    """读取上一轮问题文本，作为继续追问时的问题补全来源。"""
+    return str(
+        prior_capsule.get("resolved_question")
+        or prior_capsule.get("question")
+        or query_context.get("question")
+        or ""
+    ).strip()
+
+
+def _lead_multiturn_intent(state: AgentState) -> str | None:
+    lead_agent_context = _as_dict(state.get("lead_agent_context"))
+    classification = _as_dict(lead_agent_context.get("multiturn_classification"))
+    intent = str(classification.get("intent") or "").strip().lower()
+    return intent or None
+
+
+def _dispatch_capsule(state: AgentState) -> dict[str, Any]:
+    lead_agent_context = _as_dict(state.get("lead_agent_context"))
+    dispatch = _as_dict(lead_agent_context.get("dispatch"))
+    return _as_dict(dispatch.get("capsule") or dispatch.get("subagent_capsule"))
+
+
+def _is_interpret_result_turn(state: AgentState) -> bool:
+    capsule = _dispatch_capsule(state)
+    return (
+        capsule.get("execution_mode") == "interpret_result"
+        or capsule.get("should_generate_query") is False
+        or _lead_multiturn_intent(state) == "interpret"
+    )
+
+
+def _is_continue_turn(state: AgentState, prior_query_context: dict[str, Any]) -> bool:
+    """判断本轮是否应按承接上一轮处理；显式 turn_type 优先。"""
+    explicit = str(state.get("turn_type") or "").strip().lower()
+    if explicit in {"continue", "follow_up", "followup", "interpret"}:
+        return True
+    if explicit == "new":
+        return False
+    if _lead_multiturn_intent(state) in {"continue", "interpret"}:
+        return bool(prior_query_context)
+    if not prior_query_context:
+        return False
+    q_norm = _normalized_text(state.get("question") or "")
+    return _contains_any(q_norm, _CONTINUE_PATTERNS)
+
+
+def _extract_dimension_delta(question: str) -> list[str]:
+    """从追问短句里提取“按 X 拆分/分组/统计”的原始维度短语。"""
+    dimensions: list[str] = []
+    patterns = (
+        r"按(.+?)(?:拆分|分组|统计|汇总|看|排名)",
+        r"(?:拆分|分组)到(.+)",
+        r"(?:按|从)(.+?)(?:维度|口径)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, question):
+            raw = re.split(r"[，,。；;、\s]", match.group(1).strip())[0]
+            if raw:
+                dimensions.append(raw)
+    return _dedupe_texts(dimensions)
+
+
+def _extract_filter_delta(question: str) -> list[dict[str, Any]]:
+    """提取“只看/仅看/筛选”类原始过滤条件，后续由 DSL LLM 映射到语义资产。"""
+    filters: list[dict[str, Any]] = []
+    for pattern in (r"(?:只看|仅看|筛选|限定)(.+)", r"(?:换成|改成|改为)(.+)"):
+        match = re.search(pattern, question)
+        if not match:
+            continue
+        text = match.group(1).strip(" ，,。；;")
+        if text:
+            filters.append({"raw": text, "source": "question_delta"})
+    return filters
+
+
+def _extract_time_delta(question: str) -> dict[str, Any] | None:
+    """提取本轮追问中的时间表达；不做日期推理，只保留确定性原文。"""
+    q_norm = _normalized_text(question)
+    if not _contains_any(q_norm, _TIME_DELTA_PATTERNS):
+        return None
+    recent_match = re.search(r"(最近|近)(\d+)(天|日|周|月|年)", question)
+    if recent_match:
+        return {
+            "raw": recent_match.group(0),
+            "kind": "relative_recent",
+            "amount": int(recent_match.group(2)),
+            "unit": recent_match.group(3),
+        }
+    for token in _TIME_DELTA_PATTERNS:
+        if token in q_norm:
+            return {"raw": token, "kind": "relative_named"}
+    return None
+
+
+def _extract_limit_delta(question: str) -> int | None:
+    """提取 TopN/前 N 这类返回条数限制。"""
+    match = re.search(r"(?:top|前)\s*(\d+)", question, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return max(1, int(match.group(1)))
+    except ValueError:
+        return None
+
+
+def _derive_multiturn_delta(question: str) -> dict[str, Any]:
+    """基于当前追问生成确定性 delta，不做 schema 绑定。"""
+    delta: dict[str, Any] = {
+        "question": question,
+        "dimensions": _extract_dimension_delta(question),
+        "filters": _extract_filter_delta(question),
+    }
+    time_delta = _extract_time_delta(question)
+    if time_delta:
+        delta["time_range"] = time_delta
+    limit = _extract_limit_delta(question)
+    if limit is not None:
+        delta["limit"] = limit
+    operations: list[str] = []
+    q_norm = _normalized_text(question)
+    if delta["dimensions"]:
+        operations.append("add_dimension")
+    if delta["filters"]:
+        operations.append("add_filter")
+    if time_delta:
+        operations.append("change_time_range")
+    if limit is not None or "排名" in q_norm:
+        operations.append("rank_or_limit")
+    if "同比" in q_norm or "环比" in q_norm:
+        operations.append("compare")
+    if "同比" in q_norm or "环比" in q_norm:
+        delta["comparison"] = "同比" if "同比" in q_norm else "环比"
+    delta_type = "compare" if "compare" in operations else (
+        "drill" if delta["dimensions"] else (
+            "refine" if operations else "refine"
+        )
+    )
+    delta["operations"] = operations or ["follow_up"]
+    delta["delta_type"] = delta_type
+    return delta
+
+
+def _merge_query_context(
+    prior_query_context: dict[str, Any],
+    delta: dict[str, Any],
+    *,
+    question: str,
+) -> dict[str, Any]:
+    """确定性合并上一轮 query_context 和本轮 delta。"""
+    merged = copy.deepcopy(prior_query_context)
+    merged["question"] = question
+    merged["source"] = "multiturn_merge"
+
+    if delta.get("dimensions"):
+        merged["dimensions"] = _dedupe_jsonable(
+            _as_list(merged.get("dimensions")) + _as_list(delta.get("dimensions"))
+        )
+    if delta.get("filters"):
+        merged["filters"] = _dedupe_jsonable(
+            _as_list(merged.get("filters")) + _as_list(delta.get("filters"))
+        )
+    if delta.get("time_range"):
+        merged["time_range"] = delta["time_range"]
+    if delta.get("limit") is not None:
+        merged["limit"] = delta["limit"]
+    return merged
+
+
+def _has_query_metrics(query_context: dict[str, Any]) -> bool:
+    metrics = query_context.get("metrics")
+    if isinstance(metrics, list):
+        return bool(metrics)
+    return bool(metrics)
+
+
+def _blueprint_shortcut_candidate(
+    prior_query_context: dict[str, Any],
+    delta: dict[str, Any],
+) -> dict[str, Any] | None:
+    """识别仍落在上一轮蓝图参数空间内的追问，后续由执行节点消化。"""
+
+    blueprint_id = prior_query_context.get("blueprint_id")
+    routing_path = prior_query_context.get("routing_path")
+    if not blueprint_id and routing_path != "blueprint":
+        return None
+    unsupported = {"add_dimension", "compare"}
+    operations = set(delta.get("operations") or [])
+    if operations & unsupported:
+        return None
+    return {
+        "enabled": True,
+        "blueprint_id": _coerce_int_or_original(blueprint_id),
+        "reason": "delta 仅调整过滤、时间或返回条数，仍可复用上一轮蓝图参数空间。",
+    }
+
+
+def _coerce_int_or_original(value: Any) -> Any:
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return value
+
+
+def _blueprint_shortcut_enabled() -> bool:
+    return bool(getattr(get_settings(), "MULTITURN_BLUEPRINT_SHORTCUT_ENABLED", False))
+
+
+def _format_query_context_for_prompt(multiturn_context: dict[str, Any] | None) -> str:
+    """把多轮合并上下文压缩成 DSL 生成可消费的提示词片段。"""
+    if not multiturn_context or multiturn_context.get("turn_type") != "continue":
+        return ""
+    payload = {
+        "prior_query_context": multiturn_context.get("prior_query_context") or {},
+        "delta": multiturn_context.get("delta") or {},
+        "merged_query_context": multiturn_context.get("merged_query_context") or {},
+    }
+    return json.dumps(jsonable_encoder(payload), ensure_ascii=False)[:3000]
+
+
+def _build_interpret_answer(question: str, prior_capsule: dict[str, Any]) -> str:
+    """基于上一轮 ResultDigest 生成轻量解释，避免 interpret 轮次重新查询。"""
+
+    digest = _as_dict(prior_capsule.get("result_digest") or prior_capsule.get("last_result_digest"))
+    if not digest:
+        return "上一轮结果摘要已经失效或不存在，无法直接解释。你可以重新发起查询。"
+    columns = digest.get("columns") or []
+    column_names = [
+        str(item.get("name") or item.get("column") or item)
+        for item in columns
+        if isinstance(item, (dict, str))
+    ]
+    numeric = _as_dict(digest.get("numeric_summary"))
+    highlights = _as_dict(digest.get("highlights"))
+    lines = ["这轮是对上一轮结果的解释，不会重新生成 SQL。"]
+    lines.append(f"上一轮返回 {digest.get('row_count', 0)} 行，字段包括：{', '.join(column_names) or '无字段摘要'}。")
+    if numeric:
+        metric_bits = []
+        for name, stats in numeric.items():
+            if not isinstance(stats, dict):
+                continue
+            metric_bits.append(
+                f"{name}: min={stats.get('min')}, max={stats.get('max')}, sum={stats.get('sum')}"
+            )
+        if metric_bits:
+            lines.append("数值摘要：" + "；".join(metric_bits[:5]) + "。")
+    if highlights:
+        lines.append("摘要要点：" + json.dumps(highlights, ensure_ascii=False)[:500])
+    audit_id = digest.get("sql_audit_id")
+    if audit_id:
+        lines.append(f"可通过 SQL 审计记录 {audit_id} 回看原查询。")
+    return "\n".join(lines)
+
+
+def merge_prior_context_node(state: AgentState) -> Dict[str, Any]:
+    """合并上一轮 SubAgent 数据面上下文，形成当前轮可继续追问的查询上下文。"""
+    prior_capsule = _as_dict(state.get("prior_capsule"))
+    prior_query_context = _prior_query_context(prior_capsule)
+    is_continue = _is_continue_turn(state, prior_query_context)
+    current_question = state.get("question") or ""
+
+    if _is_interpret_result_turn(state):
+        answer = _build_interpret_answer(current_question, prior_capsule)
+        multiturn_context = {
+            "turn_type": "interpret",
+            "prior_available": bool(prior_query_context),
+            "prior_query_context": prior_query_context or None,
+            "delta": {"delta_type": "interpret", "operations": ["interpret_result"]},
+            "merged_query_context": prior_query_context or None,
+            "result_digest_available": bool(
+                prior_capsule.get("result_digest") or prior_capsule.get("last_result_digest")
+            ),
+        }
+        output = {
+            "turn_type": "interpret",
+            "entry_intent": "interpret",
+            "entry_route": "interpret_result",
+            "answer": answer,
+            "multiturn_context": multiturn_context,
+            "merge_debug": {
+                "used_prior": bool(prior_query_context),
+                "reason": "interpret_result_from_prior_digest",
+                "prior_keys": sorted(prior_capsule.keys()),
+                "generated_query": False,
+            },
+            "should_retry": False,
+            "error": None,
+        }
+        output["out_capsule"] = build_out_capsule(state, output)
+        return output
+
+    if not is_continue:
+        turn_type = "new"
+        multiturn_context = {
+            "turn_type": turn_type,
+            "prior_available": bool(prior_query_context),
+            "prior_query_context": prior_query_context or None,
+            "delta": None,
+            "merged_query_context": None,
+        }
+        return {
+            "turn_type": turn_type,
+            "multiturn_context": multiturn_context,
+            "merge_debug": {
+                "used_prior": False,
+                "reason": "no_prior_or_not_continue",
+                "prior_keys": sorted(prior_capsule.keys()),
+            },
+        }
+
+    delta = _derive_multiturn_delta(current_question)
+    merged_query_context = _merge_query_context(
+        prior_query_context,
+        delta,
+        question=current_question,
+    )
+    if not _has_query_metrics(merged_query_context):
+        multiturn_context = {
+            "turn_type": "new_query",
+            "prior_available": True,
+            "prior_query_context": prior_query_context,
+            "delta": delta,
+            "merged_query_context": None,
+        }
+        return {
+            "turn_type": "new",
+            "multiturn_context": multiturn_context,
+            "merge_debug": {
+                "used_prior": False,
+                "reason": "merged_metrics_empty_downgraded_to_new_query",
+                "delta_operations": delta.get("operations") or [],
+                "prior_keys": sorted(prior_capsule.keys()),
+            },
+        }
+    previous_question = _prior_question(prior_capsule, prior_query_context)
+    synthesized_question = current_question
+    if previous_question and previous_question not in current_question:
+        synthesized_question = f"基于上一轮问题「{previous_question}」，{current_question}"
+
+    blueprint_shortcut = _blueprint_shortcut_candidate(prior_query_context, delta)
+    multiturn_context = {
+        "turn_type": "continue",
+        "delta_type": delta.get("delta_type"),
+        "prior_available": True,
+        "prior_query_context": prior_query_context,
+        "delta": delta,
+        "merged_query_context": merged_query_context,
+        "synthesized_question": synthesized_question,
+        "blueprint_shortcut": blueprint_shortcut,
+    }
+    output = {
+        "question": synthesized_question,
+        "turn_type": "continue",
+        "multiturn_context": multiturn_context,
+        "merge_debug": {
+            "used_prior": True,
+            "reason": "continue_turn_with_prior_query_context",
+            "delta_type": delta.get("delta_type"),
+            "delta_operations": delta.get("operations") or [],
+            "rewrote_question": synthesized_question != current_question,
+            "prior_keys": sorted(prior_capsule.keys()),
+            "blueprint_shortcut": blueprint_shortcut,
+        },
+    }
+    if blueprint_shortcut and _blueprint_shortcut_enabled():
+        output.update(
+            {
+                "entry_intent": "analysis_blueprint",
+                "entry_route": "analysis_blueprint",
+                "blueprint_id": blueprint_shortcut.get("blueprint_id"),
+                "route_payload": {"kind": "analysis_blueprint", **blueprint_shortcut},
+            }
+        )
+    return output
+
+
+def _query_context_from_state(state: AgentState) -> dict[str, Any]:
+    """为 out_capsule 组装可供下一轮继续追问的查询上下文。"""
+    multiturn_context = _as_dict(state.get("multiturn_context"))
+    merged = multiturn_context.get("merged_query_context")
+    if isinstance(merged, dict):
+        query_context = copy.deepcopy(merged)
+    else:
+        query_context = copy.deepcopy(state.get("dsl") or {})
+    query_context.setdefault("question", state.get("question"))
+    query_context.setdefault("dataset_id", state.get("dataset_id"))
+    query_context.setdefault("generation_mode", state.get("generation_mode"))
+    return query_context
+
+
+def _result_columns(columns: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """ResultDigest 只保存列结构，不保存结果行。"""
+
+    if isinstance(columns, list) and columns:
+        return [
+            {"name": str(item), "type": _infer_column_type(str(item), rows)}
+            if not isinstance(item, dict)
+            else {
+                "name": str(item.get("name") or item.get("column") or ""),
+                "type": str(item.get("type") or "unknown"),
+            }
+            for item in columns
+        ]
+    if not rows:
+        return []
+    return [
+        {"name": key, "type": _infer_column_type(key, rows)}
+        for key in rows[0].keys()
+    ]
+
+
+def _infer_column_type(column: str, rows: list[dict[str, Any]]) -> str:
+    for row in rows:
+        value = row.get(column)
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, (int, float, Decimal)):
+            return "number"
+        return "string"
+    return "unknown"
+
+
+def _numeric_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    summary: dict[str, dict[str, float]] = {}
+    values_by_column: dict[str, list[float]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key, value in row.items():
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float, Decimal)):
+                values_by_column.setdefault(key, []).append(float(value))
+    for key, values in values_by_column.items():
+        if not values:
+            continue
+        summary[key] = {
+            "min": min(values),
+            "max": max(values),
+            "sum": sum(values),
+        }
+    return summary
+
+
+def _top_values(rows: list[dict[str, Any]], max_values: int = 5) -> dict[str, list[dict[str, Any]]]:
+    values: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key, value in row.items():
+            if isinstance(value, (dict, list)):
+                continue
+            bucket = values.setdefault(key, [])
+            text = str(value)
+            if not any(item["value"] == text for item in bucket):
+                bucket.append({"value": text, "count": 1})
+            else:
+                for item in bucket:
+                    if item["value"] == text:
+                        item["count"] += 1
+                        break
+    return {
+        key: sorted(items, key=lambda item: item["count"], reverse=True)[:max_values]
+        for key, items in values.items()
+    }
+
+
+def _sql_audit_id(merged_state: dict[str, Any]) -> str | None:
+    audit = _as_dict(merged_state.get("sql_audit_result"))
+    for key in ("audit_id", "id", "sql_audit_id"):
+        value = audit.get(key) or merged_state.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def build_out_capsule(state: AgentState, updates: dict[str, Any] | None = None) -> dict[str, Any]:
+    """生成 SubAgent 输出胶囊，包含下一轮可复用的 query_context 和 ResultDigest 骨架。"""
+    merged_state: dict[str, Any] = {**state, **(updates or {})}
+    sql_result = _as_dict(merged_state.get("sql_result"))
+    rows = _as_list(sql_result.get("rows"))
+    error = merged_state.get("error")
+    answer = merged_state.get("answer")
+    result_digest = {
+        "status": "failed" if error else ("ok" if sql_result else "empty"),
+        "row_count": sql_result.get("row_count", len(rows) if rows else 0),
+        "columns": _result_columns(sql_result.get("columns"), rows),
+        "numeric_summary": _numeric_summary(rows),
+        "top_values": _top_values(rows),
+        "sql_count": len(_as_list(merged_state.get("sql_list"))),
+        "sql_audit_id": _sql_audit_id(merged_state),
+        "has_answer": bool(answer),
+        "answer_preview": str(answer)[:300] if answer else None,
+        "error": str(error)[:500] if error else None,
+    }
+    return jsonable_encoder(
+        {
+            "capsule_version": "subagent.v1",
+            "dataset_id": merged_state.get("dataset_id"),
+            "manifest_version": merged_state.get("manifest_version"),
+            "bound_schema_version": merged_state.get("bound_schema_version"),
+            "schema_version": merged_state.get("bound_schema_version"),
+            "updated_turn": merged_state.get("turn_index") or 0,
+            "question": merged_state.get("question"),
+            "original_question": merged_state.get("original_question"),
+            "resolved_question": merged_state.get("resolved_question") or merged_state.get("question"),
+            "turn_type": merged_state.get("turn_type") or "new",
+            "query_context": _query_context_from_state(merged_state),
+            "multiturn_context": merged_state.get("multiturn_context"),
+            "result_digest": result_digest,
+            "last_result_digest": result_digest,
+            "sql": merged_state.get("sql"),
+            "sql_list": _as_list(merged_state.get("sql_list")),
+            "generation_mode": merged_state.get("generation_mode"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
@@ -749,12 +1339,35 @@ def intent_recognition_node(state: AgentState, db: Session | None = None) -> Dic
     system = SystemMessage(content=INTENT_RECOGNITION_SYSTEM)
 
     human_text = question
+    clarification_hints: list[str] = []
+    pending_clarification = (
+        (state.get("multiturn_context") or {}).get("pending_clarification")
+    )
+    if isinstance(pending_clarification, dict) and pending_clarification.get("kind"):
+        clarification_hints.append(
+            f"上一轮为澄清态 kind={pending_clarification.get('kind')}"
+        )
+    if state.get("clarification_response"):
+        clarification_hints.append("本轮含 clarification_response")
     if history and len(history) > 1:
         recent = history[-6:-1] if len(history) > 6 else history[:-1]
         ctx = "\n".join(
             [f"{'用户' if m['role'] == 'user' else '助手'}: {m['content'][:100]}" for m in recent]
         )
-        human_text = f"【历史上下文】\n{ctx}\n\n【当前问题】\n{question}"
+        hint_block = ""
+        if clarification_hints:
+            hint_block = "\n".join(f"- {h}" for h in clarification_hints) + "\n"
+        human_text = (
+            f"【历史上下文】\n{ctx}\n"
+            f"【多轮提示】\n{hint_block}\n"
+            f"【当前问题】\n{question}"
+        )
+    elif clarification_hints:
+        human_text = (
+            f"【多轮提示】\n"
+            + "\n".join(f"- {h}" for h in clarification_hints)
+            + f"\n【当前问题】\n{question}"
+        )
 
     human = HumanMessage(content=human_text)
     tracer = get_observability_tracer()
@@ -816,6 +1429,50 @@ def entry_intent_classification_node(db: Session):
         intent = state.get("intent") or "query"
         entities = state.get("entities") or {}
         dataset_id = state.get("dataset_id")
+
+        # ── 多轮上下文诊断日志 ──────────────────────────────────────
+        history = state.get("history") or []
+        multiturn_context = state.get("multiturn_context") or {}
+        prior_capsule = state.get("prior_capsule")
+        prior_capsule_status = state.get("prior_capsule_status") or {}
+        turn_type = state.get("turn_type")
+        conversation_id = state.get("conversation_id")
+
+        logger.info(
+            "[entry_intent] 基本信息: conversation_id=%s, intent=%s, dataset_id=%s, turn_type=%s",
+            conversation_id, intent, dataset_id, turn_type,
+        )
+        logger.info(
+            "[entry_intent] 历史消息: history_len=%d, 最近角色=%s",
+            len(history),
+            [m.get("role") for m in history[-4:]] if history else [],
+        )
+        logger.info(
+            "[entry_intent] 多轮上下文: has_multiturn_context=%s, active_dataset_id=%s, "
+            "turn_index=%s, has_summary=%s, pending_clarification_kind=%s",
+            bool(multiturn_context),
+            multiturn_context.get("active_dataset_id"),
+            multiturn_context.get("turn_index"),
+            bool(multiturn_context.get("summary")),
+            (multiturn_context.get("pending_clarification") or {}).get("kind")
+            if isinstance(multiturn_context.get("pending_clarification"), dict) else None,
+        )
+        logger.info(
+            "[entry_intent] 胶囊状态: prior_capsule_loaded=%s, capsule_status=%s, "
+            "capsule_dataset_id=%s, capsule_version=%s",
+            prior_capsule is not None,
+            prior_capsule_status.get("status"),
+            prior_capsule_status.get("dataset_id"),
+            prior_capsule_status.get("capsule_version"),
+        )
+        if prior_capsule:
+            logger.info(
+                "[entry_intent] 胶囊内容摘要: capsule_keys=%s, capsule_turn=%s",
+                list(prior_capsule.keys())[:8],
+                prior_capsule.get("updated_turn") or prior_capsule.get("turn_index"),
+            )
+        # ─────────────────────────────────────────────────────────────
+
         logger.info("入口意图分类开始: intent=%s, dataset_id=%s", intent, dataset_id)
 
         if intent == "chitchat":
@@ -827,17 +1484,37 @@ def entry_intent_classification_node(db: Session):
             }
 
         if intent == "function":
-            answer = (
-                "当前问数入口只处理数据查询、分析蓝图和知识解释，"
-                "暂不直接执行保存、发布或导出类操作。"
+            # ── 短路：LeadAgent 已锁数据集 + 存在 pending 澄清态时 ──────
+            # 视为用户对上一轮数据集/术语澄清的回复，跳过拒答进入 query_graph。
+            pending_clarification = (
+                (multiturn_context or {}).get("pending_clarification")
+                if isinstance(multiturn_context, dict)
+                else None
             )
-            return {
-                "entry_intent": "rejection",
-                "entry_route": "reject",
-                "entry_reason": "功能操作不应进入 QueryGraph。",
-                "answer": answer,
-                "route_payload": {"kind": "unsupported_function"},
-            }
+            has_pending = (
+                dataset_id is not None
+                and isinstance(pending_clarification, dict)
+                and bool(pending_clarification.get("kind"))
+            )
+            if has_pending:
+                logger.info(
+                    "[entry_intent] 跳过 function 拒答：dataset_id=%s 锁定且存在 pending_clarification=%s",
+                    dataset_id,
+                    pending_clarification.get("kind"),
+                )
+                intent = "query"
+            else:
+                answer = (
+                    "当前问数入口只处理数据查询、分析蓝图和知识解释，"
+                    "暂不直接执行保存、发布或导出类操作。"
+                )
+                return {
+                    "entry_intent": "rejection",
+                    "entry_route": "reject",
+                    "entry_reason": "功能操作不应进入 QueryGraph。",
+                    "answer": answer,
+                    "route_payload": {"kind": "unsupported_function"},
+                }
 
         if _contains_any(q_norm, _PERMISSION_PATTERNS):
             answer = (
@@ -2035,6 +2712,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
     error = state.get("error")
     query_constraints = normalize_query_constraints(state.get("query_constraints"))
     query_constraints_text = _query_constraints_text(state)
+    multiturn_prompt = _format_query_context_for_prompt(state.get("multiturn_context"))
     if query_constraints["enabled"]:
         dsl_limit_example = query_constraints["default_limit"]
         semantic_time_rule = (
@@ -2064,6 +2742,8 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         )
         system = SystemMessage(content=build_real_schema_system(query_rules))
         human_text = f"用户问题: {question}\n\n真实表结构:\n{schema}"
+        if multiturn_prompt:
+            human_text += f"\n\n【多轮查询上下文】\n{multiturn_prompt}"
         if error:
             human_text += f"\n\n上一轮错误: {error}"
         human = HumanMessage(content=human_text)
@@ -2137,6 +2817,8 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
             )
             system = SystemMessage(content=build_inferred_system(query_rules))
             human_text = f"用户问题: {question}\n\n表结构:\n{ddl_context}"
+            if multiturn_prompt:
+                human_text += f"\n\n【多轮查询上下文】\n{multiturn_prompt}"
             if entities:
                 human_text += f"\n\n已识别实体: {json.dumps(entities, ensure_ascii=False)}"
             if error:
@@ -2244,6 +2926,8 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
             content=build_semantic_system(dsl_limit_example, semantic_time_rule, semantic_limit_rule)
         )
         human_text = f"用户问题: {question}\n\n语义层信息:\n{schema}"
+        if multiturn_prompt:
+            human_text += f"\n\n【多轮查询上下文】\n{multiturn_prompt}"
         if asset_catalog:
             human_text += f"\n\n{asset_catalog}"
         if term_normalization:
@@ -2297,6 +2981,8 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
     )
     system = SystemMessage(content=build_no_schema_system(query_rules))
     human_text = f"用户问题: {question}"
+    if multiturn_prompt:
+        human_text += f"\n\n【多轮查询上下文】\n{multiturn_prompt}"
     if error:
         human_text += f"\n\n上一轮错误: {error}"
     human = HumanMessage(content=human_text)
@@ -2909,14 +3595,18 @@ def sql_execute_node(db: Session):
             upstream_error = state.get("error")
             if upstream_error:
                 logger.warning("SQL为空，保留上游错误: %s", upstream_error)
-                return {
+                output = {
                     "sql_result": None,
                     "error": upstream_error,
                     "should_retry": bool(state.get("should_retry")),
                     "sql_guard": state.get("sql_guard"),
                 }
+                output["out_capsule"] = build_out_capsule(state, output)
+                return output
             logger.warning("SQL为空，跳过执行")
-            return {"sql_result": None, "error": "SQL 为空", "should_retry": True}
+            output = {"sql_result": None, "error": "SQL 为空", "should_retry": True}
+            output["out_capsule"] = build_out_capsule(state, output)
+            return output
 
         dataset_id = state.get("dataset_id")
         datasource_context = state.get("datasource_context") or {}
@@ -2928,11 +3618,13 @@ def sql_execute_node(db: Session):
 
         if not datasource:
             logger.error("无可用数据源")
-            return {
+            output = {
                 "sql_result": None,
                 "error": "当前问数未绑定可执行数据集或数据源，请先选择数据集并测试连接",
                 "should_retry": False,
             }
+            output["out_capsule"] = build_out_capsule(state, output)
+            return output
 
         dialect = datasource_context.get("dialect") or (getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "postgres").lower()
         guard_result = _guard_readonly_sql(
@@ -2943,12 +3635,14 @@ def sql_execute_node(db: Session):
         )
         if not guard_result.ok:
             logger.error("SQL执行: SQL Guard 拦截: %s", guard_result.error)
-            return {
+            output = {
                 "sql_result": None,
                 "error": guard_result.error,
                 "sql_guard": guard_result.__dict__,
                 "should_retry": False,
             }
+            output["out_capsule"] = build_out_capsule(state, output)
+            return output
         sql = guard_result.normalized_sql or sql
 
         engine = create_engine_for_datasource(datasource)
@@ -2992,6 +3686,7 @@ def sql_execute_node(db: Session):
                 )
                 if retry_trace is not None:
                     output["sql_retry_trace"] = retry_trace
+                output["out_capsule"] = build_out_capsule(state, output)
                 return jsonable_encoder(output)
         except Exception as e:
             logger.error(f"SQL执行失败: {e}")
@@ -3011,6 +3706,7 @@ def sql_execute_node(db: Session):
             )
             if retry_trace is not None:
                 output["sql_retry_trace"] = retry_trace
+            output["out_capsule"] = build_out_capsule(state, output)
             return jsonable_encoder(output)
         finally:
             engine.dispose()
@@ -3286,5 +3982,6 @@ async def report_generator_node(
         observation_name="llm.report_generator",
         report_owner="subagent",
     )
+    result["out_capsule"] = build_out_capsule(state, result)
     logger.info("报告生成完成")
     return result

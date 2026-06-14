@@ -1043,6 +1043,109 @@ class TestLangGraphNodes:
         assert result["entry_route"] == "clarify"
         assert "补充" in result["answer"]
 
+    def test_entry_intent_function_short_circuits_with_pending_clarification(
+        self, db_session, sample_dataset
+    ):
+        """入口分类：dataset 已锁 + pending_clarification 时，function 不再拒答。"""
+        from app.graph.nodes import entry_intent_classification_node
+
+        state = {
+            "question": "选择：生产经营管理系统日志数据集",
+            "dataset_id": sample_dataset.id,
+            "intent": "function",
+            "entities": {},
+            "multiturn_context": {
+                "active_dataset_id": sample_dataset.id,
+                "pending_clarification": {
+                    "kind": "dataset_choice",
+                    "candidates": [{"dataset_id": sample_dataset.id, "name": "生产日志"}],
+                },
+            },
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] != "rejection"
+        assert result["route_payload"]["kind"] != "unsupported_function"
+
+    def test_entry_intent_function_still_rejected_without_pending_clarification(
+        self, db_session, sample_dataset
+    ):
+        """入口分类：无 pending_clarification 时真实功能操作仍走 rejection。"""
+        from app.graph.nodes import entry_intent_classification_node
+
+        state = {
+            "question": "把这份报表导出成 Excel 并发送给老板",
+            "dataset_id": sample_dataset.id,
+            "intent": "function",
+            "entities": {},
+            "multiturn_context": {},
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] == "rejection"
+        assert result["entry_route"] == "reject"
+        assert result["route_payload"]["kind"] == "unsupported_function"
+        assert "暂不直接执行" in result["answer"]
+
+    def test_entry_intent_function_rejected_when_dataset_not_locked(
+        self, db_session, sample_dataset
+    ):
+        """入口分类：dataset 未锁时即使有 pending_clarification 也不能放行。"""
+        from app.graph.nodes import entry_intent_classification_node
+
+        state = {
+            "question": "把报表导出",
+            "dataset_id": None,
+            "intent": "function",
+            "entities": {},
+            "multiturn_context": {
+                "pending_clarification": {"kind": "dataset_choice"},
+            },
+        }
+        result = entry_intent_classification_node(db_session)(state)
+
+        assert result["entry_intent"] == "rejection"
+        assert result["route_payload"]["kind"] == "unsupported_function"
+
+    def test_intent_recognition_prompt_mentions_clarification_rule(self):
+        """意图识别 prompt 必须包含多轮澄清判为 query 的规则说明。"""
+        from app.prompts.intent_router import INTENT_RECOGNITION_SYSTEM
+
+        assert "多轮澄清" in INTENT_RECOGNITION_SYSTEM
+        assert "query 而非 function" in INTENT_RECOGNITION_SYSTEM
+
+    def test_intent_recognition_node_injects_clarification_hint(self):
+        """意图识别 human_text 应包含多轮提示块，让 LLM 看到澄清信号。"""
+        from app.graph.nodes import intent_recognition_node
+
+        with patch("app.graph.nodes.get_llm") as mock_get_llm:
+            mock_llm = MagicMock()
+            mock_response = MagicMock()
+            mock_response.content = json.dumps({"intent": "query", "entities": {}})
+            mock_response.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
+            mock_llm.invoke.return_value = mock_response
+            mock_get_llm.return_value = mock_llm
+
+            state = {
+                "question": "选择：销售数据集",
+                "history": [
+                    {"role": "user", "content": "查一下近 7 天销售"},
+                    {"role": "assistant", "content": "请选择数据集"},
+                ],
+                "token_usage": None,
+                "multiturn_context": {
+                    "pending_clarification": {"kind": "dataset_choice"},
+                },
+                "clarification_response": {"kind": "dataset_choice"},
+            }
+            intent_recognition_node(state)
+
+            call_args = mock_llm.invoke.call_args
+            messages = call_args[0][0]
+            human_text = messages[-1].content
+            assert "多轮提示" in human_text
+            assert "dataset_choice" in human_text
+
     def test_dsl_validate_semantic_valid(self):
         """DSL 校验：语义层路径，合法 DSL"""
         from app.graph.nodes import dsl_validate_node
@@ -1920,6 +2023,79 @@ class TestChatStreamEvents:
         assert payload["sql_result"]["rows"][0]["created_at"] == "2026-06-08T16:27:10"
         assert payload["sql_result"]["rows"][0]["amount"] == 12.3
 
+    def test_build_query_profile_collects_explainability_fields(self):
+        """query_profile 应稳定聚合口径、多轮继承、路由和 SQL 执行摘要。"""
+        from app.api.chat import _build_query_profile
+
+        profile = _build_query_profile(
+            final_state={
+                "original_question": "继续按地区拆分",
+                "resolved_question": "基于上一轮 GMV 继续按地区拆分",
+                "entry_intent": "metric_query",
+                "entry_route": "query_graph",
+                "blueprint_id": 7,
+                "blueprint_match": {"name": "GMV 分析"},
+                "multiturn_context": {
+                    "turn_type": "continue",
+                    "delta_type": "drill",
+                    "delta": {"operations": ["add_dimension"], "dimensions": ["地区"]},
+                    "prior_query_context": {"metrics": ["gmv"]},
+                    "merged_query_context": {"metrics": ["gmv"], "dimensions": ["地区"]},
+                },
+                "turn_type": "continue",
+                "merge_debug": {"used_prior": True},
+                "prior_capsule_status": {"status": "loaded"},
+                "sql_result": {
+                    "columns": ["region", "gmv"],
+                    "rows": [{"region": "华东", "gmv": 100}],
+                    "row_count": 1,
+                },
+                "generation_mode": "semantic",
+            },
+            lead_agent_context={
+                "time_context": {"detected_time_range": {"label": "最近30日"}},
+                "schema_status": {"status": "ok"},
+            },
+            route_decision={
+                "decision": "locked",
+                "dataset_id": 10,
+                "dataset_name": "销售数据集",
+                "manifest_version": "v1",
+                "bound_schema_version": "schema-a",
+            },
+            step_traces=[
+                {
+                    "type": "step",
+                    "node": "merge_prior_context",
+                    "status": "done",
+                    "elapsed_ms": 12,
+                },
+                {
+                    "type": "step",
+                    "node": "sql_execute",
+                    "status": "done",
+                    "elapsed_ms": 34,
+                },
+            ],
+            sql="SELECT region, SUM(amount) AS gmv FROM orders GROUP BY region",
+            sql_list=["SELECT region, SUM(amount) AS gmv FROM orders GROUP BY region"],
+            execution_path="query_graph",
+            effective_dataset_id=10,
+        )
+
+        assert profile["version"] == "v1"
+        assert profile["route"]["dataset_id"] == 10
+        assert profile["route"]["blueprint_id"] == 7
+        assert profile["query_context"]["merged_query_context"]["dimensions"] == ["地区"]
+        assert profile["query_context"]["delta"]["operations"] == ["add_dimension"]
+        assert profile["query_context"]["inheritance"]["inherited"] is True
+        assert profile["sql"]["row_count"] == 1
+        assert profile["sql"]["columns"] == ["region", "gmv"]
+        assert profile["sql"]["elapsed_ms"] == 34
+        stage_keys = [stage["key"] for stage in profile["execution_summary"]["stages"]]
+        assert "understand" in stage_keys
+        assert "execute_query" in stage_keys
+
     def test_extract_node_output_supports_langgraph_nested_output(self):
         """LangGraph 节点名包装输出时，应提取真实节点结果。"""
         from app.api.chat import _extract_node_output
@@ -2050,6 +2226,75 @@ class TestChatStreamEvents:
             assert "step" in types
             assert "token" in types
             assert "final" in types
+
+    def test_chat_stream_final_and_message_metadata_include_query_profile(
+        self, db_session, sample_dataset
+    ):
+        """final payload 与落库消息都应包含稳定的 explainability/query_profile。"""
+
+        async def fake_astream_events(state, version):
+            yield {
+                "event": "on_chain_start",
+                "name": "sql_execute",
+                "data": {},
+                "metadata": {"langgraph_node": "sql_execute"},
+            }
+            yield {
+                "event": "on_chain_end",
+                "name": "sql_execute",
+                "data": {
+                    "output": {
+                        "answer": "GMV 为 100。",
+                        "entry_intent": "metric_query",
+                        "entry_route": "query_graph",
+                        "entry_reason": "识别为指标查询",
+                        "sql": "SELECT 100 AS gmv",
+                        "sql_list": ["SELECT 100 AS gmv"],
+                        "sql_result": {
+                            "columns": ["gmv"],
+                            "rows": [{"gmv": 100}],
+                            "row_count": 1,
+                        },
+                        "multiturn_context": {
+                            "turn_type": "continue",
+                            "delta_type": "refine",
+                            "delta": {"operations": ["time_refine"]},
+                            "merged_query_context": {"metrics": ["gmv"]},
+                        },
+                        "turn_type": "continue",
+                        "merge_debug": {"used_prior": True},
+                        "prior_capsule_status": {"status": "loaded"},
+                    }
+                },
+                "metadata": {"langgraph_node": "sql_execute"},
+            }
+
+        with patch("app.api.chat.build_workflow") as mock_wf:
+            mock_graph = MagicMock()
+            mock_graph.astream_events = fake_astream_events
+            mock_wf.return_value = mock_graph
+
+            events = _collect_stream_events(
+                {"question": "继续看 GMV", "dataset_id": sample_dataset.id},
+                db_session,
+            )
+
+        final = [event for event in events if event.get("type") == "final"][-1]
+        metadata = final["response_metadata"]
+        assistant_message = (
+            db_session.query(models.Message)
+            .filter(models.Message.role == "assistant")
+            .order_by(models.Message.id.desc())
+            .first()
+        )
+
+        assert final["query_profile"] == metadata["query_profile"]
+        assert final["explainability"]["query_profile"] == final["query_profile"]
+        assert metadata["explainability"]["query_profile"] == final["query_profile"]
+        assert assistant_message.response_metadata["query_profile"] == final["query_profile"]
+        assert final["query_profile"]["sql"]["row_count"] == 1
+        assert final["query_profile"]["query_context"]["inheritance"]["inherited"] is True
+        assert final["query_profile"]["execution_summary"]["stages"]
 
     def test_chat_stream_step_event_structure(self, client, sample_dataset):
         """step 事件必须含 node 和 status 字段"""

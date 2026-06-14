@@ -103,6 +103,164 @@ def test_lead_agent_context_dispatches_selected_manifest(db_session, sample_data
     assert "system_inferred_tool_calls" in context
 
 
+def test_lead_agent_multiturn_continue_reuses_active_dataset(db_session, sample_dataset):
+    """多轮续问应复用 LeadAgent active_dataset_id，并把继承摘要放入 SubAgent capsule。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manual_fields())
+
+    context = build_lead_agent_context(
+        db_session,
+        question="那按地区拆分一下",
+        now=datetime(2026, 6, 12, 9, 30),
+        multiturn_context={
+            "active_dataset_id": sample_dataset.id,
+            "inheritance_summary": "上一轮查询了最近30日GMV趋势。",
+        },
+    )
+
+    assert context["multiturn_classification"]["intent"] == "continue"
+    assert context["multiturn_classification"]["should_inherit_dataset"] is True
+    assert context["tool_policy"]["dataset_lock_source"] == "multiturn_active"
+    assert context["route_decision"]["decision"] == "locked"
+    assert context["effective_dataset_id"] == sample_dataset.id
+    assert context["dispatch"]["capsule"]["inheritance_summary"] == "上一轮查询了最近30日GMV趋势。"
+    assert context["dispatch"]["capsule"]["multiturn_intent"] == "continue"
+
+
+def test_lead_agent_multiturn_active_dataset_overrides_legacy_conversation_lock(
+    db_session,
+    sample_dataset,
+):
+    """开启多轮续问时，ConversationStore 的 active_dataset_id 优先于旧 conversation.dataset_id。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manual_fields())
+    conversation = models.Conversation(
+        id=456,
+        title="旧会话锁",
+        thread_id="thread-legacy-lock",
+        dataset_id=999,
+    )
+
+    context = build_lead_agent_context(
+        db_session,
+        question="那按地区拆分一下",
+        conversation=conversation,
+        now=datetime(2026, 6, 12, 9, 30),
+        multiturn_context={
+            "active_dataset_id": sample_dataset.id,
+            "inheritance_summary": "上一轮查询了最近30日GMV趋势。",
+        },
+    )
+
+    assert context["multiturn_classification"]["should_inherit_dataset"] is True
+    assert context["tool_policy"]["dataset_lock_source"] == "multiturn_active"
+    assert context["thread_context"]["locked_dataset_id"] == sample_dataset.id
+    assert context["route_decision"]["decision"] == "locked"
+    assert context["effective_dataset_id"] == sample_dataset.id
+
+
+def test_lead_agent_multiturn_time_inherits_prior_range(db_session, sample_dataset):
+    """相对时间续问应基于上一轮 resolved_time_context 推导。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manual_fields())
+
+    context = build_lead_agent_context(
+        db_session,
+        question="再看上个月",
+        now=datetime(2026, 6, 12, 9, 30),
+        multiturn_context={
+            "active_dataset_id": sample_dataset.id,
+            "inheritance_summary": "上一轮查询了2026年5月GMV。",
+            "resolved_time_context": {
+                "detected_time_range": {
+                    "label": "2026年5月",
+                    "start_date": "2026-05-01",
+                    "end_date": "2026-05-31",
+                    "granularity": "month",
+                    "source": "explicit_month",
+                }
+            },
+        },
+    )
+
+    detected = context["time_context"]["detected_time_range"]
+    assert detected["source"] == "prior_relative_last_month"
+    assert detected["start_date"] == "2026-04-01"
+    assert detected["end_date"] == "2026-04-30"
+    assert context["time_context"]["inherited_from_prior_time"] is True
+    assert context["resolved_question"] == "再看2026年4月"
+
+
+def test_lead_agent_multiturn_switch_does_not_reuse_active_dataset(db_session, sample_dataset):
+    """切换意图不能把旧 active_dataset_id 强行继承到本轮路由。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manual_fields())
+
+    context = build_lead_agent_context(
+        db_session,
+        question="切换到库存数据集看周转率",
+        now=datetime(2026, 6, 12, 9, 30),
+        multiturn_context={
+            "active_dataset_id": sample_dataset.id,
+            "inheritance_summary": "上一轮是销售运营数据集。",
+        },
+    )
+
+    assert context["multiturn_classification"]["intent"] == "switch"
+    assert context["multiturn_classification"]["should_inherit_dataset"] is False
+    assert context["tool_policy"]["dataset_lock_source"] == "none"
+    assert context["route_decision"]["decision"] == "no_match"
+    assert context["dispatch"] is None
+    assert context["should_continue"] is False
+
+
+def test_lead_agent_multiturn_interpret_reuses_active_dataset(db_session, sample_dataset):
+    """解释上一轮结果时应沿用 active_dataset_id，并标记 interpret intent。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manual_fields())
+
+    context = build_lead_agent_context(
+        db_session,
+        question="上面这个结果是什么意思",
+        now=datetime(2026, 6, 12, 9, 30),
+        multiturn_context={
+            "active_dataset_id": sample_dataset.id,
+            "inheritance_summary": "上一轮返回了GMV趋势和区域拆分。",
+        },
+    )
+
+    assert context["multiturn_classification"]["intent"] == "interpret"
+    assert context["route_decision"]["decision"] == "locked"
+    assert context["dispatch"]["dataset_id"] == sample_dataset.id
+    assert context["dispatch"]["capsule"]["multiturn_intent"] == "interpret"
+    assert context["dispatch"]["capsule"]["execution_mode"] == "interpret_result"
+    assert context["dispatch"]["capsule"]["should_generate_query"] is False
+    assert context["dispatch"]["capsule"]["interpretation_source"] == "prior_capsule.result_digest"
+
+
+def test_lead_agent_multiturn_chitchat_does_not_dispatch(db_session, sample_dataset):
+    """闲聊轮次即使有 active_dataset_id，也不能误调度 SubAgent。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manual_fields())
+
+    context = build_lead_agent_context(
+        db_session,
+        question="谢谢",
+        now=datetime(2026, 6, 12, 9, 30),
+        multiturn_context={
+            "active_dataset_id": sample_dataset.id,
+            "inheritance_summary": "上一轮是销售问数。",
+        },
+    )
+
+    assert context["multiturn_classification"]["intent"] == "chitchat"
+    assert context["route_decision"]["decision"] == "chitchat"
+    assert context["clarification"]["kind"] == "chitchat"
+    assert context["dispatch"] is None
+    assert context["should_continue"] is False
+    assert context["effective_dataset_id"] is None
+
+
 def test_lead_agent_blocks_when_no_current_manifest(db_session):
     """没有 current Manifest 且未显式选数据集时，LeadAgent 应生成数据集级澄清。"""
 
@@ -383,3 +541,57 @@ def test_lead_agent_records_complete_control_plane_span(db_session, sample_datas
     assert output["executed_tool_calls"]
     assert "system_inferred_tool_calls" in output
     assert "policy_violations" in output
+
+
+def test_planner_logs_prompt_and_response(monkeypatch, db_session, caplog):
+    """LeadAgent Planner 的两阶段 LLM 调用应分别记录请求和返回摘要。"""
+
+    class FakePrompt:
+        content = "planner prompt"
+        version = "v-test"
+        source = "local"
+
+    class FakePromptManager:
+        def get_text_prompt(self, *_args, **_kwargs):
+            return FakePrompt()
+
+    class FakeLLM:
+        model = "lead-model"
+
+        def invoke(self, _messages):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": (
+                        '{"reasoning_summary":"ok",'
+                        '"selected_skills":["DatasetRoutingSkill"],'
+                        '"tool_calls":[{"tool":"manifest_router","reason":"r"}]}'
+                    ),
+                    "usage_metadata": {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                },
+            )()
+
+    monkeypatch.setattr(
+        "app.services.lead_agent._lead_agent_llm_available",
+        lambda _db: {"available": True, "reason": None},
+    )
+    monkeypatch.setattr("app.services.lead_agent.get_prompt_manager", lambda: FakePromptManager())
+    monkeypatch.setattr("app.services.lead_agent.get_llm", lambda **_kwargs: FakeLLM())
+
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="app.services.lead_agent"):
+        plan_tool_calls_with_llm(
+            db_session,
+            question="查一下华东最近30天GMV",
+            conversation_summary={},
+            tool_policy={"allowed_tools": ["manifest_router"], "locked_dataset_id": 7},
+            skills=[{"name": "DatasetRoutingSkill", "description": "路由数据集"}],
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("stage=skill_selector" in m for m in messages)
+    assert any("stage=tool_planner" in m for m in messages)
+    assert any("parse_ok=True" in m for m in messages)
+
