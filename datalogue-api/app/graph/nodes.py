@@ -52,7 +52,6 @@ from app.services.analysis_blueprint import blueprint_params_from_time_context, 
 from app.services.dataset_context import build_dataset_query_context
 from app.services.datasource import create_engine_for_datasource
 from app.services.report_generation import generate_sql_result_report
-from app.services.multiturn_context import MultiturnContextBuilder
 from app.utils.query_constraints import (
     normalize_query_constraints,
     render_query_constraints_instruction,
@@ -461,31 +460,11 @@ def _format_query_context_for_prompt(multiturn_context: dict[str, Any] | None) -
 
 
 def merge_prior_context_node(state: AgentState) -> Dict[str, Any]:
-    """薄壳：调 MultiturnContextBuilder 拿 MergeDecision，再组装 LangGraph output dict。"""
-    builder = MultiturnContextBuilder(out_capsule_factory=build_out_capsule)
-    decision = builder.build(state)
-
-    if decision.interpret_payload is not None:
-        return dict(decision.interpret_payload)
-
-    output: Dict[str, Any] = {
-        "turn_type": decision.turn_type,
-        "multiturn_context": decision.multiturn_context,
-        "merge_debug": decision.merge_debug,
-    }
-    if decision.synthesized_question is not None:
-        output["question"] = decision.synthesized_question
-    blueprint_shortcut = decision.blueprint_shortcut
-    if blueprint_shortcut and blueprint_shortcut.get("settings_enabled"):
-        output.update(
-            {
-                "entry_intent": "analysis_blueprint",
-                "entry_route": "analysis_blueprint",
-                "blueprint_id": blueprint_shortcut.get("blueprint_id"),
-                "route_payload": {"kind": "analysis_blueprint", **blueprint_shortcut},
-            }
-        )
-    return output
+    """虚拟 span 节点：决策已由 LeadAgent `merge_multiturn_decision_for_chat` 在
+    LangGraph 之外完成（Phase 2 上提）。本节点仅保留供 `_merge_prior_context_router`
+    按 state["entry_route"] 路由后续分支，以及 SSE 阶段标签和 observability 链路。
+    """
+    return {}
 
 
 def _query_context_from_state(state: AgentState) -> dict[str, Any]:

@@ -17,13 +17,41 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 from app import models, schemas
-from app.graph.nodes import build_out_capsule, dsl_generate_node, merge_prior_context_node
+from app.graph.nodes import build_out_capsule, dsl_generate_node
 from app.services.conversation_store import (
     ConversationStore,
     pending_clarification_from_final_payload,
     session_key,
 )
+from app.services.lead_agent import merge_multiturn_decision_for_chat
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
+
+
+def _call_merge(state):
+    """模拟原 merge_prior_context_node 输出的 dict 形态（Phase 2 上提后由 services 接管）。"""
+    decision = merge_multiturn_decision_for_chat(
+        state=state, out_capsule_factory=build_out_capsule
+    )
+    if decision.interpret_payload is not None:
+        return dict(decision.interpret_payload)
+    output = {
+        "turn_type": decision.turn_type,
+        "multiturn_context": decision.multiturn_context,
+        "merge_debug": decision.merge_debug,
+    }
+    if decision.synthesized_question is not None:
+        output["question"] = decision.synthesized_question
+    blueprint_shortcut = decision.blueprint_shortcut
+    if blueprint_shortcut and blueprint_shortcut.get("settings_enabled"):
+        output.update(
+            {
+                "entry_intent": "analysis_blueprint",
+                "entry_route": "analysis_blueprint",
+                "blueprint_id": blueprint_shortcut.get("blueprint_id"),
+                "route_payload": {"kind": "analysis_blueprint", **blueprint_shortcut},
+            }
+        )
+    return output
 
 
 def test_chat_request_accepts_session_id():
@@ -501,7 +529,7 @@ def test_merge_prior_context_continue_merges_query_context():
         "result_digest": {"row_count": 1, "columns": ["gmv"]},
     }
 
-    result = merge_prior_context_node(
+    result = _call_merge(
         {
             "question": "按地区拆分看前5",
             "prior_capsule": prior_capsule,
@@ -525,7 +553,7 @@ def test_merge_prior_context_compare_marks_compare_delta():
         "query_context": {"metrics": ["gmv"], "time_range": {"raw": "最近30天"}},
     }
 
-    result = merge_prior_context_node(
+    result = _call_merge(
         {
             "question": "再看同比",
             "prior_capsule": prior_capsule,
@@ -540,7 +568,7 @@ def test_merge_prior_context_compare_marks_compare_delta():
 
 def test_merge_prior_context_empty_metrics_downgrades_to_new_query():
     """合并后没有指标时应降级为 new_query，避免带着空指标继续生成 SQL。"""
-    result = merge_prior_context_node(
+    result = _call_merge(
         {
             "question": "按地区拆分",
             "prior_capsule": {"query_context": {"dimensions": ["门店"]}},
@@ -555,7 +583,7 @@ def test_merge_prior_context_empty_metrics_downgrades_to_new_query():
 
 def test_merge_prior_context_interpret_uses_result_digest_without_query():
     """解释轮次应基于 prior ResultDigest 直接回答，不进入 SQL 生成。"""
-    result = merge_prior_context_node(
+    result = _call_merge(
         {
             "question": "上面这个结果是什么意思",
             "prior_capsule": {
@@ -594,7 +622,7 @@ def test_merge_prior_context_blueprint_shortcut_when_enabled(monkeypatch):
 
     monkeypatch.setattr("app.services.multiturn_context.get_settings", lambda: Settings())
 
-    result = merge_prior_context_node(
+    result = _call_merge(
         {
             "question": "只看华东",
             "prior_capsule": {
@@ -616,7 +644,7 @@ def test_merge_prior_context_blueprint_shortcut_when_enabled(monkeypatch):
 
 def test_merge_prior_context_without_continue_signal_keeps_new_turn():
     """有 prior 但当前问题不是追问时，不应强行合并上一轮上下文。"""
-    result = merge_prior_context_node(
+    result = _call_merge(
         {
             "question": "最近30天订单数是多少",
             "prior_capsule": {"query_context": {"metrics": ["gmv"]}},

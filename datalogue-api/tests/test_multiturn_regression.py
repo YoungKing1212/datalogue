@@ -20,8 +20,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from app import models, schemas
-from app.graph.nodes import build_out_capsule, merge_prior_context_node
+from app.graph.nodes import build_out_capsule
 from app.services.conversation_store import ConversationStore
+from app.services.lead_agent import merge_multiturn_decision_for_chat
 
 
 MULTITURN_REGRESSION_CASES = [
@@ -112,7 +113,29 @@ def _merge(question, *, prior_capsule=None, lead_context=None, turn_type=None):
         state["lead_agent_context"] = lead_context
     if turn_type is not None:
         state["turn_type"] = turn_type
-    return merge_prior_context_node(state)
+    decision = merge_multiturn_decision_for_chat(
+        state=state, out_capsule_factory=build_out_capsule
+    )
+    if decision.interpret_payload is not None:
+        return dict(decision.interpret_payload)
+    output = {
+        "turn_type": decision.turn_type,
+        "multiturn_context": decision.multiturn_context,
+        "merge_debug": decision.merge_debug,
+    }
+    if decision.synthesized_question is not None:
+        output["question"] = decision.synthesized_question
+    blueprint_shortcut = decision.blueprint_shortcut
+    if blueprint_shortcut and blueprint_shortcut.get("settings_enabled"):
+        output.update(
+            {
+                "entry_intent": "analysis_blueprint",
+                "entry_route": "analysis_blueprint",
+                "blueprint_id": blueprint_shortcut.get("blueprint_id"),
+                "route_payload": {"kind": "analysis_blueprint", **blueprint_shortcut},
+            }
+        )
+    return output
 
 
 def _check_refine_filter(_db_session, _monkeypatch):
@@ -178,11 +201,9 @@ def _check_compare_mom(_db_session, _monkeypatch):
 
 
 def _check_new_query_downgrade(_db_session, _monkeypatch):
-    result = merge_prior_context_node(
-        {
-            "question": "按地区拆分",
-            "prior_capsule": {"query_context": {"dimensions": ["门店"]}},
-        }
+    result = _merge(
+        "按地区拆分",
+        prior_capsule={"query_context": {"dimensions": ["门店"]}},
     )
 
     assert result["turn_type"] == "new"

@@ -20,7 +20,7 @@ import re
 from calendar import monthrange
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -33,6 +33,7 @@ from app.prompts.lead_agent import LEAD_AGENT_SKILL_SELECTOR_SYSTEM, LEAD_AGENT_
 from app.services.dataset_manifest import build_dataset_schema_version
 from app.services.dataset_router import route_dataset_for_question
 from app.services.llm_config import resolve_llm_config
+from app.services.multiturn_context import MergeDecision, MultiturnContextBuilder
 from app.services.observability.prompts import get_prompt_manager
 from app.utils.json_utils import safe_json_parse
 
@@ -1781,3 +1782,57 @@ def _mark_manifest_needs_review(
     if manifest and manifest.review_status != "needs_review":
         manifest.review_status = "needs_review"
         db.commit()
+
+
+# ============================================================
+# Phase 2: 上提 Merge 阶段到 LeadAgent
+# ============================================================
+
+
+def merge_multiturn_decision_for_chat(
+    *,
+    state: dict,
+    out_capsule_factory: Callable | None = None,
+    tracer: Any | None = None,
+    trace_context: Any | None = None,
+) -> MergeDecision:
+    """LeadAgent 控制面：在 LangGraph 之外完成多轮合并决策。
+
+    Phase 2 上提：原 LangGraph `merge_prior_context_node` 节点内的决策逻辑整体迁到这里。
+    LangGraph 入口仍保留同名 `merge_prior_context` 节点（已改为 noop 虚拟 span 节点），
+    仅为兼容 SSE 阶段标签和 observability 链路；真正的决策由本函数产出。
+
+    调用方在 chat.py 调 LangGraph 之前：
+    1. 先调 `build_lead_agent_context` 拿到 `lead_agent_context`
+    2. 再调本函数得到 `MergeDecision`
+    3. 早退判定：若 `decision.interpret_payload is not None` → 直接生成 answer
+    4. 否则把 decision 字段塞进 LangGraph initial_state
+    """
+    if tracer is not None and trace_context is not None and hasattr(tracer, "start_span"):
+        tracer.start_span(
+            trace_context,
+            node="lead.merge_prior_context",
+            display_name="Lead · 多轮合并",
+            input_payload={
+                "turn_type": state.get("turn_type"),
+                "has_prior_capsule": state.get("prior_capsule") is not None,
+                "has_lead_agent_context": state.get("lead_agent_context") is not None,
+                "dataset_id": state.get("dataset_id"),
+            },
+        )
+    builder = MultiturnContextBuilder(out_capsule_factory=out_capsule_factory)
+    decision = builder.build(state)
+
+    if tracer is not None and trace_context is not None and hasattr(tracer, "end_span"):
+        tracer.end_span(
+            trace_context,
+            node="lead.merge_prior_context",
+            output_payload={
+                "turn_type": decision.turn_type,
+                "has_synthesized_question": decision.synthesized_question is not None,
+                "has_blueprint_shortcut": decision.blueprint_shortcut is not None,
+                "is_interpret": decision.interpret_payload is not None,
+                "merge_debug": decision.merge_debug,
+            },
+        )
+    return decision

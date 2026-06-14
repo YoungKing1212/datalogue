@@ -326,6 +326,204 @@ FIXTURES = [
             "lead_agent_context": {},
         },
     },
+    # === Phase 2 扩展: 4 条 interpret 早退 case（覆盖三种触发条件 + 极简 result_digest）===
+    {
+        "name": "interpret_via_should_generate_query_false",
+        "description": (
+            "dispatch.capsule.should_generate_query=False 触发 interpret 早退；"
+            "prior_capsule 含最小 result_digest；期望 turn_type=interpret, entry_route=interpret_result."
+        ),
+        "input_state": {
+            "question": "为什么广东最高",
+            "turn_type": None,
+            "turn_index": 2,
+            "dataset_id": 1,
+            "prior_capsule": prior_capsule_base(
+                metrics=["销售额"],
+                dimensions=["省份"],
+                question="各省销售额",
+                resolved_question="各省销售额",
+                result_digest={
+                    "row_count": 5,
+                    "columns": [{"name": "省份"}, {"name": "销售额"}],
+                    "numeric_summary": {},
+                    "highlights": {},
+                },
+            ),
+            "lead_agent_context": {
+                "dispatch": {"capsule": {"should_generate_query": False}},
+            },
+        },
+    },
+    {
+        "name": "interpret_via_lead_intent_only",
+        "description": (
+            "lead_agent_context.multiturn_classification.intent=interpret 触发；"
+            "无 dispatch 字段；期望 turn_type=interpret."
+        ),
+        "input_state": {
+            "question": "为什么广东最高",
+            "turn_type": None,
+            "turn_index": 2,
+            "dataset_id": 1,
+            "prior_capsule": prior_capsule_base(
+                metrics=["销售额"],
+                dimensions=["省份"],
+                result_digest={
+                    "row_count": 5,
+                    "columns": [{"name": "省份"}, {"name": "销售额"}],
+                    "numeric_summary": {"销售额": {"min": 100, "max": 9000}},
+                    "highlights": {"top": "广东"},
+                },
+            ),
+            "lead_agent_context": {
+                "multiturn_classification": {"intent": "interpret"},
+            },
+        },
+    },
+    {
+        "name": "interpret_with_minimal_result_digest",
+        "description": (
+            "interpret 触发条件=execution_mode, result_digest 极简（无 numeric_summary/highlights）；"
+            "验证 builder 仍能输出 answer 和 out_capsule，不依赖完整字段."
+        ),
+        "input_state": {
+            "question": "这个数据怎么解读",
+            "turn_type": None,
+            "turn_index": 2,
+            "dataset_id": 1,
+            "prior_capsule": prior_capsule_base(
+                metrics=["销售额"],
+                dimensions=["省份"],
+                result_digest={
+                    "row_count": 3,
+                    "columns": [{"name": "省份"}],
+                },
+            ),
+            "lead_agent_context": lead_interpret_dispatch(),
+        },
+    },
+    {
+        "name": "interpret_with_dense_result_digest",
+        "description": (
+            "interpret 触发条件=execution_mode, result_digest 含完整 numeric_summary/highlights/sql_audit_id；"
+            "验证 builder 把 sql_audit_id 透传到 out_capsule."
+        ),
+        "input_state": {
+            "question": "为什么广东最高",
+            "turn_type": None,
+            "turn_index": 2,
+            "dataset_id": 1,
+            "prior_capsule": prior_capsule_base(
+                metrics=["销售额"],
+                dimensions=["省份", "门店"],
+                result_digest={
+                    "row_count": 5,
+                    "columns": [
+                        {"name": "省份"},
+                        {"name": "门店"},
+                        {"name": "销售额"},
+                    ],
+                    "numeric_summary": {
+                        "销售额": {"min": 100, "max": 9000, "sum": 50000, "avg": 10000}
+                    },
+                    "highlights": {"top": "广东", "bottom": "西藏"},
+                    "sql_audit_id": "audit-phase2-dense",
+                },
+            ),
+            "lead_agent_context": lead_interpret_dispatch(),
+        },
+    },
+    # === Phase 2 扩展: 4 条 blueprint_shortcut case（覆盖 delta 多样性）===
+    {
+        "name": "blueprint_shortcut_with_time_delta",
+        "description": (
+            "prior_query_context 含 blueprint_id + routing_path=blueprint；"
+            "delta 含 time_range（最近 30 天）；settings enabled；"
+            "期望 output 含 entry_intent=analysis_blueprint 且 multiturn_context.delta.time_range 存在."
+        ),
+        "input_state": {
+            "question": "最近 30 天",
+            "turn_type": None,
+            "turn_index": 2,
+            "dataset_id": 1,
+            "prior_capsule": prior_capsule_base(
+                metrics=["销售额"],
+                dimensions=["门店"],
+                question="各门店销售额",
+                blueprint_id=99,
+                routing_path="blueprint",
+            ),
+            "lead_agent_context": lead_continue_intent(),
+        },
+        "patch_settings": {"MULTITURN_BLUEPRINT_SHORTCUT_ENABLED": True},
+    },
+    {
+        "name": "blueprint_shortcut_with_filter_delta_disabled",
+        "description": (
+            "prior_query_context 含 blueprint_id；delta 加 filter（'只看华东'）；"
+            "settings disabled；期望 output 不含 entry_intent，但 blueprint_shortcut 候选保留."
+        ),
+        "input_state": {
+            "question": "只看华东",
+            "turn_type": None,
+            "turn_index": 2,
+            "dataset_id": 1,
+            "prior_capsule": prior_capsule_base(
+                metrics=["销售额"],
+                dimensions=["门店"],
+                question="各门店销售额",
+                blueprint_id=99,
+                routing_path="blueprint",
+            ),
+            "lead_agent_context": lead_continue_intent(),
+        },
+        "patch_settings": {"MULTITURN_BLUEPRINT_SHORTCUT_ENABLED": False},
+    },
+    {
+        "name": "blueprint_shortcut_no_blueprint_id",
+        "description": (
+            "prior_query_context.blueprint_id=None；"
+            "期望 output 不含 blueprint_shortcut 候选，entry_intent 不写."
+        ),
+        "input_state": {
+            "question": "只看华东",
+            "turn_type": None,
+            "turn_index": 2,
+            "dataset_id": 1,
+            "prior_capsule": prior_capsule_base(
+                metrics=["销售额"],
+                dimensions=["门店"],
+                question="各门店销售额",
+                blueprint_id=None,
+                routing_path="blueprint",
+            ),
+            "lead_agent_context": lead_continue_intent(),
+        },
+        "patch_settings": {"MULTITURN_BLUEPRINT_SHORTCUT_ENABLED": True},
+    },
+    {
+        "name": "blueprint_shortcut_routing_path_free",
+        "description": (
+            "routing_path=free_query（不是 blueprint）即使 blueprint_id 存在也不算候选；"
+            "期望 output 不含 blueprint_shortcut 候选."
+        ),
+        "input_state": {
+            "question": "只看华东",
+            "turn_type": None,
+            "turn_index": 2,
+            "dataset_id": 1,
+            "prior_capsule": prior_capsule_base(
+                metrics=["销售额"],
+                dimensions=["门店"],
+                question="各门店销售额",
+                blueprint_id=99,
+                routing_path="free_query",
+            ),
+            "lead_agent_context": lead_continue_intent(),
+        },
+        "patch_settings": {"MULTITURN_BLUEPRINT_SHORTCUT_ENABLED": True},
+    },
 ]
 
 

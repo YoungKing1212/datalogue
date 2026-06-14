@@ -18,6 +18,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -37,7 +38,11 @@ from app.services.observability.context import (
 )
 from app.services.observability.feedback import submit_message_feedback
 from app.services.observability.tracer import get_observability_tracer
-from app.services.lead_agent import build_lead_agent_context
+from app.services.lead_agent import (
+    build_lead_agent_context,
+    merge_multiturn_decision_for_chat,
+)
+from app.services.multiturn_context import MergeDecision
 from app.services.report_generation import stream_sql_result_report
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
 from app.services.conversation_store import (
@@ -974,8 +979,49 @@ async def _stream_chat_singleturn(
             dataset_id=effective_dataset_id,
             expected_schema_version=route_decision.get("bound_schema_version"),
         )
-    initial_state = {
+
+    # Phase 2: 在 LangGraph 之外完成多轮合并决策
+    # - interpret 路径早退，不进 LangGraph
+    # - 其他路径把决策字段塞进 initial_state
+    merge_state = {
         "question": resolved_question,
+        "turn_type": None,
+        "turn_index": (multiturn_context or {}).get("turn_index"),
+        "dataset_id": effective_dataset_id,
+        "prior_capsule": prior_capsule,
+        "history": history,
+        "lead_agent_context": lead_agent_context,
+        "manifest_version": route_decision.get("manifest_version"),
+        "bound_schema_version": route_decision.get("bound_schema_version"),
+    }
+    merge_decision: MergeDecision = merge_multiturn_decision_for_chat(
+        state=merge_state,
+        out_capsule_factory=_build_out_capsule_for_chat,
+        tracer=tracer,
+        trace_context=trace_context,
+    )
+    if merge_decision.interpret_payload is not None:
+        async for sse_event in _interpret_early_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=effective_dataset_id,
+            lead_agent_context=lead_agent_context,
+            route_decision=route_decision,
+            trace_context=trace_context,
+            trace_metadata=trace_metadata,
+            defer_trace_close=defer_trace_close,
+            obs_context_manager=obs_context_manager,
+            interpret_payload=merge_decision.interpret_payload,
+            turn_type=merge_decision.turn_type,
+            multiturn_context=merge_decision.multiturn_context,
+            merge_debug=merge_decision.merge_debug,
+        ):
+            yield sse_event
+        return
+
+    initial_state = {
+        "question": merge_decision.synthesized_question or resolved_question,
         "original_question": payload.question,
         "resolved_question": resolved_question,
         "dataset_id": effective_dataset_id,
@@ -997,20 +1043,40 @@ async def _stream_chat_singleturn(
         "prior_capsule": prior_capsule,
         "prior_capsule_status": prior_capsule_status,
         "out_capsule": None,
-        "multiturn_context": None,
-        "turn_type": None,
-        "merge_debug": None,
+        "multiturn_context": merge_decision.multiturn_context,
+        "turn_type": merge_decision.turn_type,
+        "merge_debug": merge_decision.merge_debug,
         "intent": None,
         "entities": None,
-        "entry_intent": None,
-        "entry_route": None,
+        "entry_intent": (
+            "analysis_blueprint"
+            if merge_decision.blueprint_shortcut
+            and merge_decision.blueprint_shortcut.get("settings_enabled")
+            else None
+        ),
+        "entry_route": (
+            "analysis_blueprint"
+            if merge_decision.blueprint_shortcut
+            and merge_decision.blueprint_shortcut.get("settings_enabled")
+            else None
+        ),
         "entry_reason": None,
-        "blueprint_id": None,
+        "blueprint_id": (
+            merge_decision.blueprint_shortcut.get("blueprint_id")
+            if merge_decision.blueprint_shortcut
+            and merge_decision.blueprint_shortcut.get("settings_enabled")
+            else None
+        ),
         "blueprint_match": None,
         "blueprint_context": None,
         "knowledge_term_id": None,
         "selected_term_id": None,
-        "route_payload": None,
+        "route_payload": (
+            {"kind": "analysis_blueprint", **(merge_decision.blueprint_shortcut or {})}
+            if merge_decision.blueprint_shortcut
+            and merge_decision.blueprint_shortcut.get("settings_enabled")
+            else None
+        ),
         "schema_context": None,
         "schema_structured": None,
         "ddl_context": None,
@@ -1749,3 +1815,122 @@ def chat_feedback(payload: schemas.ChatFeedback, db: Session = Depends(get_db)):
         trace_id=payload.trace_id,
         reason=payload.reason,
     )
+
+
+# ============================================================
+# Phase 2: 上提 Merge 阶段到 LeadAgent — chat 层辅助
+# ============================================================
+
+
+def _build_out_capsule_for_chat(
+    state: dict, updates: dict | None = None
+) -> dict:
+    """Phase 2: 把 graph.nodes.build_out_capsule 暴露给 chat.py 的 out_capsule_factory。
+
+    保留与 nodes.py 实现同语义（生成下一轮继续追问所需的 query_context + result_digest）。
+    """
+    from app.graph.nodes import build_out_capsule
+
+    return build_out_capsule(state, updates)
+
+
+async def _interpret_early_return(
+    *,
+    db: Session,
+    conv: models.Conversation,
+    payload: schemas.ChatRequest,
+    effective_dataset_id: int | None,
+    lead_agent_context: dict,
+    route_decision: dict,
+    trace_context: Any,
+    trace_metadata: dict,
+    defer_trace_close: bool,
+    obs_context_manager: Any,
+    interpret_payload: dict,
+    turn_type: str,
+    multiturn_context: dict | None,
+    merge_debug: dict,
+):
+    """interpret_result 早退：保存助手消息、emit SSE final 事件，不走 LangGraph。
+
+    完整 observability 写入留 Phase 3 完善（与 _save_route_block_message 等价的 trace_index 写入）。
+    """
+    answer = interpret_payload.get("answer") or "已生成解释。"
+    entry_intent = interpret_payload.get("entry_intent") or "interpret"
+    entry_route = interpret_payload.get("entry_route") or "interpret_result"
+    route_payload = {
+        "kind": "interpret_result",
+        "answer": answer,
+        "out_capsule": interpret_payload.get("out_capsule"),
+    }
+    final_state = {
+        "original_question": payload.question,
+        "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+        "entry_intent": entry_intent,
+        "entry_route": entry_route,
+        "route_payload": route_payload,
+        "time_context": lead_agent_context.get("time_context"),
+        "multiturn_context": multiturn_context,
+        "merge_debug": merge_debug,
+        "turn_type": turn_type,
+        "sql_result": None,
+    }
+    response_metadata = jsonable_encoder({
+        "lead_agent_context": lead_agent_context,
+        "original_question": payload.question,
+        "resolved_question": final_state["resolved_question"],
+        "route_decision": route_decision,
+        "time_context": lead_agent_context.get("time_context"),
+        "schema_status": lead_agent_context.get("schema_status"),
+        "route_payload": route_payload,
+        "multiturn_context": multiturn_context,
+        "merge_debug": merge_debug,
+    })
+    assistant_message = models.Message(
+        conversation_id=conv.id,
+        role="assistant",
+        content=answer,
+        sql_list=[],
+        step_trace=[_lead_agent_event(lead_agent_context), _route_decision_event(route_decision)],
+        response_metadata=response_metadata,
+    )
+    db.add(assistant_message)
+    db.commit()
+    db.refresh(assistant_message)
+
+    yield _sse_data(
+        {
+            "type": "step",
+            "node": "interpret_result",
+            "display_name": "解释上一轮结果",
+            "status": "done",
+        }
+    )
+    yield _sse_data(
+        {
+            "type": "final",
+            "sql": None,
+            "sql_list": [],
+            "answer": answer,
+            "entry_intent": entry_intent,
+            "entry_route": entry_route,
+            "entry_reason": "interpret_result_early_return",
+            "lead_agent_context": lead_agent_context,
+            "original_question": payload.question,
+            "resolved_question": final_state["resolved_question"],
+            "time_context": lead_agent_context.get("time_context"),
+            "route_decision": route_decision,
+            "schema_status": lead_agent_context.get("schema_status"),
+            "clarification": None,
+            "route_payload": route_payload,
+            "sql_result": None,
+            "query_profile": None,
+            "explainability": None,
+            "response_metadata": response_metadata,
+            "conversation_id": conv.id,
+            "message_id": assistant_message.id,
+            "title": conv.title,
+        }
+    )
+    if not defer_trace_close:
+        obs_context_manager.__exit__(None, None, None)
