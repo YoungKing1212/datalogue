@@ -36,6 +36,7 @@ from .conversation import (
     PendingClarification,
     SQLDiagnosisLog,
     TraceAnnotationCandidate,
+    ConversationState,
 )
 from .llm import LLMModelConfig, LLMRoleBinding
 
@@ -62,6 +63,7 @@ __all__ = [
     "SQLDiagnosisLog",
     "PendingClarification",
     "TraceAnnotationCandidate",
+    "ConversationState",
     "LLMModelConfig",
     "LLMRoleBinding",
 ]

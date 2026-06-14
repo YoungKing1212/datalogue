@@ -42,6 +42,16 @@ function toJsonText(value) {
   }
 }
 
+function stripThinkText(value) {
+  const text = toJsonText(value);
+  return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim() || '—';
+}
+
+function previewText(value, limit = 360) {
+  const text = stripThinkText(value).replace(/\s+/g, ' ');
+  return text.length > limit ? `${text.slice(0, limit).trim()}...` : text;
+}
+
 function latencyText(ms) {
   if (ms == null) return '—';
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
@@ -125,9 +135,7 @@ function ObservationWaterfall({ detail }) {
         latency: item.latency_ms,
         status: item.level || item.status_message || 'OK',
         model: item.model,
-        input: item.input,
         output: item.output,
-        metadata: item.metadata,
       }))
     : fallback.map((item) => ({
         id: item.id,
@@ -135,7 +143,6 @@ function ObservationWaterfall({ detail }) {
         type: 'local_step',
         latency: item.latency_ms,
         status: item.status,
-        metadata: item.metadata,
       }));
 
   if (!rows.length) {
@@ -160,16 +167,12 @@ function ObservationWaterfall({ detail }) {
           </summary>
           <div className="audit-observation-body">
             <div>
-              <span>输入</span>
-              <pre>{toJsonText(row.input)}</pre>
+              <span>状态</span>
+              <pre>{toJsonText({ status: row.status, model: row.model || undefined, latency_ms: row.latency })}</pre>
             </div>
             <div>
-              <span>输出</span>
-              <pre>{toJsonText(row.output)}</pre>
-            </div>
-            <div>
-              <span>元数据</span>
-              <pre>{toJsonText(row.metadata)}</pre>
+              <span>输出摘要</span>
+              <pre>{previewText(row.output)}</pre>
             </div>
           </div>
         </details>
@@ -220,7 +223,7 @@ function DetailPanel({ detail, loading }) {
     <div className="audit-detail">
       <div className="audit-detail-head">
         <div>
-          <div className="audit-detail-title">{item.question || trace.input || '查询链路'}</div>
+          <div className="audit-detail-title">{item.question || '查询链路'}</div>
           <div className="audit-detail-meta">
             <span>{item.trace_id}</span>
             <span>{formatTime(item.created_at || trace.timestamp)}</span>
@@ -247,11 +250,11 @@ function DetailPanel({ detail, loading }) {
       <div className="audit-grid">
         <div className="audit-section">
           <div className="audit-section-title">输入</div>
-          <pre className="audit-code">{toJsonText(trace.input || item.question)}</pre>
+          <pre className="audit-code">{toJsonText(item.question || '未记录问题')}</pre>
         </div>
         <div className="audit-section">
           <div className="audit-section-title">输出</div>
-          <pre className="audit-code">{toJsonText(trace.output || item.answer_preview)}</pre>
+          <pre className="audit-code">{previewText(item.answer_preview || trace.output)}</pre>
         </div>
       </div>
 

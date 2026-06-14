@@ -7,7 +7,7 @@
 // XSS: react-markdown 默认不渲染源文 HTML(没装 rehype-raw), 本身就是安全的。
 //      后端答案里若混入 <think> 等标签, 会被下面的 splitThink 先剥离, 不进 Markdown。
 
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';          // 表格、删除线、任务列表、自动链接
 import remarkMath from 'remark-math';        // 识别 $...$ / $$...$$
@@ -16,8 +16,8 @@ import rehypeHighlight from 'rehype-highlight'; // 代码语法高亮
 import 'katex/dist/katex.min.css';
 import 'highlight.js/styles/github-dark.css';
 
-/* ── 1) 把 <think>…</think> 从正文分离(支持流式中间态: 未闭合也能切) ──
- * 替代原来的 cleanAnswer —— 不再丢弃思考, 而是单独返回供折叠块展示。 */
+/* ── 1) 把 <think>…</think> 从正文剥离(支持流式中间态: 未闭合也能切) ──
+ * 原始思维链不进入对话层展示；业务化过程由 step/query_profile 承载。 */
 export function splitThink(raw) {
   if (!raw) return { think: '', answer: '', thinking: false };
   const open = raw.indexOf('<think>');
@@ -29,7 +29,7 @@ export function splitThink(raw) {
     return { think: rest, answer: raw.slice(0, open), thinking: true };
   }
   return {
-    think: rest.slice(0, close),
+    think: '',
     answer: (raw.slice(0, open) + rest.slice(close + 8)).trim(),
     thinking: false,
   };
@@ -83,26 +83,9 @@ const mdComponents = {
   ),
 };
 
-/* ── 4) 思考块: 流式时默认展开, 结束后自动折叠 ── */
-function ThinkBlock({ text, thinking }) {
-  const [open, setOpen] = useState(true);
-  useEffect(() => { if (!thinking) setOpen(false); }, [thinking]); // 思考结束→收起
-  if (!text) return null;
-  return (
-    <div className={`think-block ${open ? 'is-open' : ''}`}>
-      <button type="button" className="think-head" onClick={() => setOpen(o => !o)}>
-        <span className="think-dot" />
-        <span className="think-label">{thinking ? '正在思考…' : '查看思考过程'}</span>
-        <span className="think-chevron">⌄</span>
-      </button>
-      {open && <div className="think-body">{text}</div>}
-    </div>
-  );
-}
-
-/* ── 5) 对外组件 ── */
+/* ── 4) 对外组件 ── */
 export default function MessageContent({ text, streaming = false }) {
-  const { think, answer, thinking } = useMemo(() => splitThink(text), [text]);
+  const { answer } = useMemo(() => splitThink(text), [text]);
   const body = useMemo(
     () => (streaming ? balanceFences(answer) : answer),
     [answer, streaming]
@@ -110,7 +93,6 @@ export default function MessageContent({ text, streaming = false }) {
 
   return (
     <div className="ai-message">
-      <ThinkBlock text={think} thinking={thinking || (streaming && !!think && !answer)} />
       <div className="md-body">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}

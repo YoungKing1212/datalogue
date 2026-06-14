@@ -14,9 +14,16 @@
 from datetime import datetime
 
 from sqlalchemy import Boolean, Column, Float, Integer, String, Text, JSON, ForeignKey, DateTime, func
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+
+
+def _json_type():
+    """兼容 SQLite 测试和 PostgreSQL 生产环境的 JSON 类型。"""
+
+    return JSON().with_variant(postgresql.JSONB(astext_type=Text()), "postgresql")
 
 
 class Conversation(Base):
@@ -115,3 +122,23 @@ class TraceAnnotationCandidate(Base):
     status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
     payload = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class ConversationState(Base):
+    __tablename__ = "conversation_state"
+
+    session_id = Column(String(120), primary_key=True)
+    user_id = Column(String(64), nullable=False, index=True)
+    messages = Column(_json_type(), nullable=False, default=list)
+    compacted_summary = Column(Text)
+    facts = Column(_json_type(), nullable=False, default=list)
+    resolved_time_context = Column(_json_type())
+    active_dataset_id = Column(String(64))
+    pending_clarification = Column(_json_type())
+    subagent_capsules = Column(_json_type(), nullable=False, default=dict)
+    turn_index = Column(Integer, nullable=False, default=0, server_default="0")
+    status = Column(String(16), nullable=False, default="idle", server_default="idle", index=True)
+    lock_owner = Column(String(80))
+    locked_until = Column(DateTime(timezone=True), index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True)

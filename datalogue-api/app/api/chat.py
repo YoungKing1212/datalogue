@@ -16,6 +16,7 @@
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,6 +24,7 @@ from fastapi.encoders import jsonable_encoder
 from sse_starlette.sse import EventSourceResponse
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app import schemas, models
 from app.graph.workflow import build_workflow
@@ -37,6 +39,12 @@ from app.services.observability.feedback import submit_message_feedback
 from app.services.observability.tracer import get_observability_tracer
 from app.services.lead_agent import build_lead_agent_context
 from app.services.report_generation import stream_sql_result_report
+from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
+from app.services.conversation_store import (
+    ConversationStore,
+    pending_clarification_from_final_payload,
+    session_key,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -44,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 # 节点名称到前端展示名的映射
 _NODE_DISPLAY_NAMES = {
+    "merge_prior_context": "多轮上下文",
     "clarification_resolution": "澄清解析",
     "intent_recognition": "意图识别",
     "entry_intent_classification": "入口分类",
@@ -88,6 +97,12 @@ _STATE_OUTPUT_KEYS = {
     "route_payload",
     "clarification_response",
     "clarification_resolution_result",
+    "prior_capsule",
+    "prior_capsule_status",
+    "out_capsule",
+    "multiturn_context",
+    "turn_type",
+    "merge_debug",
     "selected_term_id",
     "schema_context",
     "query_constraints",
@@ -321,6 +336,254 @@ def _should_generate_lead_agent_report(final_state: dict) -> bool:
     return final_state.get("sql_result") is not None
 
 
+def _multiturn_observability_metrics(
+    *,
+    lead_agent_context: dict,
+    final_state: dict,
+) -> dict:
+    """整理多轮链路轻量指标，供 trace metadata 后续聚合。"""
+
+    classification = lead_agent_context.get("multiturn_classification") or {}
+    prior_capsule_status = final_state.get("prior_capsule_status") or {}
+    multiturn_context = final_state.get("multiturn_context") or {}
+    merge_debug = final_state.get("merge_debug") or {}
+    blueprint_shortcut = multiturn_context.get("blueprint_shortcut") or {}
+    capsule_status = prior_capsule_status.get("status")
+    return {
+        "turn_intent": classification.get("intent"),
+        "turn_confidence": classification.get("confidence"),
+        "turn_classifier_source": classification.get("source"),
+        "continued_with_active_dataset": bool(classification.get("should_inherit_dataset")),
+        "delta_type": multiturn_context.get("delta_type")
+        or (multiturn_context.get("delta") or {}).get("delta_type"),
+        "delta_operations": (multiturn_context.get("delta") or {}).get("operations") or [],
+        "delta_merge_used_prior": bool(merge_debug.get("used_prior")),
+        "delta_merge_conflict": merge_debug.get("reason") == "merged_metrics_empty_downgraded_to_new_query",
+        "blueprint_shortcut_candidate": bool(blueprint_shortcut),
+        "blueprint_shortcut_hit": final_state.get("entry_route") == "analysis_blueprint"
+        and bool(blueprint_shortcut),
+        "capsule_status": capsule_status,
+        "capsule_invalidated": capsule_status in {"invalid", "stale"},
+    }
+
+
+_BUSINESS_STAGE_META = {
+    "understand": {
+        "name": "理解问题与上下文",
+        "nodes": {
+            "merge_prior_context",
+            "clarification_resolution",
+            "intent_recognition",
+            "entry_intent_classification",
+        },
+    },
+    "route": {
+        "name": "选择数据集与分析路径",
+        "nodes": {"analysis_blueprint_execute"},
+    },
+    "semantic": {
+        "name": "确认业务口径",
+        "nodes": {
+            "schema_recall",
+            "term_normalize_node",
+            "semantic_asset_resolution_node",
+            "metric_resolution_node",
+        },
+    },
+    "plan_query": {
+        "name": "生成查询计划",
+        "nodes": {"dsl_generate", "dsl_validate", "dsl_compiler"},
+    },
+    "execute_query": {
+        "name": "执行查询与诊断",
+        "nodes": {"sql_execute", "sql_audit"},
+    },
+    "narrate": {
+        "name": "生成业务回答",
+        "nodes": {"report_generator", "lead_agent_report_generator"},
+    },
+}
+
+
+def _business_stage_for_node(node: str | None) -> str:
+    """将技术节点归并为前端右侧展示用的业务阶段。"""
+
+    if not node:
+        return "other"
+    for stage_key, stage_meta in _BUSINESS_STAGE_META.items():
+        if node in stage_meta["nodes"]:
+            return stage_key
+    return "other"
+
+
+def _row_count(sql_result: dict | None) -> int | None:
+    """从 SQL 执行结果中稳定提取行数。"""
+
+    if not isinstance(sql_result, dict):
+        return None
+    if sql_result.get("row_count") is not None:
+        return sql_result.get("row_count")
+    rows = sql_result.get("rows")
+    if isinstance(rows, list):
+        return len(rows)
+    return None
+
+
+def _last_step_elapsed_ms(step_traces: list[dict], *nodes: str) -> int | None:
+    """读取最后一个指定节点的耗时，避免前端从 step_trace 自行推断。"""
+
+    node_set = set(nodes)
+    for step in reversed(step_traces or []):
+        if step.get("node") in node_set and step.get("elapsed_ms") is not None:
+            return step.get("elapsed_ms")
+    return None
+
+
+def _business_execution_stages(step_traces: list[dict]) -> list[dict]:
+    """把 step_trace 压缩成业务化执行阶段，完整 trace 仍保留在 step_trace。"""
+
+    stages: dict[str, dict] = {}
+    for step in step_traces or []:
+        node = step.get("node")
+        stage_key = _business_stage_for_node(node)
+        stage_meta = _BUSINESS_STAGE_META.get(stage_key, {"name": "其他处理", "nodes": set()})
+        stage = stages.setdefault(
+            stage_key,
+            {
+                "key": stage_key,
+                "name": stage_meta["name"],
+                "status": "pending",
+                "elapsed_ms": 0,
+                "nodes": [],
+            },
+        )
+        if node and node not in stage["nodes"]:
+            stage["nodes"].append(node)
+        status = step.get("status")
+        if status:
+            stage["status"] = status
+        if step.get("elapsed_ms") is not None:
+            stage["elapsed_ms"] += int(step.get("elapsed_ms") or 0)
+
+    ordered_keys = [*list(_BUSINESS_STAGE_META.keys()), "other"]
+    return [stages[key] for key in ordered_keys if key in stages]
+
+
+def _build_query_profile(
+    *,
+    final_state: dict,
+    lead_agent_context: dict,
+    route_decision: dict,
+    step_traces: list[dict],
+    sql: str | None,
+    sql_list: list,
+    execution_path: str,
+    effective_dataset_id: int | None,
+) -> dict:
+    """构建前端口径卡片和执行摘要的稳定结构。"""
+
+    sql_result = final_state.get("sql_result") if isinstance(final_state, dict) else None
+    if not isinstance(sql_result, dict):
+        sql_result = {}
+    multiturn_context = final_state.get("multiturn_context") or {}
+    delta = multiturn_context.get("delta") or {}
+    merge_debug = final_state.get("merge_debug") or {}
+    prior_capsule_status = final_state.get("prior_capsule_status") or {}
+    row_count = _row_count(sql_result)
+    columns = sql_result.get("columns") or []
+    sql_elapsed_ms = _last_step_elapsed_ms(
+        step_traces,
+        "sql_execute",
+        "analysis_blueprint_execute",
+    )
+    stages = _business_execution_stages(step_traces)
+    total_elapsed_ms = sum(int(stage.get("elapsed_ms") or 0) for stage in stages)
+    inherited = bool(
+        merge_debug.get("used_prior")
+        or final_state.get("turn_type") in {"continue", "follow_up"}
+        or prior_capsule_status.get("status") == "loaded"
+    )
+
+    return {
+        "version": "v1",
+        "question": {
+            "original": final_state.get("original_question")
+            or lead_agent_context.get("original_question"),
+            "resolved": final_state.get("resolved_question")
+            or lead_agent_context.get("resolved_question"),
+        },
+        "route": {
+            "execution_path": execution_path,
+            "entry_intent": final_state.get("entry_intent"),
+            "entry_route": final_state.get("entry_route"),
+            "entry_reason": final_state.get("entry_reason"),
+            "decision": route_decision.get("decision"),
+            "dataset_id": route_decision.get("dataset_id") or effective_dataset_id,
+            "dataset_name": route_decision.get("dataset_name"),
+            "manifest_version": route_decision.get("manifest_version"),
+            "bound_schema_version": route_decision.get("bound_schema_version"),
+            "blueprint_id": final_state.get("blueprint_id"),
+            "blueprint_match": final_state.get("blueprint_match"),
+            "route_payload_kind": (final_state.get("route_payload") or {}).get("kind"),
+        },
+        "query_context": {
+            "time_context": final_state.get("time_context")
+            or lead_agent_context.get("time_context"),
+            "query_constraints": final_state.get("query_constraints"),
+            "merged_query_context": multiturn_context.get("merged_query_context"),
+            "prior_query_context": multiturn_context.get("prior_query_context"),
+            "delta": delta or None,
+            "delta_type": multiturn_context.get("delta_type") or delta.get("delta_type"),
+            "inheritance": {
+                "inherited": inherited,
+                "turn_type": final_state.get("turn_type") or multiturn_context.get("turn_type"),
+                "prior_capsule_status": prior_capsule_status,
+                "merge_debug": merge_debug,
+                "operations": delta.get("operations") or [],
+            },
+        },
+        "semantic": {
+            "term_normalization": final_state.get("term_normalization"),
+            "semantic_asset_resolution": final_state.get("semantic_asset_resolution"),
+            "metric_resolution": final_state.get("metric_resolution"),
+            "dataset_context_debug": final_state.get("dataset_context_debug"),
+            "schema_status": lead_agent_context.get("schema_status"),
+        },
+        "sql": {
+            "text": sql,
+            "statements": sql_list,
+            "row_count": row_count,
+            "columns": columns,
+            "elapsed_ms": sql_elapsed_ms,
+            "generation_mode": final_state.get("generation_mode"),
+            "diagnosis": final_state.get("sql_diagnosis")
+            or final_state.get("sql_audit_result"),
+            "retry_trace": final_state.get("sql_retry_trace") or [],
+        },
+        "execution_summary": {
+            "elapsed_ms": total_elapsed_ms,
+            "stages": stages,
+            "report_owner": final_state.get("report_owner"),
+            "subagent_report_skipped": final_state.get("subagent_report_skipped"),
+            "lead_agent_report": final_state.get("lead_agent_report"),
+        },
+    }
+
+
+def _build_explainability(
+    *,
+    query_profile: dict,
+    answer_explanation: dict | None = None,
+) -> dict:
+    """统一对外可解释性结构，避免前端依赖分散字段。"""
+
+    return {
+        "version": "v1",
+        "query_profile": query_profile,
+        "answer_explanation": answer_explanation or {},
+    }
+
+
 def _lead_agent_event(lead_agent_context: dict) -> dict:
     """整理 LeadAgent 控制面工具执行摘要，供前端调试和审计使用。"""
 
@@ -386,26 +649,51 @@ def _save_route_block_message(
 ) -> models.Message:
     """保存路由阻断场景的助手消息，保持会话历史完整。"""
 
+    route_payload = {
+        "kind": "manifest_route",
+        "decision": route_decision.get("decision"),
+        "candidates": route_decision.get("candidates") or [],
+        "reason": route_decision.get("reason"),
+    }
+    final_state = {
+        "original_question": lead_agent_context.get("original_question"),
+        "resolved_question": lead_agent_context.get("resolved_question"),
+        "entry_intent": "manifest_route",
+        "entry_route": route_decision.get("decision"),
+        "entry_reason": route_decision.get("reason"),
+        "route_payload": route_payload,
+        "time_context": lead_agent_context.get("time_context"),
+        "sql_result": None,
+    }
+    query_profile = _build_query_profile(
+        final_state=final_state,
+        lead_agent_context=lead_agent_context,
+        route_decision=route_decision,
+        step_traces=[_lead_agent_event(lead_agent_context), _route_decision_event(route_decision)],
+        sql=None,
+        sql_list=[],
+        execution_path="manifest_route",
+        effective_dataset_id=route_decision.get("dataset_id"),
+    )
+    explainability = _build_explainability(query_profile=query_profile)
+    response_metadata = jsonable_encoder({
+        "lead_agent_context": lead_agent_context,
+        "original_question": lead_agent_context.get("original_question"),
+        "resolved_question": lead_agent_context.get("resolved_question"),
+        "route_decision": route_decision,
+        "time_context": lead_agent_context.get("time_context"),
+        "schema_status": lead_agent_context.get("schema_status"),
+        "route_payload": route_payload,
+        "query_profile": query_profile,
+        "explainability": explainability,
+    })
     assistant_message = models.Message(
         conversation_id=conv.id,
         role="assistant",
         content=answer,
         sql_list=[],
         step_trace=[_lead_agent_event(lead_agent_context), _route_decision_event(route_decision)],
-        response_metadata=jsonable_encoder({
-            "lead_agent_context": lead_agent_context,
-            "original_question": lead_agent_context.get("original_question"),
-            "resolved_question": lead_agent_context.get("resolved_question"),
-            "route_decision": route_decision,
-            "time_context": lead_agent_context.get("time_context"),
-            "schema_status": lead_agent_context.get("schema_status"),
-            "route_payload": {
-                "kind": "manifest_route",
-                "decision": route_decision.get("decision"),
-                "candidates": route_decision.get("candidates") or [],
-                "reason": route_decision.get("reason"),
-            },
-        }),
+        response_metadata=response_metadata,
     )
     db.add(assistant_message)
     db.commit()
@@ -413,7 +701,17 @@ def _save_route_block_message(
     return assistant_message
 
 
-async def _stream_chat(payload: schemas.ChatRequest, db: Session):
+async def _stream_chat_singleturn(
+    payload: schemas.ChatRequest,
+    db: Session,
+    *,
+    multiturn_context: dict | None = None,
+    conversation_state: models.ConversationState | None = None,
+    conversation_store: ConversationStore | None = None,
+    observability_session_id: str | None = None,
+    trace_context_sink: list | None = None,
+    defer_trace_close: bool = False,
+):
     """SSE 流式问数：驱动 LangGraph 工作流，逐步发送节点进度事件。"""
     logger.info(f"[_stream_chat] 开始处理问题: {payload.question[:50]}")
     conv_id: int | None = payload.conversation_id
@@ -469,22 +767,104 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         user_id=str(conv.user_id or 1),
         tenant_id="default",
         question=payload.question,
+        session_id=observability_session_id,
         metadata={
             "thread_id": conv.thread_id,
             "title": conv.title,
             "phase": "lead_agent",
+            "business_session_id": observability_session_id,
         },
     )
+    if trace_context_sink is not None:
+        trace_context_sink.append(trace_context)
     obs_context_manager = set_observability_context(trace_context.request_context())
     obs_context_manager.__enter__()
 
-    lead_agent_context = build_lead_agent_context(
-        db,
-        question=payload.question,
-        conversation=conv,
-        payload_dataset_id=payload.dataset_id,
-        tracer=tracer,
-        trace_context=trace_context,
+    tracer.start_span(
+        trace_context,
+        node="context-assembly",
+        display_name="多轮 · 上下文组装",
+        input_payload={
+            "business_session_id": observability_session_id,
+            "conversation_id": conv_id,
+            "payload_dataset_id": payload.dataset_id,
+            "conversation_dataset_id": conv.dataset_id,
+            "has_conversation_state": conversation_state is not None,
+        },
+    )
+    tracer.end_span(
+        trace_context,
+        node="context-assembly",
+        output_payload={
+            "active_dataset_id": (multiturn_context or {}).get("active_dataset_id"),
+            "turn_index": (multiturn_context or {}).get("turn_index"),
+            "pending_clarification_kind": (
+                ((multiturn_context or {}).get("pending_clarification") or {}).get("kind")
+                if isinstance((multiturn_context or {}).get("pending_clarification"), dict)
+                else None
+            ),
+            "capsule_meta_count": len((multiturn_context or {}).get("capsule_metas") or {}),
+            "has_summary": bool((multiturn_context or {}).get("summary")),
+        },
+    )
+
+    tracer.start_span(
+        trace_context,
+        node="lead.routing",
+        display_name="Lead · 路由决策",
+        input_payload={
+            "question": payload.question,
+            "conversation_id": conv_id,
+            "payload_dataset_id": payload.dataset_id,
+            "conversation_dataset_id": conv.dataset_id,
+        },
+        trace_tags=["lead"],
+    )
+    try:
+        lead_agent_context = build_lead_agent_context(
+            db,
+            question=payload.question,
+            conversation=conv,
+            payload_dataset_id=payload.dataset_id,
+            multiturn_context=multiturn_context,
+            tracer=tracer,
+            trace_context=trace_context,
+        )
+    except Exception as exc:
+        tracer.end_span(
+            trace_context,
+            node="lead.routing",
+            output_payload={"status": "error", "error": str(exc)},
+            error=str(exc),
+        )
+        raise
+    tracer.start_span(
+        trace_context,
+        node="turn-classification",
+        display_name="多轮 · 轮次分类",
+        input_payload={
+            "question": payload.question,
+            "active_dataset_id": (multiturn_context or {}).get("active_dataset_id"),
+            "payload_dataset_id": payload.dataset_id,
+        },
+    )
+    tracer.end_span(
+        trace_context,
+        node="turn-classification",
+        output_payload=lead_agent_context.get("multiturn_classification") or {},
+    )
+    tracer.end_span(
+        trace_context,
+        node="lead.routing",
+        output_payload={
+            "route_decision": lead_agent_context.get("route_decision"),
+            "schema_status": lead_agent_context.get("schema_status"),
+            "selected_skills": lead_agent_context.get("selected_skills") or [],
+            "planned_tool_calls": lead_agent_context.get("planned_tool_calls") or [],
+            "executed_tool_calls": lead_agent_context.get("executed_tool_calls") or [],
+            "policy_violations": lead_agent_context.get("policy_violations") or [],
+            "should_continue": lead_agent_context.get("should_continue"),
+        },
     )
     route_decision = lead_agent_context["route_decision"]
     lead_event = _lead_agent_event(lead_agent_context)
@@ -520,6 +900,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             "schema_status": lead_agent_context.get("schema_status"),
             "manifest_version": route_decision.get("manifest_version"),
             "bound_schema_version": route_decision.get("bound_schema_version"),
+            "query_profile": (assistant_message.response_metadata or {}).get("query_profile"),
+            "explainability": (assistant_message.response_metadata or {}).get("explainability"),
             "prompt_versions": trace_context.prompt_versions,
         }
         tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
@@ -539,8 +921,10 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 )
             )
             db.commit()
-        tracer.close_trace(trace_context)
+        if not defer_trace_close:
+            tracer.close_trace(trace_context)
         obs_context_manager.__exit__(None, None, None)
+        response_metadata = assistant_message.response_metadata or {}
         yield _sse_data(
             {
                 "type": "final",
@@ -557,13 +941,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 "route_decision": route_decision,
                 "schema_status": lead_agent_context.get("schema_status"),
                 "clarification": lead_agent_context.get("clarification"),
-                "route_payload": {
-                    "kind": "manifest_route",
-                    "decision": route_decision.get("decision"),
-                    "candidates": route_decision.get("candidates") or [],
-                    "reason": route_decision.get("reason"),
-                },
+                "route_payload": response_metadata.get("route_payload"),
                 "sql_result": None,
+                "query_profile": response_metadata.get("query_profile"),
+                "explainability": response_metadata.get("explainability"),
+                "response_metadata": response_metadata,
                 "conversation_id": conv.id,
                 "message_id": assistant_message.id,
                 "title": conv.title,
@@ -584,6 +966,14 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     # 构建初始状态
     resolved_question = lead_agent_context.get("resolved_question") or payload.question
     report_control = _report_control_for_route(route_decision, payload.dataset_id)
+    prior_capsule = None
+    prior_capsule_status = {"status": "disabled", "reason": "multiturn_store_not_enabled"}
+    if conversation_store is not None and conversation_state is not None and effective_dataset_id is not None:
+        prior_capsule, prior_capsule_status = conversation_store.valid_prior_capsule(
+            conversation_state,
+            dataset_id=effective_dataset_id,
+            expected_schema_version=route_decision.get("bound_schema_version"),
+        )
     initial_state = {
         "question": resolved_question,
         "original_question": payload.question,
@@ -604,6 +994,12 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "history": history,
         "clarification_response": jsonable_encoder(payload.clarification_response),
         "clarification_resolution_result": None,
+        "prior_capsule": prior_capsule,
+        "prior_capsule_status": prior_capsule_status,
+        "out_capsule": None,
+        "multiturn_context": None,
+        "turn_type": None,
+        "merge_debug": None,
         "intent": None,
         "entities": None,
         "entry_intent": None,
@@ -644,6 +1040,23 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
 
     # 构建并运行工作流
     app_graph = build_workflow(db)
+    subagent_request = DatasetSubAgentRequest(
+        question=resolved_question,
+        dataset_id=int(effective_dataset_id),
+        manifest_version=route_decision.get("manifest_version"),
+        bound_schema_version=route_decision.get("bound_schema_version"),
+        thread_id=conv.thread_id or f"conversation-{conv_id}",
+        time_context=lead_agent_context.get("time_context") or {},
+        thread_context=lead_agent_context.get("thread_context") or {},
+        route_decision=route_decision,
+        schema_status=lead_agent_context.get("schema_status") or {},
+        lead_agent_context=lead_agent_context,
+        prior_capsule=prior_capsule,
+        prior_capsule_status=prior_capsule_status,
+        trace_id=trace_context.trace_id,
+        parent_observation_id=None,
+    )
+    subagent_runner = InProcessDatasetSubAgentRunner(app_graph, db)
     final_state: dict = dict(initial_state)
     node_start_times: dict[str, float] = {}
 
@@ -655,7 +1068,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         reported_done: set[str] = set()
         step_traces: list[dict] = []  # 收集推理步骤供历史加载时恢复思维链
 
-        async for event in app_graph.astream_events(initial_state, version="v2"):
+        async for event in subagent_runner.run(
+            subagent_request,
+            trace_context,
+            initial_state,
+            dataset_name=route_decision.get("dataset_name") or "",
+            version="v2",
+        ):
             kind: str = event["event"]
             meta: dict = event.get("metadata", {})
             # langgraph_node 元数据标识当前所属顶层图节点
@@ -688,6 +1107,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                         "route_decision": route_decision,
                         "schema_status": lead_agent_context.get("schema_status"),
                         "lead_agent_audit": lead_agent_context.get("audit_trace"),
+                        "prior_capsule_status": prior_capsule_status,
                     },
                 )
                 yield _sse_data(sse_payload)
@@ -840,8 +1260,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         }
         tracer.start_span(
             trace_context,
-            node=report_node,
-            display_name=_NODE_DISPLAY_NAMES[report_node],
+            node="lead.narrate",
+            display_name="Lead · 报告综合",
             input_payload={
                 "question": final_state.get("question"),
                 "original_question": final_state.get("original_question"),
@@ -851,6 +1271,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 "route_decision": route_decision,
                 "reason": "auto_routed_manifest",
             },
+            trace_tags=["lead"],
         )
         yield _sse_data(running_payload)
         lead_report_result: dict | None = None
@@ -886,7 +1307,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         step_traces.append(done_payload)
         tracer.end_span(
             trace_context,
-            node=report_node,
+            node="lead.narrate",
             output_payload=done_payload,
             elapsed_ms=report_elapsed_ms,
         )
@@ -909,17 +1330,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             answer = "AI 基于表结构推断查询时未能成功，请检查已选表配置或尝试换一种问法。"
     elif error:
         if sql_diagnosis:
-            retry_suffix = ""
-            if sql_retry_trace:
-                retry_suffix = f"。系统已尝试自动修复 {len(sql_retry_trace)} 次"
-                failed_reasons = [
-                    item.get("result") or item.get("error")
-                    for item in sql_retry_trace
-                    if item.get("status") == "failed"
-                ]
-                if failed_reasons:
-                    retry_suffix += f"，最后结果：{failed_reasons[-1]}"
-            answer = f"查询处理出现问题：{error}{retry_suffix}"
+            answer = f"查询处理出现问题：{error}。建议复核字段口径、语义层配置或数据源连接。"
         elif retry_count >= 3:
             answer = f"查询多次尝试后仍未能成功：{error}。建议检查语义层配置或数据源连接。"
         else:
@@ -944,6 +1355,24 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     active_obs_context = current_observability_context.get()
     if active_obs_context:
         trace_context.prompt_versions.update(active_obs_context.prompt_versions)
+    multiturn_observability_metrics = _multiturn_observability_metrics(
+        lead_agent_context=lead_agent_context,
+        final_state=final_state,
+    )
+    query_profile = _build_query_profile(
+        final_state=final_state,
+        lead_agent_context=lead_agent_context,
+        route_decision=route_decision,
+        step_traces=step_traces,
+        sql=sql,
+        sql_list=sql_list,
+        execution_path=execution_path,
+        effective_dataset_id=effective_dataset_id,
+    )
+    explainability = _build_explainability(
+        query_profile=query_profile,
+        answer_explanation=answer_explanation,
+    )
     trace_metadata = {
         "status": "failed" if error else "success",
         "execution_path": execution_path,
@@ -963,11 +1392,54 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "report_owner": final_state.get("report_owner"),
         "subagent_report_skipped": final_state.get("subagent_report_skipped"),
         "lead_agent_report": final_state.get("lead_agent_report"),
+        "prior_capsule_status": final_state.get("prior_capsule_status"),
+        "multiturn_context": final_state.get("multiturn_context"),
+        "turn_type": final_state.get("turn_type"),
+        "merge_debug": final_state.get("merge_debug"),
+        "out_capsule": final_state.get("out_capsule"),
+        "multiturn_metrics": multiturn_observability_metrics,
+        "query_profile": query_profile,
+        "explainability": explainability,
         "prompt_versions": trace_context.prompt_versions,
     }
     tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
 
     # jsonable_encoder 把 datetime / Decimal 等转为 JSON 安全类型，再存 JSON 列
+    response_metadata = jsonable_encoder({
+        "answer_explanation": answer_explanation,
+        "lead_agent_context": lead_agent_context,
+        "original_question": payload.question,
+        "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+        "time_context": lead_agent_context.get("time_context"),
+        "route_decision": route_decision,
+        "schema_status": lead_agent_context.get("schema_status"),
+        "report_owner": final_state.get("report_owner"),
+        "subagent_report_skipped": final_state.get("subagent_report_skipped"),
+        "lead_agent_report": final_state.get("lead_agent_report"),
+        "prior_capsule_status": final_state.get("prior_capsule_status"),
+        "multiturn_context": final_state.get("multiturn_context"),
+        "turn_type": final_state.get("turn_type"),
+        "merge_debug": final_state.get("merge_debug"),
+        "out_capsule": final_state.get("out_capsule"),
+        "route_payload": final_state.get("route_payload"),
+        "clarification_resolution": final_state.get("clarification_resolution_result"),
+        "query_profile": query_profile,
+        "explainability": explainability,
+        "langfuse": {
+            "trace_id": trace_context.trace_id,
+            "session_id": trace_context.session_id,
+            "release": trace_context.release,
+            "environment": trace_context.environment,
+            "prompt_label": trace_context.prompt_label,
+            "base_url": trace_context.base_url,
+            "project_id": trace_context.project_id,
+            "trace_url": trace_context.trace_url,
+            "enabled": trace_context.enabled,
+            "active": trace_context.active,
+            "prompt_versions": trace_context.prompt_versions,
+        },
+        "observability": trace_context.observability_payload(),
+    })
     assistant_message = models.Message(
         conversation_id=conv_id,
         role="assistant",
@@ -975,34 +1447,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         sql_list=sql_list,
         token_usage=jsonable_encoder(token_usage),
         step_trace=jsonable_encoder(step_traces),
-        response_metadata=jsonable_encoder({
-            "answer_explanation": answer_explanation,
-            "lead_agent_context": lead_agent_context,
-            "original_question": payload.question,
-            "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
-            "time_context": lead_agent_context.get("time_context"),
-            "route_decision": route_decision,
-            "schema_status": lead_agent_context.get("schema_status"),
-            "report_owner": final_state.get("report_owner"),
-            "subagent_report_skipped": final_state.get("subagent_report_skipped"),
-            "lead_agent_report": final_state.get("lead_agent_report"),
-            "route_payload": final_state.get("route_payload"),
-            "clarification_resolution": final_state.get("clarification_resolution_result"),
-            "langfuse": {
-                "trace_id": trace_context.trace_id,
-                "session_id": trace_context.session_id,
-                "release": trace_context.release,
-                "environment": trace_context.environment,
-                "prompt_label": trace_context.prompt_label,
-                "base_url": trace_context.base_url,
-                "project_id": trace_context.project_id,
-                "trace_url": trace_context.trace_url,
-                "enabled": trace_context.enabled,
-                "active": trace_context.active,
-                "prompt_versions": trace_context.prompt_versions,
-            },
-            "observability": trace_context.observability_payload(),
-        }),
+        response_metadata=response_metadata,
     )
     db.add(assistant_message)
     db.commit()
@@ -1066,6 +1511,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "report_owner": final_state.get("report_owner"),
         "subagent_report_skipped": final_state.get("subagent_report_skipped"),
         "lead_agent_report": final_state.get("lead_agent_report"),
+        "prior_capsule_status": final_state.get("prior_capsule_status"),
+        "multiturn_context": final_state.get("multiturn_context"),
+        "turn_type": final_state.get("turn_type"),
+        "merge_debug": final_state.get("merge_debug"),
+        "out_capsule": final_state.get("out_capsule"),
         "route_payload": final_state.get("route_payload"),
         "clarification_resolution": final_state.get("clarification_resolution_result"),
         "term_normalization": final_state.get("term_normalization"),
@@ -1080,6 +1530,9 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "sql_audit_result": final_state.get("sql_audit_result"),
         "sql_retry_trace": sql_retry_trace,
         "answer_explanation": answer_explanation,
+        "query_profile": query_profile,
+        "explainability": explainability,
+        "response_metadata": response_metadata,
         "schema_tokens": final_state.get("schema_tokens"),
         "conversation_id": conv_id,
         "message_id": assistant_message.id,
@@ -1087,13 +1540,193 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         "langfuse_trace_id": trace_context.trace_id,
         "langfuse_session_id": trace_context.session_id,
         "observability": trace_context.observability_payload(),
+        "multiturn_observability_metrics": multiturn_observability_metrics,
     }
     logger.info(
         f"[_stream_chat] final: answer_len={len(answer)}, sql={sql}, error={error}, mode={generation_mode}"
     )
     yield _sse_data(final_payload)
-    tracer.close_trace(trace_context)
+    if not defer_trace_close:
+        tracer.close_trace(trace_context)
     obs_context_manager.__exit__(None, None, None)
+
+
+def _persist_completed_turn(
+    *,
+    store: ConversationStore,
+    state: models.ConversationState,
+    user_id: str,
+    business_session_id: str,
+    effective_payload: schemas.ChatRequest,
+    final_payload: dict,
+    pending_resolution: dict,
+    payload_question: str,
+    trace_context_sink: list,
+) -> bool:
+    """把完成轮的胶囊、状态、澄清和追踪写入 ConversationStore。
+
+    必须在 SSE yield final 事件之前同步调用——SSE 客户端在收到 final 后会
+    立即断开，导致 yield 之后的代码因 CancelledError 不执行。
+    返回是否成功写入。
+    """
+    final_session_id = business_session_id
+    final_state = state
+    if (
+        effective_payload.session_id is None
+        and effective_payload.conversation_id is None
+        and final_payload.get("conversation_id")
+    ):
+        final_session_id = session_key(None, int(final_payload["conversation_id"]))
+        final_state = store.load_or_create(session_id=final_session_id, user_id=user_id)
+    active_dataset_id = (
+        final_payload.get("route_decision", {}).get("dataset_id")
+        or final_payload.get("dataset_id")
+        or effective_payload.dataset_id
+    )
+    updated_capsules = store.with_updated_capsule(
+        final_state,
+        dataset_id=active_dataset_id,
+        capsule=final_payload.get("out_capsule"),
+    )
+    pending_for_store = pending_clarification_from_final_payload(
+        final_payload,
+        original_question=payload_question,
+    )
+    store.append_completed_turn(
+        session_id=final_session_id,
+        question=payload_question,
+        answer=final_payload.get("answer"),
+        conversation_id=final_payload.get("conversation_id") or effective_payload.conversation_id,
+        active_dataset_id=active_dataset_id,
+        resolved_time_context=final_payload.get("time_context"),
+        pending_clarification=pending_for_store,
+        clear_pending_clarification=bool(
+            pending_for_store is None
+            and (
+                pending_resolution.get("clear_pending")
+                or pending_resolution.get("status") in {"resolved", "cleared", "inject"}
+            )
+        ),
+        subagent_capsules=updated_capsules,
+        trace_context=trace_context_sink[0] if trace_context_sink else None,
+    )
+    logger.info(
+        "[_stream_chat] 多轮状态已写入: session_id=%s, turn_index=%s, active_dataset_id=%s",
+        final_session_id,
+        final_state.turn_index,
+        active_dataset_id,
+    )
+    return True
+
+
+async def _stream_chat(payload: schemas.ChatRequest, db: Session):
+    """多轮状态包装层。
+
+    默认 feature flag 关闭时直接走原单轮链路；开启后负责 session 锁和完成轮次写回。
+    """
+
+    settings = get_settings()
+    if not settings.MULTITURN_ENABLED:
+        async for event in _stream_chat_singleturn(payload, db):
+            yield event
+        return
+
+    store = ConversationStore(db)
+    business_session_id = session_key(payload.session_id, payload.conversation_id)
+    if business_session_id == "conversation-new":
+        business_session_id = f"request-{uuid.uuid4().hex[:16]}"
+    user_id = "1"
+    lock_owner = f"chat-{uuid.uuid4().hex[:12]}"
+    state = store.load_or_create(session_id=business_session_id, user_id=user_id)
+    if not store.acquire_turn_lock(
+        session_id=business_session_id,
+        lock_owner=lock_owner,
+        ttl_seconds=settings.MULTITURN_LOCK_TTL_SECONDS,
+    ):
+        yield _sse_data(
+            {
+                "type": "final",
+                "sql": None,
+                "sql_list": [],
+                "answer": "同一会话已有一轮问数正在处理中，请稍后再试。",
+                "entry_intent": "multiturn_lock",
+                "entry_route": "turn_pending",
+                "conversation_id": payload.conversation_id,
+            }
+        )
+        return
+
+    final_payload: dict | None = None
+    completed = False
+    trace_context_sink: list = []
+    effective_payload = payload
+    pending_resolution = store.resolve_pending_clarification(
+        state,
+        question=payload.question,
+        clarification_response=payload.clarification_response,
+    )
+    if pending_resolution.get("status") == "resolved" and pending_resolution.get("type") == "dataset":
+        effective_payload = payload.model_copy(
+            update={
+                "dataset_id": int(pending_resolution["dataset_id"]),
+                "clarification_response": None,
+            }
+        )
+    elif pending_resolution.get("status") == "inject" and pending_resolution.get("type") == "term":
+        updates = {
+            "clarification_response": pending_resolution.get("clarification_response") or {},
+        }
+        if pending_resolution.get("conversation_id") and payload.conversation_id is None:
+            updates["conversation_id"] = int(pending_resolution["conversation_id"])
+        if pending_resolution.get("dataset_id") and payload.dataset_id is None:
+            updates["dataset_id"] = int(pending_resolution["dataset_id"])
+        effective_payload = payload.model_copy(update=updates)
+    try:
+        async for event in _stream_chat_singleturn(
+            effective_payload,
+            db,
+            multiturn_context=store.lead_multiturn_context(state),
+            conversation_state=state,
+            conversation_store=store,
+            observability_session_id=business_session_id,
+            trace_context_sink=trace_context_sink,
+            defer_trace_close=True,
+        ):
+            data = event.get("data") if isinstance(event, dict) else None
+            if data:
+                try:
+                    parsed = json.loads(data)
+                    if parsed.get("type") == "final":
+                        final_payload = parsed
+                        # 关键：SSE 在客户端收到 final 后会立即关闭连接，
+                        # yield 之后的代码可能因 CancelledError 不执行，
+                        # 因此这里在 yield 前同步写入多轮状态，保证下一轮能读上轮胶囊。
+                        try:
+                            completed = _persist_completed_turn(
+                                store=store,
+                                state=state,
+                                user_id=user_id,
+                                business_session_id=business_session_id,
+                                effective_payload=effective_payload,
+                                final_payload=final_payload,
+                                pending_resolution=pending_resolution,
+                                payload_question=payload.question,
+                                trace_context_sink=trace_context_sink,
+                            )
+                        except Exception as persist_exc:  # noqa: BLE001
+                            logger.exception(
+                                "[_stream_chat] 写入多轮状态失败: %s", persist_exc
+                            )
+                except json.JSONDecodeError:
+                    pass
+            yield event
+    finally:
+        if completed and trace_context_sink:
+            tracer = get_observability_tracer()
+            tracer.close_trace(trace_context_sink[0])
+        if not completed:
+            logger.info("[_stream_chat] 多轮请求未正常完成，仅释放会话锁: %s", business_session_id)
+        store.release_turn_lock(session_id=business_session_id, lock_owner=lock_owner)
 
 
 @router.post("/stream")

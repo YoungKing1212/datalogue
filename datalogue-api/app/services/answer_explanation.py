@@ -232,7 +232,7 @@ def _risk_items(state: AgentState, sql_summary: dict[str, Any]) -> list[dict[str
     if term_normalization.get("has_conflict"):
         risks.append({"code": "term_conflict", "message": "业务术语存在同名或同义词冲突。"})
     if state.get("sql_retry_trace"):
-        risks.append({"code": "sql_retry", "message": "SQL 执行过程中发生过自动修复重试。"})
+        risks.append({"code": "sql_retry", "message": "查询执行链路存在不稳定，建议复核字段口径和结果。"})
     if state.get("sql_diagnosis") or state.get("sql_audit_result"):
         risks.append({"code": "sql_diagnosis", "message": "SQL 链路出现过诊断信息，建议复核配置或结果。"})
     if context_debug.get("dropped_entries", 0) > 0:
@@ -266,7 +266,7 @@ def _confidence(state: AgentState, risks: list[dict[str, str]], dsl: dict[str, A
         "unresolved_asset": (0.2, "部分资产未解析"),
         "inferred_sql": (0.18, "查询基于表结构推断"),
         "semantic_blueprint": (0.1, "语义计划蓝图仍需生成 SQL"),
-        "sql_retry": (0.08, "SQL 发生自动修复重试"),
+        "sql_retry": (0.08, "查询执行链路存在不稳定"),
         "sql_diagnosis": (0.18, "SQL 链路存在诊断"),
         "context_trimmed": (0.08, "上下文被裁剪"),
         "workflow_error": (0.3, "工作流存在错误"),

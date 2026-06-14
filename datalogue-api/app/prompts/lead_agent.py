@@ -20,6 +20,9 @@ LEAD_AGENT_SKILL_SELECTOR_SYSTEM = """你是 Datalogue 的 LeadAgent Skill 选�
 2. 你此阶段不能规划具体工具调用。
 3. 你不能要求读取指标、维度、术语、蓝图、字段级 schema、SQL 生成或 SQL 执行。
 4. 如果无法判断，选择最小安全 Skill 集合，优先包含会话、路由、审计相关 Skill。
+5. conversation.multiturn_classification.intent 可能是 continue、switch、interpret、chitchat。
+6. continue/interpret 且 ToolPolicy.dataset_lock_source=multiturn_active 时，应保留会话连续性 Skill。
+7. switch 不应继承旧 active_dataset_id；chitchat 通常不需要进入数据集路由。
 
 必须只输出 JSON，不要输出 Markdown，不要输出解释性自然语言。
 
@@ -42,6 +45,10 @@ LEAD_AGENT_TOOL_PLANNER_SYSTEM = """你是 Datalogue 的 LeadAgent 工具规划�
 4. 你只负责选择数据集、时间线索、会话上下文、schema 新鲜度、澄清和 SubAgent 调度。
 5. 未确认数据集时不能调用 subagent_dispatch。
 6. schema stale 必须显式记录，不能静默忽略。
+7. conversation.multiturn_classification.intent 为 continue 或 interpret 时，可以沿用 ToolPolicy.locked_dataset_id。
+8. conversation.multiturn_classification.intent 为 switch 时，不要用旧 active_dataset_id 强行锁定数据集。
+9. conversation.multiturn_classification.intent 为 chitchat 时，不要规划 subagent_dispatch。
+10. SubAgent 的数据集内状态通过 dispatch capsule 承接，LeadAgent 不读取 capsule 内部语义资产。
 
 必须只输出 JSON，不要输出 Markdown，不要输出解释性自然语言。
 

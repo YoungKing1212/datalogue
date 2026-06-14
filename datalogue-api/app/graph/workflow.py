@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_SQL_RETRY_COUNT = 3
 from app.graph.nodes import (
     clarification_resolution_node,
+    merge_prior_context_node,
     intent_recognition_node,
     entry_intent_classification_node,
     analysis_blueprint_execute_node,
@@ -57,6 +58,16 @@ def _clarification_resolution_router(state: AgentState) -> str:
     if status in {"missing", "expired", "unresolved"}:
         return "end"
     return "intent_recognition"
+
+
+def _merge_prior_context_router(state: AgentState) -> str:
+    """多轮入口合并后决定是否直接结束解释轮次。"""
+
+    if state.get("entry_route") == "interpret_result":
+        return "end"
+    if state.get("entry_route") == "analysis_blueprint":
+        return "analysis_blueprint_execute"
+    return "clarification_resolution"
 
 
 def _entry_classification_router(state: AgentState) -> str:
@@ -163,6 +174,7 @@ def build_workflow(db: Session) -> Any:
     logger.info("开始构建LangGraph工作流")
 
     # 注册节点
+    workflow.add_node("merge_prior_context", merge_prior_context_node)
     workflow.add_node("clarification_resolution", clarification_resolution_node(db))
     workflow.add_node("intent_recognition", lambda state: intent_recognition_node(state, db=db))
     workflow.add_node("entry_intent_classification", entry_intent_classification_node(db))
@@ -184,7 +196,16 @@ def build_workflow(db: Session) -> Any:
     logger.info("工作流节点注册完成")
 
     # 设置入口
-    workflow.set_entry_point("clarification_resolution")
+    workflow.set_entry_point("merge_prior_context")
+    workflow.add_conditional_edges(
+        "merge_prior_context",
+        _merge_prior_context_router,
+        {
+            "clarification_resolution": "clarification_resolution",
+            "analysis_blueprint_execute": "analysis_blueprint_execute",
+            "end": END,
+        },
+    )
 
     workflow.add_conditional_edges(
         "clarification_resolution",

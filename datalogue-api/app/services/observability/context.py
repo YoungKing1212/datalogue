@@ -11,10 +11,13 @@
 # Created On  : 2026-06-11
 # ============================================================
 
+import logging
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,6 +39,7 @@ class ObservabilityRequestContext:
     enabled: bool = False
     active: bool = False
     prompt_versions: dict[str, Any] = field(default_factory=dict)
+    parent_observation_id: str | None = None
 
 
 current_observability_context: ContextVar[ObservabilityRequestContext | None] = ContextVar(
@@ -48,10 +52,24 @@ current_observability_context: ContextVar[ObservabilityRequestContext | None] = 
 def set_observability_context(
     context: ObservabilityRequestContext | None,
 ) -> Iterator[ObservabilityRequestContext | None]:
-    """临时设置当前请求观测上下文。"""
+    """临时设置当前请求观测上下文。
+
+    备注：SSE 流式接口里 `_stream_chat_singleturn` 是 async generator，
+    当客户端断开连接时 FastAPI 会调用 `aclose()` 强制关闭它。`aclose` 触发
+    的 `GeneratorExit` 清理路径可能落在与 `__enter__` 不同的 asyncio
+    task / Context 副本中，此时 `ContextVar.reset(token)` 会抛出
+    `ValueError: Token was created in a different Context`。这里捕获该异常
+    并降级——清理 task 结束时其 Context 副本会被自然回收，无须显式回退。
+    """
 
     token: Token = current_observability_context.set(context)
     try:
         yield context
     finally:
-        current_observability_context.reset(token)
+        try:
+            current_observability_context.reset(token)
+        except ValueError:
+            # 跨 Context 释放，contextvar 由原 task 的生命周期托管
+            logger.debug(
+                "observability context token 跨 asyncio Context 释放，已忽略 reset 异常",
+            )

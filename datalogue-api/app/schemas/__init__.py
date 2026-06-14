@@ -72,6 +72,7 @@ from .conversation import (
     ConversationRename,
 )
 from .chat import ChatRequest, ChatFeedback, ClarificationResponse
+from .capsule import CapsuleMeta, QueryContext, ResultDigest, SubAgentCapsule
 from .llm import (
     LLMModelConfigCreate,
     LLMModelConfigUpdate,
@@ -139,6 +140,10 @@ __all__ = [
     "ChatRequest",
     "ChatFeedback",
     "ClarificationResponse",
+    "CapsuleMeta",
+    "QueryContext",
+    "ResultDigest",
+    "SubAgentCapsule",
     "LLMModelConfigCreate",
     "LLMModelConfigUpdate",
     "LLMModelConfigOut",

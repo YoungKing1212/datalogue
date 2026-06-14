@@ -90,7 +90,7 @@ function ReasoningPart({ text }) {
  * Root 的 data-state 反映 collapsed 状态（assistant-ui Root 本身是 plain div，
  * 需要我们手动接 collapsed scope 才能在 CSS 里控制箭头旋转）
  */
-function ChainOfThought({ children }) {
+function ChainOfThought() {
   const collapsed = useAuiState((s) => s.chainOfThought?.collapsed ?? true);
   return (
     <div className="cot">
@@ -117,7 +117,7 @@ function ChainOfThought({ children }) {
 
 /**
  * 自定义 Text 组件 — 用 MessagePartPrimitive.Text（支持 smooth 流式动画）
- * 把 part 的 text 转给 MessageContent 渲染（含 <think> 折叠、markdown）
+ * 把 part 的 text 转给 MessageContent 渲染（剥离 <think>，保留 markdown）
  */
 function MessageTextPart() {
   const text = useAuiState((s) => s.part?.text);
@@ -150,6 +150,18 @@ function termCandidateId(candidate) {
   return candidateValue(candidate, ['term_id', 'termId', 'id', 'asset_id', 'assetId']);
 }
 
+function datasetCandidateId(candidate) {
+  return candidateValue(candidate, ['dataset_id', 'datasetId', 'id']);
+}
+
+function clarificationKind(clarification, routePayload) {
+  const kind = clarification?.kind || routePayload?.kind || '';
+  if (String(kind).startsWith('dataset_') || routePayload?.kind === 'manifest_route') {
+    return 'dataset';
+  }
+  return 'term';
+}
+
 function termCandidateLabel(candidate, optionIndex) {
   const nested = candidate?.term || candidate?.business_term || candidate?.businessTerm || {};
   return (
@@ -169,6 +181,21 @@ function termCandidateLabel(candidate, optionIndex) {
   );
 }
 
+function datasetCandidateLabel(candidate, optionIndex) {
+  return (
+    candidateValue(candidate, [
+      'dataset_name',
+      'datasetName',
+      'display_name',
+      'displayName',
+      'label',
+      'title',
+      'name',
+    ]) ||
+    (datasetCandidateId(candidate) ? `数据集 ${datasetCandidateId(candidate)}` : `选项 ${optionIndex}`)
+  );
+}
+
 function termCandidateSubLabel(candidate, label) {
   const nested = candidate?.term || candidate?.business_term || candidate?.businessTerm || {};
   const name = candidateValue(candidate, ['name', 'term_name', 'termName']) ||
@@ -179,10 +206,33 @@ function termCandidateSubLabel(candidate, label) {
     '业务术语';
 }
 
+function datasetCandidateSubLabel(candidate) {
+  const parts = [];
+  const domains = candidate?.business_domain || candidate?.businessDomain || [];
+  if (Array.isArray(domains) && domains.length) {
+    parts.push(domains.filter(Boolean).slice(0, 2).join('、'));
+  }
+  if (candidate?.score != null) {
+    parts.push(`得分 ${candidate.score}`);
+  }
+  if (candidate?.review_status || candidate?.reviewStatus) {
+    parts.push(candidate.review_status || candidate.reviewStatus);
+  }
+  return parts.length ? parts.join(' · ') : '数据集';
+}
+
 function termCandidateDefinition(candidate) {
   const nested = candidate?.term || candidate?.business_term || candidate?.businessTerm || {};
   return candidateValue(candidate, ['definition', 'description', 'desc']) ||
     candidateValue(nested, ['definition', 'description', 'desc']);
+}
+
+function datasetCandidateDefinition(candidate) {
+  const reasons = candidate?.reasons || [];
+  if (Array.isArray(reasons) && reasons.length) {
+    return reasons.filter(Boolean).slice(0, 2).join('；');
+  }
+  return candidateValue(candidate, ['reason', 'description', 'desc']);
 }
 
 function confidenceText(level) {
@@ -190,6 +240,323 @@ function confidenceText(level) {
   if (level === 'medium') return '中';
   if (level === 'low') return '低';
   return '未知';
+}
+
+function toArray(value) {
+  if (Array.isArray(value)) return value;
+  return value == null || value === '' ? [] : [value];
+}
+
+function dedupeValues(values, limit = 6) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function labelFromValue(value) {
+  if (value == null) return null;
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value);
+  }
+  if (typeof value !== 'object') return null;
+  const nested = value.term || value.metric || value.dimension || value.asset || {};
+  const label =
+    candidateValue(value, [
+      'display_name',
+      'displayName',
+      'label',
+      'title',
+      'resolved',
+      'entity',
+      'name',
+      'metric_name',
+      'metricName',
+      'dimension_name',
+      'dimensionName',
+      'term_name',
+      'termName',
+      'asset_name',
+      'assetName',
+      'field',
+      'column',
+    ]) ||
+    candidateValue(nested, ['display_name', 'displayName', 'name', 'label']);
+  if (label) return label;
+  const path = [value.table, value.column].filter(Boolean).join('.');
+  return path || null;
+}
+
+function labelsFromValues(...sources) {
+  return dedupeValues(
+    sources.flatMap((source) => toArray(source).map(labelFromValue).filter(Boolean)),
+  );
+}
+
+function formatTimeRange(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value !== 'object') return null;
+  return (
+    value.label ||
+    value.display_name ||
+    value.displayName ||
+    [value.start, value.end].filter(Boolean).join(' 至 ') ||
+    [value.start_date, value.end_date].filter(Boolean).join(' 至 ') ||
+    null
+  );
+}
+
+function formatFilter(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value !== 'object') return null;
+  const field = labelFromValue(value.field || value.column || value.name || value);
+  const operator = value.operator || value.op || '';
+  const rawValue = value.value ?? value.values ?? value.label;
+  const filterValue = Array.isArray(rawValue) ? rawValue.join('、') : rawValue;
+  return [field, operator, filterValue].filter(Boolean).join(' ');
+}
+
+function labelsFromFilters(...sources) {
+  return dedupeValues(
+    sources.flatMap((source) => toArray(source).map(formatFilter).filter(Boolean)),
+  );
+}
+
+function formatParams(params) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return [];
+  return Object.entries(params)
+    .filter(([, value]) => value != null && value !== '')
+    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join('、') : value}`);
+}
+
+function routePathLabel({ routePayload, routeDecision, profileRoute, caliber, generationMode }) {
+  const kind = routePayload?.kind || routePayload?.route || '';
+  if (
+    kind === 'analysis_blueprint' ||
+    routePayload?.blueprint_id ||
+    routePayload?.blueprint_name ||
+    profileRoute?.blueprint_id ||
+    profileRoute?.blueprint_match ||
+    (caliber?.blueprints || []).length > 0 ||
+    String(generationMode || '').startsWith('analysis_blueprint')
+  ) {
+    const profileBlueprint = profileRoute?.blueprint_match || {};
+    const name =
+      routePayload?.name ||
+      routePayload?.blueprint_name ||
+      routePayload?.blueprintName ||
+      profileBlueprint.name ||
+      profileBlueprint.display_name ||
+      (caliber?.blueprints || [])[0];
+    return name ? `蓝图路径 · ${name}` : '蓝图路径';
+  }
+  if (
+    routeDecision?.decision === 'selected' ||
+    routeDecision?.decision === 'locked' ||
+    profileRoute?.decision === 'selected' ||
+    profileRoute?.decision === 'locked' ||
+    kind === 'manifest_route' ||
+    routePayload?.decision
+  ) {
+    const name =
+      routeDecision?.dataset_name ||
+      profileRoute?.dataset_name ||
+      routePayload?.dataset_name ||
+      routePayload?.datasetName;
+    return name ? `场景路径 · ${name}` : '场景路径';
+  }
+  if (generationMode === 'inferred') return '临时查询 · 表结构推断';
+  return '临时查询';
+}
+
+function inheritedContextText(custom, routeDecision, queryProfile) {
+  const profileContext = queryProfile?.query_context || {};
+  const inheritance = profileContext.inheritance || {};
+  const prior = profileContext.prior_query_context || {};
+  const delta = profileContext.delta || {};
+  const context =
+    custom.multiturnContext ||
+    custom.multiturn_context ||
+    custom.threadContext ||
+    custom.thread_context ||
+    null;
+  const summary =
+    custom.inheritanceSummary ||
+    custom.inheritance_summary ||
+    context?.inheritance_summary ||
+    context?.summary ||
+    context?.last_answer_summary ||
+    null;
+  if (summary) return summary;
+  if (inheritance.inherited) {
+    const priorBits = [
+      prior.metrics?.length ? `指标 ${prior.metrics.join('、')}` : null,
+      prior.dimensions?.length ? `维度 ${prior.dimensions.join('、')}` : null,
+      formatTimeRange(prior.time_range) ? `时间 ${formatTimeRange(prior.time_range)}` : null,
+    ].filter(Boolean);
+    const deltaBits = [
+      delta.metrics?.length ? `指标调整为 ${delta.metrics.join('、')}` : null,
+      delta.dimensions?.length ? `维度调整为 ${delta.dimensions.join('、')}` : null,
+      delta.filters?.length ? `过滤调整为 ${labelsFromFilters(delta.filters).join('、')}` : null,
+      formatTimeRange(delta.time_range) ? `时间调整为 ${formatTimeRange(delta.time_range)}` : null,
+      delta.limit != null ? `返回条数调整为 ${delta.limit}` : null,
+    ].filter(Boolean);
+    return `延续上一轮：${priorBits.join('；') || '上一轮查询口径'}${deltaBits.length ? `；本轮变化：${deltaBits.join('；')}` : ''}`;
+  }
+  if (routeDecision?.decision === 'locked') {
+    return '沿用上一轮已锁定的数据集和场景上下文。';
+  }
+  if (context?.turn_type === 'continue' || context?.turnType === 'continue') {
+    return '本轮在上一轮问题上下文上继续追问。';
+  }
+  return '未继承上一轮口径。';
+}
+
+function buildQueryCaliber(custom) {
+  const queryProfile = custom.queryProfile || custom.explainability?.query_profile || {};
+  const profileContext = queryProfile.query_context || {};
+  const mergedContext = profileContext.merged_query_context || {};
+  const profileRoute = queryProfile.route || {};
+  const explanation = custom.answerExplanation || {};
+  const caliber = explanation.caliber || {};
+  const dsl = custom.dsl || {};
+  const metricResolution = custom.metricResolution || {};
+  const semantic = custom.semanticAssetResolution || custom.semantic_asset_resolution || {};
+  const intent = custom.intent || {};
+  const entities = intent.entities || {};
+  const routePayload = custom.routePayload || {};
+  const routeDecision = custom.routeDecision || {};
+  const generationMode = custom.generationMode || profileRoute.generation_mode || caliber.generation_mode || '';
+  const routePath = routePathLabel({ routePayload, routeDecision, profileRoute, caliber, generationMode });
+
+  const metrics = labelsFromValues(
+    mergedContext.metrics,
+    caliber.metrics,
+    dsl.metrics,
+    metricResolution.metrics,
+    semantic.metrics,
+  );
+  const dimensions = labelsFromValues(
+    mergedContext.dimensions,
+    caliber.dimensions,
+    dsl.dimensions,
+    metricResolution.dimensions,
+    semantic.dimensions,
+  );
+  const timeRange = formatTimeRange(
+    mergedContext.time_range ||
+    mergedContext.time_filter ||
+    caliber.time_range ||
+    dsl.time_range ||
+    entities.time_range ||
+    profileContext.time_context?.detected_time_range ||
+    custom.timeRange ||
+    custom.time_range,
+  );
+  const filters = dedupeValues([
+    ...labelsFromFilters(mergedContext.filters, caliber.filters, dsl.filters, routePayload.filters),
+    ...formatParams(caliber.blueprint_params),
+    ...formatParams(routePayload.params),
+  ]);
+  const inheritedText = inheritedContextText(custom, routeDecision, queryProfile);
+  const hasCaliberSignal = Boolean(
+    custom.queryProfile ||
+    custom.explainability ||
+    custom.answerExplanation ||
+    custom.dsl ||
+    custom.metricResolution ||
+    custom.semanticAssetResolution ||
+    custom.semantic_asset_resolution ||
+    custom.routePayload ||
+    custom.routeDecision ||
+    custom.generationMode ||
+    custom.intent ||
+    custom.sql ||
+    custom.sqlResult,
+  );
+  const hasAny = hasCaliberSignal && (metrics.length || dimensions.length || timeRange || filters.length || routePath);
+
+  if (!hasAny) return null;
+  return {
+    metrics,
+    dimensions,
+    timeRange: timeRange || '未识别',
+    filters,
+    routePath,
+    inheritedText,
+    generationMode,
+  };
+}
+
+function correctionTextFromCaliber(caliber) {
+  const parts = [
+    caliber.metrics.length ? `指标=${caliber.metrics.join('、')}` : null,
+    caliber.dimensions.length ? `维度=${caliber.dimensions.join('、')}` : null,
+    caliber.timeRange && caliber.timeRange !== '未识别' ? `时间=${caliber.timeRange}` : null,
+    caliber.filters.length ? `过滤=${caliber.filters.join('、')}` : null,
+  ].filter(Boolean);
+  return `纠正口径：${parts.length ? parts.join('；') : '请补充正确指标、维度、时间和过滤条件'}。请按这个口径重新查询。`;
+}
+
+function QueryCaliberCard({ custom, onRerun }) {
+  const caliber = buildQueryCaliber(custom);
+  if (!caliber) return null;
+
+  const dispatchCorrection = () => {
+    const detail = { text: correctionTextFromCaliber(caliber), caliber };
+    window.dispatchEvent(new CustomEvent('datalogue:query-caliber-correction', { detail }));
+    window.dispatchEvent(new CustomEvent('datalogue:composer-submit', { detail }));
+  };
+
+  const dispatchRerun = () => {
+    window.dispatchEvent(new CustomEvent('datalogue:query-caliber-rerun', { detail: { caliber } }));
+    onRerun?.();
+  };
+
+  const items = [
+    ['指标', caliber.metrics.length ? caliber.metrics.join('、') : '未识别'],
+    ['维度', caliber.dimensions.length ? caliber.dimensions.join('、') : '未识别'],
+    ['时间', caliber.timeRange],
+    ['过滤', caliber.filters.length ? caliber.filters.join('、') : '无'],
+  ];
+
+  return (
+    <div className="query-caliber-card">
+      <div className="query-caliber-head">
+        <span className="query-caliber-icon">
+          <Icon name="filter_alt" />
+        </span>
+        <div className="query-caliber-title">
+          <strong>查询口径</strong>
+          <span>{caliber.routePath}</span>
+        </div>
+        <button type="button" className="query-caliber-action" onClick={dispatchRerun}>
+          <Icon name="refresh" />
+          重跑
+        </button>
+      </div>
+      <div className="query-caliber-grid">
+        {items.map(([label, value]) => (
+          <div key={label} className="query-caliber-item">
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="query-caliber-foot">
+        <span>{caliber.inheritedText}</span>
+        <button type="button" onClick={dispatchCorrection}>发送纠正</button>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -295,29 +662,38 @@ function AnswerExplanation({ explanation }) {
 function TermClarificationCard({ clarification, routePayload, onSelect }) {
   const candidates = clarification?.candidates || routePayload?.candidates || [];
   if (!candidates.length) return null;
+  const kind = clarificationKind(clarification, routePayload);
+  const isDataset = kind === 'dataset';
   return (
     <div className="term-clarification-card">
       <div className="term-clarification-head">
         <span className="term-clarification-icon">
-          <Icon name="book" />
+          <Icon name={isDataset ? 'database' : 'book'} />
         </span>
         <div>
-          <strong>请选择业务术语口径</strong>
-          <span>点击候选后发送，或直接回复序号 / 术语名称</span>
+          <strong>{isDataset ? '请选择数据集' : '请选择业务术语口径'}</strong>
+          <span>{isDataset ? '点击数据集后发送，或直接回复序号 / 数据集名称' : '点击候选后发送，或直接回复序号 / 术语名称'}</span>
         </div>
       </div>
       <div className="term-clarification-options">
         {candidates.map((candidate, index) => {
           const optionIndex = candidate.index || index + 1;
-          const label = termCandidateLabel(candidate, optionIndex);
-          const subLabel = termCandidateSubLabel(candidate, label);
-          const definition = termCandidateDefinition(candidate);
+          const label = isDataset
+            ? datasetCandidateLabel(candidate, optionIndex)
+            : termCandidateLabel(candidate, optionIndex);
+          const subLabel = isDataset
+            ? datasetCandidateSubLabel(candidate)
+            : termCandidateSubLabel(candidate, label);
+          const definition = isDataset
+            ? datasetCandidateDefinition(candidate)
+            : termCandidateDefinition(candidate);
+          const candidateId = isDataset ? datasetCandidateId(candidate) : termCandidateId(candidate);
           return (
             <button
-              key={`${termCandidateId(candidate) || optionIndex}-${label}`}
+              key={`${candidateId || optionIndex}-${label}`}
               type="button"
               className="term-clarification-option"
-              onClick={() => onSelect(candidate, optionIndex, label)}
+              onClick={() => onSelect(candidate, optionIndex, label, kind)}
             >
               <span className="term-clarification-index">{optionIndex}</span>
               <span className="term-clarification-body">
@@ -432,15 +808,20 @@ export function AIMessage({ showSql = true }) {
   const observability = custom.observability || null;
   const savedFeedback = custom.feedback || null;
 
-  const handleSelectClarification = (candidate, optionIndex, label) => {
+  const handleSelectClarification = (candidate, optionIndex, label, kind = 'term') => {
     const clarificationId =
       clarification?.clarificationId || routePayload?.clarification_id || null;
-    window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
+    const clarificationResponse = {
       clarification_id: clarificationId,
-      selected_term_id: termCandidateId(candidate),
       selected_index: optionIndex,
       selected_text: label,
     };
+    if (kind === 'dataset') {
+      clarificationResponse.selected_dataset_id = datasetCandidateId(candidate);
+    } else {
+      clarificationResponse.selected_term_id = termCandidateId(candidate);
+    }
+    window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = clarificationResponse;
     window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
       detail: { text: `选择：${label}` },
     }));
@@ -516,6 +897,8 @@ export function AIMessage({ showSql = true }) {
         }}
       />
 
+      <QueryCaliberCard custom={custom} onRerun={handleRegenerate} />
+
       <AnswerExplanation explanation={answerExplanation} />
 
       <TermClarificationCard
@@ -564,9 +947,11 @@ export function AIMessage({ showSql = true }) {
                 <tbody>
                   {sqlResult.rows.map((row, i) => (
                     <tr key={i}>
-                      {(sqlResult.columns || []).map((col, j) => (
-                        <td key={j}>{row[col] ?? ''}</td>
-                      ))}
+                      {(sqlResult.columns || []).map((col, j) => {
+                        const val = row[col];
+                        const text = val == null ? '' : typeof val === 'object' ? JSON.stringify(val) : String(val);
+                        return <td key={j}>{text}</td>;
+                      })}
                     </tr>
                   ))}
                 </tbody>

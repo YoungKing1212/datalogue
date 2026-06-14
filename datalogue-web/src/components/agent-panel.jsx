@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icon } from './icons';
 
 // AgentPanel — 右侧 Agent 执行状态面板
@@ -15,9 +15,65 @@ import { Icon } from './icons';
 //   sqlResult        {rows, columns, elapsed_ms}  执行摘要（null = 未就绪）
 //   traceMeta        {traceId, sessionId, messageId, observability} Langfuse 观测元数据
 
+const BUSINESS_STEP_NAMES = {
+  lead_agent_tools: '理解问题',
+  manifest_route: '选择场景',
+  clarification_resolution: '确认口径',
+  intent_recognition: '识别意图',
+  entry_intent_classification: '判断入口',
+  analysis_blueprint_execute: '执行蓝图',
+  schema_recall: '读取数据结构',
+  term_normalize_node: '统一术语',
+  semantic_asset_resolution_node: '匹配语义资产',
+  metric_resolution_node: '匹配指标维度',
+  dsl_generate: '生成查询方案',
+  dsl_validate: '校验查询方案',
+  dsl_compiler: '生成 SQL',
+  sql_execute: '执行取数',
+  sql_audit: '诊断 SQL',
+  report_generator: '组织回答',
+};
+
+function businessStepName(step) {
+  return BUSINESS_STEP_NAMES[step?.node] || step?.display_name || step?.node || '执行步骤';
+}
+
+function summarizeCompletedSteps(steps, sqlResult) {
+  const doneSteps = (steps || []).filter((step) => step.status === 'done');
+  const blocked = (steps || []).find((step) => step.status === 'blocked' || step.status === 'error');
+  const lastDone = doneSteps[doneSteps.length - 1];
+  const names = doneSteps.map(businessStepName).slice(-4);
+  const rows = resultRowCount(sqlResult);
+  const rowText = rows != null ? ` · 返回 ${rows} 行` : '';
+  if (blocked) {
+    return `已停在${businessStepName(blocked)}${rowText}`;
+  }
+  if (names.length === 0) {
+    return `已完成回答${rowText}`;
+  }
+  return `已完成 ${names.join(' / ')}${lastDone?.elapsed_ms != null ? ` · ${lastDone.elapsed_ms}ms` : ''}${rowText}`;
+}
+
+function resultRowCount(sqlResult) {
+  if (!sqlResult) return null;
+  if (Array.isArray(sqlResult.rows)) return sqlResult.rows.length;
+  return sqlResult.rows ?? sqlResult.rowCount ?? sqlResult.row_count ?? null;
+}
+
 // ── 步骤列表 ──────────────────────────────────────────────
-function StepList({ steps }) {
+function StepList({ steps, compact = false, sqlResult = null }) {
   if (!steps || steps.length === 0) return null;
+  if (compact) {
+    return (
+      <div>
+        <div className="agent-section-label">执行摘要</div>
+        <div className="agent-process-summary">
+          <Icon name="check" />
+          <span>{summarizeCompletedSteps(steps, sqlResult)}</span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div>
       <div className="agent-section-label">执行过程</div>
@@ -27,7 +83,7 @@ function StepList({ steps }) {
             {step.status === 'done' && <Icon name="check" />}
           </div>
           <span className={`agent-step-label ${step.status === 'running' ? 'running' : ''}`}>
-            {step.display_name || step.node}
+            {businessStepName(step)}
           </span>
           {step.elapsed_ms != null && step.status === 'done' && (
             <span className="agent-step-ms">{step.elapsed_ms}ms</span>
@@ -79,11 +135,6 @@ function TraceSummary({ traceMeta }) {
           <span>版本</span>
           <strong>{observability.release || '—'}</strong>
         </div>
-        <div className="trace-kv">
-          <span>Prompt</span>
-          <strong>{observability.prompt_label || '—'}</strong>
-        </div>
-
         <div className="trace-id-row">
           <span>Trace ID</span>
           <code>{traceMeta.traceId || '—'}</code>
@@ -196,19 +247,36 @@ function IntentCard({ intent, metricResolution, generationMode }) {
 
 // ── SQL 预览 ──────────────────────────────────────────────
 function SqlPreview({ sql }) {
+  const [open, setOpen] = useState(false);
   if (!sql) return null;
-  const copy = () => navigator.clipboard.writeText(sql).catch(console.error);
+  const copy = (event) => {
+    event.stopPropagation();
+    navigator.clipboard.writeText(sql).catch(console.error);
+  };
   return (
     <div>
       <div className="agent-section-label">生成的 SQL</div>
-      <div className="sql-preview">
-        <div className="sql-preview-head">
-          <span><Icon name="sql" /> SQL</span>
+      <div className={`sql-preview ${open ? 'open' : ''}`}>
+        <div
+          role="button"
+          tabIndex={0}
+          className="sql-preview-head"
+          onClick={() => setOpen((v) => !v)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              setOpen((v) => !v);
+            }
+          }}
+          aria-expanded={open}
+        >
+          <span><Icon name="sql" /> SQL 已生成</span>
           <button className="btn ghost" style={{ fontSize: 11, padding: '2px 8px' }} onClick={copy}>
             复制
           </button>
+          <Icon name="chev_down" className="sql-preview-chev" />
         </div>
-        <pre>{sql}</pre>
+        {open && <pre>{sql}</pre>}
       </div>
     </div>
   );
@@ -217,12 +285,13 @@ function SqlPreview({ sql }) {
 // ── 执行摘要 ──────────────────────────────────────────────
 function ResultSummary({ sqlResult }) {
   if (!sqlResult) return null;
+  const rows = resultRowCount(sqlResult);
   return (
     <div>
       <div className="agent-section-label">执行结果</div>
       <div className="result-grid">
         <div className="result-card">
-          <div className="val">{sqlResult.rows ?? '—'}</div>
+          <div className="val">{rows ?? '—'}</div>
           <div className="lbl">返回行数</div>
         </div>
         <div className="result-card">
@@ -252,6 +321,7 @@ function AgentPanel({
   traceMeta = null,
 }) {
   if (!open) return null;
+  const executionSettled = Boolean(traceMeta) && !steps.some((step) => step.status === 'running');
 
   return (
     <div className="agent-panel">
@@ -264,7 +334,7 @@ function AgentPanel({
       </div>
       <div className="agent-panel-body">
         <TraceSummary traceMeta={traceMeta} />
-        <StepList steps={steps} />
+        <StepList steps={steps} compact={executionSettled} sqlResult={sqlResult} />
         <IntentCard intent={intent} metricResolution={metricResolution} generationMode={generationMode} />
         <SqlPreview sql={sql} />
         <ResultSummary sqlResult={sqlResult} />

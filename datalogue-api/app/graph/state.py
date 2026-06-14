@@ -39,6 +39,12 @@ class AgentState(TypedDict):
     history: Optional[List[dict]]  # 历史对话消息（最近 N 轮）
     clarification_response: Optional[dict]  # 用户对上一轮澄清的结构化回复
     clarification_resolution_result: Optional[dict]  # 澄清解析结果和 pending 状态（节点名 clarification_resolution 与此字段不同名，符合 LangGraph 要求）
+    prior_capsule: Optional[dict[str, Any]]  # 上一轮 SubAgent 输出胶囊，用于数据面多轮上下文合并
+    prior_capsule_status: Optional[dict[str, Any]]  # 上一轮胶囊加载/作废状态，供审计和观测使用
+    out_capsule: Optional[dict[str, Any]]  # 本轮 SubAgent 输出胶囊，供下一轮继续追问
+    multiturn_context: Optional[dict[str, Any]]  # 多轮合并后的查询上下文和本轮 delta 摘要
+    turn_type: Optional[str]  # new | continue，本轮是否承接上一轮查询
+    merge_debug: Optional[dict[str, Any]]  # 多轮上下文合并调试信息
 
     # 意图识别层
     intent: Optional[str]  # query | chitchat | function

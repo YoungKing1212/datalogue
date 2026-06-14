@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     LANGFUSE_FLUSH_AT_END: bool = True
     LANGFUSE_MAX_TEXT_LENGTH: int = 4000
 
+    MULTITURN_ENABLED: bool = False
+    MULTITURN_LOCK_TTL_SECONDS: int = 300
+    MULTITURN_COMPACTION_ENABLED: bool = False
+    MULTITURN_COMPACTION_TOKEN_THRESHOLD: int = 8000
+    MULTITURN_BLUEPRINT_SHORTCUT_ENABLED: bool = False
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

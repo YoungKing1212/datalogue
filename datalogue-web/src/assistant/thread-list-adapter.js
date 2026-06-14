@@ -2,8 +2,8 @@
 // 接口来自 @assistant-ui/core/dist/runtimes/remote-thread-list/types.d.ts
 // 通过 unstable_Provider 注入 ThreadHistoryAdapter，加载历史消息（用 getConversation）
 
-import { useMemo, useEffect, useState, createElement } from 'react';
-import { useAui, useAuiState } from '@assistant-ui/react';
+import { useMemo, createElement } from 'react';
+import { useAuiState } from '@assistant-ui/react';
 import { RuntimeAdapterProvider } from '@assistant-ui/react';
 import {
   ExportedMessageRepository,
@@ -26,8 +26,8 @@ const reverseIdMap = new Map();
 /**
  * 把后端 MessageOut 转成 assistant-ui 的 ThreadMessage
  *
- * assistant content 一般含 <think>…</think> 段（后端落库时未剥离），
- * MessageContent 用 splitThink 把它渲染为折叠块——不再额外拆出 reasoning part，
+ * assistant content 可能含 <think>…</think> 段（历史数据未必已剥离），
+ * MessageContent 用 splitThink 把它从正文剥离——不再额外拆出 reasoning part，
  * 避免与 ChainOfThought 重复展示。
  */
 // 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐）
@@ -82,9 +82,7 @@ function formatStepAsReasoning(step) {
     const diagnosis = step.sql_diagnosis || step.sql_audit_result || {};
     const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || 'SQL 执行失败';
     const suggested = diagnosis.suggested_action || diagnosis.suggested_fix || '';
-    const retries = step.sql_retry_trace?.length ?? 0;
-    const retryText = retries ? ` · 自动修复第 ${retries} 次` : '';
-    detail = suggested ? `${title} · ${suggested}${retryText}` : `${title}${retryText}`;
+    detail = suggested ? `${title} · ${suggested}` : title;
   } else if (step.node === 'report_generator') {
     detail = '已生成分析报告';
   }
@@ -121,6 +119,8 @@ function messagesFromBackend(detail) {
         custom: {
           routePayload: m.response_metadata?.route_payload || null,
           answerExplanation: m.response_metadata?.answer_explanation || null,
+          queryProfile: m.response_metadata?.query_profile || m.response_metadata?.explainability?.query_profile || null,
+          explainability: m.response_metadata?.explainability || null,
           messageId: m.id || null,
           langfuseTraceId: m.response_metadata?.langfuse?.trace_id || null,
           langfuseSessionId: m.response_metadata?.langfuse?.session_id || null,
@@ -161,7 +161,6 @@ function makeHistoryAdapter(getRemoteId) {
  * Provider 组件：把 history 适配器注入当前 thread 的 context
  */
 function DatalogueThreadProvider({ children }) {
-  const aui = useAui();
   const remoteId = useAuiState((s) => s.threadListItem.remoteId);
   const adapters = useMemo(
     () => ({

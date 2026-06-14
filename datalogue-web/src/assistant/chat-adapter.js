@@ -1,7 +1,7 @@
 // ChatModelAdapter — 把后端 SSE 流式响应包成 assistant-ui 能消费的 async generator
-// assistant-ui 通过 unstable_threadId 传入当前 thread 的 remoteId（即后端 conversation_id）
-// 新 thread 已经在 useRemoteThreadListRuntime 的 initialize() 阶段由 ThreadListAdapter 调
-// POST /api/conversation 创建，并把 conv_id 写入 threadListItem.remoteId
+// assistant-ui 通过 unstable_threadId 传入当前 thread 标识。不同版本/阶段可能传 remoteId
+//（后端 conversation_id），也可能传本地 thread id；因此这里显式生成业务 session_id，
+// 让后端 ConversationStore 不依赖 Langfuse session 或一次性 request id。
 //
 // 数据流：
 //   token 事件          → 累积到 accText（TextMessagePart）
@@ -12,6 +12,8 @@
 // 每次 yield content 数组是完整覆盖，所以本地累加器维护 reasonings + accText。
 
 import { streamChatEvents } from '../api/client';
+
+const BUSINESS_SESSION_PREFIX = 'assistant-thread';
 
 // 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐，作为前端兜底）
 const NODE_DISPLAY = {
@@ -68,9 +70,7 @@ function formatStepAsReasoning(ev) {
     const diagnosis = ev.sql_diagnosis || ev.sql_audit_result || {};
     const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || 'SQL 执行失败';
     const suggested = diagnosis.suggested_action || diagnosis.suggested_fix || '';
-    const retries = ev.sql_retry_trace?.length ?? 0;
-    const retryText = retries ? ` · 自动修复第 ${retries} 次` : '';
-    detail = suggested ? `${title} · ${suggested}${retryText}` : `${title}${retryText}`;
+    detail = suggested ? `${title} · ${suggested}` : title;
   } else if (ev.node === 'report_generator') {
     detail = '已生成分析报告';
   }
@@ -131,6 +131,35 @@ function extractQuestion(messages) {
     .join('');
 }
 
+function normalizeConversationId(threadId) {
+  if (threadId == null || threadId === '') return null;
+  const value = Number(threadId);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function normalizeSessionPart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+function createFallbackBusinessSessionId() {
+  const random =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${BUSINESS_SESSION_PREFIX}-${normalizeSessionPart(random)}`;
+}
+
+export function buildBusinessSessionId({ threadId, conversationId, fallbackSessionId }) {
+  if (conversationId != null) return `conversation-${conversationId}`;
+  const normalizedThreadId = normalizeSessionPart(threadId);
+  if (normalizedThreadId) return `${BUSINESS_SESSION_PREFIX}-${normalizedThreadId}`;
+  return fallbackSessionId;
+}
+
 /**
  * 在 SSE 事件来时 dispatch window 自定义事件给 AgentPanel
  * 不走 assistant-ui runtime，保持面板的低耦合
@@ -149,12 +178,19 @@ function emitTrace(ev) {
  * @param {{current: string|null}} opts.datasetIdRef - 数据集 ID 共享 ref，ChatPage 更新
  */
 export function makeChatAdapter({ datasetIdRef }) {
+  const fallbackSessionId = createFallbackBusinessSessionId();
+
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       const question = extractQuestion(messages);
       if (!question) return;
 
-      const convId = unstable_threadId ? Number(unstable_threadId) : null;
+      const convId = normalizeConversationId(unstable_threadId);
+      const businessSessionId = buildBusinessSessionId({
+        threadId: unstable_threadId,
+        conversationId: convId,
+        fallbackSessionId,
+      });
       const datasetId = datasetIdRef?.current ?? null;
       const clarificationResponse =
         typeof window !== 'undefined'
@@ -169,6 +205,7 @@ export function makeChatAdapter({ datasetIdRef }) {
         stream = streamChatEvents(
           {
             question,
+            session_id: businessSessionId,
             conversation_id: convId,
             dataset_id: datasetId,
             clarification_response: clarificationResponse,
@@ -275,18 +312,20 @@ export function makeChatAdapter({ datasetIdRef }) {
               sqlResult: finalPayload.sql_result || null,
               sqlDiagnosis: finalPayload.sql_diagnosis || null,
               sqlAuditResult: finalPayload.sql_audit_result || null,
-              sqlRetryTrace: finalPayload.sql_retry_trace || null,
               answerExplanation: finalPayload.answer_explanation || null,
+              queryProfile: finalPayload.query_profile || finalPayload.explainability?.query_profile || null,
+              explainability: finalPayload.explainability || null,
               routeDecision: finalPayload.route_decision || null,
               dsl: finalPayload.dsl || null,
               routePayload: finalPayload.route_payload || null,
               clarification: finalPayload.route_payload?.kind === 'term_conflict_clarification'
                 ? {
+                    kind: 'term_conflict',
                     clarificationId: finalPayload.route_payload.clarification_id,
                     candidates: finalPayload.route_payload.candidates || [],
                     expiresAt: finalPayload.route_payload.expires_at || null,
                   }
-                : null,
+                : finalPayload.clarification || null,
               clarificationResolution: finalPayload.clarification_resolution || null,
               termNormalization: finalPayload.term_normalization || null,
               semanticAssetResolution: finalPayload.semantic_asset_resolution || null,

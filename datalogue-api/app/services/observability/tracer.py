@@ -107,6 +107,7 @@ class ObservabilityTraceContext:
             enabled=self.enabled,
             active=self.active,
             prompt_versions=self.prompt_versions,
+            parent_observation_id=None,
         )
 
     def observability_payload(self) -> dict[str, Any]:
@@ -164,11 +165,12 @@ class DatalogueTracer:
         user_id: str | None,
         tenant_id: str,
         question: str,
+        session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ObservabilityTraceContext:
         """创建一次用户问数根 trace。"""
 
-        session_id = f"datalogue-conv-{conversation_id or 'anonymous'}"
+        session_id = session_id or f"datalogue-conv-{conversation_id or 'anonymous'}"
         fallback_trace_id = f"dlg-{uuid.uuid4().hex}"
         context = ObservabilityTraceContext(
             trace_id=fallback_trace_id,
@@ -218,6 +220,7 @@ class DatalogueTracer:
                     f"tenant:{tenant_id}",
                     f"env:{self.settings.LANGFUSE_ENVIRONMENT}",
                     f"release:{self.settings.LANGFUSE_RELEASE}",
+                    "lead",
                 ],
                 metadata=trace_metadata,
             )
@@ -243,6 +246,7 @@ class DatalogueTracer:
         node: str,
         display_name: str,
         input_payload: dict[str, Any] | None = None,
+        trace_tags: list[str] | None = None,
     ) -> None:
         """开始记录一个 LangGraph 节点 span。"""
 
@@ -262,6 +266,12 @@ class DatalogueTracer:
                 },
             )
             handle = manager.__enter__()
+            if trace_tags:
+                self._safe_call(
+                    handle,
+                    "update_trace",
+                    tags=_merge_trace_tags(context, trace_tags),
+                )
             context.span_managers[node] = manager
             context.span_handles[node] = handle
         except Exception as exc:
@@ -563,6 +573,24 @@ def _generation_display_name(name: str, metadata: dict[str, Any] | None) -> str:
         suffix = name.removeprefix("llm.")
         return LLM_OBSERVATION_NAMES.get(suffix, f"LLM · {suffix}")
     return name
+
+
+def _merge_trace_tags(
+    context: ObservabilityTraceContext,
+    extra_tags: list[str] | None,
+) -> list[str]:
+    """合并根 trace 稳定标签和 span 追加标签，避免 update_trace 覆盖基础标签。"""
+
+    tags = [
+        f"tenant:{context.tenant_id}",
+        f"env:{context.environment}",
+        f"release:{context.release}",
+        "lead",
+    ]
+    for tag in extra_tags or []:
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
 
 
 def _langfuse_usage_details(
