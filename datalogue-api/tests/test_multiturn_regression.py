@@ -245,7 +245,7 @@ def _check_blueprint_shortcut_hit(_db_session, monkeypatch):
     class Settings:
         MULTITURN_BLUEPRINT_SHORTCUT_ENABLED = True
 
-    monkeypatch.setattr("app.graph.nodes.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.multiturn_context.get_settings", lambda: Settings())
     result = _merge(
         "只看华东",
         prior_capsule=_prior_capsule(routing_path="blueprint", blueprint_id="42"),
@@ -260,7 +260,7 @@ def _check_blueprint_shortcut_disabled(_db_session, monkeypatch):
     class Settings:
         MULTITURN_BLUEPRINT_SHORTCUT_ENABLED = False
 
-    monkeypatch.setattr("app.graph.nodes.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.multiturn_context.get_settings", lambda: Settings())
     result = _merge(
         "只看华东",
         prior_capsule=_prior_capsule(routing_path="blueprint", blueprint_id="42"),

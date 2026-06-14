@@ -592,7 +592,7 @@ def test_merge_prior_context_blueprint_shortcut_when_enabled(monkeypatch):
     class Settings:
         MULTITURN_BLUEPRINT_SHORTCUT_ENABLED = True
 
-    monkeypatch.setattr("app.graph.nodes.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.multiturn_context.get_settings", lambda: Settings())
 
     result = merge_prior_context_node(
         {
