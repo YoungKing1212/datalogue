@@ -932,313 +932,38 @@ def _match_business_term(db: Session, dataset_id: int | None, question: str) -> 
 
 
 def intent_recognition_node(state: AgentState, db: Session | None = None) -> Dict[str, Any]:
-    """识别用户意图，判断是数据查询、闲聊还是功能操作。"""
-    question = state["question"]
-    logger.info(f"意图识别节点开始: question={question[:50]}...")
-    history = state.get("history", [])
-    llm = get_llm(temperature=0.0, role="intent", db=db)
+    """识别用户意图，判断是数据查询、闲聊还是功能操作。
 
-    system = SystemMessage(content=INTENT_RECOGNITION_SYSTEM)
+    DEPRECATED (Phase 3): 入口路由逻辑已上提到 app.services.lead_agent_routing.route_query_intent，
+    由 chat.py 在驱动 LangGraph 之前调用。本节点保留为 noop 兜底（返回 {}），仅供旧测试 import 路径不破。
 
-    human_text = question
-    clarification_hints: list[str] = []
-    pending_clarification = (
-        (state.get("multiturn_context") or {}).get("pending_clarification")
-    )
-    if isinstance(pending_clarification, dict) and pending_clarification.get("kind"):
-        clarification_hints.append(
-            f"上一轮为澄清态 kind={pending_clarification.get('kind')}"
-        )
-    if state.get("clarification_response"):
-        clarification_hints.append("本轮含 clarification_response")
-    if history and len(history) > 1:
-        recent = history[-6:-1] if len(history) > 6 else history[:-1]
-        ctx = "\n".join(
-            [f"{'用户' if m['role'] == 'user' else '助手'}: {m['content'][:100]}" for m in recent]
-        )
-        hint_block = ""
-        if clarification_hints:
-            hint_block = "\n".join(f"- {h}" for h in clarification_hints) + "\n"
-        human_text = (
-            f"【历史上下文】\n{ctx}\n"
-            f"【多轮提示】\n{hint_block}\n"
-            f"【当前问题】\n{question}"
-        )
-    elif clarification_hints:
-        human_text = (
-            f"【多轮提示】\n"
-            + "\n".join(f"- {h}" for h in clarification_hints)
-            + f"\n【当前问题】\n{question}"
-        )
-
-    human = HumanMessage(content=human_text)
-    tracer = get_observability_tracer()
-    generation = tracer.start_generation(
-        name="llm.intent_recognition",
-        model=getattr(llm, "model_name", None) or getattr(llm, "model", None),
-        messages=[system, human],
-        metadata={"path": "intent_recognition", "thinking_enabled": _llm_thinking_enabled(llm)},
-    )
-    started_at = time.perf_counter()
-    response, first_token_at, first_token_wall = _invoke_llm_with_metrics(llm, [system, human])
-    ended_at = time.perf_counter()
-    result = _safe_json_parse(str(response.content))
-
-    intent = result.get("intent", "query")
-    entities = result.get("entities", {})
-    direct_answer = result.get("direct_answer")
-
-    answer = direct_answer if intent == "chitchat" else None
-    logger.info(f"意图识别结果: intent={intent}")
-    usage = _extract_token_usage(response, [system, human])
-    tracer.end_generation(
-        generation,
-        output=getattr(response, "content", response),
-        usage=usage,
-        completion_start_time=first_token_wall,
-        metadata={
-            "path": "intent_recognition",
-            "thinking_enabled": _llm_thinking_enabled(llm),
-            **_llm_perf_metadata(
-                started_at=started_at,
-                ended_at=ended_at,
-                first_token_at=first_token_at,
-                usage=usage,
-            ),
-        },
-    )
-    current_usage = state.get("token_usage") or {}
-    merged = _merge_token_usage(current_usage, usage)
-
-    return {
-        "intent": intent,
-        "entities": entities,
-        "answer": answer,
-        "token_usage": merged,
-    }
+    实际逻辑迁出到 lead_agent_routing.py；该函数保留为空 stub。
+    """
+    return {}
 
 
 def entry_intent_classification_node(db: Session):
     """构建 QueryGraph 前置入口分类节点。
 
-    该节点只负责路由决策，不执行蓝图或知识库查询；非普通问数场景会写入
-    `answer` 和 `route_payload`，由工作流直接结束并交给 API 层透出。
+    DEPRECATED (Phase 3): 入口路由逻辑已上提到 app.services.lead_agent_routing.route_query_intent，
+    由 chat.py 在驱动 LangGraph 之前调用。本节点保留为 noop 兜底（返回 {}），仅供旧测试 import 路径不破。
     """
 
     def _node(state: AgentState) -> Dict[str, Any]:
-        question = state.get("question") or ""
-        q_norm = _normalized_text(question)
-        intent = state.get("intent") or "query"
-        entities = state.get("entities") or {}
-        dataset_id = state.get("dataset_id")
-
-        # ── 多轮上下文诊断日志 ──────────────────────────────────────
-        history = state.get("history") or []
-        multiturn_context = state.get("multiturn_context") or {}
-        prior_capsule = state.get("prior_capsule")
-        prior_capsule_status = state.get("prior_capsule_status") or {}
-        turn_type = state.get("turn_type")
-        conversation_id = state.get("conversation_id")
-
-        logger.info(
-            "[entry_intent] 基本信息: conversation_id=%s, intent=%s, dataset_id=%s, turn_type=%s",
-            conversation_id, intent, dataset_id, turn_type,
-        )
-        logger.info(
-            "[entry_intent] 历史消息: history_len=%d, 最近角色=%s",
-            len(history),
-            [m.get("role") for m in history[-4:]] if history else [],
-        )
-        logger.info(
-            "[entry_intent] 多轮上下文: has_multiturn_context=%s, active_dataset_id=%s, "
-            "turn_index=%s, has_summary=%s, pending_clarification_kind=%s",
-            bool(multiturn_context),
-            multiturn_context.get("active_dataset_id"),
-            multiturn_context.get("turn_index"),
-            bool(multiturn_context.get("summary")),
-            (multiturn_context.get("pending_clarification") or {}).get("kind")
-            if isinstance(multiturn_context.get("pending_clarification"), dict) else None,
-        )
-        logger.info(
-            "[entry_intent] 胶囊状态: prior_capsule_loaded=%s, capsule_status=%s, "
-            "capsule_dataset_id=%s, capsule_version=%s",
-            prior_capsule is not None,
-            prior_capsule_status.get("status"),
-            prior_capsule_status.get("dataset_id"),
-            prior_capsule_status.get("capsule_version"),
-        )
-        if prior_capsule:
-            logger.info(
-                "[entry_intent] 胶囊内容摘要: capsule_keys=%s, capsule_turn=%s",
-                list(prior_capsule.keys())[:8],
-                prior_capsule.get("updated_turn") or prior_capsule.get("turn_index"),
-            )
-        # ─────────────────────────────────────────────────────────────
-
-        logger.info("入口意图分类开始: intent=%s, dataset_id=%s", intent, dataset_id)
-
-        if intent == "chitchat":
-            return {
-                "entry_intent": "chitchat",
-                "entry_route": "direct_answer",
-                "entry_reason": "粗粒度意图识别为闲聊，直接返回回答。",
-                "route_payload": {"kind": "direct_answer"},
-            }
-
-        if intent == "function":
-            # ── 短路：LeadAgent 已锁数据集 + 存在 pending 澄清态时 ──────
-            # 视为用户对上一轮数据集/术语澄清的回复，跳过拒答进入 query_graph。
-            pending_clarification = (
-                (multiturn_context or {}).get("pending_clarification")
-                if isinstance(multiturn_context, dict)
-                else None
-            )
-            has_pending = (
-                dataset_id is not None
-                and isinstance(pending_clarification, dict)
-                and bool(pending_clarification.get("kind"))
-            )
-            if has_pending:
-                logger.info(
-                    "[entry_intent] 跳过 function 拒答：dataset_id=%s 锁定且存在 pending_clarification=%s",
-                    dataset_id,
-                    pending_clarification.get("kind"),
-                )
-                intent = "query"
-            else:
-                answer = (
-                    "当前问数入口只处理数据查询、分析蓝图和知识解释，"
-                    "暂不直接执行保存、发布或导出类操作。"
-                )
-                return {
-                    "entry_intent": "rejection",
-                    "entry_route": "reject",
-                    "entry_reason": "功能操作不应进入 QueryGraph。",
-                    "answer": answer,
-                    "route_payload": {"kind": "unsupported_function"},
-                }
-
-        if _contains_any(q_norm, _PERMISSION_PATTERNS):
-            answer = (
-                "这个问题涉及权限不足或未授权资源，我不能绕过权限继续查询。"
-                "请先确认数据集、数据源或知识库授权后再重试。"
-            )
-            return {
-                "entry_intent": "rejection",
-                "entry_route": "reject",
-                "entry_reason": "用户输入命中权限不足/未授权语义。",
-                "answer": answer,
-                "route_payload": {"kind": "permission_denied"},
-            }
-
-        blueprint_match = _match_analysis_blueprint(db, dataset_id, question)
-        if blueprint_match:
-            answer = (
-                f"已命中分析蓝图「{blueprint_match['name']}」，"
-                "将按固定分析逻辑处理。"
-            )
-            return {
-                "entry_intent": "analysis_blueprint",
-                "entry_route": "analysis_blueprint",
-                "entry_reason": (
-                    "问题命中已发布分析蓝图的关键词、示例或使用说明。"
-                ),
-                "blueprint_id": blueprint_match["blueprint_id"],
-                "blueprint_match": blueprint_match,
-                "answer": answer,
-                "route_payload": {"kind": "analysis_blueprint", **blueprint_match},
-            }
-
-        is_knowledge_question = _contains_any(q_norm, _KNOWLEDGE_PATTERNS)
-        if is_knowledge_question:
-            term_match = _match_business_term(db, dataset_id, question)
-            answer = (
-                "我识别到这是知识解释类问题，"
-                "但还需要更具体的业务术语或可用知识库内容才能回答。"
-            )
-            payload: dict[str, Any] = {"kind": "knowledge_qa"}
-            term_id = None
-            if term_match:
-                term_id = term_match["term_id"]
-                payload.update(term_match)
-                if term_match.get("definition"):
-                    answer = f"{term_match['name']}：{term_match['definition']}"
-                else:
-                    answer = (
-                        f"已识别业务术语「{term_match['name']}」，"
-                        "但知识库中还没有维护定义。"
-                    )
-            return {
-                "entry_intent": "knowledge_qa",
-                "entry_route": "knowledge_qa",
-                "entry_reason": "问题命中定义、口径、解释等知识库问答语义。",
-                "knowledge_term_id": term_id,
-                "answer": answer,
-                "route_payload": payload,
-            }
-
-        has_metric_entity = bool(entities.get("metrics"))
-        has_dimension_entity = bool(entities.get("dimensions"))
-        is_detail_query = _contains_any(q_norm, _DETAIL_PATTERNS)
-        is_metric_query = has_metric_entity or _contains_any(q_norm, _METRIC_PATTERNS)
-        is_blueprint_like = _contains_any(q_norm, _BLUEPRINT_PATTERNS)
-        is_short_ambiguous = len(q_norm) <= 4 and _contains_any(q_norm, _AMBIGUOUS_PATTERNS)
-
-        if is_blueprint_like and not is_metric_query and not is_detail_query:
-            answer = (
-                "这个问题更像固定分析诉求，但当前没有命中可用分析蓝图。"
-                "请补充要分析的主题、指标或选择具体蓝图。"
-            )
-            return {
-                "entry_intent": "clarification",
-                "entry_route": "clarify",
-                "entry_reason": "复杂固定分析语义未命中已发布蓝图，进入澄清。",
-                "answer": answer,
-                "route_payload": {"kind": "clarification", "missing": ["blueprint_or_metrics"]},
-            }
-
-        if is_short_ambiguous:
-            answer = (
-                "这个问题缺少明确对象。"
-                "请补充要查询的指标、维度、时间范围或业务术语。"
-            )
-            return {
-                "entry_intent": "clarification",
-                "entry_route": "clarify",
-                "entry_reason": "短句或指代不清，无法可靠判断查询目标。",
-                "answer": answer,
-                "route_payload": {"kind": "clarification", "missing": ["query_target"]},
-            }
-
-        if is_detail_query:
-            return {
-                "entry_intent": "detail_query",
-                "entry_route": "query_graph",
-                "entry_reason": "问题命中明细/列表类查询语义，继续 NL2SQL。",
-                "route_payload": {"kind": "detail_query"},
-            }
-
-        if is_metric_query or has_dimension_entity:
-            return {
-                "entry_intent": "metric_query",
-                "entry_route": "query_graph",
-                "entry_reason": "问题命中指标/统计类查询语义，继续 NL2SQL。",
-                "route_payload": {"kind": "metric_query"},
-            }
-
-        answer = (
-            "我还无法确定你想查询数据、运行分析蓝图，还是询问业务知识。"
-            "请补充查询对象或说明要分析的问题。"
-        )
-        return {
-            "entry_intent": "clarification",
-            "entry_route": "clarify",
-            "entry_reason": "未命中普通问数、蓝图、知识库或拒答规则。",
-            "answer": answer,
-            "route_payload": {"kind": "clarification", "missing": ["intent"]},
-        }
+        return {}
 
     return _node
+
+
+def lead_agent_node(state: AgentState) -> Dict[str, Any]:
+    """LeadAgent 总入口 noop 节点：入口路由决策已由 chat.py 在驱动 LangGraph 之前
+    通过 `route_query_intent` 完成。LangGraph 入口指向本节点仅用于：
+    1. 保留 SSE `lead_agent` 步骤事件，兼容前端按节点展示的约定
+    2. 作为 `_merge_prior_context_router` 的入口（按 state["entry_route"] 路由后续分支）
+
+    真正的工作流主线从 clarification_resolution 开始（query_graph 主链）。
+    """
+    return {}
 
 
 def analysis_blueprint_execute_node(db: Session):

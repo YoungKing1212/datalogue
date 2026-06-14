@@ -35,6 +35,7 @@ from app.services.dataset_router import route_dataset_for_question
 from app.services.llm_config import resolve_llm_config
 from app.services.multiturn_context import MergeDecision, MultiturnContextBuilder
 from app.services.observability.prompts import get_prompt_manager
+from app.services.lead_agent_routing import route_query_intent
 from app.utils.json_utils import safe_json_parse
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"

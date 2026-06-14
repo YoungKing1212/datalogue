@@ -159,9 +159,9 @@ class TestLangGraphNodes:
 
     def test_intent_recognition_chitchat(self):
         """测试意图识别：闲聊"""
-        from app.graph.nodes import intent_recognition_node
+        from app.services.lead_agent_routing import route_query_intent
 
-        with patch("app.graph.nodes.get_llm") as mock_get_llm:
+        with patch("app.services.lead_agent_routing.get_llm") as mock_get_llm:
             mock_llm = MagicMock()
             mock_response = MagicMock()
             mock_response.content = json.dumps(
@@ -176,7 +176,15 @@ class TestLangGraphNodes:
             mock_get_llm.return_value = mock_llm
 
             state = {"question": "你好", "history": [], "token_usage": None}
-            result = intent_recognition_node(state)
+            result = route_query_intent(
+                db=None,
+                question=state["question"],
+                dataset_id=None,
+                lead_agent_context={},
+                history=state["history"],
+                multiturn_context={},
+                clarification_response=None,
+            )
 
             assert result["intent"] == "chitchat"
             assert result["answer"] == "你好！有什么可以帮你的？"
@@ -184,9 +192,9 @@ class TestLangGraphNodes:
 
     def test_intent_recognition_query(self):
         """测试意图识别：数据查询"""
-        from app.graph.nodes import intent_recognition_node
+        from app.services.lead_agent_routing import route_query_intent
 
-        with patch("app.graph.nodes.get_llm") as mock_get_llm:
+        with patch("app.services.lead_agent_routing.get_llm") as mock_get_llm:
             mock_llm = MagicMock()
             mock_response = MagicMock()
             mock_response.content = json.dumps(
@@ -200,15 +208,23 @@ class TestLangGraphNodes:
             mock_get_llm.return_value = mock_llm
 
             state = {"question": "各地区的GMV", "history": [], "token_usage": None}
-            result = intent_recognition_node(state)
+            result = route_query_intent(
+                db=None,
+                question=state["question"],
+                dataset_id=None,
+                lead_agent_context={},
+                history=state["history"],
+                multiturn_context={},
+                clarification_response=None,
+            )
 
             assert result["intent"] == "query"
             assert result["entities"]["metrics"] == ["gmv"]
-            assert result["answer"] is None
+            assert result.get("answer") is None
 
     def test_entry_intent_metric_query(self, db_session, sample_dataset):
         """入口分类：指标查询继续 QueryGraph。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
 
         state = {
             "question": "最近30天GMV是多少",
@@ -216,14 +232,24 @@ class TestLangGraphNodes:
             "intent": "query",
             "entities": {"metrics": ["gmv"], "dimensions": []},
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] == "metric_query"
         assert result["entry_route"] == "query_graph"
 
     def test_entry_intent_detail_query(self, db_session, sample_dataset):
         """入口分类：明细查询继续 QueryGraph。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
 
         state = {
             "question": "列出华东订单明细",
@@ -231,14 +257,24 @@ class TestLangGraphNodes:
             "intent": "query",
             "entities": {"metrics": [], "dimensions": ["region"]},
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] == "detail_query"
         assert result["entry_route"] == "query_graph"
 
     def test_entry_intent_blueprint_hit(self, db_session, sample_dataset):
         """入口分类：命中已发布分析蓝图时返回 blueprint_id。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
         from app.models.dataset import AnalysisBlueprint
 
         bp = AnalysisBlueprint(
@@ -259,7 +295,17 @@ class TestLangGraphNodes:
             "intent": "query",
             "entities": {"metrics": [], "dimensions": []},
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] == "analysis_blueprint"
         assert result["entry_route"] == "analysis_blueprint"
@@ -983,7 +1029,7 @@ class TestLangGraphNodes:
 
     def test_entry_intent_knowledge_term(self, db_session, sample_dataset):
         """入口分类：知识解释命中业务术语。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
         from app.models.dataset import BusinessTerm
 
         term = BusinessTerm(
@@ -1004,7 +1050,17 @@ class TestLangGraphNodes:
             "intent": "query",
             "entities": {},
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] == "knowledge_qa"
         assert result["entry_route"] == "knowledge_qa"
@@ -1013,7 +1069,7 @@ class TestLangGraphNodes:
 
     def test_entry_intent_permission_rejection(self, db_session, sample_dataset):
         """入口分类：权限不足问题拒答，不进入 QueryGraph。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
 
         state = {
             "question": "帮我查一下没有权限的数据源",
@@ -1021,7 +1077,17 @@ class TestLangGraphNodes:
             "intent": "query",
             "entities": {},
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] == "rejection"
         assert result["entry_route"] == "reject"
@@ -1029,7 +1095,7 @@ class TestLangGraphNodes:
 
     def test_entry_intent_clarification(self, db_session, sample_dataset):
         """入口分类：短句指代不清时进入澄清。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
 
         state = {
             "question": "这个呢",
@@ -1037,7 +1103,17 @@ class TestLangGraphNodes:
             "intent": "query",
             "entities": {},
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] == "clarification"
         assert result["entry_route"] == "clarify"
@@ -1047,7 +1123,7 @@ class TestLangGraphNodes:
         self, db_session, sample_dataset
     ):
         """入口分类：dataset 已锁 + pending_clarification 时，function 不再拒答。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
 
         state = {
             "question": "选择：生产经营管理系统日志数据集",
@@ -1062,7 +1138,17 @@ class TestLangGraphNodes:
                 },
             },
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] != "rejection"
         assert result["route_payload"]["kind"] != "unsupported_function"
@@ -1071,7 +1157,7 @@ class TestLangGraphNodes:
         self, db_session, sample_dataset
     ):
         """入口分类：无 pending_clarification 时真实功能操作仍走 rejection。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
 
         state = {
             "question": "把这份报表导出成 Excel 并发送给老板",
@@ -1080,7 +1166,17 @@ class TestLangGraphNodes:
             "entities": {},
             "multiturn_context": {},
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] == "rejection"
         assert result["entry_route"] == "reject"
@@ -1091,7 +1187,7 @@ class TestLangGraphNodes:
         self, db_session, sample_dataset
     ):
         """入口分类：dataset 未锁时即使有 pending_clarification 也不能放行。"""
-        from app.graph.nodes import entry_intent_classification_node
+        from app.services.lead_agent_routing import _classify_entry_intent
 
         state = {
             "question": "把报表导出",
@@ -1102,7 +1198,17 @@ class TestLangGraphNodes:
                 "pending_clarification": {"kind": "dataset_choice"},
             },
         }
-        result = entry_intent_classification_node(db_session)(state)
+        result = _classify_entry_intent(
+            db=db_session,
+            question=state.get("question") or "",
+            intent=state.get("intent") or "query",
+            entities=state.get("entities") or {},
+            dataset_id=state.get("dataset_id"),
+            history=state.get("history") or [],
+            multiturn_context=state.get("multiturn_context") or {},
+            clarification_response=state.get("clarification_response"),
+            lead_agent_context=state.get("lead_agent_context") or {},
+        )
 
         assert result["entry_intent"] == "rejection"
         assert result["route_payload"]["kind"] == "unsupported_function"
@@ -1116,35 +1222,27 @@ class TestLangGraphNodes:
 
     def test_intent_recognition_node_injects_clarification_hint(self):
         """意图识别 human_text 应包含多轮提示块，让 LLM 看到澄清信号。"""
-        from app.graph.nodes import intent_recognition_node
+        from app.services.lead_agent_routing import _build_human_text
 
-        with patch("app.graph.nodes.get_llm") as mock_get_llm:
-            mock_llm = MagicMock()
-            mock_response = MagicMock()
-            mock_response.content = json.dumps({"intent": "query", "entities": {}})
-            mock_response.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
-            mock_llm.invoke.return_value = mock_response
-            mock_get_llm.return_value = mock_llm
-
-            state = {
-                "question": "选择：销售数据集",
-                "history": [
-                    {"role": "user", "content": "查一下近 7 天销售"},
-                    {"role": "assistant", "content": "请选择数据集"},
-                ],
-                "token_usage": None,
-                "multiturn_context": {
-                    "pending_clarification": {"kind": "dataset_choice"},
-                },
-                "clarification_response": {"kind": "dataset_choice"},
-            }
-            intent_recognition_node(state)
-
-            call_args = mock_llm.invoke.call_args
-            messages = call_args[0][0]
-            human_text = messages[-1].content
-            assert "多轮提示" in human_text
-            assert "dataset_choice" in human_text
+        state = {
+            "question": "选择：销售数据集",
+            "history": [
+                {"role": "user", "content": "查一下近 7 天销售"},
+                {"role": "assistant", "content": "请选择数据集"},
+            ],
+            "multiturn_context": {
+                "pending_clarification": {"kind": "dataset_choice"},
+            },
+            "clarification_response": {"kind": "dataset_choice"},
+        }
+        human_text = _build_human_text(
+            question=state["question"],
+            history=state["history"],
+            multiturn_context=state["multiturn_context"],
+            clarification_response=state["clarification_response"],
+        )
+        assert "多轮提示" in human_text
+        assert "dataset_choice" in human_text
 
     def test_dsl_validate_semantic_valid(self):
         """DSL 校验：语义层路径，合法 DSL"""
@@ -1899,31 +1997,36 @@ class TestAnswerExplanation:
 class TestWorkflowRouting:
     """测试工作流路由逻辑"""
 
-    def test_should_continue_chitchat(self):
-        """闲聊意图直接结束"""
-        from app.graph.workflow import _should_continue
+    def test_lead_agent_router_interpret_result(self):
+        """LeadAgent 入口路由：interpret_result 直接结束。"""
+        from app.graph.workflow import _lead_agent_router
 
-        assert _should_continue({"intent": "chitchat"}) == "end"
+        assert _lead_agent_router({"entry_route": "interpret_result"}) == "end"
 
-    def test_should_continue_query(self):
-        """查询意图继续"""
-        from app.graph.workflow import _should_continue
-
-        assert _should_continue({"intent": "query"}) == "schema_recall"
-
-    def test_entry_classification_router_query_graph(self):
-        """入口分类：普通问数进入 QueryGraph。"""
-        from app.graph.workflow import _entry_classification_router
-
-        assert _entry_classification_router({"entry_route": "query_graph"}) == "schema_recall"
-
-    def test_entry_classification_router_non_query(self):
-        """入口分类：蓝图/知识库/澄清/拒答不进入 NL2SQL。"""
-        from app.graph.workflow import _entry_classification_router
+    def test_lead_agent_router_analysis_blueprint(self):
+        """LeadAgent 入口路由：analysis_blueprint 进入分析蓝图执行。"""
+        from app.graph.workflow import _lead_agent_router
 
         assert (
-            _entry_classification_router({"entry_route": "analysis_blueprint"})
+            _lead_agent_router({"entry_route": "analysis_blueprint"})
             == "analysis_blueprint_execute"
+        )
+
+    def test_lead_agent_router_default(self):
+        """LeadAgent 入口路由：默认进 clarification_resolution（query_graph 路径）。"""
+        from app.graph.workflow import _lead_agent_router
+
+        assert _lead_agent_router({"entry_route": "query_graph"}) == "clarification_resolution"
+
+    def test_clarification_resolution_router_resolved(self):
+        """澄清回复解析：resolved 进 schema_recall。"""
+        from app.graph.workflow import _clarification_resolution_router
+
+        assert (
+            _clarification_resolution_router(
+                {"clarification_resolution_result": {"status": "resolved"}}
+            )
+            == "schema_recall"
         )
 
     def test_analysis_blueprint_execution_router_success(self):

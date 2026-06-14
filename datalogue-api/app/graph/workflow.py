@@ -26,9 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_SQL_RETRY_COUNT = 3
 from app.graph.nodes import (
     clarification_resolution_node,
-    merge_prior_context_node,
-    intent_recognition_node,
-    entry_intent_classification_node,
+    lead_agent_node,
     analysis_blueprint_execute_node,
     schema_recall_node,
     term_normalize_node,
@@ -42,41 +40,31 @@ from app.graph.nodes import (
 )
 
 
-def _should_continue(state: AgentState) -> str:
-    """判断旧版粗粒度意图识别后应该走向哪个分支。"""
-    intent = state.get("intent")
-    if intent == "chitchat":
-        return "end"
-    return "schema_recall"
-
-
 def _clarification_resolution_router(state: AgentState) -> str:
-    """澄清回复解析后决定恢复查询、进入普通入口或直接结束。"""
+    """澄清回复解析后决定恢复查询或直接结束。
+
+    Phase 3 简化：意图识别已由 LeadAgent `route_query_intent` 在 chat.py 完成，
+    本节点不再回退到 `intent_recognition` 节点（已删除）。
+    """
     status = (state.get("clarification_resolution_result") or {}).get("status")
     if status == "resolved":
         return "schema_recall"
     if status in {"missing", "expired", "unresolved"}:
         return "end"
-    return "intent_recognition"
+    return "schema_recall"
 
 
-def _merge_prior_context_router(state: AgentState) -> str:
-    """多轮入口合并后决定是否直接结束解释轮次。"""
+def _lead_agent_router(state: AgentState) -> str:
+    """LeadAgent 入口节点路由器（Phase 3）：按 state["entry_route"] 路由后续分支。
 
+    入口路由决策由 chat.py 通过 `route_query_intent` 一次性产出，写入 initial_state。
+    LangGraph `lead_agent` 节点本身是 noop，仅保留 SSE 事件可见性。
+    """
     if state.get("entry_route") == "interpret_result":
         return "end"
     if state.get("entry_route") == "analysis_blueprint":
         return "analysis_blueprint_execute"
     return "clarification_resolution"
-
-
-def _entry_classification_router(state: AgentState) -> str:
-    """入口分类后进行主链路分流。"""
-    if state.get("entry_route") == "query_graph":
-        return "schema_recall"
-    if state.get("entry_route") == "analysis_blueprint":
-        return "analysis_blueprint_execute"
-    return "end"
 
 
 def _should_skip_subagent_report(state: AgentState) -> bool:
@@ -173,11 +161,10 @@ def build_workflow(db: Session) -> Any:
     workflow = StateGraph(AgentState)
     logger.info("开始构建LangGraph工作流")
 
-    # 注册节点
-    workflow.add_node("merge_prior_context", merge_prior_context_node)
+    # 注册节点（Phase 3 改造：删 intent_recognition / entry_intent_classification / merge_prior_context，
+    # 合并为 lead_agent 入口）
+    workflow.add_node("lead_agent", lead_agent_node)
     workflow.add_node("clarification_resolution", clarification_resolution_node(db))
-    workflow.add_node("intent_recognition", lambda state: intent_recognition_node(state, db=db))
-    workflow.add_node("entry_intent_classification", entry_intent_classification_node(db))
     workflow.add_node("analysis_blueprint_execute", analysis_blueprint_execute_node(db))
     workflow.add_node("schema_recall", schema_recall_node(db))
     workflow.add_node("term_normalize_node", term_normalize_node)
@@ -195,11 +182,11 @@ def build_workflow(db: Session) -> Any:
     workflow.add_node("increment_retry", _increment_retry)
     logger.info("工作流节点注册完成")
 
-    # 设置入口
-    workflow.set_entry_point("merge_prior_context")
+    # 设置入口（Phase 3：LeadAgent 总入口）
+    workflow.set_entry_point("lead_agent")
     workflow.add_conditional_edges(
-        "merge_prior_context",
-        _merge_prior_context_router,
+        "lead_agent",
+        _lead_agent_router,
         {
             "clarification_resolution": "clarification_resolution",
             "analysis_blueprint_execute": "analysis_blueprint_execute",
@@ -211,21 +198,7 @@ def build_workflow(db: Session) -> Any:
         "clarification_resolution",
         _clarification_resolution_router,
         {
-            "intent_recognition": "intent_recognition",
             "schema_recall": "schema_recall",
-            "end": END,
-        },
-    )
-
-    # 意图识别 → 入口分类：在进入 QueryGraph 前识别蓝图、知识库、澄清和拒答
-    workflow.add_edge("intent_recognition", "entry_intent_classification")
-
-    workflow.add_conditional_edges(
-        "entry_intent_classification",
-        _entry_classification_router,
-        {
-            "schema_recall": "schema_recall",
-            "analysis_blueprint_execute": "analysis_blueprint_execute",
             "end": END,
         },
     )

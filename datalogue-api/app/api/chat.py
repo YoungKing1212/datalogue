@@ -41,6 +41,7 @@ from app.services.observability.tracer import get_observability_tracer
 from app.services.lead_agent import (
     build_lead_agent_context,
     merge_multiturn_decision_for_chat,
+    route_query_intent,
 )
 from app.services.multiturn_context import MergeDecision
 from app.services.report_generation import stream_sql_result_report
@@ -1020,6 +1021,50 @@ async def _stream_chat_singleturn(
             yield sse_event
         return
 
+    # Phase 3: LeadAgent 总入口路由（替代 intent + entry 两个图节点）
+    routing = route_query_intent(
+        db,
+        question=merge_decision.synthesized_question or resolved_question,
+        dataset_id=effective_dataset_id,
+        lead_agent_context=lead_agent_context,
+        history=history,
+        multiturn_context=merge_decision.multiturn_context,
+        clarification_response=jsonable_encoder(payload.clarification_response),
+        tracer=tracer,
+        trace_context=trace_context,
+    )
+    yield _sse_data(
+        {
+            "type": "step",
+            "node": "lead_agent",
+            "display_name": "LeadAgent · 入口路由",
+            "status": "done",
+            "intent": routing.get("intent"),
+            "entities": routing.get("entities") or {},
+            "entry_intent": routing.get("entry_intent"),
+            "entry_route": routing.get("entry_route"),
+            "entry_reason": routing.get("entry_reason"),
+            "blueprint_id": routing.get("blueprint_id"),
+            "route_payload": routing.get("route_payload") or {},
+        }
+    )
+    if routing.get("entry_route") in {"direct_answer", "reject", "knowledge_qa", "clarify"}:
+        async for sse_event in _early_route_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=effective_dataset_id,
+            lead_agent_context=lead_agent_context,
+            route_decision=route_decision,
+            trace_context=trace_context,
+            trace_metadata=trace_metadata,
+            defer_trace_close=defer_trace_close,
+            obs_context_manager=obs_context_manager,
+            routing=routing,
+        ):
+            yield sse_event
+        return
+
     initial_state = {
         "question": merge_decision.synthesized_question or resolved_question,
         "original_question": payload.question,
@@ -1046,37 +1091,17 @@ async def _stream_chat_singleturn(
         "multiturn_context": merge_decision.multiturn_context,
         "turn_type": merge_decision.turn_type,
         "merge_debug": merge_decision.merge_debug,
-        "intent": None,
-        "entities": None,
-        "entry_intent": (
-            "analysis_blueprint"
-            if merge_decision.blueprint_shortcut
-            and merge_decision.blueprint_shortcut.get("settings_enabled")
-            else None
-        ),
-        "entry_route": (
-            "analysis_blueprint"
-            if merge_decision.blueprint_shortcut
-            and merge_decision.blueprint_shortcut.get("settings_enabled")
-            else None
-        ),
-        "entry_reason": None,
-        "blueprint_id": (
-            merge_decision.blueprint_shortcut.get("blueprint_id")
-            if merge_decision.blueprint_shortcut
-            and merge_decision.blueprint_shortcut.get("settings_enabled")
-            else None
-        ),
-        "blueprint_match": None,
+        "intent": routing.get("intent"),
+        "entities": routing.get("entities") or {},
+        "entry_intent": routing.get("entry_intent"),
+        "entry_route": routing.get("entry_route"),
+        "entry_reason": routing.get("entry_reason"),
+        "blueprint_id": routing.get("blueprint_id"),
+        "blueprint_match": routing.get("blueprint_match"),
         "blueprint_context": None,
-        "knowledge_term_id": None,
+        "knowledge_term_id": routing.get("knowledge_term_id"),
         "selected_term_id": None,
-        "route_payload": (
-            {"kind": "analysis_blueprint", **(merge_decision.blueprint_shortcut or {})}
-            if merge_decision.blueprint_shortcut
-            and merge_decision.blueprint_shortcut.get("settings_enabled")
-            else None
-        ),
+        "route_payload": routing.get("route_payload"),
         "schema_context": None,
         "schema_structured": None,
         "ddl_context": None,
@@ -1196,19 +1221,10 @@ async def _stream_chat_singleturn(
                     "elapsed_ms": elapsed_ms,
                 }
                 # 节点特定数据
-                if lg_node == "intent_recognition":
-                    sse_payload["intent"] = final_state.get("intent") or ""
-                    sse_payload["entities"] = final_state.get("entities") or {}
-                elif lg_node == "clarification_resolution":
+                if lg_node == "clarification_resolution":
                     sse_payload["clarification_resolution"] = (
                         final_state.get("clarification_resolution_result") or {}
                     )
-                    sse_payload["route_payload"] = final_state.get("route_payload") or {}
-                elif lg_node == "entry_intent_classification":
-                    sse_payload["entry_intent"] = final_state.get("entry_intent") or ""
-                    sse_payload["entry_route"] = final_state.get("entry_route") or ""
-                    sse_payload["entry_reason"] = final_state.get("entry_reason") or ""
-                    sse_payload["blueprint_id"] = final_state.get("blueprint_id")
                     sse_payload["route_payload"] = final_state.get("route_payload") or {}
                 elif lg_node == "analysis_blueprint_execute":
                     result = final_state.get("sql_result") or {}
@@ -1915,6 +1931,92 @@ async def _interpret_early_return(
             "entry_intent": entry_intent,
             "entry_route": entry_route,
             "entry_reason": "interpret_result_early_return",
+            "lead_agent_context": lead_agent_context,
+            "original_question": payload.question,
+            "resolved_question": final_state["resolved_question"],
+            "time_context": lead_agent_context.get("time_context"),
+            "route_decision": route_decision,
+            "schema_status": lead_agent_context.get("schema_status"),
+            "clarification": None,
+            "route_payload": route_payload,
+            "sql_result": None,
+            "query_profile": None,
+            "explainability": None,
+            "response_metadata": response_metadata,
+            "conversation_id": conv.id,
+            "message_id": assistant_message.id,
+            "title": conv.title,
+        }
+    )
+    if not defer_trace_close:
+        obs_context_manager.__exit__(None, None, None)
+
+
+async def _early_route_return(
+    *,
+    db: Session,
+    conv: models.Conversation,
+    payload: schemas.ChatRequest,
+    effective_dataset_id: int | None,
+    lead_agent_context: dict,
+    route_decision: dict,
+    trace_context: Any,
+    trace_metadata: dict,
+    defer_trace_close: bool,
+    obs_context_manager: Any,
+    routing: dict,
+):
+    """Phase 3: LeadAgent 入口路由早退（chitchat/reject/knowledge_qa/clarify）。
+
+    直接保存助手消息、emit SSE final 事件，不调 LangGraph。
+    """
+    entry_intent = routing.get("entry_intent") or "early_return"
+    entry_route = routing.get("entry_route") or "direct_answer"
+    answer = routing.get("answer") or "已生成回答。"
+    route_payload = routing.get("route_payload") or {"kind": entry_route}
+    final_state = {
+        "original_question": payload.question,
+        "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+        "entry_intent": entry_intent,
+        "entry_route": entry_route,
+        "entry_reason": routing.get("entry_reason"),
+        "route_payload": route_payload,
+        "time_context": lead_agent_context.get("time_context"),
+        "blueprint_id": routing.get("blueprint_id"),
+        "knowledge_term_id": routing.get("knowledge_term_id"),
+        "sql_result": None,
+    }
+    response_metadata = jsonable_encoder({
+        "lead_agent_context": lead_agent_context,
+        "original_question": payload.question,
+        "resolved_question": final_state["resolved_question"],
+        "route_decision": route_decision,
+        "time_context": lead_agent_context.get("time_context"),
+        "schema_status": lead_agent_context.get("schema_status"),
+        "route_payload": route_payload,
+        "routing": routing,
+    })
+    assistant_message = models.Message(
+        conversation_id=conv.id,
+        role="assistant",
+        content=answer,
+        sql_list=[],
+        step_trace=[_lead_agent_event(lead_agent_context), _route_decision_event(route_decision)],
+        response_metadata=response_metadata,
+    )
+    db.add(assistant_message)
+    db.commit()
+    db.refresh(assistant_message)
+
+    yield _sse_data(
+        {
+            "type": "final",
+            "sql": None,
+            "sql_list": [],
+            "answer": answer,
+            "entry_intent": entry_intent,
+            "entry_route": entry_route,
+            "entry_reason": routing.get("entry_reason"),
             "lead_agent_context": lead_agent_context,
             "original_question": payload.question,
             "resolved_question": final_state["resolved_question"],
