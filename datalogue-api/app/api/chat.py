@@ -49,7 +49,7 @@ from app.services.lead_agent_routing import (
 from app.services.dataset_subagent import DatasetSubAgent
 from app.services.multiturn_context import MergeDecision
 from app.services.report_generation import stream_sql_result_report
-from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
+from app.services.runner import DatasetSubAgentRequest
 from app.services.conversation_store import (
     ConversationStore,
     pending_clarification_from_final_payload,
@@ -67,6 +67,8 @@ _NODE_DISPLAY_NAMES = {
     "intent_recognition": "意图识别",
     "entry_intent_classification": "入口分类",
     "analysis_blueprint_execute": "蓝图执行",
+    "candidate_assets": "候选资产召回",
+    "query_plan": "查询规划",
     "schema_recall": "Schema 召回",
     "term_conflict_resolve": "术语冲突解析",
     "metric_resolve": "指标解析",
@@ -120,6 +122,9 @@ _STATE_OUTPUT_KEYS = {
     "term_normalization",
     "semantic_asset_resolution",
     "metric_resolution",
+    "candidate_assets",
+    "query_plan",
+    "query_plan_debug",
     "dsl",
     "dsl_valid",
     "sql",
@@ -1366,6 +1371,9 @@ async def _stream_chat_singleturn(
             if metric_outcome and metric_outcome.get("status") != "not_applicable"
             else None
         ),
+        "candidate_assets": None,
+        "query_plan": None,
+        "query_plan_debug": None,
         "dsl": None,
         "dsl_valid": False,
         "sql": None,
@@ -1402,7 +1410,6 @@ async def _stream_chat_singleturn(
         trace_id=trace_context.trace_id,
         parent_observation_id=None,
     )
-    subagent_runner = InProcessDatasetSubAgentRunner(app_graph, db)
     final_state: dict = dict(initial_state)
     node_start_times: dict[str, float] = {}
 
@@ -1414,13 +1421,49 @@ async def _stream_chat_singleturn(
         reported_done: set[str] = set()
         step_traces: list[dict] = []  # 收集推理步骤供历史加载时恢复思维链
 
-        async for event in subagent_runner.run(
+        async for sub_event in sub_agent.run(
             subagent_request,
             trace_context,
-            initial_state,
-            dataset_name=route_decision.get("dataset_name") or "",
-            version="v2",
+            graph=app_graph,
+            initial_state=initial_state,
+            graph_kwargs={
+                "dataset_name": route_decision.get("dataset_name") or "",
+                "version": "v2",
+            },
         ):
+            if sub_event.event_type in {"candidate_assets", "query_plan"}:
+                sse_payload = sub_event.to_sse_payload()
+                if sub_event.event_type == "candidate_assets":
+                    final_state["candidate_assets"] = sse_payload.get("candidate_assets")
+                elif sub_event.event_type == "query_plan":
+                    final_state["query_plan"] = sse_payload.get("query_plan")
+                    final_state["query_plan_debug"] = (
+                        (sse_payload.get("query_plan") or {}).get("debug")
+                    )
+                step_traces.append(sse_payload)
+                yield _sse_data(sse_payload)
+                continue
+
+            if sub_event.event_type == "result":
+                final_state.update(sub_event.payload.get("final_state") or {})
+                continue
+
+            if sub_event.event_type == "graph_event":
+                event = sub_event.payload["event"]
+            else:
+                sse_payload = sub_event.to_sse_payload()
+                sse_payload.setdefault("node", sub_event.event_type)
+                node_name = str(sse_payload.get("node"))
+                sse_payload.setdefault(
+                    "display_name",
+                    _NODE_DISPLAY_NAMES.get(node_name, node_name),
+                )
+                sse_payload["type"] = "step"
+                sse_payload.setdefault("status", "done")
+                step_traces.append(sse_payload)
+                yield _sse_data(sse_payload)
+                continue
+
             kind: str = event["event"]
             meta: dict = event.get("metadata", {})
             # langgraph_node 元数据标识当前所属顶层图节点
@@ -1714,6 +1757,9 @@ async def _stream_chat_singleturn(
         "turn_type": final_state.get("turn_type"),
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
+        "candidate_assets": final_state.get("candidate_assets"),
+        "query_plan": final_state.get("query_plan"),
+        "query_plan_debug": final_state.get("query_plan_debug"),
         "multiturn_metrics": multiturn_observability_metrics,
         "query_profile": query_profile,
         "explainability": explainability,
@@ -1738,6 +1784,9 @@ async def _stream_chat_singleturn(
         "turn_type": final_state.get("turn_type"),
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
+        "candidate_assets": final_state.get("candidate_assets"),
+        "query_plan": final_state.get("query_plan"),
+        "query_plan_debug": final_state.get("query_plan_debug"),
         "route_payload": final_state.get("route_payload"),
         "clarification_resolution": final_state.get("clarification_resolution_result"),
         "query_profile": query_profile,
@@ -1833,6 +1882,9 @@ async def _stream_chat_singleturn(
         "turn_type": final_state.get("turn_type"),
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
+        "candidate_assets": final_state.get("candidate_assets"),
+        "query_plan": final_state.get("query_plan"),
+        "query_plan_debug": final_state.get("query_plan_debug"),
         "route_payload": final_state.get("route_payload"),
         "clarification_resolution": final_state.get("clarification_resolution_result"),
         "term_normalization": final_state.get("term_normalization"),

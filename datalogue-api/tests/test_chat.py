@@ -65,6 +65,32 @@ def _find_event(events, event_type):
     return next(item for item in events if item.get("type") == event_type)
 
 
+def _graph_backed_fake_subagent_class():
+    """测试用 SubAgent：保留 chat 旧用例中直接驱动 fake graph 的边界。"""
+    from app.services.subagent_planning import SubAgentEvent
+
+    class FakeSubAgent:
+        def __init__(self, db, dataset_id):
+            self.db = db
+            self.dataset_id = dataset_id
+
+        def resolve_term_conflict(self, **kwargs):
+            return {"status": "not_applicable"}
+
+        def resolve_metric(self, **kwargs):
+            return {"status": "not_applicable"}
+
+        def resolve_analysis_blueprint(self, **kwargs):
+            return {"status": "not_applicable"}
+
+        async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+            version = (graph_kwargs or {}).get("version", "v2")
+            async for event in graph.astream_events(initial_state or {}, version):
+                yield SubAgentEvent(event_type="graph_event", payload={"event": event})
+
+    return FakeSubAgent
+
+
 class TestChatAPI:
     """测试 /api/chat 路由"""
 
@@ -2123,6 +2149,122 @@ class TestWorkflowRouting:
 class TestChatStreamEvents:
     """测试 /api/chat/stream SSE 事件格式（astream_events）"""
 
+    @pytest.mark.asyncio
+    async def test_stream_chat_emits_query_plan_step(self, monkeypatch, db_session, sample_dataset):
+        """单轮 chat 应透传 DatasetSubAgent 的查询规划事件和最终状态。"""
+        from app.api.chat import _stream_chat_singleturn
+        from app.services.subagent_planning import SubAgentEvent
+
+        query_plan = {
+            "query_type": "detail_query",
+            "execution_strategy": "query_graph",
+            "explanation": {"summary": "明细查询"},
+        }
+        candidate_assets = {"summary": {"field_count": 1}}
+
+        class FakeSubAgent:
+            def __init__(self, db, dataset_id):
+                self.db = db
+                self.dataset_id = dataset_id
+
+            def resolve_term_conflict(self, **kwargs):
+                return {"status": "not_applicable"}
+
+            def resolve_metric(self, **kwargs):
+                return {"status": "not_applicable"}
+
+            def resolve_analysis_blueprint(self, **kwargs):
+                return {"status": "not_applicable"}
+
+            async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+                yield SubAgentEvent(
+                    event_type="query_plan",
+                    payload={
+                        "node": "query_plan",
+                        "display_name": "查询规划",
+                        "status": "done",
+                        "query_plan": query_plan,
+                    },
+                )
+                yield SubAgentEvent(
+                    event_type="result",
+                    payload={
+                        "final_state": {
+                            **(initial_state or {}),
+                            "answer": "完成",
+                            "sql": "select 1",
+                            "sql_list": ["select 1"],
+                            "sql_result": {
+                                "columns": ["id"],
+                                "rows": [{"id": 1}],
+                                "row_count": 1,
+                            },
+                            "query_plan": query_plan,
+                            "candidate_assets": candidate_assets,
+                            "error": None,
+                        }
+                    },
+                )
+
+        route_decision = {
+            "decision": "selected",
+            "dataset_id": sample_dataset.id,
+            "dataset_name": sample_dataset.name,
+            "manifest_version": "v-test",
+            "bound_schema_version": "schema-test",
+            "score": 1.0,
+            "reason": "测试固定路由",
+        }
+        lead_agent_context = {
+            "route_decision": route_decision,
+            "effective_dataset_id": sample_dataset.id,
+            "should_continue": True,
+            "resolved_question": "查询明细",
+            "time_context": {},
+            "thread_context": {},
+            "schema_status": {"status": "ok", "structured": {"terms": []}},
+            "selected_skills": [],
+            "planned_tool_calls": [],
+            "executed_tool_calls": [],
+            "policy_violations": [],
+            "audit_trace": {},
+            "multiturn_classification": {},
+        }
+
+        monkeypatch.setattr("app.api.chat.DatasetSubAgent", FakeSubAgent)
+        monkeypatch.setattr("app.api.chat.build_workflow", lambda db: object())
+        monkeypatch.setattr(
+            "app.api.chat.build_lead_agent_context",
+            lambda *args, **kwargs: lead_agent_context,
+        )
+        monkeypatch.setattr(
+            "app.api.chat.resolve_term_clarification",
+            lambda *args, **kwargs: {"status": "none"},
+        )
+        monkeypatch.setattr(
+            "app.api.chat.route_query_intent",
+            lambda *args, **kwargs: {
+                "intent": "query",
+                "entities": {},
+                "entry_intent": "detail_query",
+                "entry_route": "query_graph",
+                "entry_reason": "测试进入查询规划",
+                "route_payload": {"kind": "query_graph"},
+            },
+        )
+
+        events = []
+        payload = ChatRequest(question="查询明细", dataset_id=sample_dataset.id)
+        async for item in _stream_chat_singleturn(payload, db_session):
+            events.append(json.loads(item["data"]))
+
+        step_events = [event for event in events if event.get("type") == "query_plan"]
+        final = [event for event in events if event.get("type") == "final"][-1]
+
+        assert any(event.get("node") == "query_plan" for event in step_events)
+        assert final["query_plan"]["execution_strategy"] == "query_graph"
+        assert final["candidate_assets"]["summary"]["field_count"] == 1
+
     def test_sse_data_serializes_datetime_and_decimal(self):
         """SSE payload 应兼容 datetime 和 Decimal 等查询结果值。"""
         from app.api.chat import _sse_data
@@ -2291,7 +2433,10 @@ class TestChatStreamEvents:
     def test_chat_stream_event_types(self, client, sample_dataset):
         """SSE 流式接口每个事件必须含 type 字段，值为 step / token / final 之一"""
         payload = {"question": "查询所有订单", "dataset_id": sample_dataset.id}
-        with patch("app.api.chat.build_workflow") as mock_wf:
+        with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.DatasetSubAgent",
+            _graph_backed_fake_subagent_class(),
+        ):
             # 模拟 astream_events 返回两个 step 事件和一个 final 事件
             async def fake_astream_events(state, version):
                 yield {
@@ -2392,7 +2537,10 @@ class TestChatStreamEvents:
                 "metadata": {"langgraph_node": "sql_execute"},
             }
 
-        with patch("app.api.chat.build_workflow") as mock_wf:
+        with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.DatasetSubAgent",
+            _graph_backed_fake_subagent_class(),
+        ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
             mock_wf.return_value = mock_graph
@@ -2491,6 +2639,9 @@ class TestChatStreamEvents:
             }
 
         with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.DatasetSubAgent",
+            _graph_backed_fake_subagent_class(),
+        ), patch(
             "app.api.chat.stream_sql_result_report",
             fake_lead_report_stream,
         ):
@@ -2598,7 +2749,10 @@ class TestChatStreamEvents:
                 "metadata": {"langgraph_node": "report_generator"},
             }
 
-        with patch("app.api.chat.build_workflow") as mock_wf:
+        with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.DatasetSubAgent",
+            _graph_backed_fake_subagent_class(),
+        ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
             mock_wf.return_value = mock_graph
