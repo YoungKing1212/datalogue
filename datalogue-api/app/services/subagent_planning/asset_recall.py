@@ -54,6 +54,8 @@ def _norm(text: Any) -> str:
 
 def _score(question: str, *texts: Any) -> tuple[float, list[dict[str, Any]]]:
     q = _norm(question)
+    if not q:
+        return 0.0, []
     signals: list[dict[str, Any]] = []
     best = 0.0
     for text in _text_values(*texts):

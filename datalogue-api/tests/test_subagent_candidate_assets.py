@@ -177,3 +177,28 @@ def test_realistic_display_names_synonyms_and_trigger_examples_score():
 
     assert any(asset["confidence"] > 0 for asset in scored)
     assert any(asset["match_signals"] for asset in scored)
+
+
+def test_blank_question_does_not_score_all_assets():
+    context = {
+        "schema_structured": {
+            "metrics": [{"id": 1, "name": "日志数量"}],
+            "dimensions": [{"id": 2, "name": "用户"}],
+            "terms": [{"id": 3, "name": "失败日志"}],
+            "blueprints": [{"id": 4, "name": "个人日报查询"}],
+            "fields": [{"table_name": "user_logs", "column_name": "created_at"}],
+            "tables_json": {"selected_tables": [{"name": "user_logs"}]},
+        }
+    }
+
+    result = build_candidate_assets_from_context(
+        question="   ",
+        dataset_id=10,
+        context=context,
+        manifest_version="v1",
+        bound_schema_version="schema-1",
+    )
+
+    assert result["assets"]
+    assert all(asset["confidence"] == 0 for asset in result["assets"])
+    assert all(asset["match_signals"] == [] for asset in result["assets"])
