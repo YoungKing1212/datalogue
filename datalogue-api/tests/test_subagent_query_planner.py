@@ -1,7 +1,11 @@
 import json
 
 from app.services.subagent_planning.contracts import CandidateAsset
-from app.services.subagent_planning.planner import build_fallback_query_plan, plan_query
+from app.services.subagent_planning.planner import (
+    _planner_human_prompt,
+    build_fallback_query_plan,
+    plan_query,
+)
 
 
 class FakeLLMResponse:
@@ -222,3 +226,81 @@ def test_plan_query_falls_back_when_llm_clarifies_detail_query_with_field_table(
     assert plan.planner_source == "fallback"
     assert plan.execution_strategy == "query_graph"
     assert "detail_query" in plan.fallback_reason
+
+
+def test_planner_human_prompt_uses_lightweight_whitelists():
+    asset = _blueprint(
+        parameters=[
+            {"name": "user_name", "required": True},
+            {"name": "start_date", "required": True},
+        ]
+    ).to_dict()
+    asset["metadata"].update(
+        {
+            "sql_template": "SELECT * FROM very_large_template WHERE private_token = 'secret'",
+            "ddl": "CREATE TABLE huge_raw_schema(id bigint)",
+            "implementation_type": "sql_template",
+        }
+    )
+    asset["match_signals"] = [
+        {"type": "keyword", "value": "日报", "score": 0.9, "raw_text": "x" * 1000}
+    ]
+
+    prompt = _planner_human_prompt(
+        question="查一下日报",
+        routing={
+            "entry_route": "dataset_subagent",
+            "entry_intent": "blueprint_query",
+            "dataset_id": 10,
+            "matched_manifest": {"manifest_id": "manifest-1", "large_debug": "debug" * 200},
+            "raw_trace": "should_not_be_prompted",
+        },
+        candidate_assets={"assets": [asset]},
+        multiturn_context={
+            "question_context": "沿用上轮用户",
+            "resolved_references": {"用户": "KenYang"},
+            "active_filters": [{"field": "date", "value": "today"}],
+            "previous_query_summary": "昨天查过日报",
+            "messages": [{"role": "user", "content": "full chat history"}],
+            "history": ["raw history"],
+        },
+        lead_agent_context={
+            "time_context": {"today": "2026-06-15"},
+            "schema_status": "ready",
+            "dataset_selection": {"dataset_id": 10},
+            "permission_scope": {"allowed": ["user_logs"]},
+            "scratchpad": "private reasoning",
+        },
+    )
+    payload = json.loads(prompt)
+
+    assert payload["routing"] == {
+        "entry_route": "dataset_subagent",
+        "entry_intent": "blueprint_query",
+        "dataset_id": 10,
+        "matched_manifest": {"manifest_id": "manifest-1"},
+    }
+    assert payload["multiturn_context"] == {
+        "question_context": "沿用上轮用户",
+        "resolved_references": {"用户": "KenYang"},
+        "active_filters": [{"field": "date", "value": "today"}],
+        "previous_query_summary": "昨天查过日报",
+    }
+    assert payload["lead_agent_context_summary"] == {
+        "time_context": {"today": "2026-06-15"},
+        "schema_status": "ready",
+        "dataset_selection": {"dataset_id": 10},
+        "permission_scope": {"allowed": ["user_logs"]},
+    }
+    assert payload["candidate_assets"][0]["metadata"] == {
+        "parameters": [
+            {"name": "user_name", "required": True},
+            {"name": "start_date", "required": True},
+        ],
+        "implementation_type": "sql_template",
+    }
+    assert "sql_template" not in payload["candidate_assets"][0]["metadata"].keys()
+    assert "very_large_template" not in prompt
+    assert "full chat history" not in prompt
+    assert "should_not_be_prompted" not in prompt
+    assert "private reasoning" not in prompt

@@ -31,6 +31,20 @@ from app.services.subagent_planning.contracts import (
 DETAIL_PATTERNS = ("明细", "列表", "日志", "记录", "最近", "前", "条", "limit")
 METRIC_PATTERNS = ("统计", "数量", "总数", "平均", "占比", "汇总", "趋势")
 BLUEPRINT_PATTERNS = ("日报", "周报", "月报", "分析", "报告")
+PROMPT_ASSET_LIMIT = 40
+LIGHTWEIGHT_METADATA_KEYS = {"table_name", "column_name", "parameters", "implementation_type"}
+LIGHTWEIGHT_ASSET_KEYS = {
+    "asset_type",
+    "asset_id",
+    "name",
+    "display_name",
+    "source",
+    "confidence",
+    "usage",
+    "match_reason",
+    "reject_reason",
+}
+LIGHTWEIGHT_SIGNAL_KEYS = {"type", "value", "score", "field", "table", "name"}
 
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
@@ -277,6 +291,112 @@ def _planner_system_prompt() -> str:
     )
 
 
+def _compact_error_text(exc: Exception, max_length: int = 300) -> str:
+    text = str(exc) or exc.__class__.__name__
+    if len(text) <= max_length:
+        return text
+    return f"{text[:max_length]}..."
+
+
+def _pick_keys(payload: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {key: payload[key] for key in keys if key in payload and payload[key] not in (None, "", [], {})}
+
+
+def _manifest_summary(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    return _pick_keys(
+        value,
+        (
+            "manifest_id",
+            "id",
+            "name",
+            "display_name",
+            "dataset_id",
+            "version",
+            "status",
+        ),
+    )
+
+
+def _routing_summary(routing: Any) -> dict[str, Any]:
+    summary = _pick_keys(
+        routing,
+        (
+            "entry_route",
+            "entry_intent",
+            "dataset_id",
+            "manifest_id",
+            "matched_manifest_id",
+        ),
+    )
+    if isinstance(routing, dict):
+        for source_key in ("matched_manifest", "manifest"):
+            if source_key in routing:
+                manifest = _manifest_summary(routing[source_key])
+                if manifest not in (None, "", [], {}):
+                    summary["matched_manifest"] = manifest
+                break
+        if "route" in routing and "entry_route" not in summary:
+            summary["entry_route"] = routing["route"]
+        if "intent" in routing and "entry_intent" not in summary:
+            summary["entry_intent"] = routing["intent"]
+    return summary
+
+
+def _multiturn_summary(multiturn_context: Any) -> dict[str, Any]:
+    return _pick_keys(
+        multiturn_context,
+        (
+            "question_context",
+            "resolved_references",
+            "active_filters",
+            "previous_query_summary",
+        ),
+    )
+
+
+def _lead_agent_context_summary(lead_agent_context: Any) -> dict[str, Any]:
+    return _pick_keys(
+        lead_agent_context,
+        (
+            "time_context",
+            "schema_status",
+            "dataset_selection",
+            "permission_scope",
+        ),
+    )
+
+
+def _lightweight_match_signal(signal: Any) -> dict[str, Any] | None:
+    if not isinstance(signal, dict):
+        return None
+    compact = _pick_keys(signal, tuple(LIGHTWEIGHT_SIGNAL_KEYS))
+    return compact or None
+
+
+def _lightweight_asset(asset: CandidateAsset) -> dict[str, Any]:
+    payload = asset.to_dict()
+    compact = _pick_keys(payload, tuple(LIGHTWEIGHT_ASSET_KEYS))
+    signals = [
+        signal
+        for signal in (_lightweight_match_signal(item) for item in payload.get("match_signals") or [])
+        if signal
+    ]
+    if signals:
+        compact["match_signals"] = signals[:5]
+    metadata = {
+        key: value
+        for key, value in (payload.get("metadata") or {}).items()
+        if key in LIGHTWEIGHT_METADATA_KEYS and value not in (None, "", [], {})
+    }
+    if metadata:
+        compact["metadata"] = metadata
+    return compact
+
+
 def _planner_human_prompt(
     *,
     question: str,
@@ -285,7 +405,7 @@ def _planner_human_prompt(
     multiturn_context: Any = None,
     lead_agent_context: Any = None,
 ) -> str:
-    assets = [asset.to_dict() for asset in _assets(candidate_assets)]
+    assets = [_lightweight_asset(asset) for asset in _assets(candidate_assets)]
     asset_counts: dict[str, int] = {}
     for asset in assets:
         asset_type = str(asset.get("asset_type") or "unknown")
@@ -293,14 +413,14 @@ def _planner_human_prompt(
 
     payload = {
         "question": question,
-        "routing": routing,
+        "routing": _routing_summary(routing),
         "candidate_summary": {
             "total": len(assets),
             "counts_by_type": asset_counts,
         },
-        "candidate_assets": assets[:40],
-        "multiturn_context": multiturn_context,
-        "lead_agent_context": lead_agent_context,
+        "candidate_assets": assets[:PROMPT_ASSET_LIMIT],
+        "multiturn_context": _multiturn_summary(multiturn_context),
+        "lead_agent_context_summary": _lead_agent_context_summary(lead_agent_context),
         "rules": [
             "blueprint_execute 只能用于固定蓝图查询，且不能携带 required_inputs。",
             "blueprint_as_reference 必须提供 reference_assets。",
@@ -356,22 +476,21 @@ def plan_query(
     multiturn_context: Any = None,
     lead_agent_context: Any = None,
 ) -> QueryPlan:
+    messages = [
+        SystemMessage(content=_planner_system_prompt()),
+        HumanMessage(
+            content=_planner_human_prompt(
+                question=question,
+                routing=routing,
+                candidate_assets=candidate_assets,
+                multiturn_context=multiturn_context,
+                lead_agent_context=lead_agent_context,
+            )
+        ),
+    ]
     try:
         llm = get_llm(temperature=0.0, role="lead_agent", db=db)
-        response = llm.invoke(
-            [
-                SystemMessage(content=_planner_system_prompt()),
-                HumanMessage(
-                    content=_planner_human_prompt(
-                        question=question,
-                        routing=routing,
-                        candidate_assets=candidate_assets,
-                        multiturn_context=multiturn_context,
-                        lead_agent_context=lead_agent_context,
-                    )
-                ),
-            ]
-        )
+        response = llm.invoke(messages)
         payload = _safe_json_parse(getattr(response, "content", response))
         plan = normalize_query_plan(payload)
         _validate_hard_rules(plan, question=question, candidate_assets=candidate_assets)
@@ -381,5 +500,5 @@ def plan_query(
             question=question,
             routing=routing,
             candidate_assets=candidate_assets,
-            fallback_reason=str(exc),
+            fallback_reason=_compact_error_text(exc),
         )

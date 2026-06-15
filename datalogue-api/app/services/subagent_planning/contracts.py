@@ -184,15 +184,55 @@ class SubAgentResult:
         )
 
 
+def _asset_payload_items(items: Any, usage: str) -> list[Any]:
+    if items is None:
+        return []
+    if isinstance(items, dict):
+        if "assets" not in items:
+            raise QueryPlanValidationError(f"{usage} assets wrapper must include assets")
+        wrapped = items.get("assets")
+        if not isinstance(wrapped, list):
+            raise QueryPlanValidationError(f"{usage} assets must be list")
+        return wrapped
+    if isinstance(items, list):
+        return items
+    raise QueryPlanValidationError(f"{usage} assets must be list")
+
+
 def _assets_from_payload(items: Any, usage: str) -> list[CandidateAsset]:
     assets: list[CandidateAsset] = []
-    for item in items or []:
+    for item in _asset_payload_items(items, usage):
         if not isinstance(item, dict):
             raise QueryPlanValidationError(f"{usage} asset must be object")
         normalized = dict(item)
         normalized["usage"] = normalized.get("usage") or usage
         assets.append(CandidateAsset.from_dict(normalized))
     return assets
+
+
+def _required_inputs_from_payload(items: Any) -> list[dict[str, Any]]:
+    if items in (None, "", []):
+        return []
+    if isinstance(items, list):
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise QueryPlanValidationError("required_inputs item must be object")
+            normalized.append(dict(item))
+        return normalized
+    if isinstance(items, dict):
+        normalized = []
+        for name, spec in items.items():
+            if isinstance(spec, dict):
+                item = dict(spec)
+            elif isinstance(spec, bool):
+                item = {"required": spec}
+            else:
+                raise QueryPlanValidationError("required_inputs dict value must be object")
+            item.setdefault("name", str(name))
+            normalized.append(item)
+        return normalized
+    raise QueryPlanValidationError("required_inputs must be list[object] or object map")
 
 
 def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
@@ -212,7 +252,7 @@ def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
         selected_assets=_assets_from_payload(payload.get("selected_assets"), "selected"),
         reference_assets=_assets_from_payload(payload.get("reference_assets"), "reference"),
         rejected_assets=_assets_from_payload(payload.get("rejected_assets"), "rejected"),
-        required_inputs=list(payload.get("required_inputs") or []),
+        required_inputs=_required_inputs_from_payload(payload.get("required_inputs")),
         clarification=payload.get("clarification") if isinstance(payload.get("clarification"), dict) else None,
         fallback_reason=payload.get("fallback_reason"),
         planner_source=planner_source,

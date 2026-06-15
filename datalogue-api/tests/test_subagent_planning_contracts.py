@@ -52,6 +52,107 @@ def test_query_plan_rejects_invalid_execution_strategy():
         raise AssertionError("invalid execution_strategy should fail validation")
 
 
+def test_normalize_query_plan_accepts_wrapped_asset_lists():
+    raw = {
+        "query_type": "detail_query",
+        "execution_strategy": "blueprint_as_reference",
+        "confidence": 0.82,
+        "selected_assets": {
+            "assets": [
+                {
+                    "asset_type": "field",
+                    "asset_id": "table:user_logs.column:id",
+                    "name": "id",
+                    "display_name": "日志ID",
+                    "source": "schema",
+                    "confidence": 0.9,
+                    "metadata": {"table_name": "user_logs", "column_name": "id"},
+                }
+            ]
+        },
+        "reference_assets": {
+            "assets": [
+                {
+                    "asset_type": "blueprint",
+                    "asset_id": 7,
+                    "name": "个人日报查询",
+                    "display_name": "个人日报查询",
+                    "source": "analysis_blueprint",
+                    "confidence": 0.8,
+                    "metadata": {"implementation_type": "sql_template"},
+                }
+            ]
+        },
+        "rejected_assets": {"assets": []},
+        "planner_source": "llm",
+        "explanation": {"summary": "蓝图作为参考。"},
+    }
+
+    plan = normalize_query_plan(raw)
+
+    assert plan.selected_assets[0].asset_type == "field"
+    assert plan.selected_assets[0].usage == "selected"
+    assert plan.reference_assets[0].asset_type == "blueprint"
+    assert plan.reference_assets[0].usage == "reference"
+
+
+def test_normalize_query_plan_rejects_malformed_asset_wrapper():
+    raw = {
+        "query_type": "detail_query",
+        "execution_strategy": "query_graph",
+        "confidence": 0.82,
+        "selected_assets": {"items": []},
+        "planner_source": "llm",
+        "explanation": {"summary": "字段查询。"},
+    }
+
+    try:
+        normalize_query_plan(raw)
+    except QueryPlanValidationError as exc:
+        assert "selected assets" in str(exc)
+    else:
+        raise AssertionError("malformed selected_assets wrapper should fail validation")
+
+
+def test_normalize_query_plan_accepts_required_inputs_dict():
+    raw = {
+        "query_type": "blueprint_query",
+        "execution_strategy": "clarify",
+        "confidence": 0.7,
+        "required_inputs": {
+            "user_name": {"required": True, "display_name": "用户"},
+            "start_date": {"required": True},
+        },
+        "planner_source": "llm",
+        "explanation": {"summary": "缺少蓝图参数。"},
+    }
+
+    plan = normalize_query_plan(raw)
+
+    assert plan.required_inputs == [
+        {"required": True, "display_name": "用户", "name": "user_name"},
+        {"required": True, "name": "start_date"},
+    ]
+
+
+def test_normalize_query_plan_rejects_unstable_required_inputs():
+    raw = {
+        "query_type": "blueprint_query",
+        "execution_strategy": "clarify",
+        "confidence": 0.7,
+        "required_inputs": ["user_name", "start_date"],
+        "planner_source": "llm",
+        "explanation": {"summary": "缺少蓝图参数。"},
+    }
+
+    try:
+        normalize_query_plan(raw)
+    except QueryPlanValidationError as exc:
+        assert "required_inputs" in str(exc)
+    else:
+        raise AssertionError("list[str] required_inputs should fail validation")
+
+
 def test_query_plan_constructor_rejects_invalid_strategy():
     try:
         QueryPlan(query_type="detail_query", execution_strategy="unknown", confidence=0.1)
