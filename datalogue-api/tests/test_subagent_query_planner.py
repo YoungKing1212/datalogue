@@ -81,3 +81,48 @@ def test_fallback_blueprint_query_missing_required_input_clarifies():
     assert plan.execution_strategy == "clarify"
     assert {item["name"] for item in plan.required_inputs} == {"user_name", "start_date"}
     assert plan.clarification
+
+
+def test_fallback_accepts_asset_recall_result_dict_for_detail_query():
+    plan = build_fallback_query_plan(
+        "查询10条用户日志",
+        {"assets": [_field().to_dict(), _table()], "summary": {}, "recall_debug": {}},
+    )
+
+    assert plan.query_type == "detail_query"
+    assert plan.execution_strategy == "query_graph"
+    assert {asset.asset_type for asset in plan.selected_assets} == {"field", "table"}
+
+
+def test_fallback_accepts_keyword_routing_and_fallback_reason():
+    plan = build_fallback_query_plan(
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent", "inputs": {"limit": 10}},
+        candidate_assets={"assets": [_field().to_dict(), _table()]},
+        fallback_reason="llm_plan_invalid",
+    )
+
+    assert plan.query_type == "detail_query"
+    assert plan.execution_strategy == "query_graph"
+    assert plan.fallback_reason == "llm_plan_invalid"
+
+
+def test_fallback_blueprint_query_with_inputs_executes_blueprint():
+    plan = build_fallback_query_plan(
+        question="查一下日报",
+        routing={"inputs": {"user_name": "KenYang", "start_date": "2026-06-15"}},
+        candidate_assets=[
+            _blueprint(
+                parameters={
+                    "user_name": {"required": True},
+                    "start_date": {"required": True},
+                }
+            )
+        ],
+    )
+
+    assert plan.query_type == "blueprint_query"
+    assert plan.execution_strategy == "blueprint_execute"
+    assert plan.selected_assets[0].asset_type == "blueprint"
+    assert plan.selected_assets[0].usage == "selected"
+    assert plan.required_inputs == []
