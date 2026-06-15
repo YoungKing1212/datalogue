@@ -4,6 +4,8 @@
 .agents/skills/
 .codex/config.toml
 .cubestore/
+.codegraph/
+.worktrees/
 skills-lock.json
 feishu-cli-auth-qrcode.png
 
