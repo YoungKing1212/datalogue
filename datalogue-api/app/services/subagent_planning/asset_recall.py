@@ -24,6 +24,30 @@ from app.services.subagent_planning.contracts import CandidateAsset
 LIGHTWEIGHT_CONTEXT_TOKEN_BUDGET = 2500
 
 
+def _as_mapping(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return value
+
+
+def _first_text(*values: Any) -> str:
+    for value in _text_values(*values):
+        return value
+    return ""
+
+
+def _text_values(*values: Any) -> list[str]:
+    texts: list[str] = []
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            texts.extend(_text_values(*value))
+        elif value not in (None, "", [], {}):
+            text = str(value).strip()
+            if text:
+                texts.append(text)
+    return texts
+
+
 def _norm(text: Any) -> str:
     return re.sub(r"[\s_`'\".]+", "", str(text or "").strip().lower())
 
@@ -32,8 +56,7 @@ def _score(question: str, *texts: Any) -> tuple[float, list[dict[str, Any]]]:
     q = _norm(question)
     signals: list[dict[str, Any]] = []
     best = 0.0
-    for raw in texts:
-        text = str(raw or "").strip()
+    for text in _text_values(*texts):
         normalized = _norm(text)
         if not normalized:
             continue
@@ -71,8 +94,11 @@ def _asset(
 
 def _table_assets(structured: dict[str, Any], question: str) -> list[dict[str, Any]]:
     tables_json = structured.get("tables_json") or {}
+    if not isinstance(tables_json, dict):
+        tables_json = {}
     selected = tables_json.get("selected_tables") or tables_json.get("tables") or []
     assets: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for item in selected:
         if isinstance(item, str):
             name = item
@@ -85,7 +111,23 @@ def _table_assets(structured: dict[str, Any], question: str) -> list[dict[str, A
             continue
         if not name:
             continue
+        normalized = _norm(name)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
         confidence, signals = _score(question, name, metadata.get("description"))
+        assets.append(_asset("table", name, name, "schema", confidence, signals, metadata))
+    for field in structured.get("fields") or []:
+        mapping = _as_mapping(field)
+        if not mapping:
+            continue
+        name = _first_text(mapping.get("table_name"), mapping.get("table"))
+        normalized = _norm(name)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        metadata = {"table_name": name, "source": "fields"}
+        confidence, signals = _score(question, name)
         assets.append(_asset("table", name, name, "schema", confidence, signals, metadata))
     return assets
 
@@ -100,72 +142,138 @@ def build_candidate_assets_from_context(
 ) -> dict[str, Any]:
     structured = context.get("schema_structured") or {}
     assets: list[dict[str, Any]] = []
-    for blueprint in structured.get("blueprints") or []:
+    if not isinstance(structured, dict):
+        structured = {}
+    for raw_blueprint in structured.get("blueprints") or []:
+        blueprint = _as_mapping(raw_blueprint)
+        if not blueprint:
+            continue
+        name = _first_text(blueprint.get("name"), blueprint.get("display_name"))
+        asset_id = blueprint.get("id") or name
+        if not asset_id or not name:
+            continue
         confidence, signals = _score(
             question,
-            blueprint.get("name"),
+            name,
             blueprint.get("description"),
             blueprint.get("when_to_use"),
-            " ".join(blueprint.get("trigger_keywords") or []),
+            blueprint.get("trigger_keywords"),
+            blueprint.get("trigger_examples"),
         )
         metadata = dict(blueprint)
         assets.append(
             _asset(
                 "blueprint",
-                blueprint.get("id") or blueprint.get("name"),
-                str(blueprint.get("name") or ""),
+                asset_id,
+                name,
                 "analysis_blueprint",
                 confidence,
                 signals,
                 metadata,
             )
         )
-    for metric in structured.get("metrics") or []:
-        confidence, signals = _score(question, metric.get("name"), metric.get("description"), metric.get("expr"))
+    for raw_metric in structured.get("metrics") or []:
+        metric = _as_mapping(raw_metric)
+        if not metric:
+            continue
+        name = _first_text(metric.get("name"), metric.get("display_name"))
+        asset_id = metric.get("id") or name
+        if not asset_id or not name:
+            continue
+        confidence, signals = _score(
+            question,
+            name,
+            metric.get("display_name"),
+            metric.get("synonyms"),
+            metric.get("description"),
+            metric.get("expr"),
+        )
         assets.append(
             _asset(
                 "metric",
-                metric.get("id") or metric.get("name"),
-                str(metric.get("name") or ""),
+                asset_id,
+                name,
                 "semantic_metric",
                 confidence,
                 signals,
                 dict(metric),
             )
         )
-    for dimension in structured.get("dimensions") or []:
-        confidence, signals = _score(question, dimension.get("name"), dimension.get("description"), dimension.get("expr"))
+    for raw_dimension in structured.get("dimensions") or []:
+        dimension = _as_mapping(raw_dimension)
+        if not dimension:
+            continue
+        name = _first_text(dimension.get("name"), dimension.get("display_name"))
+        asset_id = dimension.get("id") or name
+        if not asset_id or not name:
+            continue
+        confidence, signals = _score(
+            question,
+            name,
+            dimension.get("display_name"),
+            dimension.get("synonyms"),
+            dimension.get("description"),
+            dimension.get("expr"),
+        )
         assets.append(
             _asset(
                 "dimension",
-                dimension.get("id") or dimension.get("name"),
-                str(dimension.get("name") or ""),
+                asset_id,
+                name,
                 "semantic_dimension",
                 confidence,
                 signals,
                 dict(dimension),
             )
         )
-    for term in structured.get("terms") or []:
-        aliases = term.get("aliases") or []
-        confidence, signals = _score(question, term.get("name"), term.get("display_name"), " ".join(map(str, aliases)))
+    for raw_term in structured.get("terms") or []:
+        term = _as_mapping(raw_term)
+        if not term:
+            continue
+        name = _first_text(term.get("name"), term.get("display_name"))
+        asset_id = term.get("id") or name
+        if not asset_id or not name:
+            continue
+        confidence, signals = _score(
+            question,
+            name,
+            term.get("display_name"),
+            term.get("aliases"),
+            term.get("synonyms"),
+        )
         assets.append(
             _asset(
                 "term",
-                term.get("id") or term.get("name"),
-                str(term.get("name") or term.get("display_name") or ""),
+                asset_id,
+                name,
                 "business_term",
                 confidence,
                 signals,
                 dict(term),
             )
         )
-    for field in structured.get("fields") or []:
-        table_name = field.get("table_name") or field.get("table")
-        column_name = field.get("column_name") or field.get("name") or field.get("column")
+    for raw_field in structured.get("fields") or []:
+        field = _as_mapping(raw_field)
+        if not field:
+            continue
+        table_name = _first_text(field.get("table_name"), field.get("table"))
+        column_name = _first_text(field.get("column_name"), field.get("name"), field.get("column"))
+        if not table_name or not column_name:
+            continue
         asset_id = f"table:{table_name}.column:{column_name}"
-        confidence, signals = _score(question, column_name, field.get("semantic"), field.get("description"), table_name)
-        assets.append(_asset("field", asset_id, str(column_name or ""), "schema", confidence, signals, dict(field)))
+        confidence, signals = _score(
+            question,
+            column_name,
+            field.get("display_name"),
+            field.get("semantic"),
+            field.get("business_desc"),
+            field.get("effective_desc"),
+            field.get("column_comment"),
+            field.get("synonyms"),
+            field.get("description"),
+            table_name,
+        )
+        assets.append(_asset("field", asset_id, column_name, "schema", confidence, signals, dict(field)))
     assets.extend(_table_assets(structured, question))
     summary = {
         "blueprint_count": sum(1 for asset in assets if asset["asset_type"] == "blueprint"),

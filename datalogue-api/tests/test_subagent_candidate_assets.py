@@ -91,3 +91,89 @@ def test_recall_candidate_assets_uses_lightweight_token_budget(db_session, monke
 
     assert captured == {"dataset_id": 10, "question": "查询10条用户日志", "token_budget": 2500}
     assert result["summary"]["blueprint_count"] == 0
+
+
+def test_table_assets_fallback_to_field_table_names_when_tables_json_empty():
+    context = {
+        "schema_structured": {
+            "tables_json": {},
+            "fields": [
+                {"table_name": "user_logs", "column_name": "id"},
+                {"table_name": "user_logs", "column_name": "created_at"},
+            ],
+        }
+    }
+
+    result = build_candidate_assets_from_context(
+        question="查询用户日志",
+        dataset_id=10,
+        context=context,
+        manifest_version="v1",
+        bound_schema_version="schema-1",
+    )
+
+    tables = [asset for asset in result["assets"] if asset["asset_type"] == "table"]
+
+    assert [table["name"] for table in tables] == ["user_logs"]
+    assert tables[0]["metadata"] == {"table_name": "user_logs", "source": "fields"}
+
+
+def test_malformed_structured_entries_are_skipped():
+    context = {
+        "schema_structured": {
+            "blueprints": [None, {}, "bad"],
+            "metrics": [None, {}],
+            "dimensions": ["bad"],
+            "terms": [{}],
+            "fields": [{}, {"table_name": "user_logs"}],
+        }
+    }
+
+    result = build_candidate_assets_from_context(
+        question="查询用户日志",
+        dataset_id=10,
+        context=context,
+        manifest_version="v1",
+        bound_schema_version="schema-1",
+    )
+
+    assert all(asset["asset_id"] for asset in result["assets"])
+    assert all(asset["name"] for asset in result["assets"])
+    assert not any(asset["asset_id"] == "table:None.column:None" for asset in result["assets"])
+
+
+def test_realistic_display_names_synonyms_and_trigger_examples_score():
+    context = {
+        "schema_structured": {
+            "blueprints": [
+                {"id": 1, "name": "日报", "trigger_examples": ["查询个人工作日志"]},
+            ],
+            "metrics": [
+                {"id": 2, "name": "log_count", "display_name": "日志数量", "synonyms": ["记录数"]},
+            ],
+            "dimensions": [],
+            "terms": [],
+            "fields": [
+                {
+                    "table_name": "user_logs",
+                    "column_name": "status",
+                    "display_name": "日志状态",
+                    "synonyms": ["失败状态"],
+                }
+            ],
+            "tables_json": {},
+        }
+    }
+
+    result = build_candidate_assets_from_context(
+        question="最近10条失败状态日志",
+        dataset_id=10,
+        context=context,
+        manifest_version="v1",
+        bound_schema_version="schema-1",
+    )
+
+    scored = [asset for asset in result["assets"] if asset["asset_type"] in {"field", "blueprint", "metric"}]
+
+    assert any(asset["confidence"] > 0 for asset in scored)
+    assert any(asset["match_signals"] for asset in scored)
