@@ -1,5 +1,25 @@
+import json
+
 from app.services.subagent_planning.contracts import CandidateAsset
-from app.services.subagent_planning.planner import build_fallback_query_plan
+from app.services.subagent_planning.planner import build_fallback_query_plan, plan_query
+
+
+class FakeLLMResponse:
+    def __init__(self, content):
+        self.content = content
+
+
+class FakeLLM:
+    def __init__(self, content=None, exc=None):
+        self.content = content
+        self.exc = exc
+        self.messages = None
+
+    def invoke(self, messages):
+        self.messages = messages
+        if self.exc:
+            raise self.exc
+        return FakeLLMResponse(self.content)
 
 
 def _field(name="created_at"):
@@ -126,3 +146,79 @@ def test_fallback_blueprint_query_with_inputs_executes_blueprint():
     assert plan.selected_assets[0].asset_type == "blueprint"
     assert plan.selected_assets[0].usage == "selected"
     assert plan.required_inputs == []
+
+
+def test_plan_query_with_llm_validates_and_returns_llm_plan(monkeypatch, db_session):
+    llm_payload = {
+        "query_type": "detail_query",
+        "execution_strategy": "blueprint_as_reference",
+        "confidence": 0.88,
+        "selected_assets": [_field().to_dict(), _table()],
+        "reference_assets": [_blueprint().to_dict()],
+        "planner_source": "llm",
+        "explanation": {"summary": "使用字段和表查询明细，蓝图仅作为参考。"},
+    }
+    fake_llm = FakeLLM(json.dumps(llm_payload, ensure_ascii=False))
+
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: fake_llm,
+    )
+
+    plan = plan_query(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": [_blueprint().to_dict(), _field().to_dict(), _table()]},
+    )
+
+    assert plan.planner_source == "llm"
+    assert plan.execution_strategy == "blueprint_as_reference"
+
+
+def test_plan_query_falls_back_when_llm_raises(monkeypatch, db_session):
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: FakeLLM(exc=RuntimeError("planner down")),
+    )
+
+    plan = plan_query(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": [_field().to_dict(), _table()]},
+    )
+
+    assert plan.planner_source == "fallback"
+    assert plan.fallback_reason == "planner down"
+    assert plan.execution_strategy == "query_graph"
+
+
+def test_plan_query_falls_back_when_llm_clarifies_detail_query_with_field_table(
+    monkeypatch,
+    db_session,
+):
+    llm_payload = {
+        "query_type": "detail_query",
+        "execution_strategy": "clarify",
+        "confidence": 0.66,
+        "required_inputs": [{"name": "metric", "required": True}],
+        "clarification": {"message": "请选择指标"},
+        "planner_source": "llm",
+        "explanation": {"summary": "需要指标后继续。"},
+    }
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: FakeLLM(json.dumps(llm_payload, ensure_ascii=False)),
+    )
+
+    plan = plan_query(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": [_field().to_dict(), _table()]},
+    )
+
+    assert plan.planner_source == "fallback"
+    assert plan.execution_strategy == "query_graph"
+    assert "detail_query" in plan.fallback_reason

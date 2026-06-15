@@ -13,14 +13,19 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from app.graph.llm import get_llm
 from app.services.subagent_planning.contracts import (
     CANDIDATE_ASSET_TYPES,
     CandidateAsset,
     QueryPlan,
     QueryPlanValidationError,
+    normalize_query_plan,
 )
 
 DETAIL_PATTERNS = ("明细", "列表", "日志", "记录", "最近", "前", "条", "limit")
@@ -256,3 +261,125 @@ def build_fallback_query_plan(
         planner_source="fallback",
         explanation={"summary": "候选资产不足，规则兜底无法形成可执行查询计划。"},
     )
+
+
+def _planner_system_prompt() -> str:
+    return "\n".join(
+        [
+            "你是数语 DatasetSubAgent 的查询规划器，只能输出严格 JSON。",
+            "不要输出 Markdown、解释文字或代码块之外的任何内容。",
+            "JSON 必须符合 QueryPlan 契约：query_type、execution_strategy、confidence、planner_source、explanation。",
+            "planner_source 必须为 llm。",
+            "可选资产字段包括 selected_assets、reference_assets、rejected_assets、required_inputs、clarification、debug。",
+            "execution_strategy 可选：blueprint_execute、blueprint_as_reference、query_graph、clarify、reject。",
+            "明细查询命中 field/table 时，应优先 query_graph 或 blueprint_as_reference，不要因为缺少指标而 clarify。",
+        ]
+    )
+
+
+def _planner_human_prompt(
+    *,
+    question: str,
+    routing: Any,
+    candidate_assets: CandidateAssetInput,
+    multiturn_context: Any = None,
+    lead_agent_context: Any = None,
+) -> str:
+    assets = [asset.to_dict() for asset in _assets(candidate_assets)]
+    asset_counts: dict[str, int] = {}
+    for asset in assets:
+        asset_type = str(asset.get("asset_type") or "unknown")
+        asset_counts[asset_type] = asset_counts.get(asset_type, 0) + 1
+
+    payload = {
+        "question": question,
+        "routing": routing,
+        "candidate_summary": {
+            "total": len(assets),
+            "counts_by_type": asset_counts,
+        },
+        "candidate_assets": assets[:40],
+        "multiturn_context": multiturn_context,
+        "lead_agent_context": lead_agent_context,
+        "rules": [
+            "blueprint_execute 只能用于固定蓝图查询，且不能携带 required_inputs。",
+            "blueprint_as_reference 必须提供 reference_assets。",
+            "reject 必须提供 explanation.summary。",
+            "detail_query 如果候选中已有 field/table，不应返回 clarify。",
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _safe_json_parse(content: Any) -> dict[str, Any]:
+    if isinstance(content, dict):
+        return content
+    text = str(content or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise QueryPlanValidationError("planner output must be a JSON object")
+    return parsed
+
+
+def _validate_hard_rules(
+    plan: QueryPlan,
+    *,
+    question: str,
+    candidate_assets: CandidateAssetInput,
+) -> None:
+    del question
+    if plan.execution_strategy == "blueprint_execute" and plan.required_inputs:
+        raise QueryPlanValidationError("blueprint_execute cannot include required_inputs")
+    if plan.execution_strategy == "blueprint_as_reference" and not plan.reference_assets:
+        raise QueryPlanValidationError("blueprint_as_reference requires reference_assets")
+    if plan.execution_strategy == "reject" and not str(plan.explanation.get("summary") or "").strip():
+        raise QueryPlanValidationError("reject requires explanation.summary")
+
+    has_field_or_table = any(asset.asset_type in {"field", "table"} for asset in _assets(candidate_assets))
+    if plan.query_type == "detail_query" and plan.execution_strategy == "clarify" and has_field_or_table:
+        raise QueryPlanValidationError("detail_query cannot clarify when field/table candidates exist")
+
+
+def plan_query(
+    *,
+    db: Any,
+    question: str,
+    routing: Any,
+    candidate_assets: CandidateAssetInput,
+    multiturn_context: Any = None,
+    lead_agent_context: Any = None,
+) -> QueryPlan:
+    try:
+        llm = get_llm(temperature=0.0, role="lead_agent", db=db)
+        response = llm.invoke(
+            [
+                SystemMessage(content=_planner_system_prompt()),
+                HumanMessage(
+                    content=_planner_human_prompt(
+                        question=question,
+                        routing=routing,
+                        candidate_assets=candidate_assets,
+                        multiturn_context=multiturn_context,
+                        lead_agent_context=lead_agent_context,
+                    )
+                ),
+            ]
+        )
+        payload = _safe_json_parse(getattr(response, "content", response))
+        plan = normalize_query_plan(payload)
+        _validate_hard_rules(plan, question=question, candidate_assets=candidate_assets)
+        return plan
+    except Exception as exc:
+        return build_fallback_query_plan(
+            question=question,
+            routing=routing,
+            candidate_assets=candidate_assets,
+            fallback_reason=str(exc),
+        )
