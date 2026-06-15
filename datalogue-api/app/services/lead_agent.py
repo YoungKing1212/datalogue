@@ -177,6 +177,80 @@ def build_fallback_plan(
     }
 
 
+FAST_PATH_QUERY_INTENTS = {"new", "new_query", "query", "self_contained"}
+FAST_PATH_QUERY_KEYWORDS = (
+    "查",
+    "查询",
+    "看",
+    "列",
+    "明细",
+    "日志",
+    "日报",
+    "记录",
+    "多少",
+    "统计",
+    "趋势",
+    "排名",
+)
+FAST_PATH_TOOLS = (
+    "thread_context",
+    "manifest_router",
+    "schema_status",
+    "subagent_dispatch",
+    "audit_trace",
+)
+FAST_PATH_SKILLS = [
+    "ConversationContinuitySkill",
+    "DatasetRoutingSkill",
+    "SchemaFreshnessSkill",
+    "SubAgentDelegationSkill",
+    "AuditSkill",
+]
+
+
+def _fast_path_query_signal(question: str) -> bool:
+    return any(keyword in question for keyword in FAST_PATH_QUERY_KEYWORDS)
+
+
+def _deterministic_tool_plan(
+    *,
+    question: str,
+    conversation_summary: dict[str, Any],
+    tool_policy: dict[str, Any],
+) -> dict[str, Any] | None:
+    """锁定数据集的新自包含查询直接走固定控制面计划，绕开两次 LLM。"""
+
+    if not tool_policy.get("locked_dataset_id"):
+        return None
+    multiturn_classification = conversation_summary.get("multiturn_classification") or {}
+    turn_intent = str(multiturn_classification.get("intent") or "new_query")
+    if turn_intent not in FAST_PATH_QUERY_INTENTS:
+        return None
+    if multiturn_classification.get("should_inherit_dataset") is True:
+        return None
+    if not _fast_path_query_signal(question):
+        return None
+    allowed_tools = set(tool_policy.get("allowed_tools") or [])
+    if not set(FAST_PATH_TOOLS).issubset(allowed_tools):
+        return None
+    return {
+        "reasoning_summary": "锁定数据集的新自包含查询命中确定性控制面快路径。",
+        "selected_skills": FAST_PATH_SKILLS,
+        "tool_calls": [
+            {"tool": "thread_context", "reason": "读取会话和显式数据集锁定。"},
+            {"tool": "manifest_router", "reason": "使用已锁定数据集，不重新选择数据集。"},
+            {"tool": "schema_status", "reason": "检查锁定数据集的 Manifest/schema 状态。"},
+            {"tool": "subagent_dispatch", "reason": "数据集已明确，直接调度 SubAgent。"},
+            {"tool": "audit_trace", "reason": "记录确定性快路径控制面摘要。"},
+        ],
+        "planner_fallback": False,
+        "fallback_reason": None,
+        "planner_source": "deterministic",
+        "fast_path_hit": True,
+        "llm_skipped_reason": "locked_dataset_self_contained_query",
+    }
+
+
 def plan_tool_calls_with_llm(
     db: Session,
     *,
@@ -188,6 +262,32 @@ def plan_tool_calls_with_llm(
     trace_context: Any | None = None,
 ) -> dict[str, Any]:
     """LeadAgentPlanner：用 LLM 生成工具计划，失败时返回安全降级计划。"""
+
+    deterministic_plan = _deterministic_tool_plan(
+        question=question,
+        conversation_summary=conversation_summary,
+        tool_policy=tool_policy,
+    )
+    if deterministic_plan:
+        if tracer is not None and trace_context is not None:
+            try:
+                span = tracer.start_span(
+                    trace_context,
+                    node="llm.lead_agent_tool_planner",
+                    display_name="llm.lead_agent_tool_planner",
+                    input_payload={
+                        "question": question,
+                        "locked_dataset_id": tool_policy.get("locked_dataset_id"),
+                    },
+                )
+                tracer.end_span(
+                    trace_context,
+                    node="llm.lead_agent_tool_planner",
+                    output_payload=deterministic_plan,
+                )
+            except Exception:
+                pass
+        return deterministic_plan
 
     availability = _lead_agent_llm_available(db)
     if not availability["available"]:
@@ -1344,7 +1444,7 @@ def build_lead_agent_context(
         tracer.start_span(
             trace_context,
             node="lead_agent_control_plane",
-            display_name="LeadAgent 控制面",
+            display_name="lead_agent_control_plane",
             input_payload={
                 "question": question,
                 "conversation": conversation_summary,
@@ -1813,7 +1913,7 @@ def merge_multiturn_decision_for_chat(
         tracer.start_span(
             trace_context,
             node="lead.merge_prior_context",
-            display_name="Lead · 多轮合并",
+            display_name="lead.merge_prior_context",
             input_payload={
                 "turn_type": state.get("turn_type"),
                 "has_prior_capsule": state.get("prior_capsule") is not None,

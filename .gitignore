@@ -29,6 +29,7 @@ env/
 .ruff_cache/
 wheelhouse/
 datalogue-api/wheelhouse/
+datalogue-api/data/
 
 # IDE
 .idea/

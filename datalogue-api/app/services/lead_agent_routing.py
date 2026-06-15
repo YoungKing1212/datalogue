@@ -290,7 +290,7 @@ def route_query_intent(
         tracer.start_span(
             trace_context,
             node="lead_agent_routing",
-            display_name="LeadAgent · 入口路由",
+            display_name="lead_agent_routing",
             input_payload={
                 "question": question,
                 "dataset_id": dataset_id,
@@ -392,7 +392,10 @@ def _invoke_intent_llm(
         logger.warning("[route_query_intent] LLM 调用失败，降级: %s", exc)
         if generation is not None and tracer is not None and hasattr(tracer, "end_generation"):
             tracer.end_generation(
-                generation, output=str(exc), usage={}, error=str(exc)
+                generation,
+                output=str(exc),
+                usage={},
+                metadata={"status": "fallback", "error": str(exc)[:1000]},
             )
         return "query", {}, None, {}
     ended_at = time.perf_counter()

@@ -18,6 +18,7 @@ pydantic-settings==2.3.4
 langchain==0.2.0
 langchain-openai==0.1.7
 langgraph==0.0.65
+litellm>=1.70,<1.83
 
 # Security
 cryptography==42.0.7

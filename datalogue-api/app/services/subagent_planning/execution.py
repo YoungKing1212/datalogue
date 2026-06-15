@@ -19,7 +19,6 @@ from typing import Any
 from app.services.subagent_planning.contracts import CandidateAsset, QueryPlan, SubAgentResult
 
 TEXT_LIMIT = 600
-SQL_LIMIT = 400
 PARAMETERS_LIMIT = 900
 TRUNCATED_SUFFIX = "...[已截断]"
 
@@ -69,22 +68,12 @@ def build_blueprint_reference_context(plan: QueryPlan) -> str:
         description = _asset_value(asset, "description")
         when_to_use = _asset_value(asset, "when_to_use")
         parameters = _asset_value(asset, "parameters")
-        sql_template = (
-            metadata.get("sql_template")
-            or metadata.get("call_template")
-            or metadata.get("raw_sql")
-        )
         if description:
             lines.append(f"- description: {_compact_value(description)}")
         if when_to_use:
             lines.append(f"- when_to_use: {_compact_value(when_to_use)}")
         if parameters:
             lines.append(f"- parameters: {_compact_value(parameters, PARAMETERS_LIMIT)}")
-        if sql_template:
-            lines.append("- SQL 参考模板（只能作为参考证据，不能原样执行）:")
-            lines.append("```sql")
-            lines.append(_compact_value(sql_template, SQL_LIMIT))
-            lines.append("```")
         sections.append("\n".join(lines))
 
     return "\n\n".join(sections)

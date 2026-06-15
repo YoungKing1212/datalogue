@@ -55,30 +55,35 @@ from app.services.conversation_store import (
     pending_clarification_from_final_payload,
     session_key,
 )
+from app.utils.think import (
+    filter_think_stream_chunk,
+    flush_think_stream_state,
+    new_think_stream_state,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-# 节点名称到前端展示名的映射
+# 节点名称到前端/Trace 展示名的映射；展示名统一使用原始节点名，便于按节点检索 trace。
 _NODE_DISPLAY_NAMES = {
-    "merge_prior_context": "多轮上下文",
-    "clarification_resolution": "澄清解析",
-    "intent_recognition": "意图识别",
-    "entry_intent_classification": "入口分类",
-    "analysis_blueprint_execute": "蓝图执行",
-    "candidate_assets": "候选资产召回",
-    "query_plan": "查询规划",
-    "schema_recall": "Schema 召回",
-    "term_conflict_resolve": "术语冲突解析",
-    "metric_resolve": "指标解析",
-    "dsl_generate": "DSL 生成",
-    "dsl_validate": "DSL 校验",
-    "dsl_compiler": "SQL 编译",
-    "sql_execute": "SQL 执行",
-    "sql_audit": "SQL 诊断",
-    "report_generator": "报告生成",
-    "lead_agent_report_generator": "LeadAgent 报告生成",
+    "merge_prior_context": "merge_prior_context",
+    "clarification_resolution": "clarification_resolution",
+    "intent_recognition": "intent_recognition",
+    "entry_intent_classification": "entry_intent_classification",
+    "analysis_blueprint_execute": "analysis_blueprint_execute",
+    "candidate_assets": "subagent.candidate_assets",
+    "query_plan": "subagent.query_plan",
+    "schema_recall": "schema_recall",
+    "term_conflict_resolve": "term_conflict_resolve",
+    "metric_resolve": "metric_resolve",
+    "dsl_generate": "dsl_generate",
+    "dsl_validate": "dsl_validate",
+    "dsl_compiler": "dsl_compiler",
+    "sql_execute": "sql_execute",
+    "sql_audit": "sql_audit",
+    "report_generator": "report_generator",
+    "lead_agent_report_generator": "lead_agent_report_generator",
 }
 
 _STATE_OUTPUT_KEYS = {
@@ -796,7 +801,7 @@ async def _stream_chat_singleturn(
     tracer.start_span(
         trace_context,
         node="context-assembly",
-        display_name="多轮 · 上下文组装",
+        display_name="context-assembly",
         input_payload={
             "business_session_id": observability_session_id,
             "conversation_id": conv_id,
@@ -824,7 +829,7 @@ async def _stream_chat_singleturn(
     tracer.start_span(
         trace_context,
         node="lead.routing",
-        display_name="Lead · 路由决策",
+        display_name="lead.routing",
         input_payload={
             "question": payload.question,
             "conversation_id": conv_id,
@@ -854,7 +859,7 @@ async def _stream_chat_singleturn(
     tracer.start_span(
         trace_context,
         node="turn-classification",
-        display_name="多轮 · 轮次分类",
+        display_name="turn-classification",
         input_payload={
             "question": payload.question,
             "active_dataset_id": (multiturn_context or {}).get("active_dataset_id"),
@@ -1062,7 +1067,7 @@ async def _stream_chat_singleturn(
         {
             "type": "step",
             "node": "lead_agent",
-            "display_name": "LeadAgent · 入口路由",
+            "display_name": "lead_agent",
             "status": "done",
             "intent": routing.get("intent"),
             "entities": routing.get("entities") or {},
@@ -1078,7 +1083,7 @@ async def _stream_chat_singleturn(
             {
                 "type": "step",
                 "node": "clarification_resolution",
-                "display_name": _NODE_DISPLAY_NAMES.get("clarification_resolution", "澄清解析"),
+                "display_name": _NODE_DISPLAY_NAMES.get("clarification_resolution", "clarification_resolution"),
                 "status": "done",
                 "elapsed_ms": 0,
                 "clarification_resolution": term_resolution.get("clarification_resolution_result") or {},
@@ -1236,6 +1241,7 @@ async def _stream_chat_singleturn(
         reported_running: set[str] = set()
         reported_done: set[str] = set()
         step_traces: list[dict] = []  # 收集推理步骤供历史加载时恢复思维链
+        graph_report_think_state = new_think_stream_state()
 
         async for sub_event in sub_agent.run(
             subagent_request,
@@ -1342,6 +1348,10 @@ async def _stream_chat_singleturn(
                 elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
                 # 合并节点输出到 final_state（允许 None 值传播）
                 final_state.update(output)
+                if lg_node == "report_generator":
+                    visible_tail = flush_think_stream_state(graph_report_think_state)
+                    if visible_tail:
+                        yield _sse_data({"type": "token", "content": visible_tail})
 
                 sse_payload = {
                     "type": "step",
@@ -1407,7 +1417,9 @@ async def _stream_chat_singleturn(
                 chunk = event.get("data", {}).get("chunk")
                 token: str = getattr(chunk, "content", "") or ""
                 if token:
-                    yield _sse_data({"type": "token", "content": token})
+                    visible_token = filter_think_stream_chunk(token, graph_report_think_state)
+                    if visible_token:
+                        yield _sse_data({"type": "token", "content": visible_token})
 
         logger.info("[_stream_chat] astream_events 完成")
 
@@ -1416,7 +1428,7 @@ async def _stream_chat_singleturn(
         tracer.update_trace_output(trace_context, output=f"处理出错：{e}", metadata={"status": "failed"})
         tracer.close_trace(trace_context)
         obs_context_manager.__exit__(None, None, None)
-        yield _sse_data({"type": "step", "node": "error", "display_name": "错误", "status": "done"})
+        yield _sse_data({"type": "step", "node": "error", "display_name": "error", "status": "done"})
         yield _sse_data({"type": "final", "sql": None, "sql_list": [], "answer": f"处理出错：{e}"})
         return
 
@@ -1451,7 +1463,7 @@ async def _stream_chat_singleturn(
         tracer.start_span(
             trace_context,
             node="lead.narrate",
-            display_name="Lead · 报告综合",
+            display_name="lead.narrate",
             input_payload={
                 "question": final_state.get("question"),
                 "original_question": final_state.get("original_question"),
@@ -2150,7 +2162,7 @@ async def _interpret_early_return(
         {
             "type": "step",
             "node": "interpret_result",
-            "display_name": "解释上一轮结果",
+            "display_name": "interpret_result",
             "status": "done",
         }
     )

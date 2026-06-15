@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -27,6 +26,12 @@ from app.prompts.report_generate import build_report_system
 from app.services.observability.prompts import get_prompt_manager
 from app.services.observability.tracer import get_observability_tracer
 from app.utils import extract_token_usage, merge_token_usage
+from app.utils.think import (
+    filter_think_stream_chunk,
+    flush_think_stream_state,
+    new_think_stream_state,
+    strip_think_blocks,
+)
 
 REPORT_RESULT_MAX_ROWS = 30
 REPORT_CELL_MAX_CHARS = 120
@@ -35,8 +40,7 @@ REPORT_CELL_MAX_CHARS = 120
 def _strip_think_blocks(text: str) -> str:
     """移除模型泄露的思考标签，避免最终回答污染用户可见内容。"""
 
-    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text or "", flags=re.IGNORECASE)
-    return cleaned.strip()
+    return strip_think_blocks(text)
 
 
 def _llm_thinking_enabled(llm) -> bool:
@@ -139,6 +143,7 @@ async def stream_sql_result_report(
 
     full_content = ""
     usage = None
+    think_stream_state = new_think_stream_state()
     tracer = get_observability_tracer()
     generation = tracer.start_generation(
         name=observation_name,
@@ -160,10 +165,22 @@ async def stream_sql_result_report(
             first_token_at = time.perf_counter()
             first_token_wall = datetime.now(timezone.utc)
         full_content += content
-        if content:
-            yield {"type": "token", "content": content}
+        visible_content = (
+            filter_think_stream_chunk(content, think_stream_state)
+            if not _llm_thinking_enabled(llm)
+            else content
+        )
+        if visible_content:
+            yield {"type": "token", "content": visible_content}
         if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
             usage = chunk.usage_metadata
+    visible_tail = (
+        flush_think_stream_state(think_stream_state)
+        if not _llm_thinking_enabled(llm)
+        else ""
+    )
+    if visible_tail:
+        yield {"type": "token", "content": visible_tail}
 
     ended_at = time.perf_counter()
     answer = _clean_llm_content_if_needed(llm, full_content)

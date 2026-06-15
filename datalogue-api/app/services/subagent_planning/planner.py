@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 from json import JSONDecodeError
 from copy import deepcopy
 from typing import Any
@@ -21,6 +22,8 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.graph.llm import get_llm
+from app.services.observability.context import current_observability_context
+from app.services.observability.tracer import get_observability_tracer
 from app.services.subagent_planning.contracts import (
     CANDIDATE_ASSET_TYPES,
     CandidateAsset,
@@ -32,6 +35,8 @@ from app.services.subagent_planning.contracts import (
 DETAIL_PATTERNS = ("明细", "列表", "日志", "记录", "最近", "前", "条", "limit")
 METRIC_PATTERNS = ("统计", "数量", "总数", "平均", "占比", "汇总", "趋势")
 BLUEPRINT_PATTERNS = ("日报", "周报", "月报", "分析", "报告")
+LOG_DETAIL_PATTERNS = ("日志", "工作日志", "用户日志", "记录")
+DAILY_BLUEPRINT_PATTERNS = ("日报", "个人日报", "任务日报")
 BLUEPRINT_MIN_CONFIDENCE = 0.05
 PROMPT_ASSET_LIMIT = 40
 LIGHTWEIGHT_METADATA_KEYS = {"table_name", "column_name", "parameters", "implementation_type"}
@@ -50,7 +55,7 @@ LIGHTWEIGHT_ASSET_KEYS = {
     "reject_reason",
 }
 LIGHTWEIGHT_SIGNAL_KEYS = {"type", "value", "score", "field", "table", "name"}
-LLM_ERROR_MODULE_PREFIXES = ("openai", "httpx", "langchain_openai")
+LLM_ERROR_MODULE_PREFIXES = ("openai", "httpx", "langchain_openai", "litellm")
 LLM_ERROR_TYPE_KEYWORDS = (
     "APIConnectionError",
     "APIError",
@@ -327,6 +332,152 @@ def _blueprint_comparison_factor(blueprints: list[CandidateAsset]) -> list[dict[
     ]
 
 
+def _asset_table_name(asset: CandidateAsset) -> str:
+    value = asset.metadata.get("table_name") or asset.name
+    return str(value or "").strip()
+
+
+def _asset_column_name(asset: CandidateAsset) -> str:
+    value = asset.metadata.get("column_name") or asset.name
+    return str(value or "").split(".")[-1].strip()
+
+
+def _is_log_detail_query(question: str) -> bool:
+    return _contains_any(question, LOG_DETAIL_PATTERNS)
+
+
+def _is_daily_blueprint(asset: CandidateAsset | None) -> bool:
+    if asset is None:
+        return False
+    text = " ".join(
+        str(value or "")
+        for value in (
+            asset.name,
+            asset.display_name,
+            asset.metadata.get("description"),
+            asset.metadata.get("when_to_use"),
+        )
+    )
+    return _contains_any(text, DAILY_BLUEPRINT_PATTERNS)
+
+
+def _selected_main_table(field_table_assets: list[CandidateAsset]) -> str | None:
+    table_names = [_asset_table_name(asset) for asset in field_table_assets]
+    if "plan_task_daily_record" in table_names:
+        return "plan_task_daily_record"
+    table_assets = [asset for asset in field_table_assets if asset.asset_type == "table"]
+    if table_assets:
+        return _asset_table_name(table_assets[0]) or None
+    field_assets = [asset for asset in field_table_assets if asset.asset_type == "field"]
+    if field_assets:
+        return _asset_table_name(field_assets[0]) or None
+    return None
+
+
+def _join_hints_for_assets(field_table_assets: list[CandidateAsset]) -> list[dict[str, Any]]:
+    table_names = {_asset_table_name(asset) for asset in field_table_assets}
+    if {"plan_task_daily_record", "eas_personofile"}.issubset(table_names):
+        return [
+            {
+                "left_table": "plan_task_daily_record",
+                "left_column": "account",
+                "right_table": "eas_personofile",
+                "right_column": "person_card",
+                "purpose": "日志账号关联人员姓名",
+            }
+        ]
+    return []
+
+
+def _selected_detail_assets(field_table_assets: list[CandidateAsset]) -> list[CandidateAsset]:
+    main_table = _selected_main_table(field_table_assets)
+    join_hints = _join_hints_for_assets(field_table_assets)
+    selected: list[CandidateAsset] = []
+    for asset in field_table_assets:
+        candidate = _with_usage(asset, "selected")
+        table_name = _asset_table_name(candidate)
+        metadata = dict(candidate.metadata or {})
+        if table_name == main_table:
+            metadata["main_table_role"] = "fact"
+        elif table_name:
+            metadata["dimension_table_role"] = "dimension"
+        if join_hints:
+            metadata["join_hints"] = join_hints
+        candidate.metadata = metadata
+        selected.append(candidate)
+    return selected
+
+
+def _query_plan_debug(field_table_assets: list[CandidateAsset]) -> dict[str, Any]:
+    debug: dict[str, Any] = {}
+    main_table = _selected_main_table(field_table_assets)
+    if main_table:
+        debug["selected_main_table"] = main_table
+    join_hints = _join_hints_for_assets(field_table_assets)
+    if join_hints:
+        debug["join_hints"] = join_hints
+    return debug
+
+
+def _extract_limit(question: str, default: int = 100) -> int:
+    match = re.search(r"(?:查询|查|看|前|最近)?\s*(\d+)\s*条", str(question or ""))
+    if not match:
+        return default
+    try:
+        return max(1, min(int(match.group(1)), 1000))
+    except ValueError:
+        return default
+
+
+def _dataset10_log_detail_sql(question: str) -> str:
+    limit = _extract_limit(question)
+    return (
+        "SELECT "
+        "p.id, p.rzrq, p.cjsj, p.account, ep.person_name, "
+        "p.deptcode, d.dept_name, p.xmid, pm.XMMC AS project_name, "
+        "p.jhgznr, p.jtgznr, p.zt, p.rzbz "
+        "FROM plan_task_daily_record p "
+        "LEFT JOIN eas_personofile ep ON p.account = ep.person_card "
+        "LEFT JOIN sys_dept d ON p.deptcode = d.dept_id "
+        "LEFT JOIN project_manager pm ON p.xmid = pm.XMID "
+        "WHERE p.rzrq >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) "
+        f"ORDER BY p.rzrq DESC, p.cjsj DESC LIMIT {limit}"
+    )
+
+
+def _routing_dataset_id(routing: Any) -> int | None:
+    if not isinstance(routing, dict):
+        return None
+    for key in ("dataset_id", "locked_dataset_id"):
+        value = routing.get(key)
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _dataset10_log_template_debug(question: str, routing: Any, field_table_assets: list[CandidateAsset]) -> dict[str, Any]:
+    if _routing_dataset_id(routing) != 10:
+        return {}
+    if not _is_log_detail_query(question):
+        return {}
+    table_names = {_asset_table_name(asset) for asset in field_table_assets}
+    if "plan_task_daily_record" not in table_names:
+        return {}
+    return {
+        "template_name": "dataset10_log_detail",
+        "schema_token_budget": "template_bypass",
+        "sql_template": _dataset10_log_detail_sql(question),
+    }
+
+
+def _reject_blueprint_for_detail(asset: CandidateAsset) -> CandidateAsset:
+    rejected = _with_usage(asset, "rejected")
+    rejected.reject_reason = "日志明细查询不强套日报蓝图，避免错误主表和必填参数污染 DSL。"
+    return rejected
+
+
 def build_fallback_query_plan(
     question: str,
     candidate_assets: CandidateAssetInput = None,
@@ -355,6 +506,7 @@ def build_fallback_query_plan(
     is_detail_query = _contains_any(question, DETAIL_PATTERNS)
     is_metric_query = _contains_any(question, METRIC_PATTERNS)
     is_blueprint_query = _contains_any(question, BLUEPRINT_PATTERNS)
+    planner_source = "fallback" if fallback_reason else "deterministic"
 
     required_inputs = _required_inputs(blueprint, routing)
     common_warnings = _fallback_warnings(fallback_reason)
@@ -364,6 +516,7 @@ def build_fallback_query_plan(
         metric_dimension_assets=metric_dimension_assets,
         blueprint=blueprint,
     )
+    template_debug = _dataset10_log_template_debug(question, routing, field_table_assets)
     if is_blueprint_query and blueprint and required_inputs:
         return QueryPlan(
             query_type="blueprint_query",
@@ -376,7 +529,7 @@ def build_fallback_query_plan(
                 "required_inputs": required_inputs,
             },
             fallback_reason=fallback_reason or "blueprint_required_inputs_missing",
-            planner_source="fallback",
+            planner_source=planner_source,
             explanation={
                 "summary": "问题命中蓝图类查询，但缺少必填参数。",
                 "matched_blueprint": blueprint.display_name or blueprint.name,
@@ -399,7 +552,7 @@ def build_fallback_query_plan(
             selected_assets=[_with_usage(blueprint, "selected")],
             rejected_assets=rejected_blueprints,
             fallback_reason=fallback_reason or "blueprint_query_ready",
-            planner_source="fallback",
+            planner_source="fallback" if fallback_reason else "template",
             explanation={
                 "summary": "问题命中蓝图类查询，且必要参数已满足或无需参数。",
                 "matched_blueprint": blueprint.display_name or blueprint.name,
@@ -414,16 +567,70 @@ def build_fallback_query_plan(
             governance_suggestions=common_suggestions,
         )
 
+    if is_detail_query and field_table_assets and _is_log_detail_query(question) and _is_daily_blueprint(blueprint):
+        template_source = "template" if template_debug and not fallback_reason else planner_source
+        rejected_daily_blueprints = [
+            _reject_blueprint_for_detail(asset)
+            for asset in blueprints
+            if _is_daily_blueprint(asset)
+        ]
+        rejected_asset_keys = {
+            (asset.asset_type, str(asset.asset_id))
+            for asset in [*rejected_blueprints, *rejected_daily_blueprints]
+        }
+        return QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.78,
+            selected_assets=_selected_detail_assets(field_table_assets),
+            rejected_assets=[
+                *rejected_daily_blueprints,
+                *rejected_blueprints,
+                *[
+                    _with_usage(asset, "rejected")
+                    for asset in all_blueprints
+                    if (asset.asset_type, str(asset.asset_id)) not in rejected_asset_keys
+                ],
+            ],
+            fallback_reason=fallback_reason,
+            planner_source=template_source,
+            explanation={
+                "summary": "识别为日志明细查询，使用字段和表构建 QueryGraph。",
+                "why_not_blueprint_execute": "用户问题是日志明细查询，不能强制执行日报蓝图。",
+                "why_continue_without_metric": "明细查询不要求必须命中指标或维度。",
+            },
+            decision_factors=[
+                _factor("detail_query_signal", "问题包含明细查询信号。", list(DETAIL_PATTERNS)),
+                _factor(
+                    "field_table_coverage",
+                    "已召回字段或表，可继续构建 QueryGraph。",
+                    [_asset_label(asset) for asset in field_table_assets[:8]],
+                ),
+                _factor("blueprint_rejected_for_detail", "日志明细查询拒绝套用日报蓝图。", _asset_label(blueprint)),
+                *blueprint_comparison_factors,
+            ],
+            planner_warnings=[
+                *common_warnings,
+                _warning(
+                    "blueprint_rejected_for_detail",
+                    "用户问题是日志明细查询，命中日报蓝图不能作为执行或 DSL 参考上下文。",
+                    _asset_label(blueprint),
+                ),
+            ],
+            governance_suggestions=common_suggestions,
+            debug={**_query_plan_debug(field_table_assets), **template_debug},
+        )
+
     if is_detail_query and blueprint and field_table_assets:
         return QueryPlan(
             query_type="detail_query",
             execution_strategy="blueprint_as_reference",
             confidence=0.74,
-            selected_assets=[_with_usage(asset, "selected") for asset in field_table_assets],
+            selected_assets=_selected_detail_assets(field_table_assets),
             reference_assets=[_with_usage(blueprint, "reference")],
             rejected_assets=rejected_blueprints,
-            fallback_reason=fallback_reason or "detail_query_with_blueprint_reference",
-            planner_source="fallback",
+            fallback_reason=fallback_reason,
+            planner_source=planner_source,
             explanation={
                 "summary": "识别为明细查询，蓝图仅作为字段和表推理参考。",
                 "why_not_blueprint_execute": "用户问题不是固定蓝图分析，不能强制执行蓝图。",
@@ -448,18 +655,20 @@ def build_fallback_query_plan(
                 ),
             ],
             governance_suggestions=common_suggestions,
+            debug={**_query_plan_debug(field_table_assets), **template_debug},
         )
 
     if is_detail_query and field_table_assets:
+        template_source = "template" if template_debug and not fallback_reason else planner_source
         return QueryPlan(
             query_type="detail_query",
             execution_strategy="query_graph",
-            confidence=0.7,
-            selected_assets=[_with_usage(asset, "selected") for asset in field_table_assets],
-            fallback_reason=fallback_reason or "detail_query_field_table_fallback",
-            planner_source="fallback",
+            confidence=0.86 if template_debug else 0.7,
+            selected_assets=_selected_detail_assets(field_table_assets),
+            fallback_reason=fallback_reason,
+            planner_source=template_source,
             explanation={
-                "summary": "识别为明细查询，使用字段和表构建查询图。",
+                "summary": "命中数据集日志明细模板。" if template_debug else "识别为明细查询，使用字段和表构建查询图。",
                 "why_continue_without_metric": "明细查询不要求必须命中指标或维度。",
             },
             decision_factors=[
@@ -472,6 +681,7 @@ def build_fallback_query_plan(
             ],
             planner_warnings=common_warnings,
             governance_suggestions=common_suggestions,
+            debug={**_query_plan_debug(field_table_assets), **template_debug},
         )
 
     if is_metric_query and metric_dimension_assets:
@@ -481,7 +691,7 @@ def build_fallback_query_plan(
             confidence=0.68,
             selected_assets=[_with_usage(asset, "selected") for asset in metric_dimension_assets],
             fallback_reason=fallback_reason or "metric_query_semantic_asset_fallback",
-            planner_source="fallback",
+            planner_source=planner_source,
             explanation={"summary": "识别为指标类查询，使用指标或维度资产构建查询图。"},
             decision_factors=[
                 _factor("metric_query_signal", "问题包含统计或聚合查询信号。", list(METRIC_PATTERNS)),
@@ -762,14 +972,38 @@ def _is_llm_call_error(exc: BaseException) -> bool:
     return False
 
 
-def _invoke_planner_llm(db: Any, messages: list[Any]) -> Any:
-    try:
-        llm = get_llm(temperature=0.0, role="lead_agent", db=db)
-        return llm.invoke(messages)
-    except Exception as exc:
-        if not _is_llm_call_error(exc):
-            raise
-        raise QueryPlanValidationError(_compact_error_text(exc)) from exc
+def _planner_model_name(llm: Any) -> str | None:
+    return getattr(llm, "model_name", None) or getattr(llm, "model", None)
+
+
+def _planner_response_content(response: Any) -> Any:
+    return getattr(response, "content", response)
+
+
+def _planner_generation_base_metadata(
+    *,
+    question: str,
+    routing: Any,
+    candidate_assets: CandidateAssetInput,
+) -> dict[str, Any]:
+    routing_payload = routing if isinstance(routing, dict) else {}
+    summary = candidate_assets.get("summary") if isinstance(candidate_assets, dict) else {}
+    return {
+        "path": "subagent.query_plan",
+        "planner": "subagent_query_planner",
+        "question": question,
+        "entry_route": routing_payload.get("entry_route") or routing_payload.get("route"),
+        "entry_intent": routing_payload.get("entry_intent"),
+        "blueprint_id": routing_payload.get("blueprint_id"),
+        "candidate_asset_count": len(_asset_items(candidate_assets)),
+        "candidate_asset_summary": summary or {},
+    }
+
+
+def _with_validation_error(plan: QueryPlan, validation_error: str | None) -> QueryPlan:
+    if validation_error:
+        plan.debug = {**(plan.debug or {}), "validation_error": validation_error}
+    return plan
 
 
 def plan_query(
@@ -781,6 +1015,18 @@ def plan_query(
     multiturn_context: Any = None,
     lead_agent_context: Any = None,
 ) -> QueryPlan:
+    deterministic_plan = build_fallback_query_plan(
+        question=question,
+        routing=routing,
+        candidate_assets=candidate_assets,
+    )
+    if (
+        deterministic_plan.planner_source == "deterministic"
+        and deterministic_plan.query_type == "detail_query"
+        and deterministic_plan.execution_strategy == "query_graph"
+    ):
+        return deterministic_plan
+
     messages = [
         SystemMessage(content=_planner_system_prompt()),
         HumanMessage(
@@ -793,25 +1039,131 @@ def plan_query(
             )
         ),
     ]
+    tracer = get_observability_tracer()
+    generation = None
+    generation_base_metadata = _planner_generation_base_metadata(
+        question=question,
+        routing=routing,
+        candidate_assets=candidate_assets,
+    )
     try:
-        response = _invoke_planner_llm(db, messages)
-    except QueryPlanValidationError as exc:
-        return build_fallback_query_plan(
-            question=question,
-            routing=routing,
-            candidate_assets=candidate_assets,
-            fallback_reason=_compact_error_text(exc),
+        llm = get_llm(temperature=0.0, role="lead_agent", db=db)
+    except Exception as exc:
+        if not _is_llm_call_error(exc):
+            raise
+        validation_error = _compact_error_text(exc)
+        return _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=candidate_assets,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
         )
 
+    active_obs_context = current_observability_context.get()
+    if active_obs_context and active_obs_context.active:
+        try:
+            generation = tracer.start_generation(
+                name="llm.subagent_query_planner",
+                model=_planner_model_name(llm),
+                messages=messages,
+                metadata={**generation_base_metadata, "status": "running"},
+            )
+        except Exception:
+            generation = None
+
     try:
-        payload = _safe_json_parse(getattr(response, "content", response))
+        response = llm.invoke(messages)
+    except Exception as exc:
+        if not _is_llm_call_error(exc):
+            try:
+                tracer.end_generation(
+                    generation,
+                    output=repr(exc),
+                    metadata={
+                        **generation_base_metadata,
+                        "status": "error",
+                        "validation_error": _compact_error_text(exc),
+                        "error_stage": "llm_call",
+                    },
+                )
+            except Exception:
+                pass
+            raise
+        validation_error = _compact_error_text(exc)
+        plan = _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=candidate_assets,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
+        )
+        try:
+            tracer.end_generation(
+                generation,
+                output=validation_error,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "fallback",
+                    "fallback_reason": plan.fallback_reason,
+                    "validation_error": validation_error,
+                    "error_stage": "llm_call",
+                    "fallback_execution_strategy": plan.execution_strategy,
+                },
+            )
+        except Exception:
+            pass
+        return plan
+
+    response_content = _planner_response_content(response)
+    try:
+        payload = _safe_json_parse(response_content)
         plan = normalize_query_plan(payload)
         _validate_hard_rules(plan, question=question, candidate_assets=candidate_assets)
+        try:
+            tracer.end_generation(
+                generation,
+                output=response_content,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "success",
+                    "execution_strategy": plan.execution_strategy,
+                    "query_type": plan.query_type,
+                    "confidence": plan.confidence,
+                    "planner_source": plan.planner_source,
+                },
+            )
+        except Exception:
+            pass
         return plan
     except (JSONDecodeError, QueryPlanValidationError, ValueError, TypeError) as exc:
-        return build_fallback_query_plan(
-            question=question,
-            routing=routing,
-            candidate_assets=candidate_assets,
-            fallback_reason=_compact_error_text(exc),
+        validation_error = _compact_error_text(exc)
+        plan = _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=candidate_assets,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
         )
+        try:
+            tracer.end_generation(
+                generation,
+                output=response_content,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "fallback",
+                    "fallback_reason": plan.fallback_reason,
+                    "validation_error": validation_error,
+                    "error_stage": "validation",
+                    "fallback_execution_strategy": plan.execution_strategy,
+                },
+            )
+        except Exception:
+            pass
+        return plan

@@ -25,6 +25,34 @@ class FakeTraceContext:
     trace_id = "trace-test"
 
 
+class FakeTracer:
+    def __init__(self):
+        self.started_spans: list[dict[str, Any]] = []
+        self.ended_spans: list[dict[str, Any]] = []
+
+    def start_span(self, context, *, node, display_name, input_payload=None, trace_tags=None):
+        self.started_spans.append(
+            {
+                "context": context,
+                "node": node,
+                "display_name": display_name,
+                "input_payload": input_payload or {},
+                "trace_tags": trace_tags or [],
+            }
+        )
+
+    def end_span(self, context, *, node, output_payload=None, elapsed_ms=None, error=None):
+        self.ended_spans.append(
+            {
+                "context": context,
+                "node": node,
+                "output_payload": output_payload or {},
+                "elapsed_ms": elapsed_ms,
+                "error": error,
+            }
+        )
+
+
 def _request() -> DatasetSubAgentRequest:
     return DatasetSubAgentRequest(
         question="查询个人日报",
@@ -130,10 +158,59 @@ def test_subagent_run_emits_candidate_assets_and_query_plan(monkeypatch, db_sess
     events = asyncio.run(_collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=None))
 
     assert [event.event_type for event in events] == ["candidate_assets", "query_plan", "result"]
+    assert events[0].payload["display_name"] == "subagent.candidate_assets"
+    assert events[1].payload["display_name"] == "subagent.query_plan"
     assert events[0].payload["candidate_assets"]["assets"] == []
     assert "context" not in events[0].payload["candidate_assets"]
     assert events[-1].payload["final_state"]["entry_route"] == "clarify"
     assert events[-1].payload["final_state"]["candidate_assets"]["assets"] == []
+
+
+def test_subagent_run_records_candidate_assets_and_query_plan_spans(monkeypatch, db_session):
+    fake_tracer = FakeTracer()
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.get_observability_tracer",
+        lambda: fake_tracer,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _blueprint_recall_result(),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.plan_query",
+        lambda **kwargs: QueryPlan(
+            query_type="blueprint_query",
+            execution_strategy="clarify",
+            confidence=0.51,
+            fallback_reason="planner validation failed",
+            planner_source="fallback",
+            decision_factors=[{"code": "missing_required_input"}],
+            planner_warnings=[{"code": "fallback_used"}],
+            governance_suggestions=[{"code": "complete_blueprint_params"}],
+            debug={"validation_error": "blueprint_execute cannot include required_inputs"},
+            clarification={"message": "请补充用户和日期。"},
+        ),
+    )
+
+    events = asyncio.run(_collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=None))
+
+    assert events[-1].event_type == "result"
+    assert [span["node"] for span in fake_tracer.started_spans] == [
+        "subagent.candidate_assets",
+        "subagent.query_plan",
+    ]
+    assert [span["display_name"] for span in fake_tracer.started_spans] == [
+        "subagent.candidate_assets",
+        "subagent.query_plan",
+    ]
+    ended_by_node = {span["node"]: span for span in fake_tracer.ended_spans}
+    assert ended_by_node["subagent.candidate_assets"]["output_payload"]["summary"]["blueprint_count"] == 1
+    query_plan_output = ended_by_node["subagent.query_plan"]["output_payload"]
+    assert query_plan_output["execution_strategy"] == "clarify"
+    assert query_plan_output["fallback_reason"] == "planner validation failed"
+    assert query_plan_output["validation_error"] == "blueprint_execute cannot include required_inputs"
+    assert query_plan_output["decision_factors"] == [{"code": "missing_required_input"}]
 
 
 def test_subagent_run_blueprint_reference_marks_context_and_query_graph(monkeypatch, db_session):

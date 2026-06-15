@@ -16,24 +16,24 @@ import { Icon } from './icons';
 //   traceMeta        {traceId, sessionId, messageId, observability} Langfuse 观测元数据
 
 const BUSINESS_STEP_NAMES = {
-  lead_agent_tools: '理解问题',
-  manifest_route: '选择场景',
-  clarification_resolution: '确认口径',
-  intent_recognition: '识别意图',
-  entry_intent_classification: '判断入口',
-  analysis_blueprint_execute: '执行蓝图',
-  candidate_assets: '召回候选资产',
-  query_plan: '查询规划',
-  schema_recall: '读取数据结构',
-  term_normalize_node: '统一术语',
-  semantic_asset_resolution_node: '匹配语义资产',
-  metric_resolution_node: '匹配指标维度',
-  dsl_generate: '生成查询方案',
-  dsl_validate: '校验查询方案',
-  dsl_compiler: '生成 SQL',
-  sql_execute: '执行取数',
-  sql_audit: '诊断 SQL',
-  report_generator: '组织回答',
+  lead_agent_tools: 'lead_agent_tools',
+  manifest_route: 'manifest_route',
+  clarification_resolution: 'clarification_resolution',
+  intent_recognition: 'intent_recognition',
+  entry_intent_classification: 'entry_intent_classification',
+  analysis_blueprint_execute: 'analysis_blueprint_execute',
+  candidate_assets: 'subagent.candidate_assets',
+  query_plan: 'subagent.query_plan',
+  schema_recall: 'schema_recall',
+  term_normalize_node: 'term_normalize_node',
+  semantic_asset_resolution_node: 'semantic_asset_resolution_node',
+  metric_resolution_node: 'metric_resolution_node',
+  dsl_generate: 'dsl_generate',
+  dsl_validate: 'dsl_validate',
+  dsl_compiler: 'dsl_compiler',
+  sql_execute: 'sql_execute',
+  sql_audit: 'sql_audit',
+  report_generator: 'report_generator',
 };
 
 const QUERY_TYPE_LABELS = {
@@ -58,7 +58,7 @@ function enumLabel(labels, value) {
 }
 
 function businessStepName(step) {
-  return BUSINESS_STEP_NAMES[step?.node] || step?.display_name || step?.node || '执行步骤';
+  return BUSINESS_STEP_NAMES[step?.node] || step?.display_name || step?.node || 'step';
 }
 
 function summarizeCompletedSteps(steps, sqlResult) {

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
@@ -33,6 +34,7 @@ from app.services.analysis_blueprint import (
     blueprint_params_from_time_context,
     execute_analysis_blueprint,
 )
+from app.services.observability.tracer import get_observability_tracer
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
 from app.services.subagent_planning import (
     QueryPlan,
@@ -45,6 +47,49 @@ from app.services.subagent_planning import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _dsa_end_span(
+    tracer: Any,
+    trace_context: Any | None,
+    *,
+    node: str,
+    started_at: float,
+    output_payload: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    """结束 SubAgent 自有 span；观测失败不影响主链路。"""
+
+    try:
+        tracer.end_span(
+            trace_context,
+            node=node,
+            output_payload=output_payload or {},
+            elapsed_ms=max(0, int((time.monotonic() - started_at) * 1000)),
+            error=error,
+        )
+    except Exception:
+        logger.warning("tracer.end_span 失败 node=%s", node, exc_info=True)
+
+
+def _dsa_query_plan_span_output(query_plan: QueryPlan) -> dict[str, Any]:
+    """提取查询规划 span 的高价值观测字段。"""
+
+    return {
+        "query_type": query_plan.query_type,
+        "execution_strategy": query_plan.execution_strategy,
+        "confidence": query_plan.confidence,
+        "planner_source": query_plan.planner_source,
+        "fallback_reason": query_plan.fallback_reason,
+        "validation_error": (query_plan.debug or {}).get("validation_error"),
+        "selected_asset_count": len(query_plan.selected_assets),
+        "reference_asset_count": len(query_plan.reference_assets),
+        "rejected_asset_count": len(query_plan.rejected_assets),
+        "required_input_count": len(query_plan.required_inputs),
+        "decision_factors": query_plan.decision_factors,
+        "planner_warnings": query_plan.planner_warnings,
+        "governance_suggestions": query_plan.governance_suggestions,
+    }
 
 
 # ============================================================
@@ -816,6 +861,7 @@ def _dsa_build_run_routing(
     route_decision = dict(request.route_decision or {})
     routing = {
         **route_decision,
+        "dataset_id": request.dataset_id,
         "entry_route": state.get("entry_route") or route_decision.get("entry_route") or route_decision.get("decision"),
         "entry_intent": state.get("entry_intent") or route_decision.get("entry_intent") or state.get("intent"),
         "entry_reason": state.get("entry_reason") or route_decision.get("reason"),
@@ -970,39 +1016,115 @@ class DatasetSubAgent:
         question = state.get("question") or request.question
         routing = _dsa_build_run_routing(state, request)
         multiturn_context = state.get("multiturn_context") or {}
+        tracer = get_observability_tracer()
 
-        candidate_assets = recall_candidate_assets(
-            self.db,
-            dataset_id=request.dataset_id,
-            question=question,
-            manifest_version=request.manifest_version,
-            bound_schema_version=request.bound_schema_version,
-        )
+        candidate_span_started_at = time.monotonic()
+        try:
+            tracer.start_span(
+                trace_context,
+                node="subagent.candidate_assets",
+                display_name="subagent.candidate_assets",
+                input_payload={
+                    "dataset_id": request.dataset_id,
+                    "question": question,
+                    "manifest_version": request.manifest_version,
+                    "bound_schema_version": request.bound_schema_version,
+                },
+                trace_tags=["subagent"],
+            )
+        except Exception:
+            logger.warning("tracer.start_span 失败 node=subagent.candidate_assets", exc_info=True)
+        try:
+            candidate_assets = recall_candidate_assets(
+                self.db,
+                dataset_id=request.dataset_id,
+                question=question,
+                manifest_version=request.manifest_version,
+                bound_schema_version=request.bound_schema_version,
+            )
+        except Exception as exc:
+            _dsa_end_span(
+                tracer,
+                trace_context,
+                node="subagent.candidate_assets",
+                started_at=candidate_span_started_at,
+                error=repr(exc),
+            )
+            raise
         public_candidate_assets = _dsa_public_candidate_assets(candidate_assets)
+        _dsa_end_span(
+            tracer,
+            trace_context,
+            node="subagent.candidate_assets",
+            started_at=candidate_span_started_at,
+            output_payload={
+                "asset_count": len(public_candidate_assets.get("assets") or []),
+                "summary": public_candidate_assets.get("summary") or {},
+                "recall_debug": public_candidate_assets.get("recall_debug") or {},
+            },
+        )
         yield SubAgentEvent(
             event_type="candidate_assets",
             payload={
                 "node": "candidate_assets",
-                "display_name": "候选资产召回",
+                "display_name": "subagent.candidate_assets",
                 "status": "done",
                 "candidate_assets": public_candidate_assets,
             },
         )
 
-        query_plan = plan_query(
-            db=self.db,
-            question=question,
-            routing=routing,
-            candidate_assets=public_candidate_assets,
-            multiturn_context=multiturn_context,
-            lead_agent_context=request.lead_agent_context,
-        )
+        query_plan_span_started_at = time.monotonic()
+        try:
+            tracer.start_span(
+                trace_context,
+                node="subagent.query_plan",
+                display_name="subagent.query_plan",
+                input_payload={
+                    "dataset_id": request.dataset_id,
+                    "question": question,
+                    "routing": {
+                        "entry_route": routing.get("entry_route"),
+                        "entry_intent": routing.get("entry_intent"),
+                        "blueprint_id": routing.get("blueprint_id"),
+                    },
+                    "candidate_asset_count": len(public_candidate_assets.get("assets") or []),
+                    "candidate_asset_summary": public_candidate_assets.get("summary") or {},
+                },
+                trace_tags=["subagent"],
+            )
+        except Exception:
+            logger.warning("tracer.start_span 失败 node=subagent.query_plan", exc_info=True)
+        try:
+            query_plan = plan_query(
+                db=self.db,
+                question=question,
+                routing=routing,
+                candidate_assets=public_candidate_assets,
+                multiturn_context=multiturn_context,
+                lead_agent_context=request.lead_agent_context,
+            )
+        except Exception as exc:
+            _dsa_end_span(
+                tracer,
+                trace_context,
+                node="subagent.query_plan",
+                started_at=query_plan_span_started_at,
+                error=repr(exc),
+            )
+            raise
         query_plan_payload = query_plan.to_dict()
+        _dsa_end_span(
+            tracer,
+            trace_context,
+            node="subagent.query_plan",
+            started_at=query_plan_span_started_at,
+            output_payload=_dsa_query_plan_span_output(query_plan),
+        )
         yield SubAgentEvent(
             event_type="query_plan",
             payload={
                 "node": "query_plan",
-                "display_name": "查询规划",
+                "display_name": "subagent.query_plan",
                 "status": "done",
                 "query_plan": query_plan_payload,
             },
@@ -1139,7 +1261,7 @@ class DatasetSubAgent:
                 span = tracer.start_span(
                     trace_context,
                     node="analysis_blueprint_resolve",
-                    display_name="分析蓝图解析",
+                    display_name="analysis_blueprint_resolve",
                     input_payload={"blueprint_id": blueprint_id, "question": question},
                 )
             except Exception:  # 兜底：tracer 不可用时不影响主流程
@@ -1402,7 +1524,7 @@ class DatasetSubAgent:
                 span = tracer.start_span(
                     trace_context,
                     node="term_conflict_resolve",
-                    display_name="术语冲突解析",
+                    display_name="term_conflict_resolve",
                     input_payload={
                         "question": question,
                         "terms_count": len(terms or []),
@@ -1616,7 +1738,7 @@ class DatasetSubAgent:
                 span = tracer.start_span(
                     trace_context,
                     node="metric_resolve",
-                    display_name="指标解析",
+                    display_name="metric_resolve",
                     input_payload={
                         "question": question,
                         "has_schema": bool(schema_structured),

@@ -158,6 +158,95 @@ def test_dsl_prompt_does_not_duplicate_reference_blueprint_from_dataset_prompt(m
     assert "blueprint_as_reference" in human_prompt
 
 
+def test_semantic_prompt_uses_progressive_disclosure(monkeypatch):
+    """语义层确定性路径应使用渐进式披露，避免重复灌入完整 schema_context。"""
+    from app.graph import nodes as nodes_module
+
+    fake_llm = _FakeLLMResponse(
+        '{"fields": [{"name": "rzrq", "asset_type": "field", "asset_id": 1}], "limit": 10}'
+    )
+    monkeypatch.setattr(nodes_module, "get_llm", lambda **_kwargs: fake_llm)
+
+    state = _base_state(
+        schema_context=(
+            "【语义层】\n"
+            "数据集: 生产经营管理系统日志数据集\n\n"
+            "【所选表字段与样例】\n"
+            "- plan_task_daily_record.rzrq (date) 名称=日志日期\n"
+            "- hy_tenant_user.tenant_user_id (varchar) 名称=在当前租户的用户id\n"
+        ),
+        schema_structured={
+            "dataset_name": "生产经营管理系统日志数据集",
+            "metrics": [],
+            "dimensions": [],
+            "terms": [],
+            "blueprints": [],
+            "fields": [
+                {
+                    "id": 1,
+                    "name": "rzrq",
+                    "column_name": "rzrq",
+                    "table_name": "plan_task_daily_record",
+                    "data_type": "date",
+                    "display_name": "日志日期",
+                    "semantic_role": "time_field",
+                },
+                {
+                    "id": 2,
+                    "name": "zt",
+                    "column_name": "zt",
+                    "table_name": "plan_task_daily_record",
+                    "data_type": "varchar",
+                    "display_name": "状态",
+                    "semantic_role": "dimension_candidate",
+                },
+                {
+                    "id": 3,
+                    "name": "tenant_user_id",
+                    "column_name": "tenant_user_id",
+                    "table_name": "hy_tenant_user",
+                    "data_type": "varchar",
+                    "display_name": "在当前租户的用户id",
+                    "semantic_role": "id_field",
+                },
+            ],
+        },
+        metric_resolution={"all_matched": True, "metrics": [], "dimensions": []},
+        query_plan={
+            "query_type": "detail_query",
+            "execution_strategy": "query_graph",
+            "planner_source": "deterministic",
+            "selected_assets": [
+                {
+                    "asset_type": "field",
+                    "name": "rzrq",
+                    "metadata": {
+                        "table_name": "plan_task_daily_record",
+                        "column_name": "rzrq",
+                    },
+                }
+            ],
+            "debug": {"selected_main_table": "plan_task_daily_record"},
+        },
+        dataset_context_debug={
+            "asset_counts": {"fields": 3},
+            "retained_counts": {"fields": 2},
+        },
+    )
+
+    nodes_module.dsl_generate_node(state, db=None)
+
+    human_prompt = fake_llm.messages[1].content
+    assert "【渐进式语义层上下文】" in human_prompt
+    assert "【L0 数据集与任务】" in human_prompt
+    assert "【L1 硬约束】" in human_prompt
+    assert "【L2 相关语义资产】" in human_prompt
+    assert "plan_task_daily_record" in human_prompt
+    assert "rzrq" in human_prompt
+    assert "hy_tenant_user.tenant_user_id" not in human_prompt
+    assert "【所选表字段与样例】" not in human_prompt
+
+
 def test_format_query_plan_for_prompt_ignores_invalid_or_empty_plan():
     """helper 只在 query_plan 有有效规划字段时输出提示词片段。"""
     from app.graph.nodes import _format_query_plan_for_prompt

@@ -247,7 +247,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
         setTraceSteps((prev) => {
           const toolStep = {
             node: 'lead_agent_tools',
-            display_name: 'LeadAgent 工具',
+            display_name: 'lead_agent_tools',
             status: ev.should_continue ? 'done' : 'blocked',
             elapsed_ms: null,
             audit_trace: ev.audit_trace,
@@ -277,7 +277,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
         setTraceSteps((prev) => {
           const routeStep = {
             node: 'manifest_route',
-            display_name: 'Manifest 路由',
+            display_name: 'manifest_route',
             status: 'done',
             elapsed_ms: null,
             decision: ev.decision,

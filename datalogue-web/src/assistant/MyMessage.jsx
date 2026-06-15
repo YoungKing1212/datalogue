@@ -17,14 +17,14 @@ import { submitMessageFeedback } from '../api/client';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
-  clarification_resolution: '澄清解析',
-  intent_recognition: '意图识别',
-  schema_recall: 'Schema 召回',
-  dsl_generate: 'DSL 生成',
-  dsl_validate: 'DSL 校验',
-  dsl_compiler: 'SQL 编译',
-  sql_execute: 'SQL 执行',
-  report_generator: '报告生成',
+  clarification_resolution: 'clarification_resolution',
+  intent_recognition: 'intent_recognition',
+  schema_recall: 'schema_recall',
+  dsl_generate: 'dsl_generate',
+  dsl_validate: 'dsl_validate',
+  dsl_compiler: 'dsl_compiler',
+  sql_execute: 'sql_execute',
+  report_generator: 'report_generator',
 };
 
 const NODE_ICONS = {
@@ -68,7 +68,7 @@ function ReasoningPart({ text }) {
   // part 形如 { type: 'reasoning', text: '意图识别：销售归因...', parentId: 'intent_recognition' }
   // 把 parentId 当 step 节点名（chat-adapter.js 用 parentId 写 ev.node）
   const node = useAuiState((s) => s.part?.parentId);
-  const label = NODE_STEP_NAMES[node] || '推理步骤';
+  const label = NODE_STEP_NAMES[node] || node || 'reasoning';
   const icon = NODE_ICONS[node] || 'brain';
   return (
     <div className="cot-step">

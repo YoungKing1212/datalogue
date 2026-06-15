@@ -126,9 +126,9 @@ def test_resolve_llm_config_role_and_default_fallback(db_session):
 
 
 def test_get_llm_uses_database_role_config(db_session):
-    """get_llm 创建 ChatOpenAI 时使用角色绑定的数据库配置。"""
+    """get_llm 应使用角色绑定的数据库配置创建 LiteLLM SDK 客户端。"""
     from app.core.security import encrypt_password
-    from app.graph.llm import get_llm
+    from app.graph.llm import LiteLLMChatClient, get_llm
 
     model = LLMModelConfig(
         name="Intent DB",
@@ -145,23 +145,25 @@ def test_get_llm_uses_database_role_config(db_session):
     db_session.add(LLMRoleBinding(role="intent", model_config_id=model.id))
     db_session.commit()
 
-    with patch("app.graph.llm.ChatOpenAI") as chat_openai:
-        llm = get_llm(temperature=0.2, role="intent", db=db_session)
+    llm = get_llm(temperature=0.2, role="intent", db=db_session)
 
-    kwargs = chat_openai.call_args.kwargs
-    assert kwargs["model"] == "qwen-plus"
-    assert kwargs["api_key"] == "sk-intent"
-    assert kwargs["base_url"] == "http://localhost:4000/v1"
-    assert kwargs["temperature"] == 0.2
-    assert kwargs["timeout"] == 12
-    assert kwargs["model_kwargs"] == {"extra_body": {"enable_thinking": False}}
+    assert isinstance(llm, LiteLLMChatClient)
+    assert llm.model == "qwen/qwen-plus"
+    assert llm.api_key == "sk-intent"
+    assert llm.api_base == "http://localhost:4000/v1"
+    assert llm.temperature == 0.2
+    assert llm.timeout == 12
+    assert llm.model_kwargs == {"extra_body": {"enable_thinking": False}}
+    assert llm.max_tokens == 256
+    assert llm.response_format == {"type": "json_object"}
+    assert llm.datalogue_call_policy["structured_output"] is True
     assert llm.datalogue_thinking_enabled is False
 
 
 def test_get_llm_keeps_thinking_when_enabled(db_session):
     """模型配置开启 Think 后，不应再下发禁用思考参数。"""
     from app.core.security import encrypt_password
-    from app.graph.llm import get_llm
+    from app.graph.llm import LiteLLMChatClient, get_llm
 
     model = LLMModelConfig(
         name="Thinking DB",
@@ -177,11 +179,44 @@ def test_get_llm_keeps_thinking_when_enabled(db_session):
     db_session.add(LLMRoleBinding(role="report", model_config_id=model.id))
     db_session.commit()
 
-    with patch("app.graph.llm.ChatOpenAI") as chat_openai:
-        llm = get_llm(role="report", db=db_session)
+    llm = get_llm(role="report", db=db_session)
 
-    assert chat_openai.call_args.kwargs["model_kwargs"] == {}
+    assert isinstance(llm, LiteLLMChatClient)
+    assert llm.model == "qwen/qwen-plus"
+    assert llm.model_kwargs == {}
+    assert llm.response_format is None
     assert llm.datalogue_thinking_enabled is True
+
+
+def test_get_llm_uses_litellm_sdk_adapter(db_session):
+    """显式 LiteLLM 模型名前缀应原样透传给 SDK 适配器。"""
+    from app.core.security import encrypt_password
+    from app.graph.llm import LiteLLMChatClient, get_llm
+
+    model = LLMModelConfig(
+        name="LiteLLM SDK MiniMax",
+        provider="litellm_sdk",
+        base_url="https://api.minimaxi.com/v1",
+        model="minimax/MiniMax-M3",
+        api_key_enc=encrypt_password("sk-minimax"),
+        status="active",
+        request_timeout_seconds=30,
+        thinking_enabled=False,
+    )
+    db_session.add(model)
+    db_session.flush()
+    db_session.add(LLMRoleBinding(role="lead_agent", model_config_id=model.id))
+    db_session.commit()
+
+    llm = get_llm(temperature=0.1, role="lead_agent", db=db_session)
+
+    assert isinstance(llm, LiteLLMChatClient)
+    assert llm.model == "minimax/MiniMax-M3"
+    assert llm.api_base == "https://api.minimaxi.com/v1"
+    assert llm.api_key == "sk-minimax"
+    assert llm.temperature == 0.1
+    assert llm.timeout == 30
+    assert llm.datalogue_thinking_enabled is False
 
 
 def test_llm_model_test_endpoint_persists_result(client, db_session):
@@ -201,11 +236,18 @@ def test_llm_model_test_endpoint_persists_result(client, db_session):
     fake_response = MagicMock()
     fake_response.content = "OK"
 
-    with patch("app.api.llm.ChatOpenAI") as chat_openai:
-        chat_openai.return_value.invoke.return_value = fake_response
+    with patch("app.api.llm.LiteLLMChatClient") as litellm_client:
+        litellm_client.return_value.invoke.return_value = fake_response
         resp = client.post(f"/api/llm/models/{model_id}/test", json={})
 
-    assert chat_openai.call_args.kwargs["model_kwargs"] == {}
+    kwargs = litellm_client.call_args.kwargs
+    assert kwargs["model"] == "openai/test-model"
+    assert kwargs["api_key"] == "sk-test"
+    assert kwargs["api_base"] == "http://localhost:4000/v1"
+    assert kwargs["model_kwargs"] == {}
+    assert kwargs["max_tokens"] is None
+    assert kwargs["response_format"] is None
+    assert kwargs["thinking_enabled"] is False
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
     config = db_session.get(LLMModelConfig, model_id)

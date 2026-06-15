@@ -49,7 +49,8 @@ def test_build_blueprint_reference_context_marks_sql_reference_only():
     assert "按人员和日期查询日报明细。" in context
     assert "只能作为参考证据" in context
     assert "不能原样执行" in context
-    assert "SELECT * FROM daily_report" in context
+    assert "SELECT * FROM daily_report" not in context
+    assert "SQL 参考模板" not in context
     assert "person_name" in context
 
 
@@ -111,7 +112,7 @@ def test_build_blueprint_reference_context_truncates_large_blueprint_values():
 
     assert "只能作为参考证据" in context
     assert "不能原样执行" in context
-    assert "SELECT * FROM daily_report" in context
+    assert "SELECT * FROM daily_report" not in context
     assert long_sql not in context
     assert long_description not in context
     assert "人员参数" * 300 not in context

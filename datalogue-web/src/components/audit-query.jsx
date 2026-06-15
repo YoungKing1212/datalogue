@@ -44,7 +44,7 @@ function toJsonText(value) {
 
 function stripThinkText(value) {
   const text = toJsonText(value);
-  return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim() || '—';
+  return text.replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, '').trim() || '—';
 }
 
 function previewText(value, limit = 360) {

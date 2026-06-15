@@ -63,7 +63,7 @@ class InProcessDatasetSubAgentRunner:
         tracer.start_span(
             trace_context,
             node=span_key,
-            display_name=f"SubAgent · {dataset_name or request.dataset_id}",
+            display_name=span_key,
             input_payload={
                 "question": request.question,
                 "dataset_id": request.dataset_id,
@@ -130,7 +130,7 @@ def _record_delta_merge_span(
     tracer.start_span(
         trace_context,
         node="delta-merge",
-        display_name="多轮 · Delta 合并",
+        display_name="delta-merge",
         input_payload={
             "question": initial_state.get("question"),
             "prior_capsule_status": initial_state.get("prior_capsule_status"),

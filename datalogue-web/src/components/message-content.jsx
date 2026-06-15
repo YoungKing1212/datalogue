@@ -18,19 +18,25 @@ import 'highlight.js/styles/github-dark.css';
 
 /* ── 1) 把 <think>…</think> 从正文剥离(支持流式中间态: 未闭合也能切) ──
  * 原始思维链不进入对话层展示；业务化过程由 step/query_profile 承载。 */
+const THINK_OPEN_RE = /<think\b[^>]*>/i;
+const THINK_CLOSE_RE = /<\/think\s*>/i;
+
 export function splitThink(raw) {
   if (!raw) return { think: '', answer: '', thinking: false };
-  const open = raw.indexOf('<think>');
-  if (open === -1) return { think: '', answer: raw, thinking: false };
-  const rest = raw.slice(open + 7);
-  const close = rest.indexOf('</think>');
-  if (close === -1) {
+  const openMatch = THINK_OPEN_RE.exec(raw);
+  if (!openMatch) return { think: '', answer: raw, thinking: false };
+
+  const before = raw.slice(0, openMatch.index);
+  const rest = raw.slice(openMatch.index + openMatch[0].length);
+  const closeMatch = THINK_CLOSE_RE.exec(rest);
+  if (!closeMatch) {
     // think 仍在流式输出, 正文还没开始
-    return { think: rest, answer: raw.slice(0, open), thinking: true };
+    return { think: rest, answer: before, thinking: true };
   }
+
   return {
     think: '',
-    answer: (raw.slice(0, open) + rest.slice(close + 8)).trim(),
+    answer: (before + rest.slice(closeMatch.index + closeMatch[0].length)).trim(),
     thinking: false,
   };
 }

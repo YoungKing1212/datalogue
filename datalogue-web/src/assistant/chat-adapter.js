@@ -17,21 +17,21 @@ const BUSINESS_SESSION_PREFIX = 'assistant-thread';
 
 // 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐，作为前端兜底）
 const NODE_DISPLAY = {
-  intent_recognition: '意图识别',
-  entry_intent_classification: '入口分类',
-  analysis_blueprint_execute: '蓝图执行',
-  candidate_assets: '候选资产召回',
-  query_plan: '查询规划',
-  schema_recall: 'Schema 召回',
-  term_normalize_node: '术语归一化',
-  semantic_asset_resolution_node: '语义资产解析',
-  metric_resolution_node: '指标解析',
-  dsl_generate: 'DSL 生成',
-  dsl_validate: 'DSL 校验',
-  dsl_compiler: 'SQL 编译',
-  sql_execute: 'SQL 执行',
-  sql_audit: 'SQL 诊断',
-  report_generator: '报告生成',
+  intent_recognition: 'intent_recognition',
+  entry_intent_classification: 'entry_intent_classification',
+  analysis_blueprint_execute: 'analysis_blueprint_execute',
+  candidate_assets: 'subagent.candidate_assets',
+  query_plan: 'subagent.query_plan',
+  schema_recall: 'schema_recall',
+  term_normalize_node: 'term_normalize_node',
+  semantic_asset_resolution_node: 'semantic_asset_resolution_node',
+  metric_resolution_node: 'metric_resolution_node',
+  dsl_generate: 'dsl_generate',
+  dsl_validate: 'dsl_validate',
+  dsl_compiler: 'dsl_compiler',
+  sql_execute: 'sql_execute',
+  sql_audit: 'sql_audit',
+  report_generator: 'report_generator',
 };
 
 const QUERY_TYPE_LABELS = {

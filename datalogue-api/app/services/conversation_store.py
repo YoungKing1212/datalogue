@@ -446,7 +446,7 @@ class ConversationStore:
         tracer.start_span(
             trace_context,
             node="context-compaction",
-            display_name="多轮 · 消息压缩",
+            display_name="context-compaction",
             input_payload={
                 "session_id": state.session_id,
                 "estimated_tokens": estimated_tokens,

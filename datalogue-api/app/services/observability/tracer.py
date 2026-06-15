@@ -31,21 +31,6 @@ from app.utils.token import estimate_messages_tokens, estimate_text_tokens
 logger = logging.getLogger(__name__)
 
 
-LLM_OBSERVATION_NAMES = {
-    "intent_recognition": "LLM · 意图识别",
-    "真实Schema": "LLM · 真实 Schema 生成",
-    "语义层-推断": "LLM · 语义层推断",
-    "语义层-确定性": "LLM · 语义层确定性",
-    "无Schema": "LLM · 无 Schema 生成",
-    "sql_audit": "LLM · SQL 诊断",
-    "report_generator": "LLM · 报告生成",
-    "lead_agent_planner": "LLM · LeadAgent Planner",
-    "lead_agent_skill_selector": "LLM · LeadAgent Skill Selector",
-    "lead_agent_tool_planner": "LLM · LeadAgent Tool Planner",
-    "lead_agent_report_generator": "LLM · LeadAgent Report Generator",
-}
-
-
 def build_langfuse_trace_url(
     *,
     base_url: str | None,
@@ -564,14 +549,13 @@ def _message_to_dict(message: Any) -> dict[str, Any]:
 
 
 def _generation_display_name(name: str, metadata: dict[str, Any] | None) -> str:
-    """把内部 LLM 调用名转换为 Langfuse 中更容易阅读的中文名称。"""
+    """Langfuse generation 展示名统一使用原始节点/调用名。"""
 
-    path = str((metadata or {}).get("path") or "")
-    if path in LLM_OBSERVATION_NAMES:
-        return LLM_OBSERVATION_NAMES[path]
     if name.startswith("llm."):
-        suffix = name.removeprefix("llm.")
-        return LLM_OBSERVATION_NAMES.get(suffix, f"LLM · {suffix}")
+        return name
+    path = str((metadata or {}).get("path") or "")
+    if path:
+        return path if path.startswith("llm.") else f"llm.{path}"
     return name
 
 

@@ -390,6 +390,80 @@ def test_incomplete_planner_plan_uses_fallback(monkeypatch, db_session, sample_d
     assert context["route_decision"]["decision"] == "selected"
 
 
+def test_tool_planner_fast_path_skips_llm_for_locked_detail_query(monkeypatch, db_session, sample_dataset):
+    """锁定数据集的新明细查询应直接走确定性工具计划，不再调用两次 LLM。"""
+
+    def fail_get_llm(*_args, **_kwargs):
+        raise AssertionError("fast path should not call lead agent LLM")
+
+    monkeypatch.setattr("app.services.lead_agent.get_llm", fail_get_llm)
+
+    plan = plan_tool_calls_with_llm(
+        db_session,
+        question="查询10条用户日志",
+        conversation_summary={
+            "multiturn_classification": {
+                "intent": "new_query",
+                "should_inherit_dataset": False,
+            }
+        },
+        tool_policy={
+            "allowed_tools": [
+                "thread_context",
+                "manifest_router",
+                "schema_status",
+                "subagent_dispatch",
+                "audit_trace",
+            ],
+            "blocked_tools": ["metric_resolution"],
+            "locked_dataset_id": sample_dataset.id,
+            "dataset_lock_source": "payload",
+        },
+        skills=[],
+    )
+
+    assert plan["planner_source"] == "deterministic"
+    assert plan["fast_path_hit"] is True
+    assert plan["llm_skipped_reason"] == "locked_dataset_self_contained_query"
+    assert [item["tool"] for item in plan["tool_calls"]] == [
+        "thread_context",
+        "manifest_router",
+        "schema_status",
+        "subagent_dispatch",
+        "audit_trace",
+    ]
+
+
+def test_tool_planner_fast_path_avoids_multiturn_continue(monkeypatch, db_session, sample_dataset):
+    """多轮续问需要保留 LLM/兜底判断，不能被锁定数据集快路径误服务。"""
+
+    monkeypatch.setattr(
+        "app.services.lead_agent._lead_agent_llm_available",
+        lambda _db: {"available": False, "reason": "lead_agent_llm_not_configured"},
+    )
+
+    plan = plan_tool_calls_with_llm(
+        db_session,
+        question="那按部门拆一下",
+        conversation_summary={
+            "multiturn_classification": {
+                "intent": "continue",
+                "should_inherit_dataset": True,
+            }
+        },
+        tool_policy={
+            "allowed_tools": ["thread_context", "manifest_router", "schema_status", "subagent_dispatch"],
+            "locked_dataset_id": sample_dataset.id,
+            "dataset_lock_source": "multiturn_active",
+        },
+        skills=[],
+    )
+
+    assert plan.get("fast_path_hit") is not True
+    assert plan["planner_fallback"] is True
+    assert plan["fallback_reason"] == "lead_agent_llm_not_configured"
+
+
 def test_planner_records_langfuse_generation(monkeypatch, db_session):
     """LeadAgent Planner 应按 Skill -> Tool 两阶段渐进式披露并记录 generation。"""
 
@@ -594,4 +668,3 @@ def test_planner_logs_prompt_and_response(monkeypatch, db_session, caplog):
     assert any("stage=skill_selector" in m for m in messages)
     assert any("stage=tool_planner" in m for m in messages)
     assert any("parse_ok=True" in m for m in messages)
-

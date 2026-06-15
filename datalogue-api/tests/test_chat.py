@@ -95,14 +95,97 @@ class TestChatAPI:
     """测试 /api/chat 路由"""
 
     def test_sql_audit_node_is_exposed_to_stream_payloads(self):
-        """SQL 诊断节点应纳入 SSE 展示名和状态输出提取。"""
+        """SQL 诊断节点应按原始节点名展示，并纳入状态输出提取。"""
         from app.api.chat import _NODE_DISPLAY_NAMES, _STATE_OUTPUT_KEYS
 
-        assert _NODE_DISPLAY_NAMES["sql_audit"] == "SQL 诊断"
+        assert _NODE_DISPLAY_NAMES["sql_audit"] == "sql_audit"
         assert "sql_audit_result" in _STATE_OUTPUT_KEYS
         assert "sql_diagnosis" in _STATE_OUTPUT_KEYS
         assert "sql_retry_trace" in _STATE_OUTPUT_KEYS
         assert "answer_explanation" in _STATE_OUTPUT_KEYS
+
+    def test_query_plan_prompt_exposes_main_table_and_join_hints(self):
+        """DSL prompt 中应带主表和 JOIN 线索，避免生成端再次选错表。"""
+        from app.graph.nodes import _format_query_plan_for_prompt
+
+        prompt = _format_query_plan_for_prompt(
+            {
+                "query_type": "detail_query",
+                "execution_strategy": "query_graph",
+                "planner_source": "deterministic",
+                "explanation": {"summary": "日志明细查询。"},
+                "debug": {
+                    "selected_main_table": "plan_task_daily_record",
+                    "join_hints": [
+                        {
+                            "left_table": "plan_task_daily_record",
+                            "left_column": "account",
+                            "right_table": "eas_personofile",
+                            "right_column": "person_card",
+                            "purpose": "日志账号关联人员姓名",
+                        }
+                    ],
+                },
+            }
+        )
+
+        assert "规划来源: deterministic" in prompt
+        assert "事实主表: plan_task_daily_record" in prompt
+        assert "plan_task_daily_record.account = eas_personofile.person_card" in prompt
+
+    def test_dsl_asset_catalog_filters_fields_by_query_plan(self):
+        """QueryPlan 已选表字段时，DSL 资产目录不再追加全量字段目录。"""
+        from app.graph.nodes import _format_dsl_asset_catalog
+
+        catalog = _format_dsl_asset_catalog(
+            {
+                "fields": [
+                    {"id": 1, "name": "rzrq", "column_name": "rzrq", "table_name": "plan_task_daily_record"},
+                    {"id": 2, "name": "zt", "column_name": "zt", "table_name": "plan_task_daily_record"},
+                    {"id": 3, "name": "person_money", "column_name": "person_money", "table_name": "eas_personofile"},
+                ]
+            },
+            {
+                "selected_assets": [
+                    {
+                        "asset_type": "field",
+                        "name": "rzrq",
+                        "metadata": {
+                            "table_name": "plan_task_daily_record",
+                            "column_name": "rzrq",
+                        },
+                    }
+                ]
+            },
+        )
+
+        assert "rzrq" in catalog
+        assert "zt" in catalog
+        assert "person_money" not in catalog
+
+    def test_dsl_generate_template_plan_skips_llm(self, monkeypatch):
+        """模板 QueryPlan 应直接产出 SQL，不初始化 DSL LLM。"""
+        from app.graph.nodes import dsl_generate_node
+
+        def fail_get_llm(*_args, **_kwargs):
+            raise AssertionError("template path should not create llm")
+
+        monkeypatch.setattr("app.graph.nodes.get_llm", fail_get_llm)
+        sql = "SELECT * FROM plan_task_daily_record LIMIT 10"
+
+        result = dsl_generate_node(
+            {
+                "question": "查询10条用户日志",
+                "query_plan": {
+                    "planner_source": "template",
+                    "debug": {"sql_template": sql},
+                },
+            }
+        )
+
+        assert result["generation_mode"] == "template"
+        assert result["llm_skipped_reason"] == "query_plan_template_sql"
+        assert result["sql"] == sql
 
     def test_sql_execute_preserves_upstream_compile_error(self, db_session):
         """上游 SQL 编译失败时，不应被 SQL 执行节点覆盖成笼统的 SQL 为空。"""
@@ -1343,6 +1426,51 @@ class TestLangGraphNodes:
         assert "invalid_metric" in result["error"]
         assert result["should_retry"] is True
 
+    def test_dsl_validate_detail_query_empty_dsl_explains_asset_or_template_gap(self):
+        """明细查询空 DSL：提示字段召回不足或模板未命中，而不是泛化成语义层错误。"""
+        from app.graph.nodes import dsl_validate_node
+
+        schema = """【语义层】
+数据集: 生产经营管理系统日志数据集
+
+【所选表字段与样例】
+- plan_task_daily_record.rzrq (timestamp) 名称=日志日期 角色=time_field 默认聚合=NONE
+"""
+        state = {
+            "dsl": {"metrics": [], "dimensions": [], "fields": []},
+            "schema_context": schema,
+            "schema_structured": {
+                "metrics": [],
+                "dimensions": [],
+                "fields": [{"name": "rzrq"}],
+                "terms": [],
+                "blueprints": [],
+            },
+            "query_plan": {
+                "query_type": "detail_query",
+                "execution_strategy": "query_graph",
+                "planner_source": "deterministic",
+                "selected_assets": [
+                    {
+                        "asset_type": "field",
+                        "asset_id": 1,
+                        "name": "rzrq",
+                        "usage": "selected",
+                    }
+                ],
+                "debug": {"selected_main_table": "plan_task_daily_record"},
+            },
+        }
+
+        result = dsl_validate_node(state)
+
+        assert result["dsl_valid"] is False
+        assert "字段召回不足或模板未命中" in result["error"]
+        assert "plan_task_daily_record" in result["error"]
+        assert "query_plan.debug.template_name/sql_template" in result["error"]
+        assert "metrics/dimensions/fields 至少需要一项" not in result["error"]
+        assert result["should_retry"] is True
+
     def test_dsl_validate_direct_sql(self):
         """DSL 校验：direct_sql 路径"""
         from app.graph.nodes import dsl_validate_node
@@ -1901,6 +2029,50 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
             assert "其余 5 行未展开" in captured["human"]
             assert "x" * 150 not in captured["human"]
 
+    def test_report_generator_stream_strips_think_tokens_when_disabled(self):
+        """报告生成流式 token 在 Think 关闭时不应泄露思考内容。"""
+        from app.services.report_generation import stream_sql_result_report
+
+        with patch("app.services.report_generation.get_llm") as mock_get_llm:
+            mock_llm = MagicMock()
+            mock_llm.datalogue_thinking_enabled = False
+
+            async def _fake_astream(messages):
+                yield type("C", (), {"content": "<Thi", "usage_metadata": None})()
+                yield type("C", (), {"content": "nk>内部推理", "usage_metadata": None})()
+                yield type("C", (), {"content": "</Think>结论：", "usage_metadata": None})()
+                yield type("C", (), {"content": "表现稳定。", "usage_metadata": None})()
+
+            mock_llm.astream = _fake_astream
+            mock_get_llm.return_value = mock_llm
+
+            state = {
+                "question": "供应商综合评估",
+                "sql_result": {
+                    "columns": ["name"],
+                    "rows": [{"name": "供应商A"}],
+                    "row_count": 1,
+                },
+                "token_usage": None,
+            }
+
+            async def _collect():
+                tokens = []
+                result = None
+                async for event in stream_sql_result_report(state):
+                    if event.get("type") == "token":
+                        tokens.append(event.get("content") or "")
+                    elif event.get("type") == "result":
+                        result = event
+                return tokens, result
+
+            tokens, result = asyncio.run(_collect())
+
+            visible = "".join(tokens)
+            assert visible == "结论：表现稳定。"
+            assert result["answer"] == "结论：表现稳定。"
+            assert "内部推理" not in visible
+
     def test_invoke_llm_with_metrics_strips_think_when_disabled(self):
         """通用 LLM 调用在 Think 关闭时也应清理流式输出。"""
         from app.graph.nodes import _invoke_llm_with_metrics
@@ -2184,7 +2356,7 @@ class TestChatStreamEvents:
                     event_type="candidate_assets",
                     payload={
                         "node": "candidate_assets",
-                        "display_name": "候选资产召回",
+                        "display_name": "subagent.candidate_assets",
                         "status": "done",
                         "candidate_assets": candidate_assets,
                     },
@@ -2193,7 +2365,7 @@ class TestChatStreamEvents:
                     event_type="query_plan",
                     payload={
                         "node": "query_plan",
-                        "display_name": "查询规划",
+                        "display_name": "subagent.query_plan",
                         "status": "done",
                         "query_plan": query_plan,
                     },
@@ -2294,6 +2466,8 @@ class TestChatStreamEvents:
 
         assert candidate_steps
         assert query_plan_steps
+        assert candidate_steps[-1]["display_name"] == "subagent.candidate_assets"
+        assert query_plan_steps[-1]["display_name"] == "subagent.query_plan"
         assert query_plan_steps[-1]["query_plan"]["execution_strategy"] == "query_graph"
         assert final["query_plan"]["execution_strategy"] == "query_graph"
         assert final["candidate_assets"]["summary"]["field_count"] == 1
@@ -2338,7 +2512,7 @@ class TestChatStreamEvents:
                     event_type="candidate_assets",
                     payload={
                         "node": "candidate_assets",
-                        "display_name": "候选资产召回",
+                        "display_name": "subagent.candidate_assets",
                         "status": "done",
                         "candidate_assets": candidate_assets,
                     },
@@ -2347,7 +2521,7 @@ class TestChatStreamEvents:
                     event_type="query_plan",
                     payload={
                         "node": "query_plan",
-                        "display_name": "查询规划",
+                        "display_name": "subagent.query_plan",
                         "status": "done",
                         "query_plan": query_plan,
                     },
@@ -2670,6 +2844,56 @@ class TestChatStreamEvents:
             assert "step" in types
             assert "token" in types
             assert "final" in types
+
+    def test_chat_stream_report_generator_strips_think_tokens(
+        self, db_session, sample_dataset
+    ):
+        """Graph report_generator 的原生 LLM token 不应泄露 Think 标签。"""
+
+        async def fake_astream_events(state, version):
+            yield {
+                "event": "on_chain_start",
+                "name": "report_generator",
+                "data": {},
+                "metadata": {"langgraph_node": "report_generator"},
+            }
+            for content in ["<Thi", "nk>内部推理", "</Think>结论：", "表现稳定。"]:
+                yield {
+                    "event": "on_chat_model_stream",
+                    "name": "ChatOpenAI",
+                    "data": {"chunk": type("C", (), {"content": content})()},
+                    "metadata": {"langgraph_node": "report_generator"},
+                }
+            yield {
+                "event": "on_chain_end",
+                "name": "report_generator",
+                "data": {
+                    "output": {
+                        "answer": "结论：表现稳定。",
+                        "sql": "SELECT 1",
+                        "sql_list": ["SELECT 1"],
+                    }
+                },
+                "metadata": {"langgraph_node": "report_generator"},
+            }
+
+        with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.DatasetSubAgent",
+            _graph_backed_fake_subagent_class(),
+        ):
+            mock_graph = MagicMock()
+            mock_graph.astream_events = fake_astream_events
+            mock_wf.return_value = mock_graph
+
+            events = _collect_stream_events(
+                {"question": "查询供应商日志", "dataset_id": sample_dataset.id},
+                db_session,
+            )
+
+        visible = "".join(event.get("content", "") for event in events if event.get("type") == "token")
+        assert visible == "结论：表现稳定。"
+        assert "内部推理" not in visible
+        assert "<Thi" not in visible
 
     def test_chat_stream_final_and_message_metadata_include_query_profile(
         self, db_session, sample_dataset

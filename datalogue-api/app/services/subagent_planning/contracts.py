@@ -35,7 +35,7 @@ ExecutionStrategy = Literal[
     "reject",
 ]
 AssetUsage = Literal["selected", "reference", "rejected", "candidate"]
-PlannerSource = Literal["llm", "fallback", "rules"]
+PlannerSource = Literal["deterministic", "template", "llm", "fallback"]
 
 CANDIDATE_ASSET_TYPES = {"blueprint", "metric", "dimension", "term", "field", "table"}
 QUERY_TYPES = {
@@ -54,7 +54,7 @@ EXECUTION_STRATEGIES = {
     "reject",
 }
 ASSET_USAGES = {"selected", "reference", "rejected", "candidate"}
-PLANNER_SOURCES = {"llm", "fallback", "rules"}
+PLANNER_SOURCES = {"deterministic", "template", "llm", "fallback"}
 
 
 class QueryPlanValidationError(ValueError):
@@ -126,7 +126,7 @@ class QueryPlan:
     required_inputs: list[dict[str, Any]] = field(default_factory=list)
     clarification: dict[str, Any] | None = None
     fallback_reason: str | None = None
-    planner_source: str = "rules"
+    planner_source: str = "deterministic"
     explanation: dict[str, Any] = field(default_factory=dict)
     decision_factors: list[dict[str, Any]] = field(default_factory=list)
     planner_warnings: list[dict[str, Any]] = field(default_factory=list)
@@ -257,7 +257,7 @@ def _dict_list_from_payload(items: Any, field_name: str) -> list[dict[str, Any]]
 def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
     query_type = str(payload.get("query_type") or "")
     execution_strategy = str(payload.get("execution_strategy") or "")
-    planner_source = str(payload.get("planner_source") or "rules")
+    planner_source = str(payload.get("planner_source") or "deterministic")
     if query_type not in QUERY_TYPES:
         raise QueryPlanValidationError(f"query_type invalid: {query_type}")
     if execution_strategy not in EXECUTION_STRATEGIES:

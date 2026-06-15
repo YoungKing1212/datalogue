@@ -56,19 +56,20 @@ from app.utils.query_constraints import (
     normalize_query_constraints,
     render_query_constraints_instruction,
 )
+from app.utils.think import strip_think_blocks
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_SQL_RETRY_COUNT = 3
 REPORT_RESULT_MAX_ROWS = 30
 REPORT_CELL_MAX_CHARS = 120
+DSL_FIELD_CATALOG_LIMIT = 20
 
 
 def _strip_think_blocks(text: str) -> str:
     """移除模型泄露的思考标签，避免最终回答和 trace 被推理草稿污染。"""
 
-    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text or "", flags=re.IGNORECASE)
-    return cleaned.strip()
+    return strip_think_blocks(text)
 
 
 def _llm_thinking_enabled(llm) -> bool:
@@ -466,7 +467,9 @@ def _format_query_plan_for_prompt(query_plan: dict | None) -> str:
 
     query_type = query_plan.get("query_type") or ""
     execution_strategy = query_plan.get("execution_strategy") or ""
+    planner_source = query_plan.get("planner_source") or ""
     explanation = query_plan.get("explanation") or {}
+    debug = query_plan.get("debug") or {}
     summary = explanation.get("summary") if isinstance(explanation, dict) else ""
 
     lines = ["【查询规划】"]
@@ -474,8 +477,27 @@ def _format_query_plan_for_prompt(query_plan: dict | None) -> str:
         lines.append(f"查询类型: {query_type}")
     if execution_strategy:
         lines.append(f"执行策略: {execution_strategy}")
+    if planner_source:
+        lines.append(f"规划来源: {planner_source}")
     if summary:
         lines.append(f"规划说明: {summary}")
+    selected_main_table = debug.get("selected_main_table") if isinstance(debug, dict) else None
+    if selected_main_table:
+        lines.append(f"事实主表: {selected_main_table}")
+    join_hints = debug.get("join_hints") if isinstance(debug, dict) else None
+    if isinstance(join_hints, list) and join_hints:
+        lines.append("必要 JOIN 线索:")
+        for hint in join_hints[:5]:
+            if not isinstance(hint, dict):
+                continue
+            left_table = hint.get("left_table")
+            left_column = hint.get("left_column")
+            right_table = hint.get("right_table")
+            right_column = hint.get("right_column")
+            if left_table and left_column and right_table and right_column:
+                purpose = hint.get("purpose")
+                suffix = f" ({purpose})" if purpose else ""
+                lines.append(f"- {left_table}.{left_column} = {right_table}.{right_column}{suffix}")
     if execution_strategy == "blueprint_as_reference":
         lines.append("硬性要求: 命中的蓝图只能作为参考证据，不能原样执行蓝图 SQL。")
     if len(lines) == 1:
@@ -495,6 +517,50 @@ def _append_query_planning_context(
     if blueprint_context and blueprint_context not in human_text:
         human_text += f"\n\n{blueprint_context}"
     return human_text
+
+
+def _template_sql_from_query_plan(query_plan: dict | None) -> str:
+    if not isinstance(query_plan, dict):
+        return ""
+    if query_plan.get("planner_source") != "template":
+        return ""
+    debug = query_plan.get("debug") if isinstance(query_plan.get("debug"), dict) else {}
+    sql = debug.get("sql_template")
+    return str(sql).strip() if sql else ""
+
+
+def _empty_detail_query_error(state: AgentState) -> str | None:
+    """为空明细 DSL 返回更可操作的诊断，避免误导为语义层整体损坏。"""
+
+    query_plan = state.get("query_plan")
+    if not isinstance(query_plan, dict):
+        return None
+    if query_plan.get("query_type") != "detail_query":
+        return None
+
+    debug = query_plan.get("debug") if isinstance(query_plan.get("debug"), dict) else {}
+    selected_assets = query_plan.get("selected_assets")
+    has_selected_assets = isinstance(selected_assets, list) and bool(selected_assets)
+    template_name = str(debug.get("template_name") or "").strip()
+    selected_main_table = str(debug.get("selected_main_table") or "").strip()
+
+    if template_name:
+        template_hint = f"已识别模板 {template_name}，但未拿到可用 SQL 模板"
+    else:
+        template_hint = "未命中可用明细模板"
+    if selected_main_table:
+        asset_hint = f"当前主表候选为 {selected_main_table}"
+    elif has_selected_assets:
+        asset_hint = "已有字段/表候选，但 DSL LLM 未生成 fields"
+    else:
+        asset_hint = "字段/表候选资产不足"
+
+    return (
+        "字段召回不足或模板未命中：明细查询没有生成可展示字段，也没有可用模板 SQL。"
+        f"{asset_hint}；{template_hint}。"
+        "请检查 candidate_assets 是否召回到日志主表字段、routing.dataset_id 是否正确，"
+        "以及 query_plan.debug.template_name/sql_template 是否存在。"
+    )
 
 
 def merge_prior_context_node(state: AgentState) -> Dict[str, Any]:
@@ -860,7 +926,41 @@ def _field_aliases(field: dict) -> list[str]:
     )
 
 
-def _format_dsl_asset_catalog(structured: dict | None) -> str:
+def _query_plan_selected_asset_names(query_plan: dict | None) -> tuple[set[str], set[str]]:
+    """提取 QueryPlan 已选字段和表，用于裁剪 DSL 资产目录。"""
+
+    field_names: set[str] = set()
+    table_names: set[str] = set()
+    if not isinstance(query_plan, dict):
+        return field_names, table_names
+    for asset in query_plan.get("selected_assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        asset_type = asset.get("asset_type")
+        table_name = str(metadata.get("table_name") or "").strip()
+        column_name = str(metadata.get("column_name") or asset.get("name") or "").split(".")[-1].strip()
+        if table_name:
+            table_names.add(table_name)
+        if asset_type == "field" and column_name:
+            field_names.add(column_name)
+    return field_names, table_names
+
+
+def _filter_catalog_fields(items: list[dict[str, Any]], query_plan: dict | None) -> list[dict[str, Any]]:
+    field_names, table_names = _query_plan_selected_asset_names(query_plan)
+    if not field_names and not table_names:
+        return items[:DSL_FIELD_CATALOG_LIMIT]
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        table_name = str(item.get("table_name") or "").strip()
+        column_name = str(item.get("column_name") or item.get("name") or "").split(".")[-1].strip()
+        if (table_name and table_name in table_names) or (column_name and column_name in field_names):
+            filtered.append(item)
+    return filtered[:DSL_FIELD_CATALOG_LIMIT]
+
+
+def _format_dsl_asset_catalog(structured: dict | None, query_plan: dict | None = None) -> str:
     """把结构化语义层资产整理成 NL2DSL v2 可引用目录。fields 使用紧凑格式，unused 字段自动过滤。"""
     if not structured:
         return ""
@@ -875,23 +975,119 @@ def _format_dsl_asset_catalog(structured: dict | None) -> str:
     ):
         if not items:
             continue
+        if asset_type == "field":
+            items = _filter_catalog_fields(items, query_plan)
+            if not items:
+                continue
         lines.append(f"{title}:")
         if asset_type == "field":
             # fields 使用紧凑行格式，unused 在 format_fields_compact 内部过滤
             compact = format_fields_compact(items)
             if compact:
                 lines.append(compact)
+            else:
+                for item in items:
+                    lines.append(
+                        "- "
+                        f"asset_type=field, asset_id={item.get('id')}, "
+                        f"name={item.get('name')}, table={item.get('table_name')}, "
+                        f"column={item.get('column_name') or item.get('name')}"
+                    )
             continue
         for item in items:
             aliases = item.get("synonyms") or item.get("aliases") or []
             alias_text = f"，同义词={aliases}" if aliases else ""
+            detail_parts: list[str] = []
+            if asset_type == "metric":
+                if item.get("expr"):
+                    detail_parts.append(f"expr={item.get('expr')}")
+                if item.get("table_name"):
+                    detail_parts.append(f"table={item.get('table_name')}")
+                if item.get("time_field"):
+                    detail_parts.append(f"time_field={item.get('time_field')}")
+            elif asset_type == "dimension":
+                if item.get("table_name"):
+                    detail_parts.append(f"table={item.get('table_name')}")
+                if item.get("column_name"):
+                    detail_parts.append(f"column={item.get('column_name')}")
+            detail_text = f"，{', '.join(detail_parts)}" if detail_parts else ""
             lines.append(
                 "- "
                 f"asset_type={asset_type}, asset_id={item.get('id')}, "
                 f"name={item.get('name')}, display_name={item.get('display_name') or item.get('name')}"
-                f"{alias_text}"
+                f"{detail_text}{alias_text}"
             )
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _extract_dataset_name(schema: str) -> str:
+    match = re.search(r"^数据集:\s*(.+)$", schema or "", re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def _format_progressive_semantic_context(
+    state: AgentState,
+    *,
+    schema: str,
+    structured: dict | None,
+    asset_catalog: str,
+    query_constraints_text: str,
+) -> str:
+    """为 DSL 生成构造渐进式披露上下文，避免重复注入完整 schema_context。"""
+
+    if not structured:
+        return schema
+
+    query_plan = state.get("query_plan") if isinstance(state.get("query_plan"), dict) else {}
+    debug = query_plan.get("debug") if isinstance(query_plan.get("debug"), dict) else {}
+    dataset_name = structured.get("dataset_name") or _extract_dataset_name(schema) or "未知数据集"
+    dataset_prompt = (state.get("dataset_prompt_instructions") or "").strip()
+    context_debug = state.get("dataset_context_debug") or {}
+    asset_counts = context_debug.get("asset_counts") or {}
+    retained_counts = context_debug.get("retained_counts") or {}
+
+    lines = [
+        "【渐进式语义层上下文】",
+        "说明: 以下内容按 L0-L3 渐进披露。优先使用 L0/L1/L2；只有必要时参考 L3 预算信息。",
+        "",
+        "【L0 数据集与任务】",
+        f"- 数据集: {dataset_name}",
+    ]
+    query_type = query_plan.get("query_type")
+    execution_strategy = query_plan.get("execution_strategy")
+    if query_type:
+        lines.append(f"- 查询类型: {query_type}")
+    if execution_strategy:
+        lines.append(f"- 执行策略: {execution_strategy}")
+    selected_main_table = debug.get("selected_main_table")
+    if selected_main_table:
+        lines.append(f"- 事实主表: {selected_main_table}")
+    if query_type == "detail_query":
+        lines.append("- 明细查询允许使用 fields；不要求必须生成 metrics。")
+
+    lines.extend(["", "【L1 硬约束】"])
+    if query_constraints_text:
+        lines.append(query_constraints_text)
+    else:
+        lines.append("（无额外查询约束）")
+    if dataset_prompt:
+        lines.append("")
+        lines.append("【数据集级 LLM 约束（硬性要求）】")
+        lines.append(dataset_prompt)
+
+    lines.extend(["", "【L2 相关语义资产】"])
+    if asset_catalog:
+        lines.append(asset_catalog)
+    else:
+        lines.append("（当前未召回可引用语义资产，不能编造 asset_id）")
+
+    lines.extend(["", "【L3 召回预算摘要】"])
+    if asset_counts or retained_counts:
+        lines.append(f"- asset_counts: {json.dumps(asset_counts, ensure_ascii=False)}")
+        lines.append(f"- retained_counts: {json.dumps(retained_counts, ensure_ascii=False)}")
+    else:
+        lines.append("（无预算摘要）")
+    return "\n".join(lines).strip()
 
 
 def _match_analysis_blueprint(db: Session, dataset_id: int | None, question: str) -> dict | None:
@@ -1249,6 +1445,20 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         semantic_time_rule = "3. 时间范围只在用户明确提出时设置，不要自行添加默认时间范围\n"
         semantic_limit_rule = "5. 用户明确要求返回条数时再设置 limit；否则可以省略或设为 null\n"
 
+    template_sql = _template_sql_from_query_plan(state.get("query_plan"))
+    if template_sql:
+        logger.info("DSL生成命中模板旁路: template_sql_len=%s", len(template_sql))
+        return {
+            "dsl": {"direct_sql": template_sql, "template": True},
+            "sql": template_sql,
+            "sql_list": [template_sql],
+            "generation_mode": "template",
+            "error": None,
+            "should_retry": False,
+            "llm_skipped_reason": "query_plan_template_sql",
+            "token_usage": state.get("token_usage"),
+        }
+
     llm = get_llm(temperature=0.1, role="dsl", db=db)
 
     has_semantic = bool(schema and "【语义层】" in schema)
@@ -1318,7 +1528,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         metric_resolution = state.get("metric_resolution") or {}
         term_normalization = state.get("term_normalization") or {}
         semantic_asset_resolution = state.get("semantic_asset_resolution") or {}
-        asset_catalog = _format_dsl_asset_catalog(structured)
+        asset_catalog = _format_dsl_asset_catalog(structured, state.get("query_plan"))
         all_matched = metric_resolution.get("all_matched", True)
         unresolved = metric_resolution.get("unresolved", [])
 
@@ -1457,11 +1667,16 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         system = SystemMessage(
             content=build_semantic_system(dsl_limit_example, semantic_time_rule, semantic_limit_rule)
         )
-        human_text = f"用户问题: {question}\n\n语义层信息:\n{schema}"
+        semantic_prompt_context = _format_progressive_semantic_context(
+            state,
+            schema=schema,
+            structured=structured,
+            asset_catalog=asset_catalog,
+            query_constraints_text=query_constraints_text,
+        )
+        human_text = f"用户问题: {question}\n\n语义层信息:\n{semantic_prompt_context}"
         if multiturn_prompt:
             human_text += f"\n\n【多轮查询上下文】\n{multiturn_prompt}"
-        if asset_catalog:
-            human_text += f"\n\n{asset_catalog}"
         if term_normalization:
             human_text += (
                 "\n\n【业务术语归一化结果】\n"
@@ -1657,7 +1872,10 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
     dsl_fields_names = _dsl_item_names(dsl.get("fields", []))
     dsl_dim_names = _dsl_item_names(dsl.get("dimensions", []))
     if not metrics and not dsl_fields_names and not dsl_dim_names:
-        errors.append("查询条件不足：metrics/dimensions/fields 至少需要一项")
+        errors.append(
+            _empty_detail_query_error(state)
+            or "查询条件不足：metrics/dimensions/fields 至少需要一项"
+        )
     for m in metrics:
         if m not in valid_names:
             errors.append(f"指标 '{m}' 不在语义层定义中")

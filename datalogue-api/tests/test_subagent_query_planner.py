@@ -1,5 +1,9 @@
 import json
 
+from app.services.observability.context import (
+    ObservabilityRequestContext,
+    set_observability_context,
+)
 from app.services.subagent_planning.contracts import CandidateAsset
 from app.services.subagent_planning.planner import (
     _planner_human_prompt,
@@ -18,6 +22,7 @@ class FakeLLM:
         self.content = content
         self.exc = exc
         self.messages = None
+        self.model_name = "fake-planner-model"
 
     def invoke(self, messages):
         self.messages = messages
@@ -31,6 +36,19 @@ class FakeOpenAIAPIConnectionError(Exception):
 
 
 FakeOpenAIAPIConnectionError.__module__ = "openai"
+
+
+class FakeTracer:
+    def __init__(self):
+        self.started_generations = []
+        self.ended_generations = []
+
+    def start_generation(self, **kwargs):
+        self.started_generations.append(kwargs)
+        return {"handle": len(self.started_generations)}
+
+    def end_generation(self, handle, **kwargs):
+        self.ended_generations.append({"handle": handle, **kwargs})
 
 
 def _field(name="created_at"):
@@ -57,6 +75,42 @@ def _table(name="user_logs"):
     }
 
 
+def _daily_field(name="rzrq", display_name="日志日期"):
+    return CandidateAsset(
+        asset_type="field",
+        asset_id=f"table:plan_task_daily_record.column:{name}",
+        name=name,
+        display_name=display_name,
+        source="schema",
+        confidence=0.88,
+        metadata={"table_name": "plan_task_daily_record", "column_name": name},
+    )
+
+
+def _daily_table():
+    return CandidateAsset(
+        asset_type="table",
+        asset_id="plan_task_daily_record",
+        name="plan_task_daily_record",
+        display_name="计划任务日报记录表",
+        source="schema",
+        confidence=0.9,
+        metadata={"table_name": "plan_task_daily_record"},
+    )
+
+
+def _person_table():
+    return CandidateAsset(
+        asset_type="table",
+        asset_id="eas_personofile",
+        name="eas_personofile",
+        display_name="人员档案表",
+        source="schema",
+        confidence=0.72,
+        metadata={"table_name": "eas_personofile"},
+    )
+
+
 def _blueprint(parameters=None, asset_id=7, name="个人日报查询", confidence=0.91):
     return CandidateAsset(
         asset_type="blueprint",
@@ -81,6 +135,47 @@ def test_fallback_detail_query_uses_query_graph_without_metrics():
     assert plan.explanation["why_continue_without_metric"] == "明细查询不要求必须命中指标或维度。"
 
 
+def test_fallback_detail_query_records_main_table_and_join_hints():
+    plan = build_fallback_query_plan(
+        "查询汤杰10条工作日志",
+        [_blueprint(), _daily_field("rzrq"), _daily_field("zt", "状态"), _daily_table(), _person_table()],
+    )
+
+    assert plan.query_type == "detail_query"
+    assert plan.execution_strategy == "query_graph"
+    assert plan.planner_source == "deterministic"
+    assert plan.debug["selected_main_table"] == "plan_task_daily_record"
+    assert plan.debug["join_hints"] == [
+        {
+            "left_table": "plan_task_daily_record",
+            "left_column": "account",
+            "right_table": "eas_personofile",
+            "right_column": "person_card",
+            "purpose": "日志账号关联人员姓名",
+        }
+    ]
+    selected_daily = next(asset for asset in plan.selected_assets if asset.name == "plan_task_daily_record")
+    assert selected_daily.metadata["main_table_role"] == "fact"
+    rejected_blueprint = next(asset for asset in plan.rejected_assets if asset.asset_type == "blueprint")
+    assert "日志明细查询不强套日报蓝图" in rejected_blueprint.reject_reason
+
+
+def test_dataset10_log_detail_uses_template_plan():
+    plan = build_fallback_query_plan(
+        "查询10条用户日志",
+        [_daily_field("rzrq"), _daily_table(), _person_table()],
+        routing={"dataset_id": 10},
+    )
+
+    assert plan.planner_source == "template"
+    assert plan.execution_strategy == "query_graph"
+    assert plan.debug["template_name"] == "dataset10_log_detail"
+    assert plan.debug["schema_token_budget"] == "template_bypass"
+    assert "FROM plan_task_daily_record p" in plan.debug["sql_template"]
+    assert "LEFT JOIN eas_personofile ep ON p.account = ep.person_card" in plan.debug["sql_template"]
+    assert "LIMIT 10" in plan.debug["sql_template"]
+
+
 def test_fallback_blueprint_hit_detail_query_becomes_reference():
     plan = build_fallback_query_plan(
         "查询10条用户日志",
@@ -88,17 +183,18 @@ def test_fallback_blueprint_hit_detail_query_becomes_reference():
     )
 
     assert plan.query_type == "detail_query"
-    assert plan.execution_strategy == "blueprint_as_reference"
-    assert plan.reference_assets[0].asset_type == "blueprint"
-    assert plan.reference_assets[0].name == "个人日报查询"
-    assert plan.reference_assets[0].usage == "reference"
-    assert "不是固定蓝图分析" in plan.explanation["why_not_blueprint_execute"]
+    assert plan.execution_strategy == "query_graph"
+    assert not plan.reference_assets
+    rejected_blueprint = next(asset for asset in plan.rejected_assets if asset.asset_type == "blueprint")
+    assert rejected_blueprint.name == "个人日报查询"
+    assert rejected_blueprint.usage == "rejected"
+    assert "不强套日报蓝图" in rejected_blueprint.reject_reason
     assert {factor["code"] for factor in plan.decision_factors} == {
         "detail_query_signal",
         "field_table_coverage",
-        "blueprint_reference",
+        "blueprint_rejected_for_detail",
     }
-    assert plan.planner_warnings[0]["code"] == "blueprint_reference_only"
+    assert plan.planner_warnings[0]["code"] == "blueprint_rejected_for_detail"
 
 
 def test_fallback_compares_multiple_blueprint_candidates():
@@ -226,7 +322,7 @@ def test_plan_query_with_llm_validates_and_returns_llm_plan(monkeypatch, db_sess
 
     plan = plan_query(
         db=db_session,
-        question="查询10条用户日志",
+        question="规划一个复杂查询",
         routing={"route": "dataset_subagent"},
         candidate_assets={"assets": [_blueprint().to_dict(), _field().to_dict(), _table()]},
     )
@@ -245,14 +341,14 @@ def test_plan_query_falls_back_when_llm_raises(monkeypatch, db_session):
 
     plan = plan_query(
         db=db_session,
-        question="查询10条用户日志",
+        question="这个数据集支持什么天气预报",
         routing={"route": "dataset_subagent"},
-        candidate_assets={"assets": [_field().to_dict(), _table()]},
+        candidate_assets={"assets": []},
     )
 
     assert plan.planner_source == "fallback"
     assert plan.fallback_reason == "planner down"
-    assert plan.execution_strategy == "query_graph"
+    assert plan.execution_strategy == "reject"
     assert plan.planner_warnings[0]["code"] == "planner_fallback"
     assert plan.decision_factors
 
@@ -268,14 +364,14 @@ def test_plan_query_falls_back_when_llm_raises_openai_connection_error(
 
     plan = plan_query(
         db=db_session,
-        question="查询10条用户日志",
+        question="这个数据集支持什么天气预报",
         routing={"route": "dataset_subagent"},
-        candidate_assets={"assets": [_field().to_dict(), _table()]},
+        candidate_assets={"assets": []},
     )
 
     assert plan.planner_source == "fallback"
     assert plan.fallback_reason == "api connection failed"
-    assert plan.execution_strategy == "query_graph"
+    assert plan.execution_strategy == "reject"
 
 
 def test_fallback_reject_generates_governance_suggestions():
@@ -295,9 +391,9 @@ def test_plan_query_truncates_long_fallback_reason(monkeypatch, db_session):
 
     plan = plan_query(
         db=db_session,
-        question="查询10条用户日志",
+        question="这个数据集支持什么天气预报",
         routing={"route": "dataset_subagent"},
-        candidate_assets={"assets": [_field().to_dict(), _table()]},
+        candidate_assets={"assets": []},
     )
 
     assert plan.planner_source == "fallback"
@@ -317,9 +413,9 @@ def test_plan_query_does_not_swallow_prompt_assembly_errors(monkeypatch, db_sess
     try:
         plan_query(
             db=db_session,
-            question="查询10条用户日志",
+            question="这个数据集支持什么天气预报",
             routing={"route": "dataset_subagent"},
-            candidate_assets={"assets": [_field().to_dict(), _table()]},
+            candidate_assets={"assets": []},
         )
     except AssertionError as exc:
         assert str(exc) == "local prompt bug"
@@ -352,9 +448,49 @@ def test_plan_query_falls_back_when_llm_clarifies_detail_query_with_field_table(
         candidate_assets={"assets": [_field().to_dict(), _table()]},
     )
 
-    assert plan.planner_source == "fallback"
+    assert plan.planner_source == "deterministic"
     assert plan.execution_strategy == "query_graph"
-    assert "detail_query" in plan.fallback_reason
+
+
+def test_plan_query_records_llm_generation_with_fallback_metadata(monkeypatch, db_session):
+    fake_tracer = FakeTracer()
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_observability_tracer",
+        lambda: fake_tracer,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: FakeLLM("not-json"),
+    )
+
+    request_context = ObservabilityRequestContext(
+        trace_id="trace-test",
+        session_id="session-test",
+        conversation_id=1,
+        dataset_id=10,
+        user_id="tester",
+        tenant_id="default",
+        active=True,
+        enabled=True,
+    )
+    with set_observability_context(request_context):
+        plan = plan_query(
+            db=db_session,
+            question="规划复杂查询",
+            routing={"route": "dataset_subagent"},
+            candidate_assets={"assets": [_field().to_dict(), _table()]},
+        )
+
+    assert plan.planner_source == "fallback"
+    assert plan.debug["validation_error"].startswith("Expecting value")
+    assert fake_tracer.started_generations[0]["name"] == "llm.subagent_query_planner"
+    assert fake_tracer.started_generations[0]["model"] == "fake-planner-model"
+    metadata = fake_tracer.ended_generations[0]["metadata"]
+    assert metadata["status"] == "fallback"
+    assert metadata["fallback_reason"] == plan.fallback_reason
+    assert metadata["validation_error"] == plan.debug["validation_error"]
+    assert metadata["fallback_execution_strategy"] == "reject"
 
 
 def test_planner_human_prompt_uses_lightweight_whitelists():
