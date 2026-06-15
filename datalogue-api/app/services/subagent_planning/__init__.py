@@ -26,6 +26,7 @@ from app.services.subagent_planning.asset_recall import (
     build_candidate_assets_from_context,
     recall_candidate_assets,
 )
+from app.services.subagent_planning.planner import build_fallback_query_plan
 
 __all__ = [
     "CANDIDATE_ASSET_TYPES",
@@ -37,6 +38,7 @@ __all__ = [
     "SubAgentEvent",
     "SubAgentResult",
     "build_candidate_assets_from_context",
+    "build_fallback_query_plan",
     "normalize_query_plan",
     "recall_candidate_assets",
 ]
