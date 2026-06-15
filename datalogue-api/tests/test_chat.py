@@ -2158,9 +2158,12 @@ class TestChatStreamEvents:
         query_plan = {
             "query_type": "detail_query",
             "execution_strategy": "query_graph",
+            "planner_source": "fallback",
+            "fallback_reason": "测试兜底",
             "explanation": {"summary": "明细查询"},
         }
         candidate_assets = {"summary": {"field_count": 1}}
+        query_plan_debug = {"planner_source": "final_state", "fallback_reason": "最终状态优先"}
 
         class FakeSubAgent:
             def __init__(self, db, dataset_id):
@@ -2168,15 +2171,24 @@ class TestChatStreamEvents:
                 self.dataset_id = dataset_id
 
             def resolve_term_conflict(self, **kwargs):
-                return {"status": "not_applicable"}
+                raise AssertionError("chat should not call resolve_term_conflict before run")
 
             def resolve_metric(self, **kwargs):
-                return {"status": "not_applicable"}
+                raise AssertionError("chat should not call resolve_metric before run")
 
             def resolve_analysis_blueprint(self, **kwargs):
-                return {"status": "not_applicable"}
+                raise AssertionError("chat should not call resolve_analysis_blueprint before run")
 
             async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+                yield SubAgentEvent(
+                    event_type="candidate_assets",
+                    payload={
+                        "node": "candidate_assets",
+                        "display_name": "候选资产召回",
+                        "status": "done",
+                        "candidate_assets": candidate_assets,
+                    },
+                )
                 yield SubAgentEvent(
                     event_type="query_plan",
                     payload={
@@ -2184,6 +2196,17 @@ class TestChatStreamEvents:
                         "display_name": "查询规划",
                         "status": "done",
                         "query_plan": query_plan,
+                    },
+                )
+                yield SubAgentEvent(
+                    event_type="graph_event",
+                    payload={
+                        "event": {
+                            "event": "on_chain_end",
+                            "name": "sql_execute",
+                            "data": {"output": {"should_retry": False}},
+                            "metadata": {"langgraph_node": "sql_execute"},
+                        }
                     },
                 )
                 yield SubAgentEvent(
@@ -2201,6 +2224,7 @@ class TestChatStreamEvents:
                             },
                             "query_plan": query_plan,
                             "candidate_assets": candidate_assets,
+                            "query_plan_debug": query_plan_debug,
                             "error": None,
                         }
                     },
@@ -2258,12 +2282,157 @@ class TestChatStreamEvents:
         async for item in _stream_chat_singleturn(payload, db_session):
             events.append(json.loads(item["data"]))
 
-        step_events = [event for event in events if event.get("type") == "query_plan"]
+        candidate_steps = [
+            event for event in events
+            if event.get("type") == "step" and event.get("node") == "candidate_assets"
+        ]
+        query_plan_steps = [
+            event for event in events
+            if event.get("type") == "step" and event.get("node") == "query_plan"
+        ]
         final = [event for event in events if event.get("type") == "final"][-1]
 
-        assert any(event.get("node") == "query_plan" for event in step_events)
+        assert candidate_steps
+        assert query_plan_steps
+        assert query_plan_steps[-1]["query_plan"]["execution_strategy"] == "query_graph"
         assert final["query_plan"]["execution_strategy"] == "query_graph"
         assert final["candidate_assets"]["summary"]["field_count"] == 1
+        assert final["query_plan_debug"] == query_plan_debug
+
+    @pytest.mark.asyncio
+    async def test_blueprint_route_enters_subagent_run(self, monkeypatch, db_session, sample_dataset):
+        """蓝图命中不能在 chat 层直接早退，应进入 SubAgent.run 做规划后执行。"""
+        from app.api.chat import _stream_chat_singleturn
+        from app.services.subagent_planning import SubAgentEvent
+
+        called = {"run": False}
+        query_plan = {
+            "query_type": "metric_query",
+            "execution_strategy": "blueprint_execute",
+            "planner_source": "llm",
+            "fallback_reason": None,
+            "explanation": {"summary": "蓝图完全适用"},
+        }
+        candidate_assets = {"summary": {"blueprint_count": 1}}
+        query_plan_debug = {"planner_source": "llm", "fallback_reason": None}
+
+        class FakeSubAgent:
+            def __init__(self, db, dataset_id):
+                self.db = db
+                self.dataset_id = dataset_id
+
+            def resolve_term_conflict(self, **kwargs):
+                raise AssertionError("chat should not call resolve_term_conflict before run")
+
+            def resolve_metric(self, **kwargs):
+                raise AssertionError("chat should not call resolve_metric before run")
+
+            def resolve_analysis_blueprint(self, **kwargs):
+                raise AssertionError("chat should not call resolve_analysis_blueprint before run")
+
+            async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+                called["run"] = True
+                yield SubAgentEvent(
+                    event_type="candidate_assets",
+                    payload={
+                        "node": "candidate_assets",
+                        "display_name": "候选资产召回",
+                        "status": "done",
+                        "candidate_assets": candidate_assets,
+                    },
+                )
+                yield SubAgentEvent(
+                    event_type="query_plan",
+                    payload={
+                        "node": "query_plan",
+                        "display_name": "查询规划",
+                        "status": "done",
+                        "query_plan": query_plan,
+                    },
+                )
+                yield SubAgentEvent(
+                    event_type="result",
+                    payload={
+                        "final_state": {
+                            **(initial_state or {}),
+                            "answer": "蓝图执行完成",
+                            "sql": "select 1",
+                            "sql_list": ["select 1"],
+                            "sql_result": {
+                                "columns": ["id"],
+                                "rows": [{"id": 1}],
+                                "row_count": 1,
+                            },
+                            "query_plan": query_plan,
+                            "candidate_assets": candidate_assets,
+                            "query_plan_debug": query_plan_debug,
+                            "error": None,
+                        }
+                    },
+                )
+
+        route_decision = {
+            "decision": "selected",
+            "dataset_id": sample_dataset.id,
+            "dataset_name": sample_dataset.name,
+            "manifest_version": "v-test",
+            "bound_schema_version": "schema-test",
+            "score": 1.0,
+            "reason": "测试固定路由",
+        }
+        lead_agent_context = {
+            "route_decision": route_decision,
+            "effective_dataset_id": sample_dataset.id,
+            "should_continue": True,
+            "resolved_question": "跑蓝图",
+            "time_context": {},
+            "thread_context": {},
+            "schema_status": {"status": "ok", "structured": {"terms": []}},
+            "selected_skills": [],
+            "planned_tool_calls": [],
+            "executed_tool_calls": [],
+            "policy_violations": [],
+            "audit_trace": {},
+            "multiturn_classification": {},
+        }
+
+        monkeypatch.setattr("app.api.chat.DatasetSubAgent", FakeSubAgent)
+        monkeypatch.setattr("app.api.chat.build_workflow", lambda db: object())
+        monkeypatch.setattr(
+            "app.api.chat.build_lead_agent_context",
+            lambda *args, **kwargs: lead_agent_context,
+        )
+        monkeypatch.setattr(
+            "app.api.chat.resolve_term_clarification",
+            lambda *args, **kwargs: {"status": "none"},
+        )
+        monkeypatch.setattr(
+            "app.api.chat.route_query_intent",
+            lambda *args, **kwargs: {
+                "intent": "query",
+                "entities": {},
+                "entry_intent": "metric_query",
+                "entry_route": "analysis_blueprint",
+                "entry_reason": "命中蓝图",
+                "blueprint_id": 12,
+                "blueprint_match": {"id": 12, "name": "测试蓝图"},
+                "route_payload": {"kind": "analysis_blueprint", "blueprint_id": 12},
+            },
+        )
+
+        events = []
+        payload = ChatRequest(question="跑蓝图", dataset_id=sample_dataset.id)
+        async for item in _stream_chat_singleturn(payload, db_session):
+            events.append(json.loads(item["data"]))
+
+        final = [event for event in events if event.get("type") == "final"][-1]
+
+        assert called["run"] is True
+        assert not [event for event in events if event.get("node") == "analysis_blueprint_execute"]
+        assert final["answer"] == "蓝图执行完成"
+        assert final["query_plan"]["execution_strategy"] == "blueprint_execute"
+        assert final["candidate_assets"]["summary"]["blueprint_count"] == 1
+        assert final["query_plan_debug"] == query_plan_debug
 
     def test_sse_data_serializes_datetime_and_decimal(self):
         """SSE payload 应兼容 datetime 和 Decimal 等查询结果值。"""

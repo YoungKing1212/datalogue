@@ -1125,177 +1125,9 @@ async def _stream_chat_singleturn(
             yield sse_event
         return
 
-    # Phase 6: 业务术语归一化（DatasetSubAgent 接管 term_normalize_node）
-    # 不依赖 schema_structured，可在 LeadAgent 路由后立即调用；冲突术语走澄清早退。
+    # DatasetSubAgent.run 统一接管候选资产召回、查询规划和具体执行策略。
+    # chat 层只保留 LeadAgent 路由、历史/多轮和 pending clarification 解析。
     sub_agent = DatasetSubAgent(db=db, dataset_id=int(effective_dataset_id) if effective_dataset_id else 0)
-    schema_structured_seed = (
-        (lead_agent_context.get("schema_status") or {}).get("structured")
-        or {}
-    )
-    seed_terms = (
-        schema_structured_seed.get("terms")
-        if isinstance(schema_structured_seed, dict)
-        else None
-    ) or []
-    _tc_question = (
-        _resolved_question
-        if (_resolved_question and term_resolution["status"] == "resolved")
-        else (merge_decision.synthesized_question or resolved_question)
-    )
-    term_conflict_outcome = sub_agent.resolve_term_conflict(
-        question=_tc_question,
-        terms=seed_terms,
-        entities=routing.get("entities") or {},
-        selected_term_id=term_resolution.get("selected_term_id"),
-        tracer=tracer,
-        trace_context=trace_context,
-    )
-    if term_conflict_outcome.get("status") != "not_applicable":
-        yield _sse_data(
-            {
-                "type": "step",
-                "node": "term_conflict_resolve",
-                "display_name": _NODE_DISPLAY_NAMES.get("term_conflict_resolve", "术语冲突解析"),
-                "status": "done",
-                "elapsed_ms": 0,
-                "term_conflict_status": term_conflict_outcome["status"],
-                "term_normalization": term_conflict_outcome.get("term_normalization") or {},
-                "route_payload": term_conflict_outcome.get("route_payload") or {},
-            }
-        )
-    if term_conflict_outcome.get("status") in {"needs_clarification", "missing_term"}:
-        # 冲突术语 / 缺配置 → 早退（与 term_clarification 早退风格一致）
-        tc_routing = dict(routing)
-        tc_routing["entry_intent"] = "clarification"
-        tc_routing["entry_route"] = "clarify"
-        tc_routing["entry_reason"] = (
-            "业务术语同义词命中多个定义或缺配置，需要用户澄清。"
-        )
-        tc_routing["answer"] = term_conflict_outcome.get("answer")
-        tc_routing["route_payload"] = term_conflict_outcome.get("route_payload") or {}
-        async for sse_event in _early_route_return(
-            db=db,
-            conv=conv,
-            payload=payload,
-            effective_dataset_id=effective_dataset_id,
-            lead_agent_context=lead_agent_context,
-            route_decision=route_decision,
-            trace_context=trace_context,
-            defer_trace_close=defer_trace_close,
-            obs_context_manager=obs_context_manager,
-            routing=tc_routing,
-        ):
-            yield sse_event
-        return
-
-    # Phase 7: 统一语义资产解析（DatasetSubAgent 接管 semantic_asset_resolution_node）
-    # 此时 schema_structured 还没完全准备好（schema_recall 节点未跑），传 None 让 metric 走
-    # not_applicable 分支；实际 metric 在 schema_recall 后由独立节点驱动（或后续 Phase 上提）。
-    metric_outcome = sub_agent.resolve_metric(
-        question=_tc_question,
-        entities=routing.get("entities") or {},
-        schema_structured=None,
-        tracer=tracer,
-        trace_context=trace_context,
-    )
-    if metric_outcome.get("status") not in ("not_applicable", "resolved"):
-        yield _sse_data(
-            {
-                "type": "step",
-                "node": "metric_resolve",
-                "display_name": _NODE_DISPLAY_NAMES.get("metric_resolve", "指标解析"),
-                "status": "done",
-                "elapsed_ms": 0,
-                "metric_resolve_status": metric_outcome["status"],
-                "semantic_asset_resolution": metric_outcome.get("semantic_asset_resolution") or {},
-                "metric_resolution": metric_outcome.get("metric_resolution") or {},
-                "route_payload": metric_outcome.get("route_payload") or {},
-            }
-        )
-    if metric_outcome.get("status") == "needs_clarification":
-        m_routing = dict(routing)
-        m_routing["entry_intent"] = "clarification"
-        m_routing["entry_route"] = "clarify"
-        m_routing["entry_reason"] = (
-            "多个语义资产置信度接近，需要用户澄清。"
-        )
-        m_routing["answer"] = metric_outcome.get("answer")
-        m_routing["route_payload"] = metric_outcome.get("route_payload") or {}
-        async for sse_event in _early_route_return(
-            db=db,
-            conv=conv,
-            payload=payload,
-            effective_dataset_id=effective_dataset_id,
-            lead_agent_context=lead_agent_context,
-            route_decision=route_decision,
-            trace_context=trace_context,
-            defer_trace_close=defer_trace_close,
-            obs_context_manager=obs_context_manager,
-            routing=m_routing,
-        ):
-            yield sse_event
-        return
-
-    # Phase 5: 蓝图入口路径决策（LeadAgent 编排 selected subAgent）
-    # analysis_blueprint 路径在 chat 层直接执行，避免进入 LangGraph 节点。
-    # 注：sub_agent 已在 Phase 6 块上提定义，此处复用。
-    entry_route = routing.get("entry_route")
-    _bp_original_question = payload.question
-    _bp_resolved_question = (
-        _resolved_question
-        if (_resolved_question and term_resolution["status"] == "resolved")
-        else (merge_decision.synthesized_question or resolved_question)
-    )
-    blueprint_outcome = sub_agent.resolve_analysis_blueprint(
-        blueprint_id=routing.get("blueprint_id"),
-        question=_bp_resolved_question or _bp_original_question,
-        entry_route=entry_route,
-        original_question=_bp_original_question,
-        resolved_question=_bp_resolved_question,
-        time_context=lead_agent_context.get("time_context"),
-        tracer=tracer,
-        trace_context=trace_context,
-    )
-    # 仅当 blueprint 被实际处理（status != not_applicable）时，先 emit SSE 步骤事件。
-    if blueprint_outcome.get("status") and blueprint_outcome["status"] != "not_applicable":
-        bp_result = blueprint_outcome.get("sql_result") or {}
-        yield _sse_data(
-            {
-                "type": "step",
-                "node": "analysis_blueprint_execute",
-                "display_name": _NODE_DISPLAY_NAMES["analysis_blueprint_execute"],
-                "status": "done",
-                "elapsed_ms": 0,
-                "blueprint_id": blueprint_outcome.get("blueprint_id"),
-                "blueprint_outcome_status": blueprint_outcome["status"],
-                "sql": blueprint_outcome.get("sql") or "",
-                "rows": bp_result.get("row_count", 0) if bp_result else 0,
-                "columns": bp_result.get("columns", []) if bp_result else [],
-                "route_payload": blueprint_outcome.get("route_payload") or {},
-            }
-        )
-    # 早退判定：executed / clarification / error / not_found 走 _early_route_return
-    if blueprint_outcome.get("status") in ("executed", "clarification", "error", "not_found"):
-        # 合并蓝图 outcome 字段到 routing（与 term 早退风格一致）
-        blueprint_route = dict(routing)
-        blueprint_route["route_payload"] = blueprint_outcome.get("route_payload") or {}
-        blueprint_route["answer"] = blueprint_outcome.get("answer")
-        blueprint_route["blueprint_id"] = blueprint_outcome.get("blueprint_id")
-        blueprint_route["blueprint_outcome_status"] = blueprint_outcome["status"]
-        async for sse_event in _early_route_return(
-            db=db,
-            conv=conv,
-            payload=payload,
-            effective_dataset_id=effective_dataset_id,
-            lead_agent_context=lead_agent_context,
-            route_decision=route_decision,
-            trace_context=trace_context,
-            defer_trace_close=defer_trace_close,
-            obs_context_manager=obs_context_manager,
-            routing=blueprint_route,
-        ):
-            yield sse_event
-        return
 
     # Phase 4: 注入 term 解析结果（resolved 时把 question 恢复到原问题 + selected_term_id）
     _initial_question = (
@@ -1341,36 +1173,20 @@ async def _stream_chat_singleturn(
         "entry_reason": routing.get("entry_reason"),
         "blueprint_id": routing.get("blueprint_id"),
         "blueprint_match": routing.get("blueprint_match"),
-        "blueprint_context": blueprint_outcome.get("blueprint_context"),
+        "blueprint_context": None,
         "knowledge_term_id": routing.get("knowledge_term_id"),
         "selected_term_id": term_resolution.get("selected_term_id"),
-        "route_payload": (
-            blueprint_outcome.get("route_payload")
-            if blueprint_outcome.get("route_payload")
-            else _initial_route_payload
-        ),
-        "generation_mode": blueprint_outcome.get("generation_mode"),
+        "route_payload": _initial_route_payload,
+        "generation_mode": None,
         "schema_context": None,
         "schema_structured": None,
         "ddl_context": None,
         "query_constraints": None,
         "dataset_context_debug": None,
         "datasource_context": None,
-        "term_normalization": (
-            term_conflict_outcome.get("term_normalization")
-            if term_conflict_outcome and term_conflict_outcome.get("status") != "not_applicable"
-            else None
-        ),
-        "semantic_asset_resolution": (
-            metric_outcome.get("semantic_asset_resolution")
-            if metric_outcome and metric_outcome.get("status") != "not_applicable"
-            else None
-        ),
-        "metric_resolution": (
-            metric_outcome.get("metric_resolution")
-            if metric_outcome and metric_outcome.get("status") != "not_applicable"
-            else None
-        ),
+        "term_normalization": None,
+        "semantic_asset_resolution": None,
+        "metric_resolution": None,
         "candidate_assets": None,
         "query_plan": None,
         "query_plan_debug": None,
@@ -1433,19 +1249,29 @@ async def _stream_chat_singleturn(
         ):
             if sub_event.event_type in {"candidate_assets", "query_plan"}:
                 sse_payload = sub_event.to_sse_payload()
+                sse_payload["type"] = "step"
                 if sub_event.event_type == "candidate_assets":
                     final_state["candidate_assets"] = sse_payload.get("candidate_assets")
                 elif sub_event.event_type == "query_plan":
-                    final_state["query_plan"] = sse_payload.get("query_plan")
-                    final_state["query_plan_debug"] = (
-                        (sse_payload.get("query_plan") or {}).get("debug")
-                    )
+                    query_plan = sse_payload.get("query_plan") or {}
+                    final_state["query_plan"] = query_plan
+                    if final_state.get("query_plan_debug") is None:
+                        final_state["query_plan_debug"] = {
+                            "planner_source": query_plan.get("planner_source"),
+                            "fallback_reason": query_plan.get("fallback_reason"),
+                        }
                 step_traces.append(sse_payload)
                 yield _sse_data(sse_payload)
                 continue
 
             if sub_event.event_type == "result":
                 final_state.update(sub_event.payload.get("final_state") or {})
+                if final_state.get("query_plan_debug") is None:
+                    query_plan = final_state.get("query_plan") or {}
+                    final_state["query_plan_debug"] = {
+                        "planner_source": query_plan.get("planner_source"),
+                        "fallback_reason": query_plan.get("fallback_reason"),
+                    }
                 continue
 
             if sub_event.event_type == "graph_event":
@@ -1519,9 +1345,7 @@ async def _stream_chat_singleturn(
                     "elapsed_ms": elapsed_ms,
                 }
                 # 节点特定数据
-                # Phase 6/7：term_normalize_node / semantic_asset_resolution_node / metric_resolution_node 已迁移到 chat 层
-                # DatasetSubAgent.resolve_term_conflict / resolve_metric，SSE 步骤事件由 chat 层前置 emit，
-                # LangGraph 不再产出这些节点事件，因此不再需要 if 分支处理。
+                # 旧语义解析节点不再作为 LangGraph 顶层节点处理，SubAgent.run 统一输出规划事件。
                 if lg_node == "dsl_generate":
                     sse_payload["dsl"] = final_state.get("dsl") or {}
                     sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
