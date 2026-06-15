@@ -16,9 +16,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -35,6 +36,7 @@ from app.utils.token import estimate_text_tokens
 logger = logging.getLogger(__name__)
 
 DATALOGUE_COMPACTION_PROMPT_NAME = "datalogue-compaction"
+THREAD_STATE_KEY = "_thread"
 DATALOGUE_COMPACTION_FALLBACK_PROMPT = """你是 Datalogue 多轮问数会话压缩器。
 
 请把旧对话压缩为简洁中文摘要，只保留：
@@ -120,6 +122,43 @@ class ConversationStore:
         self.db.commit()
         self.db.refresh(state)
         return state
+
+    def get_thread_state(self, session_id: str | None) -> dict[str, Any]:
+        """读取 session 级线程记忆，第一版固定保存在 SubAgent capsule 桶内。"""
+
+        if not session_id:
+            return {}
+        state = self.load(session_id)
+        if not state:
+            return {}
+        capsules = dict(state.subagent_capsules or {})
+        thread_state = capsules.get(THREAD_STATE_KEY)
+        return dict(thread_state) if isinstance(thread_state, dict) else {}
+
+    def update_thread_state(
+        self,
+        session_id: str | None,
+        patch: dict[str, Any],
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """以浅合并方式更新线程记忆，并写入 ConversationState.subagent_capsules。"""
+
+        if not session_id or not isinstance(patch, dict):
+            return {}
+        state = self.load_or_create(session_id=session_id, user_id=user_id or "1")
+        capsules = dict(state.subagent_capsules or {})
+        current = capsules.get(THREAD_STATE_KEY)
+        thread_state = dict(current) if isinstance(current, dict) else {}
+        thread_state.update(patch)
+        thread_state = jsonable_encoder(thread_state)
+        capsules[THREAD_STATE_KEY] = thread_state
+        state.subagent_capsules = capsules
+        state.updated_at = datetime.now(timezone.utc)
+        self.db.add(state)
+        self.db.commit()
+        self.db.refresh(state)
+        return thread_state
 
     def lead_multiturn_context(self, state: models.ConversationState | None) -> dict[str, Any]:
         """组装 LeadAgent 可消费的控制面多轮上下文。"""
@@ -216,6 +255,8 @@ class ConversationStore:
         metas: dict[str, dict[str, Any]] = {}
         capsules = (state.subagent_capsules or {}) if state else {}
         for dataset_id, capsule in capsules.items():
+            if dataset_id == THREAD_STATE_KEY:
+                continue
             if not isinstance(capsule, dict):
                 continue
             try:
