@@ -22,6 +22,10 @@ from app.services.subagent_planning.contracts import (
     SubAgentResult,
     normalize_query_plan,
 )
+from app.services.subagent_planning.asset_recall import (
+    build_candidate_assets_from_context,
+    recall_candidate_assets,
+)
 
 __all__ = [
     "CANDIDATE_ASSET_TYPES",
@@ -32,5 +36,7 @@ __all__ = [
     "QueryPlanValidationError",
     "SubAgentEvent",
     "SubAgentResult",
+    "build_candidate_assets_from_context",
     "normalize_query_plan",
+    "recall_candidate_assets",
 ]
