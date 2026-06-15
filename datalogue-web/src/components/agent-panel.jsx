@@ -36,6 +36,23 @@ const BUSINESS_STEP_NAMES = {
   report_generator: '组织回答',
 };
 
+const QUERY_TYPE_LABELS = {
+  detail_query: '明细查询',
+  metric_query: '指标查询',
+};
+
+const EXECUTION_STRATEGY_LABELS = {
+  blueprint_execute: '直接执行蓝图',
+  blueprint_as_reference: '参考蓝图生成查询',
+  query_graph: '普通查询生成',
+  clarify: '需要补充信息',
+  reject: '无法处理',
+};
+
+function enumLabel(labels, value) {
+  return value ? labels[value] || value : null;
+}
+
 function businessStepName(step) {
   return BUSINESS_STEP_NAMES[step?.node] || step?.display_name || step?.node || '执行步骤';
 }
@@ -65,9 +82,11 @@ function resultRowCount(sqlResult) {
 function formatQueryPlanDetails(queryPlan) {
   if (!queryPlan || typeof queryPlan !== 'object') return [];
   const explanation = queryPlan.explanation || {};
+  const queryType = enumLabel(QUERY_TYPE_LABELS, queryPlan.query_type);
+  const executionStrategy = enumLabel(EXECUTION_STRATEGY_LABELS, queryPlan.execution_strategy);
   return [
-    queryPlan.query_type ? `查询类型：${queryPlan.query_type}` : null,
-    queryPlan.execution_strategy ? `执行策略：${queryPlan.execution_strategy}` : null,
+    queryType ? `查询类型：${queryType}` : null,
+    executionStrategy ? `执行策略：${executionStrategy}` : null,
     explanation.summary ? `说明：${explanation.summary}` : null,
   ].filter(Boolean);
 }

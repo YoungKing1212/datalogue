@@ -301,6 +301,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
           return [
             ...prev,
             {
+              ...ev,
               node: ev.node,
               display_name: ev.display_name,
               status: ev.status,
