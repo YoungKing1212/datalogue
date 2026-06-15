@@ -26,6 +26,11 @@ from app.services.subagent_planning.asset_recall import (
     build_candidate_assets_from_context,
     recall_candidate_assets,
 )
+from app.services.subagent_planning.execution import (
+    build_blueprint_reference_context,
+    build_clarify_result,
+    build_reject_result,
+)
 from app.services.subagent_planning.planner import build_fallback_query_plan, plan_query
 
 __all__ = [
@@ -37,8 +42,11 @@ __all__ = [
     "QueryPlanValidationError",
     "SubAgentEvent",
     "SubAgentResult",
+    "build_blueprint_reference_context",
     "build_candidate_assets_from_context",
+    "build_clarify_result",
     "build_fallback_query_plan",
+    "build_reject_result",
     "normalize_query_plan",
     "plan_query",
     "recall_candidate_assets",
