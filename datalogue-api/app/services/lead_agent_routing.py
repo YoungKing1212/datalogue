@@ -9,6 +9,15 @@
 #   - 5 条 PATTERN 常量 + 2 个 match helper + 1 个 _collect_blueprint_terms 从 nodes.py 迁出
 #   - 不依赖 app.graph.nodes（保持 services→graph 单向边界）
 #
+#   Phase 4 改造：
+#   - 新增 `resolve_term_clarification`：把原 LangGraph `clarification_resolution_node`
+#     上提至 chat 层，chat.py 在 `route_query_intent` 之后调一次；missing/expired/unresolved
+#     走 `_early_route_return` 早退，resolved 注入 selected_term_id + resolved_question
+#   - 迁出 6 个澄清解析辅助函数（parse_clarification_response / term_resolve_clarification_candidate
+#     / term_latest_pending_clarification / term_format_clarification_answer / term_response_selected_index
+#     / term_candidate_matches_text）
+#   - LangGraph 节点数 13 → 12
+#
 # Author      : yangkai
 # Created On  : 2026-06-14
 # ============================================================
@@ -52,6 +61,9 @@ _DETAIL_PATTERNS = (
     "明细",
     "列表",
     "记录",
+    "日志",
+    "工作日志",
+    "工作日报",
     "清单",
     "详情",
     "逐条",
@@ -683,3 +695,380 @@ def _classify_entry_intent(
         "blueprint_match": None,
         "knowledge_term_id": None,
     }
+
+
+# ============================================================
+# Phase 4：术语澄清解析（chat 层接管 LangGraph `clarification_resolution_node`）
+# ============================================================
+#
+# 行为契约 1:1 等价于 `app/graph.nodes.clarification_resolution_node`：
+#   5 状态机：none / missing / expired / unresolved / resolved
+# 辅助函数（_parse_clarification_response / _resolve_clarification_candidate /
+# _latest_pending_clarification / _response_selected_index / _candidate_matches_text /
+# _format_term_clarification_answer / _ORDINAL_WORDS）从 graph/nodes.py 迁出。
+# 复用 _normalized_text / _coerce_text_list / _semantic_match_text 三个本地副本，
+# 避免 services→graph 反向依赖。
+# ============================================================
+
+import re  # noqa: F401  # 保持与文件其他部分 import 风格一致
+from datetime import datetime
+
+from app.models.conversation import PendingClarification
+
+_TERM_PENDING_NODE_NAME = "term_clarification_resolution"
+_TERM_PENDING_DISPLAY_NAME = "术语澄清解析"
+
+_ORDINAL_WORDS = {
+    "一": 1,
+    "第一个": 1,
+    "第一": 1,
+    "1": 1,
+    "二": 2,
+    "第二个": 2,
+    "第二": 2,
+    "2": 2,
+    "三": 3,
+    "第三个": 3,
+    "第三": 3,
+    "3": 3,
+    "四": 4,
+    "第四个": 4,
+    "第四": 4,
+    "4": 4,
+    "五": 5,
+    "第五个": 5,
+    "第五": 5,
+    "5": 5,
+}
+
+
+def _term_normalized_text(text: str) -> str:
+    """归一化文本（空白 + 小写），用于序号匹配。"""
+    return re.sub(r"\s+", "", (text or "").lower())
+
+
+def _term_coerce_text_list(value: Any) -> list[str]:
+    """把 JSON / 字符串 / 列表里的别名清洗成字符串列表。"""
+    if value is None:
+        return []
+    if isinstance(value, list | tuple | set):
+        raw_items = list(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                raw_items = json.loads(stripped)
+                if not isinstance(raw_items, list):
+                    raw_items = [stripped]
+            except (ValueError, TypeError):
+                raw_items = [item.strip() for item in stripped.split(",") if item.strip()]
+        else:
+            raw_items = [item.strip() for item in stripped.split(",") if item.strip()]
+    else:
+        raw_items = [str(value)]
+    out: list[str] = []
+    for item in raw_items:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _term_semantic_match_text(text: Any) -> str:
+    """忽略大小写、空白、下划线、引用符后的纯语义匹配文本。"""
+    if text is None:
+        return ""
+    return re.sub(r"[\s_`'\".]+", "", str(text).strip().lower())
+
+
+def parse_clarification_response(payload: Any) -> dict[str, Any]:
+    """兼容 Pydantic 对象和普通 dict，提取澄清回复。"""
+    if payload is None:
+        return {}
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(exclude_none=True)
+    if isinstance(payload, dict):
+        return {k: v for k, v in payload.items() if v is not None}
+    return {}
+
+
+def term_response_selected_index(text: str) -> int | None:
+    """从『第一个/1/选 2』等回复中提取候选序号。"""
+    normalized = _term_normalized_text(text)
+    if not normalized:
+        return None
+    for word, value in _ORDINAL_WORDS.items():
+        if _term_normalized_text(word) == normalized or _term_normalized_text(word) in normalized:
+            return value
+    match = re.search(r"(?:选择|选|第)?\s*(\d+)", text or "")
+    return int(match.group(1)) if match else None
+
+
+def term_candidate_matches_text(candidate: dict, text: str) -> bool:
+    """判断自然语言回复是否指向某个候选术语。"""
+    text_norm = _term_semantic_match_text(text)
+    if not text_norm:
+        return False
+    aliases = [
+        candidate.get("display_name"),
+        candidate.get("name"),
+        *_term_coerce_text_list(candidate.get("aliases")),
+    ]
+    for alias in aliases:
+        alias_norm = _term_semantic_match_text(alias)
+        if alias_norm and (alias_norm == text_norm or alias_norm in text_norm):
+            return True
+    return False
+
+
+def term_resolve_clarification_candidate(
+    candidates: list[dict],
+    response: dict[str, Any],
+    text: str,
+) -> dict | None:
+    """从结构化回复或自然语言中解析候选项。"""
+    selected_term_id = response.get("selected_term_id")
+    if selected_term_id is not None:
+        for candidate in candidates:
+            if int(candidate.get("term_id")) == int(selected_term_id):
+                return candidate
+
+    selected_index = response.get("selected_index")
+    if selected_index is None:
+        selected_index = term_response_selected_index(response.get("selected_text") or text)
+    if selected_index is not None:
+        for candidate in candidates:
+            if int(candidate.get("index") or 0) == int(selected_index):
+                return candidate
+
+    selected_text = response.get("selected_text") or text
+    for candidate in candidates:
+        if term_candidate_matches_text(candidate, selected_text):
+            return candidate
+    return None
+
+
+def term_latest_pending_clarification(
+    db: Session,
+    conversation_id: int | None,
+    dataset_id: int | None,
+    response: dict[str, Any],
+) -> PendingClarification | None:
+    """查找当前会话最近一个待处理术语澄清。"""
+    if not conversation_id:
+        return None
+    query = db.query(PendingClarification).filter(
+        PendingClarification.conversation_id == conversation_id,
+        PendingClarification.clarification_type == "term_conflict",
+        PendingClarification.status == "pending",
+    )
+    if dataset_id is not None:
+        query = query.filter(
+            (PendingClarification.dataset_id == dataset_id)
+            | (PendingClarification.dataset_id.is_(None))
+        )
+    clarification_id = response.get("clarification_id")
+    if clarification_id is not None:
+        query = query.filter(PendingClarification.id == int(clarification_id))
+    return query.order_by(PendingClarification.created_at.desc()).first()
+
+
+def term_format_clarification_answer(candidates: list[dict], prefix: str) -> str:
+    """生成术语澄清提示文案。"""
+    parts = []
+    for candidate in candidates:
+        label = candidate.get("display_name") or candidate.get("name") or candidate.get("term_id")
+        definition = candidate.get("definition")
+        parts.append(
+            f"{candidate.get('index')}. {label}" + (f"（{definition}）" if definition else "")
+        )
+    return f"{prefix}请回复序号或术语名称：{'；'.join(parts)}"
+
+
+def _emit_term_span(tracer, trace_context, span_input: dict, span_output: dict) -> None:
+    """emit term 澄清解析的 tracer span（缺失 tracer / 出错时降级跳过）。"""
+    if tracer is None or not hasattr(tracer, "start_span"):
+        return
+    try:
+        tracer.start_span(
+            trace_context,
+            node=_TERM_PENDING_NODE_NAME,
+            display_name=_TERM_PENDING_DISPLAY_NAME,
+            input_payload=span_input,
+        )
+        if hasattr(tracer, "end_span"):
+            tracer.end_span(
+                trace_context,
+                node=_TERM_PENDING_NODE_NAME,
+                output_payload=span_output,
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("术语澄清 span emit 失败", exc_info=True)
+
+
+def resolve_term_clarification(
+    db: Session,
+    *,
+    question: str,
+    conversation_id: int | None,
+    dataset_id: int | None,
+    clarification_response: Any,
+    tracer: Any | None = None,
+    trace_context: Any | None = None,
+) -> dict[str, Any]:
+    """Phase 4: chat 层 term 澄清解析（替代 LangGraph clarification_resolution_node）。
+
+    5 状态机（与原节点行为 1:1 等价）：
+    - none       : 无挂起且无回复 → 透明通过
+    - missing    : 有回复但找不到挂起 → 拒答
+    - expired    : 挂起已过期 → 拒答（lazy mark expired + commit）
+    - unresolved : 候选未匹配 → 重新提示
+    - resolved   : 命中候选 → 注入 selected_term_id + resolved_question
+    """
+    response = parse_clarification_response(clarification_response)
+    pending = term_latest_pending_clarification(db, conversation_id, dataset_id, response)
+    has_response = bool(response) or bool(pending)
+
+    span_input = {
+        "question": question,
+        "conversation_id": conversation_id,
+        "dataset_id": dataset_id,
+        "has_response": has_response,
+    }
+
+    if not pending:
+        if response:
+            result = {
+                "status": "missing",
+                "selected_term_id": None,
+                "resolved_question": None,
+                "answer": "没有找到待处理的术语澄清，请重新提出完整问题。",
+                "entry_intent": "clarification",
+                "entry_route": "clarify",
+                "entry_reason": "没有找到待处理的术语澄清态。",
+                "route_payload": {"kind": "term_conflict_missing"},
+                "clarification_resolution_result": {"status": "missing"},
+            }
+        else:
+            result = {
+                "status": "none",
+                "selected_term_id": None,
+                "resolved_question": None,
+                "answer": None,
+                "entry_intent": None,
+                "entry_route": None,
+                "entry_reason": None,
+                "route_payload": {},
+                "clarification_resolution_result": {"status": "none"},
+            }
+        _emit_term_span(tracer, trace_context, span_input, {
+            "status": result["status"],
+            "route_payload": result["route_payload"],
+        })
+        return result
+
+    now = datetime.utcnow()
+    if pending.expires_at and pending.expires_at <= now:
+        pending.status = "expired"
+        db.commit()
+        result = {
+            "status": "expired",
+            "selected_term_id": None,
+            "resolved_question": None,
+            "answer": "术语澄清已过期，请重新提出完整问题。",
+            "entry_intent": "clarification",
+            "entry_route": "clarify",
+            "entry_reason": "术语澄清态已过期。",
+            "route_payload": {
+                "kind": "term_conflict_expired",
+                "clarification_id": pending.id,
+            },
+            "clarification_resolution_result": {
+                "status": "expired",
+                "clarification_id": pending.id,
+            },
+        }
+        _emit_term_span(tracer, trace_context, span_input, {
+            "status": result["status"],
+            "route_payload": result["route_payload"],
+        })
+        return result
+
+    candidates = pending.candidates or []
+    selected = term_resolve_clarification_candidate(candidates, response, question)
+    if not selected:
+        answer = term_format_clarification_answer(
+            candidates, "我还不能确认你要使用哪个术语口径。",
+        )
+        result = {
+            "status": "unresolved",
+            "selected_term_id": None,
+            "resolved_question": None,
+            "answer": answer,
+            "entry_intent": "clarification",
+            "entry_route": "clarify",
+            "entry_reason": "用户澄清回复未能匹配候选术语。",
+            "route_payload": {
+                "kind": "term_conflict_clarification",
+                "clarification_id": pending.id,
+                "candidates": candidates,
+                "expires_at": pending.expires_at.isoformat() if pending.expires_at else None,
+            },
+            "clarification_resolution_result": {
+                "status": "unresolved",
+                "clarification_id": pending.id,
+            },
+        }
+        _emit_term_span(tracer, trace_context, span_input, {
+            "status": result["status"],
+            "route_payload": result["route_payload"],
+        })
+        return result
+
+    selected_payload = {
+        "term_id": selected.get("term_id"),
+        "index": selected.get("index"),
+        "name": selected.get("name"),
+        "display_name": selected.get("display_name"),
+        "source": "structured" if response else "natural_language",
+        "response_text": response.get("selected_text") or question,
+    }
+    pending.status = "resolved"
+    pending.resolved_at = now
+    pending.selected_payload = selected_payload
+    db.commit()
+    logger.info(
+        "术语澄清解析成功: clarification_id=%s, term_id=%s",
+        pending.id,
+        selected_payload["term_id"],
+    )
+    result = {
+        "status": "resolved",
+        "selected_term_id": int(selected["term_id"]),
+        "resolved_question": pending.original_question,
+        "answer": None,
+        "entry_intent": None,
+        "entry_route": None,
+        "entry_reason": None,
+        "route_payload": {
+            "kind": "term_conflict_resolved",
+            "clarification_id": pending.id,
+            "selected_term_id": int(selected["term_id"]),
+            "selected_term": selected_payload,
+        },
+        "clarification_resolution_result": {
+            "status": "resolved",
+            "clarification_id": pending.id,
+            "selected_term": selected_payload,
+        },
+    }
+    _emit_term_span(tracer, trace_context, span_input, {
+        "status": result["status"],
+        "route_payload": result["route_payload"],
+        "selected_term_id": result["selected_term_id"],
+    })
+    return result

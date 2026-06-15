@@ -25,12 +25,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_SQL_RETRY_COUNT = 3
 from app.graph.nodes import (
-    clarification_resolution_node,
     lead_agent_node,
-    analysis_blueprint_execute_node,
     schema_recall_node,
-    term_normalize_node,
-    semantic_asset_resolution_node,
     dsl_generate_node,
     dsl_validate_node,
     dsl_compiler_node,
@@ -40,31 +36,22 @@ from app.graph.nodes import (
 )
 
 
-def _clarification_resolution_router(state: AgentState) -> str:
-    """澄清回复解析后决定恢复查询或直接结束。
-
-    Phase 3 简化：意图识别已由 LeadAgent `route_query_intent` 在 chat.py 完成，
-    本节点不再回退到 `intent_recognition` 节点（已删除）。
-    """
-    status = (state.get("clarification_resolution_result") or {}).get("status")
-    if status == "resolved":
-        return "schema_recall"
-    if status in {"missing", "expired", "unresolved"}:
-        return "end"
-    return "schema_recall"
-
-
 def _lead_agent_router(state: AgentState) -> str:
-    """LeadAgent 入口节点路由器（Phase 3）：按 state["entry_route"] 路由后续分支。
+    """LeadAgent 入口节点路由器：按 state["entry_route"] 路由后续分支。
 
     入口路由决策由 chat.py 通过 `route_query_intent` 一次性产出，写入 initial_state。
+    Phase 4: term 澄清已在 chat 层 `resolve_term_clarification` 处理完。
+    Phase 5: analysis_blueprint 已在 chat 层 `DatasetSubAgent.resolve_analysis_blueprint` 处理完。
     LangGraph `lead_agent` 节点本身是 noop，仅保留 SSE 事件可见性。
     """
-    if state.get("entry_route") == "interpret_result":
+    entry = state.get("entry_route")
+    if entry in ("interpret_result", "analysis_blueprint"):
         return "end"
-    if state.get("entry_route") == "analysis_blueprint":
-        return "analysis_blueprint_execute"
-    return "clarification_resolution"
+    if entry == "analysis_blueprint_execute":  # 兼容旧值（不应出现）
+        return "end"
+    if entry == "analysis_blueprint_semantic_execute":  # 兼容旧值
+        return "schema_recall"
+    return "schema_recall"
 
 
 def _should_skip_subagent_report(state: AgentState) -> bool:
@@ -75,29 +62,6 @@ def _should_skip_subagent_report(state: AgentState) -> bool:
         return bool(explicit)
     route_decision = state.get("route_decision") or (state.get("lead_agent_context") or {}).get("route_decision") or {}
     return route_decision.get("decision") == "selected"
-
-
-def _analysis_blueprint_execution_router(state: AgentState) -> str:
-    """分析蓝图执行后分流。
-
-    SQL 模板蓝图执行成功后生成报告；手动语义计划蓝图不要求可执行 SQL，
-    而是带着蓝图上下文回到 QueryGraph 继续做 Schema 召回和 NL2SQL。
-    """
-    if state.get("generation_mode") == "analysis_blueprint_semantic":
-        return "schema_recall"
-    if state.get("sql_result") is not None:
-        if _should_skip_subagent_report(state):
-            return "end"
-        return "report"
-    return "end"
-
-
-def _term_normalization_router(state: AgentState) -> str:
-    """业务术语归一化后路由；冲突术语必须先澄清。"""
-    route_payload = state.get("route_payload") or {}
-    if route_payload.get("kind") == "term_conflict_clarification":
-        return "end"
-    return "semantic_asset_resolution"
 
 
 def _dsl_validation_router(state: AgentState) -> str:
@@ -162,13 +126,14 @@ def build_workflow(db: Session) -> Any:
     logger.info("开始构建LangGraph工作流")
 
     # 注册节点（Phase 3 改造：删 intent_recognition / entry_intent_classification / merge_prior_context，
-    # 合并为 lead_agent 入口）
+    # 合并为 lead_agent 入口。Phase 4 改造：删 clarification_resolution，由 chat 层 `resolve_term_clarification` 接管。
+    # Phase 5 改造：删 analysis_blueprint_execute，由 chat 层 `DatasetSubAgent.resolve_analysis_blueprint` 接管。
+    # Phase 6 改造：删 term_normalize_node，由 chat 层 `DatasetSubAgent.resolve_term_conflict` 接管。
+    # Phase 7 改造：删 semantic_asset_resolution_node，由 chat 层 `DatasetSubAgent.resolve_metric` 接管。
+    # 当前 LangGraph 节点数：9：lead_agent / schema_recall / dsl_generate / dsl_validate / dsl_compiler /
+    #   sql_execute / sql_audit / report_generator / increment_retry）
     workflow.add_node("lead_agent", lead_agent_node)
-    workflow.add_node("clarification_resolution", clarification_resolution_node(db))
-    workflow.add_node("analysis_blueprint_execute", analysis_blueprint_execute_node(db))
     workflow.add_node("schema_recall", schema_recall_node(db))
-    workflow.add_node("term_normalize_node", term_normalize_node)
-    workflow.add_node("semantic_asset_resolution_node", semantic_asset_resolution_node)
     workflow.add_node("dsl_generate", lambda state: dsl_generate_node(state, db=db))
     workflow.add_node("dsl_validate", dsl_validate_node)
     # dsl_compiler 现在是工厂函数（接 db 以查 Datasource.db_type 推断方言）
@@ -188,42 +153,13 @@ def build_workflow(db: Session) -> Any:
         "lead_agent",
         _lead_agent_router,
         {
-            "clarification_resolution": "clarification_resolution",
-            "analysis_blueprint_execute": "analysis_blueprint_execute",
-            "end": END,
-        },
-    )
-
-    workflow.add_conditional_edges(
-        "clarification_resolution",
-        _clarification_resolution_router,
-        {
             "schema_recall": "schema_recall",
             "end": END,
         },
     )
 
-    workflow.add_conditional_edges(
-        "analysis_blueprint_execute",
-        _analysis_blueprint_execution_router,
-        {
-            "schema_recall": "schema_recall",
-            "report": "report_generator",
-            "end": END,
-        },
-    )
-
-    # Schema 召回 → 术语归一化 → 语义资产解析 → DSL 生成
-    workflow.add_edge("schema_recall", "term_normalize_node")
-    workflow.add_conditional_edges(
-        "term_normalize_node",
-        _term_normalization_router,
-        {
-            "semantic_asset_resolution": "semantic_asset_resolution_node",
-            "end": END,
-        },
-    )
-    workflow.add_edge("semantic_asset_resolution_node", "dsl_generate")
+    # Schema 召回 → DSL 生成
+    workflow.add_edge("schema_recall", "dsl_generate")
 
     # DSL 生成 → DSL 校验
     workflow.add_edge("dsl_generate", "dsl_validate")

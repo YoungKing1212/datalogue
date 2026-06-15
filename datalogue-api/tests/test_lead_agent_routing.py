@@ -248,6 +248,31 @@ def test_route_query_intent_metric_query():
     assert result["entry_route"] == "query_graph"
 
 
+def test_route_query_intent_work_log_query_routes_to_detail(monkeypatch):
+    """日志类查询应进入明细查询主链，不能落到默认澄清。"""
+    from app.services import lead_agent_routing
+
+    monkeypatch.setattr(
+        lead_agent_routing,
+        "_invoke_intent_llm",
+        lambda **_: ("query", {}, None, {}),
+    )
+
+    result = route_query_intent(
+        db=None,
+        question="查询汤杰前年的工作日志",
+        dataset_id=10,
+        lead_agent_context={},
+        history=[],
+        multiturn_context={},
+        clarification_response=None,
+    )
+
+    assert result["entry_intent"] == "detail_query"
+    assert result["entry_route"] == "query_graph"
+    assert result["answer"] is None
+
+
 # ===== 7. LLM 失败降级 =====
 
 

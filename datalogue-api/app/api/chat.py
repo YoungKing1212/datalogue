@@ -41,8 +41,12 @@ from app.services.observability.tracer import get_observability_tracer
 from app.services.lead_agent import (
     build_lead_agent_context,
     merge_multiturn_decision_for_chat,
+)
+from app.services.lead_agent_routing import (
+    resolve_term_clarification,
     route_query_intent,
 )
+from app.services.dataset_subagent import DatasetSubAgent
 from app.services.multiturn_context import MergeDecision
 from app.services.report_generation import stream_sql_result_report
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
@@ -64,9 +68,8 @@ _NODE_DISPLAY_NAMES = {
     "entry_intent_classification": "入口分类",
     "analysis_blueprint_execute": "蓝图执行",
     "schema_recall": "Schema 召回",
-    "term_normalize_node": "术语归一化",
-    "semantic_asset_resolution_node": "语义资产解析",
-    "metric_resolution_node": "指标解析",
+    "term_conflict_resolve": "术语冲突解析",
+    "metric_resolve": "指标解析",
     "dsl_generate": "DSL 生成",
     "dsl_validate": "DSL 校验",
     "dsl_compiler": "SQL 编译",
@@ -391,9 +394,8 @@ _BUSINESS_STAGE_META = {
         "name": "确认业务口径",
         "nodes": {
             "schema_recall",
-            "term_normalize_node",
-            "semantic_asset_resolution_node",
-            "metric_resolution_node",
+            "term_conflict_resolve",
+            "metric_resolve",
         },
     },
     "plan_query": {
@@ -1010,7 +1012,6 @@ async def _stream_chat_singleturn(
             lead_agent_context=lead_agent_context,
             route_decision=route_decision,
             trace_context=trace_context,
-            trace_metadata=trace_metadata,
             defer_trace_close=defer_trace_close,
             obs_context_manager=obs_context_manager,
             interpret_payload=merge_decision.interpret_payload,
@@ -1021,10 +1022,29 @@ async def _stream_chat_singleturn(
             yield sse_event
         return
 
+    # Phase 4: 先解析挂起 term 澄清，再做入口路由。
+    # 用户对 pending 术语澄清通常只回复“第一个”或术语名；若先走入口路由，
+    # 这类短句会被普通 clarify 早退截断，导致 pending 永远不能 resolved。
+    term_resolution = resolve_term_clarification(
+        db,
+        question=merge_decision.synthesized_question or resolved_question,
+        conversation_id=conv_id,
+        dataset_id=effective_dataset_id,
+        clarification_response=jsonable_encoder(payload.clarification_response),
+        tracer=tracer,
+        trace_context=trace_context,
+    )
+    _resolved_question = term_resolution.get("resolved_question")
+    routing_question = (
+        _resolved_question
+        if (_resolved_question and term_resolution["status"] == "resolved")
+        else (merge_decision.synthesized_question or resolved_question)
+    )
+
     # Phase 3: LeadAgent 总入口路由（替代 intent + entry 两个图节点）
     routing = route_query_intent(
         db,
-        question=merge_decision.synthesized_question or resolved_question,
+        question=routing_question,
         dataset_id=effective_dataset_id,
         lead_agent_context=lead_agent_context,
         history=history,
@@ -1048,6 +1068,42 @@ async def _stream_chat_singleturn(
             "route_payload": routing.get("route_payload") or {},
         }
     )
+    if term_resolution["status"] != "none":
+        yield _sse_data(
+            {
+                "type": "step",
+                "node": "clarification_resolution",
+                "display_name": _NODE_DISPLAY_NAMES.get("clarification_resolution", "澄清解析"),
+                "status": "done",
+                "elapsed_ms": 0,
+                "clarification_resolution": term_resolution.get("clarification_resolution_result") or {},
+                "route_payload": term_resolution.get("route_payload") or {},
+            }
+        )
+    term_should_early = term_resolution["status"] in {"missing", "expired", "unresolved"}
+    if term_should_early:
+        # 合并 term 解析字段到 routing，复用 _early_route_return 早退
+        routing = dict(routing)
+        routing["entry_intent"] = term_resolution.get("entry_intent") or routing.get("entry_intent")
+        routing["entry_route"] = term_resolution.get("entry_route") or routing.get("entry_route")
+        routing["entry_reason"] = term_resolution.get("entry_reason") or routing.get("entry_reason")
+        routing["answer"] = term_resolution.get("answer") or routing.get("answer")
+        routing["route_payload"] = term_resolution.get("route_payload") or routing.get("route_payload")
+        async for sse_event in _early_route_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=effective_dataset_id,
+            lead_agent_context=lead_agent_context,
+            route_decision=route_decision,
+            trace_context=trace_context,
+            defer_trace_close=defer_trace_close,
+            obs_context_manager=obs_context_manager,
+            routing=routing,
+        ):
+            yield sse_event
+        return
+
     if routing.get("entry_route") in {"direct_answer", "reject", "knowledge_qa", "clarify"}:
         async for sse_event in _early_route_return(
             db=db,
@@ -1057,7 +1113,6 @@ async def _stream_chat_singleturn(
             lead_agent_context=lead_agent_context,
             route_decision=route_decision,
             trace_context=trace_context,
-            trace_metadata=trace_metadata,
             defer_trace_close=defer_trace_close,
             obs_context_manager=obs_context_manager,
             routing=routing,
@@ -1065,8 +1120,191 @@ async def _stream_chat_singleturn(
             yield sse_event
         return
 
+    # Phase 6: 业务术语归一化（DatasetSubAgent 接管 term_normalize_node）
+    # 不依赖 schema_structured，可在 LeadAgent 路由后立即调用；冲突术语走澄清早退。
+    sub_agent = DatasetSubAgent(db=db, dataset_id=int(effective_dataset_id) if effective_dataset_id else 0)
+    schema_structured_seed = (
+        (lead_agent_context.get("schema_status") or {}).get("structured")
+        or {}
+    )
+    seed_terms = (
+        schema_structured_seed.get("terms")
+        if isinstance(schema_structured_seed, dict)
+        else None
+    ) or []
+    _tc_question = (
+        _resolved_question
+        if (_resolved_question and term_resolution["status"] == "resolved")
+        else (merge_decision.synthesized_question or resolved_question)
+    )
+    term_conflict_outcome = sub_agent.resolve_term_conflict(
+        question=_tc_question,
+        terms=seed_terms,
+        entities=routing.get("entities") or {},
+        selected_term_id=term_resolution.get("selected_term_id"),
+        tracer=tracer,
+        trace_context=trace_context,
+    )
+    if term_conflict_outcome.get("status") != "not_applicable":
+        yield _sse_data(
+            {
+                "type": "step",
+                "node": "term_conflict_resolve",
+                "display_name": _NODE_DISPLAY_NAMES.get("term_conflict_resolve", "术语冲突解析"),
+                "status": "done",
+                "elapsed_ms": 0,
+                "term_conflict_status": term_conflict_outcome["status"],
+                "term_normalization": term_conflict_outcome.get("term_normalization") or {},
+                "route_payload": term_conflict_outcome.get("route_payload") or {},
+            }
+        )
+    if term_conflict_outcome.get("status") in {"needs_clarification", "missing_term"}:
+        # 冲突术语 / 缺配置 → 早退（与 term_clarification 早退风格一致）
+        tc_routing = dict(routing)
+        tc_routing["entry_intent"] = "clarification"
+        tc_routing["entry_route"] = "clarify"
+        tc_routing["entry_reason"] = (
+            "业务术语同义词命中多个定义或缺配置，需要用户澄清。"
+        )
+        tc_routing["answer"] = term_conflict_outcome.get("answer")
+        tc_routing["route_payload"] = term_conflict_outcome.get("route_payload") or {}
+        async for sse_event in _early_route_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=effective_dataset_id,
+            lead_agent_context=lead_agent_context,
+            route_decision=route_decision,
+            trace_context=trace_context,
+            defer_trace_close=defer_trace_close,
+            obs_context_manager=obs_context_manager,
+            routing=tc_routing,
+        ):
+            yield sse_event
+        return
+
+    # Phase 7: 统一语义资产解析（DatasetSubAgent 接管 semantic_asset_resolution_node）
+    # 此时 schema_structured 还没完全准备好（schema_recall 节点未跑），传 None 让 metric 走
+    # not_applicable 分支；实际 metric 在 schema_recall 后由独立节点驱动（或后续 Phase 上提）。
+    metric_outcome = sub_agent.resolve_metric(
+        question=_tc_question,
+        entities=routing.get("entities") or {},
+        schema_structured=None,
+        tracer=tracer,
+        trace_context=trace_context,
+    )
+    if metric_outcome.get("status") not in ("not_applicable", "resolved"):
+        yield _sse_data(
+            {
+                "type": "step",
+                "node": "metric_resolve",
+                "display_name": _NODE_DISPLAY_NAMES.get("metric_resolve", "指标解析"),
+                "status": "done",
+                "elapsed_ms": 0,
+                "metric_resolve_status": metric_outcome["status"],
+                "semantic_asset_resolution": metric_outcome.get("semantic_asset_resolution") or {},
+                "metric_resolution": metric_outcome.get("metric_resolution") or {},
+                "route_payload": metric_outcome.get("route_payload") or {},
+            }
+        )
+    if metric_outcome.get("status") == "needs_clarification":
+        m_routing = dict(routing)
+        m_routing["entry_intent"] = "clarification"
+        m_routing["entry_route"] = "clarify"
+        m_routing["entry_reason"] = (
+            "多个语义资产置信度接近，需要用户澄清。"
+        )
+        m_routing["answer"] = metric_outcome.get("answer")
+        m_routing["route_payload"] = metric_outcome.get("route_payload") or {}
+        async for sse_event in _early_route_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=effective_dataset_id,
+            lead_agent_context=lead_agent_context,
+            route_decision=route_decision,
+            trace_context=trace_context,
+            defer_trace_close=defer_trace_close,
+            obs_context_manager=obs_context_manager,
+            routing=m_routing,
+        ):
+            yield sse_event
+        return
+
+    # Phase 5: 蓝图入口路径决策（LeadAgent 编排 selected subAgent）
+    # analysis_blueprint 路径在 chat 层直接执行，避免进入 LangGraph 节点。
+    # 注：sub_agent 已在 Phase 6 块上提定义，此处复用。
+    entry_route = routing.get("entry_route")
+    _bp_original_question = payload.question
+    _bp_resolved_question = (
+        _resolved_question
+        if (_resolved_question and term_resolution["status"] == "resolved")
+        else (merge_decision.synthesized_question or resolved_question)
+    )
+    blueprint_outcome = sub_agent.resolve_analysis_blueprint(
+        blueprint_id=routing.get("blueprint_id"),
+        question=_bp_resolved_question or _bp_original_question,
+        entry_route=entry_route,
+        original_question=_bp_original_question,
+        resolved_question=_bp_resolved_question,
+        time_context=lead_agent_context.get("time_context"),
+        tracer=tracer,
+        trace_context=trace_context,
+    )
+    # 仅当 blueprint 被实际处理（status != not_applicable）时，先 emit SSE 步骤事件。
+    if blueprint_outcome.get("status") and blueprint_outcome["status"] != "not_applicable":
+        bp_result = blueprint_outcome.get("sql_result") or {}
+        yield _sse_data(
+            {
+                "type": "step",
+                "node": "analysis_blueprint_execute",
+                "display_name": _NODE_DISPLAY_NAMES["analysis_blueprint_execute"],
+                "status": "done",
+                "elapsed_ms": 0,
+                "blueprint_id": blueprint_outcome.get("blueprint_id"),
+                "blueprint_outcome_status": blueprint_outcome["status"],
+                "sql": blueprint_outcome.get("sql") or "",
+                "rows": bp_result.get("row_count", 0) if bp_result else 0,
+                "columns": bp_result.get("columns", []) if bp_result else [],
+                "route_payload": blueprint_outcome.get("route_payload") or {},
+            }
+        )
+    # 早退判定：executed / clarification / error / not_found 走 _early_route_return
+    if blueprint_outcome.get("status") in ("executed", "clarification", "error", "not_found"):
+        # 合并蓝图 outcome 字段到 routing（与 term 早退风格一致）
+        blueprint_route = dict(routing)
+        blueprint_route["route_payload"] = blueprint_outcome.get("route_payload") or {}
+        blueprint_route["answer"] = blueprint_outcome.get("answer")
+        blueprint_route["blueprint_id"] = blueprint_outcome.get("blueprint_id")
+        blueprint_route["blueprint_outcome_status"] = blueprint_outcome["status"]
+        async for sse_event in _early_route_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=effective_dataset_id,
+            lead_agent_context=lead_agent_context,
+            route_decision=route_decision,
+            trace_context=trace_context,
+            defer_trace_close=defer_trace_close,
+            obs_context_manager=obs_context_manager,
+            routing=blueprint_route,
+        ):
+            yield sse_event
+        return
+
+    # Phase 4: 注入 term 解析结果（resolved 时把 question 恢复到原问题 + selected_term_id）
+    _initial_question = (
+        _resolved_question
+        if (_resolved_question and term_resolution["status"] == "resolved")
+        else (merge_decision.synthesized_question or resolved_question)
+    )
+    _initial_route_payload = (
+        term_resolution.get("route_payload")
+        if term_resolution["status"] != "none"
+        else routing.get("route_payload")
+    )
     initial_state = {
-        "question": merge_decision.synthesized_question or resolved_question,
+        "question": _initial_question,
         "original_question": payload.question,
         "resolved_question": resolved_question,
         "dataset_id": effective_dataset_id,
@@ -1084,7 +1322,7 @@ async def _stream_chat_singleturn(
         "conversation_id": conv_id,
         "history": history,
         "clarification_response": jsonable_encoder(payload.clarification_response),
-        "clarification_resolution_result": None,
+        "clarification_resolution_result": term_resolution.get("clarification_resolution_result"),
         "prior_capsule": prior_capsule,
         "prior_capsule_status": prior_capsule_status,
         "out_capsule": None,
@@ -1098,19 +1336,36 @@ async def _stream_chat_singleturn(
         "entry_reason": routing.get("entry_reason"),
         "blueprint_id": routing.get("blueprint_id"),
         "blueprint_match": routing.get("blueprint_match"),
-        "blueprint_context": None,
+        "blueprint_context": blueprint_outcome.get("blueprint_context"),
         "knowledge_term_id": routing.get("knowledge_term_id"),
-        "selected_term_id": None,
-        "route_payload": routing.get("route_payload"),
+        "selected_term_id": term_resolution.get("selected_term_id"),
+        "route_payload": (
+            blueprint_outcome.get("route_payload")
+            if blueprint_outcome.get("route_payload")
+            else _initial_route_payload
+        ),
+        "generation_mode": blueprint_outcome.get("generation_mode"),
         "schema_context": None,
         "schema_structured": None,
         "ddl_context": None,
         "query_constraints": None,
         "dataset_context_debug": None,
         "datasource_context": None,
-        "term_normalization": None,
-        "semantic_asset_resolution": None,
-        "metric_resolution": None,
+        "term_normalization": (
+            term_conflict_outcome.get("term_normalization")
+            if term_conflict_outcome and term_conflict_outcome.get("status") != "not_applicable"
+            else None
+        ),
+        "semantic_asset_resolution": (
+            metric_outcome.get("semantic_asset_resolution")
+            if metric_outcome and metric_outcome.get("status") != "not_applicable"
+            else None
+        ),
+        "metric_resolution": (
+            metric_outcome.get("metric_resolution")
+            if metric_outcome and metric_outcome.get("status") != "not_applicable"
+            else None
+        ),
         "dsl": None,
         "dsl_valid": False,
         "sql": None,
@@ -1221,30 +1476,10 @@ async def _stream_chat_singleturn(
                     "elapsed_ms": elapsed_ms,
                 }
                 # 节点特定数据
-                if lg_node == "clarification_resolution":
-                    sse_payload["clarification_resolution"] = (
-                        final_state.get("clarification_resolution_result") or {}
-                    )
-                    sse_payload["route_payload"] = final_state.get("route_payload") or {}
-                elif lg_node == "analysis_blueprint_execute":
-                    result = final_state.get("sql_result") or {}
-                    sse_payload["blueprint_id"] = final_state.get("blueprint_id")
-                    sse_payload["sql"] = final_state.get("sql") or ""
-                    sse_payload["rows"] = result.get("row_count", 0)
-                    sse_payload["columns"] = result.get("columns", [])
-                    sse_payload["route_payload"] = final_state.get("route_payload") or {}
-                elif lg_node in ("semantic_asset_resolution_node", "metric_resolution_node"):
-                    sse_payload["semantic_asset_resolution"] = (
-                        final_state.get("semantic_asset_resolution") or {}
-                    )
-                    sse_payload["metric_resolution"] = final_state.get("metric_resolution") or {}
-                elif lg_node == "term_normalize_node":
-                    sse_payload["term_normalization"] = (
-                        final_state.get("term_normalization") or {}
-                    )
-                    sse_payload["entry_route"] = final_state.get("entry_route") or ""
-                    sse_payload["route_payload"] = final_state.get("route_payload") or {}
-                elif lg_node == "dsl_generate":
+                # Phase 6/7：term_normalize_node / semantic_asset_resolution_node / metric_resolution_node 已迁移到 chat 层
+                # DatasetSubAgent.resolve_term_conflict / resolve_metric，SSE 步骤事件由 chat 层前置 emit，
+                # LangGraph 不再产出这些节点事件，因此不再需要 if 分支处理。
+                if lg_node == "dsl_generate":
                     sse_payload["dsl"] = final_state.get("dsl") or {}
                     sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
                 elif lg_node == "schema_recall":
@@ -1850,6 +2085,109 @@ def _build_out_capsule_for_chat(
     return build_out_capsule(state, updates)
 
 
+def _early_trace_status(entry_route: str) -> str:
+    """把早退路由映射成 trace index 状态。"""
+    return "blocked" if entry_route == "reject" else "success"
+
+
+def _early_trace_metadata(
+    *,
+    final_state: dict,
+    lead_agent_context: dict,
+    route_decision: dict,
+    response_metadata: dict,
+    trace_context: Any,
+) -> dict:
+    """组装早退分支的 trace metadata，保持与正常 final 分支字段对齐。"""
+    active_obs_context = current_observability_context.get()
+    if active_obs_context:
+        trace_context.prompt_versions.update(active_obs_context.prompt_versions)
+    return {
+        "status": _early_trace_status(final_state.get("entry_route") or ""),
+        "execution_path": final_state.get("entry_route") or final_state.get("entry_intent"),
+        "original_question": final_state.get("original_question"),
+        "resolved_question": final_state.get("resolved_question"),
+        "entry_intent": final_state.get("entry_intent"),
+        "entry_route": final_state.get("entry_route"),
+        "entry_reason": final_state.get("entry_reason"),
+        "blueprint_id": final_state.get("blueprint_id"),
+        "knowledge_term_id": final_state.get("knowledge_term_id"),
+        "lead_agent_context": lead_agent_context,
+        "time_context": lead_agent_context.get("time_context"),
+        "route_decision": route_decision,
+        "schema_status": lead_agent_context.get("schema_status"),
+        "route_payload": final_state.get("route_payload"),
+        "response_metadata": response_metadata,
+        "prompt_versions": trace_context.prompt_versions,
+    }
+
+
+def _early_langfuse_payload(trace_context: Any) -> dict:
+    """提取前端和审计页需要的 Langfuse trace 信息。"""
+    return {
+        "trace_id": trace_context.trace_id,
+        "session_id": trace_context.session_id,
+        "release": trace_context.release,
+        "environment": trace_context.environment,
+        "prompt_label": trace_context.prompt_label,
+        "base_url": trace_context.base_url,
+        "project_id": trace_context.project_id,
+        "trace_url": trace_context.trace_url,
+        "enabled": trace_context.enabled,
+        "active": trace_context.active,
+        "prompt_versions": trace_context.prompt_versions,
+    }
+
+
+def _finalize_early_trace(
+    *,
+    db: Session,
+    assistant_message: models.Message,
+    effective_dataset_id: int | None,
+    lead_agent_context: dict,
+    route_decision: dict,
+    trace_context: Any,
+    response_metadata: dict,
+    final_state: dict,
+    answer: str,
+    defer_trace_close: bool,
+) -> dict:
+    """早退分支在发送 final 前完成 trace 输出、索引落库和可观测 metadata。"""
+    tracer = get_observability_tracer()
+    trace_metadata = _early_trace_metadata(
+        final_state=final_state,
+        lead_agent_context=lead_agent_context,
+        route_decision=route_decision,
+        response_metadata=response_metadata,
+        trace_context=trace_context,
+    )
+    response_metadata["langfuse"] = _early_langfuse_payload(trace_context)
+    response_metadata["observability"] = trace_context.observability_payload()
+    tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
+    assistant_message.response_metadata = jsonable_encoder(response_metadata)
+
+    if trace_context.trace_id:
+        db.add(
+            models.ObservabilityTraceIndex(
+                langfuse_trace_id=trace_context.trace_id,
+                langfuse_session_id=trace_context.session_id,
+                conversation_id=assistant_message.conversation_id,
+                message_id=assistant_message.id,
+                dataset_id=effective_dataset_id,
+                entry_route=trace_metadata.get("execution_path") or "early_return",
+                status=trace_metadata["status"],
+                total_tokens=0,
+                total_cost=0,
+                metadata_json=jsonable_encoder(trace_metadata),
+            )
+        )
+    db.commit()
+    db.refresh(assistant_message)
+    if not defer_trace_close:
+        tracer.close_trace(trace_context)
+    return trace_metadata
+
+
 async def _interpret_early_return(
     *,
     db: Session,
@@ -1859,7 +2197,6 @@ async def _interpret_early_return(
     lead_agent_context: dict,
     route_decision: dict,
     trace_context: Any,
-    trace_metadata: dict,
     defer_trace_close: bool,
     obs_context_manager: Any,
     interpret_payload: dict,
@@ -1869,7 +2206,7 @@ async def _interpret_early_return(
 ):
     """interpret_result 早退：保存助手消息、emit SSE final 事件，不走 LangGraph。
 
-    完整 observability 写入留 Phase 3 完善（与 _save_route_block_message 等价的 trace_index 写入）。
+    早退前会写入 trace output 和 TraceIndex，避免 SSE final 后断连丢失收尾逻辑。
     """
     answer = interpret_payload.get("answer") or "已生成解释。"
     entry_intent = interpret_payload.get("entry_intent") or "interpret"
@@ -1913,6 +2250,19 @@ async def _interpret_early_return(
     db.add(assistant_message)
     db.commit()
     db.refresh(assistant_message)
+    trace_metadata = _finalize_early_trace(
+        db=db,
+        assistant_message=assistant_message,
+        effective_dataset_id=effective_dataset_id,
+        lead_agent_context=lead_agent_context,
+        route_decision=route_decision,
+        trace_context=trace_context,
+        response_metadata=response_metadata,
+        final_state=final_state,
+        answer=answer,
+        defer_trace_close=defer_trace_close,
+    )
+    obs_context_manager.__exit__(None, None, None)
 
     yield _sse_data(
         {
@@ -1946,10 +2296,13 @@ async def _interpret_early_return(
             "conversation_id": conv.id,
             "message_id": assistant_message.id,
             "title": conv.title,
+            "langfuse_trace_id": trace_context.trace_id,
+            "langfuse_session_id": trace_context.session_id,
+            "observability": trace_context.observability_payload(),
+            "trace_metadata": trace_metadata,
+            "out_capsule": interpret_payload.get("out_capsule"),
         }
     )
-    if not defer_trace_close:
-        obs_context_manager.__exit__(None, None, None)
 
 
 async def _early_route_return(
@@ -1961,7 +2314,6 @@ async def _early_route_return(
     lead_agent_context: dict,
     route_decision: dict,
     trace_context: Any,
-    trace_metadata: dict,
     defer_trace_close: bool,
     obs_context_manager: Any,
     routing: dict,
@@ -2007,6 +2359,19 @@ async def _early_route_return(
     db.add(assistant_message)
     db.commit()
     db.refresh(assistant_message)
+    trace_metadata = _finalize_early_trace(
+        db=db,
+        assistant_message=assistant_message,
+        effective_dataset_id=effective_dataset_id,
+        lead_agent_context=lead_agent_context,
+        route_decision=route_decision,
+        trace_context=trace_context,
+        response_metadata=response_metadata,
+        final_state=final_state,
+        answer=answer,
+        defer_trace_close=defer_trace_close,
+    )
+    obs_context_manager.__exit__(None, None, None)
 
     yield _sse_data(
         {
@@ -2032,7 +2397,9 @@ async def _early_route_return(
             "conversation_id": conv.id,
             "message_id": assistant_message.id,
             "title": conv.title,
+            "langfuse_trace_id": trace_context.trace_id,
+            "langfuse_session_id": trace_context.session_id,
+            "observability": trace_context.observability_payload(),
+            "trace_metadata": trace_metadata,
         }
     )
-    if not defer_trace_close:
-        obs_context_manager.__exit__(None, None, None)

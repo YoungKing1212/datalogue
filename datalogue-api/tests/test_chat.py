@@ -314,12 +314,13 @@ class TestLangGraphNodes:
 
     def test_semantic_asset_resolution_metric_synonym(self):
         """语义资产解析：指标同义词命中，并兼容旧 metric_resolution。"""
-        from app.graph.nodes import semantic_asset_resolution_node
+        from app.services.dataset_subagent import DatasetSubAgent
 
-        state = {
-            "question": "销售额是多少",
-            "entities": {"metrics": ["销售额"], "dimensions": []},
-            "schema_structured": {
+        sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
+        out = sub_agent.resolve_metric(
+            question="销售额是多少",
+            entities={"metrics": ["销售额"], "dimensions": []},
+            schema_structured={
                 "metrics": [
                     {
                         "id": 1,
@@ -333,114 +334,114 @@ class TestLangGraphNodes:
                 "fields": [],
                 "blueprints": [],
             },
-        }
-        result = semantic_asset_resolution_node(state)
+        )
 
-        semantic = result["semantic_asset_resolution"]
+        # Phase 7 改写：DatasetSubAgent.resolve_metric 返回 status=resolved
+        assert out["status"] == "resolved"
+        semantic = out["semantic_asset_resolution"]
         assert semantic["metrics"][0]["name"] == "gmv"
         assert semantic["metrics"][0]["asset_id"] == 1
         assert semantic["metrics"][0]["match_type"] == "synonym"
-        assert result["metric_resolution"]["metrics"][0]["resolved"] == "gmv"
-        assert result["metric_resolution"]["all_matched"] is True
+        assert out["metric_resolution"]["metrics"][0]["resolved"] == "gmv"
+        assert out["metric_resolution"]["all_matched"] is True
 
     def test_term_normalize_node_alias_match(self):
         """术语归一化：业务术语同义词应注入 entities.terms。"""
-        from app.graph.nodes import term_normalize_node
+        from app.services.dataset_subagent import DatasetSubAgent
 
-        state = {
-            "question": "销售额趋势",
-            "entities": {"metrics": [], "dimensions": []},
-            "schema_structured": {
-                "terms": [
-                    {
-                        "id": 7,
-                        "name": "gmv",
-                        "display_name": "GMV",
-                        "term_type": "metric",
-                        "aliases": ["销售额"],
-                        "asset_links": [
-                            {
-                                "asset_type": "metric",
-                                "asset_id": 1,
-                                "asset_name": "gmv",
-                            }
-                        ],
-                    }
-                ]
-            },
-        }
-        result = term_normalize_node(state)
+        sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
+        out = sub_agent.resolve_term_conflict(
+            question="销售额趋势",
+            terms=[
+                {
+                    "id": 7,
+                    "name": "gmv",
+                    "display_name": "GMV",
+                    "term_type": "metric",
+                    "aliases": ["销售额"],
+                    "asset_links": [
+                        {
+                            "asset_type": "metric",
+                            "asset_id": 1,
+                            "asset_name": "gmv",
+                        }
+                    ],
+                }
+            ],
+            entities={"metrics": [], "dimensions": []},
+        )
 
-        normalization = result["term_normalization"]
+        # Phase 6 改写：DatasetSubAgent.resolve_term_conflict 返回 status=resolved
+        assert out["status"] == "resolved"
+        normalization = out["term_normalization"]
         assert normalization["matched_terms"][0]["name"] == "gmv"
         assert normalization["matched_terms"][0]["match_type"] == "synonym"
         assert normalization["has_conflict"] is False
-        assert result["entities"]["terms"] == ["销售额"]
+        assert out["entities"]["terms"] == ["销售额"]
 
     def test_term_normalize_node_conflict_clarification(self):
         """术语归一化：同一个同义词命中多个术语时进入澄清。"""
-        from app.graph.nodes import term_normalize_node
+        from app.services.dataset_subagent import DatasetSubAgent
 
-        state = {
-            "question": "销售额是多少",
-            "entities": {"metrics": [], "dimensions": []},
-            "schema_structured": {
-                "terms": [
-                    {
-                        "id": 1,
-                        "name": "gmv",
-                        "display_name": "GMV",
-                        "aliases": ["销售额"],
-                    },
-                    {
-                        "id": 2,
-                        "name": "paid_amount",
-                        "display_name": "实付金额",
-                        "aliases": ["销售额"],
-                    },
-                ]
-            },
-        }
-        result = term_normalize_node(state)
+        sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
+        out = sub_agent.resolve_term_conflict(
+            question="销售额是多少",
+            terms=[
+                {
+                    "id": 1,
+                    "name": "gmv",
+                    "display_name": "GMV",
+                    "aliases": ["销售额"],
+                },
+                {
+                    "id": 2,
+                    "name": "paid_amount",
+                    "display_name": "实付金额",
+                    "aliases": ["销售额"],
+                },
+            ],
+            entities={"metrics": [], "dimensions": []},
+        )
 
-        assert result["entry_intent"] == "clarification"
-        assert result["entry_route"] == "clarify"
-        assert result["route_payload"]["kind"] == "term_conflict_clarification"
-        assert result["term_normalization"]["has_conflict"] is True
-        assert {t["id"] for t in result["route_payload"]["conflicts"][0]["terms"]} == {1, 2}
-        assert {t["term_id"] for t in result["route_payload"]["candidates"]} == {1, 2}
+        # Phase 6 改写：needs_clarification 由 DatasetSubAgent 决策；
+        # entry_intent / entry_route 由 chat 层在 _early_route_return 时注入。
+        assert out["status"] == "needs_clarification"
+        assert out["route_payload"]["kind"] == "term_conflict_clarification"
+        assert out["term_normalization"]["has_conflict"] is True
+        assert {t["id"] for t in out["route_payload"]["conflicts"][0]["terms"]} == {1, 2}
+        assert {t["term_id"] for t in out["route_payload"]["candidates"]} == {1, 2}
 
     def test_term_normalize_selected_term_resolves_conflict(self):
         """术语归一化：澄清后的 selected_term_id 会压掉同义词冲突。"""
-        from app.graph.nodes import term_normalize_node
+        from app.services.dataset_subagent import DatasetSubAgent
 
-        state = {
-            "question": "销售额是多少",
-            "entities": {"metrics": [], "dimensions": []},
-            "selected_term_id": 2,
-            "schema_structured": {
-                "terms": [
-                    {
-                        "id": 1,
-                        "name": "gmv",
-                        "display_name": "GMV",
-                        "aliases": ["销售额"],
-                    },
-                    {
-                        "id": 2,
-                        "name": "paid_amount",
-                        "display_name": "实付金额",
-                        "aliases": ["销售额"],
-                    },
-                ]
-            },
-        }
-        result = term_normalize_node(state)
+        sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
+        out = sub_agent.resolve_term_conflict(
+            question="销售额是多少",
+            terms=[
+                {
+                    "id": 1,
+                    "name": "gmv",
+                    "display_name": "GMV",
+                    "aliases": ["销售额"],
+                },
+                {
+                    "id": 2,
+                    "name": "paid_amount",
+                    "display_name": "实付金额",
+                    "aliases": ["销售额"],
+                },
+            ],
+            entities={"metrics": [], "dimensions": []},
+            selected_term_id=2,
+        )
 
-        assert result["term_normalization"]["has_conflict"] is False
-        assert result["term_normalization"]["selected_term_id"] == 2
-        assert [m["term_id"] for m in result["term_normalization"]["matched_terms"]] == [2]
-        assert result["entities"]["terms"] == ["销售额"]
+        # Phase 6 改写：selected_term_id 由 DatasetSubAgent 接收并直接归一化
+        assert out["status"] == "resolved"
+        assert out["term_normalization"]["has_conflict"] is False
+        assert out["term_normalization"]["selected_term_id"] == 2
+        assert [m["term_id"] for m in out["term_normalization"]["matched_terms"]] == [2]
+        assert out["entities"]["terms"] == ["销售额"]
 
     def _create_pending_term_clarification(self, db_session, sample_dataset, **overrides):
         """创建一个术语冲突澄清态，供澄清解析测试复用。"""
@@ -562,24 +563,24 @@ class TestLangGraphNodes:
 
     def test_clarification_resolution_selected_term_id(self, db_session, sample_dataset):
         """澄清解析：结构化 selected_term_id 可恢复原问题。"""
-        from app.graph.nodes import clarification_resolution_node
+        from app.services.lead_agent_routing import resolve_term_clarification
         from app.models.conversation import PendingClarification
 
         conv, pending = self._create_pending_term_clarification(db_session, sample_dataset)
-        result = clarification_resolution_node(db_session)(
-            {
-                "question": "选择 GMV",
-                "conversation_id": conv.id,
-                "dataset_id": sample_dataset.id,
-                "clarification_response": {
-                    "clarification_id": pending.id,
-                    "selected_term_id": 1,
-                },
-            }
+        result = resolve_term_clarification(
+            db=db_session,
+            question="选择 GMV",
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            clarification_response={
+                "clarification_id": pending.id,
+                "selected_term_id": 1,
+            },
         )
 
-        assert result["question"] == "销售额是多少"
+        assert result["resolved_question"] == "销售额是多少"
         assert result["selected_term_id"] == 1
+        assert result["status"] == "resolved"
         assert result["clarification_resolution_result"]["status"] == "resolved"
         db_session.refresh(pending)
         assert pending.status == "resolved"
@@ -587,52 +588,52 @@ class TestLangGraphNodes:
 
     def test_clarification_resolution_ordinal_reply(self, db_session, sample_dataset):
         """澄清解析：自然语言“第一个”可匹配候选序号。"""
-        from app.graph.nodes import clarification_resolution_node
+        from app.services.lead_agent_routing import resolve_term_clarification
 
         conv, pending = self._create_pending_term_clarification(db_session, sample_dataset)
-        result = clarification_resolution_node(db_session)(
-            {
-                "question": "第一个",
-                "conversation_id": conv.id,
-                "dataset_id": sample_dataset.id,
-                "clarification_response": None,
-            }
+        result = resolve_term_clarification(
+            db=db_session,
+            question="第一个",
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            clarification_response=None,
         )
 
         assert result["selected_term_id"] == 1
-        assert result["question"] == pending.original_question
+        assert result["status"] == "resolved"
+        assert result["resolved_question"] == pending.original_question
 
     def test_clarification_resolution_name_reply(self, db_session, sample_dataset):
         """澄清解析：自然语言术语展示名可匹配候选。"""
-        from app.graph.nodes import clarification_resolution_node
+        from app.services.lead_agent_routing import resolve_term_clarification
 
         conv, _ = self._create_pending_term_clarification(db_session, sample_dataset)
-        result = clarification_resolution_node(db_session)(
-            {
-                "question": "实付金额",
-                "conversation_id": conv.id,
-                "dataset_id": sample_dataset.id,
-                "clarification_response": None,
-            }
+        result = resolve_term_clarification(
+            db=db_session,
+            question="实付金额",
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            clarification_response=None,
         )
 
         assert result["selected_term_id"] == 2
+        assert result["status"] == "resolved"
         assert result["clarification_resolution_result"]["selected_term"]["display_name"] == "实付金额"
 
     def test_clarification_resolution_invalid_reply(self, db_session, sample_dataset):
         """澄清解析：无效回复继续提示候选并保持 pending。"""
-        from app.graph.nodes import clarification_resolution_node
+        from app.services.lead_agent_routing import resolve_term_clarification
 
         conv, pending = self._create_pending_term_clarification(db_session, sample_dataset)
-        result = clarification_resolution_node(db_session)(
-            {
-                "question": "都不是",
-                "conversation_id": conv.id,
-                "dataset_id": sample_dataset.id,
-                "clarification_response": None,
-            }
+        result = resolve_term_clarification(
+            db=db_session,
+            question="都不是",
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            clarification_response=None,
         )
 
+        assert result["status"] == "unresolved"
         assert result["entry_route"] == "clarify"
         assert result["route_payload"]["kind"] == "term_conflict_clarification"
         assert result["clarification_resolution_result"]["status"] == "unresolved"
@@ -641,103 +642,114 @@ class TestLangGraphNodes:
 
     def test_clarification_resolution_missing_state(self, db_session, sample_dataset):
         """澄清解析：结构化回复找不到 pending 时提示重新提问。"""
-        from app.graph.nodes import clarification_resolution_node
+        from app.services.lead_agent_routing import resolve_term_clarification
 
-        result = clarification_resolution_node(db_session)(
-            {
-                "question": "第一个",
-                "conversation_id": 99999,
-                "dataset_id": sample_dataset.id,
-                "clarification_response": {"selected_index": 1},
-            }
+        result = resolve_term_clarification(
+            db=db_session,
+            question="第一个",
+            conversation_id=99999,
+            dataset_id=sample_dataset.id,
+            clarification_response={"selected_index": 1},
         )
 
+        assert result["status"] == "missing"
         assert result["route_payload"]["kind"] == "term_conflict_missing"
         assert result["clarification_resolution_result"]["status"] == "missing"
 
     def test_clarification_resolution_expired_state(self, db_session, sample_dataset):
         """澄清解析：过期 pending 惰性标记 expired。"""
-        from app.graph.nodes import clarification_resolution_node
+        from app.services.lead_agent_routing import resolve_term_clarification
 
         conv, pending = self._create_pending_term_clarification(
             db_session,
             sample_dataset,
             expires_at=datetime.utcnow() - timedelta(minutes=1),
         )
-        result = clarification_resolution_node(db_session)(
-            {
-                "question": "第一个",
-                "conversation_id": conv.id,
-                "dataset_id": sample_dataset.id,
-                "clarification_response": None,
-            }
+        result = resolve_term_clarification(
+            db=db_session,
+            question="第一个",
+            conversation_id=conv.id,
+            dataset_id=sample_dataset.id,
+            clarification_response=None,
         )
 
+        assert result["status"] == "expired"
         assert result["route_payload"]["kind"] == "term_conflict_expired"
         assert result["clarification_resolution_result"]["status"] == "expired"
         db_session.refresh(pending)
         assert pending.status == "expired"
 
     def test_term_normalization_router_blocks_conflict(self):
-        """工作流路由：术语冲突时不继续进入 DSL 生成链路。"""
-        from app.graph.workflow import _term_normalization_router
+        """工作流路由：术语冲突时不再进入 LangGraph 节点（Phase 6 由 chat 层 _early_route_return 早退）。"""
+        from app.graph.workflow import _lead_agent_router
 
-        assert (
-            _term_normalization_router(
-                {"route_payload": {"kind": "term_conflict_clarification"}}
-            )
-            == "end"
-        )
-        assert _term_normalization_router({"route_payload": {}}) == "semantic_asset_resolution"
+        # Phase 6 改写：_term_normalization_router 已删除，术语冲突早退由 chat 层
+        # 在 Phase 6 集成块内 _early_route_return 完成；LangGraph 不再承担冲突判定。
+        # 验证：route_query_intent 决策 entry_route=schema_recall 时直接进 schema_recall，
+        # 已不再路由到 term_normalize_node 或 semantic_asset_resolution_node。
+        state_clarify = {"entry_route": "schema_recall", "route_payload": {"kind": "term_conflict_clarification"}}
+        assert _lead_agent_router(state_clarify) == "schema_recall"
+        state_normal = {"entry_route": "schema_recall", "route_payload": {}}
+        assert _lead_agent_router(state_normal) == "schema_recall"
 
     def test_term_normalize_feeds_semantic_asset_resolution(self):
         """术语归一化结果应影响后续资产解析。"""
-        from app.graph.nodes import semantic_asset_resolution_node, term_normalize_node
+        from app.services.dataset_subagent import DatasetSubAgent
 
-        state = {
-            "question": "销售额趋势",
-            "entities": {"metrics": [], "dimensions": []},
-            "schema_structured": {
-                "metrics": [
-                    {"id": 1, "name": "gmv", "display_name": "GMV", "synonyms": []}
-                ],
-                "dimensions": [],
-                "fields": [],
-                "terms": [
-                    {
-                        "id": 7,
-                        "name": "sales_term",
-                        "display_name": "销售额术语",
-                        "aliases": ["销售额"],
-                        "asset_links": [
-                            {
-                                "asset_type": "metric",
-                                "asset_id": 1,
-                                "asset_name": "gmv",
-                            }
-                        ],
-                    }
-                ],
-                "blueprints": [],
-            },
+        sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
+        schema_structured = {
+            "metrics": [
+                {"id": 1, "name": "gmv", "display_name": "GMV", "synonyms": []}
+            ],
+            "dimensions": [],
+            "fields": [],
+            "terms": [
+                {
+                    "id": 7,
+                    "name": "sales_term",
+                    "display_name": "销售额术语",
+                    "aliases": ["销售额"],
+                    "asset_links": [
+                        {
+                            "asset_type": "metric",
+                            "asset_id": 1,
+                            "asset_name": "gmv",
+                        }
+                    ],
+                }
+            ],
+            "blueprints": [],
         }
-        normalized = term_normalize_node(state)
-        result = semantic_asset_resolution_node({**state, **normalized})
+        term_outcome = sub_agent.resolve_term_conflict(
+            question="销售额趋势",
+            terms=schema_structured["terms"],
+            entities={"metrics": [], "dimensions": []},
+        )
+        # Phase 6+7 改写：把 term_outcome.entities 合并到 metric 调用的 entities 入参
+        metric_outcome = sub_agent.resolve_metric(
+            question="销售额趋势",
+            entities=term_outcome.get("entities") or {"metrics": [], "dimensions": []},
+            schema_structured=schema_structured,
+        )
 
-        assert any(t["name"] == "sales_term" for t in result["semantic_asset_resolution"]["terms"])
+        assert any(
+            t["name"] == "sales_term"
+            for t in metric_outcome["semantic_asset_resolution"]["terms"]
+        )
         assert any(
             m["name"] == "gmv" and m["match_type"] == "linked_term"
-            for m in result["semantic_asset_resolution"]["metrics"]
+            for m in metric_outcome["semantic_asset_resolution"]["metrics"]
         )
 
     def test_semantic_asset_resolution_field_label(self):
         """语义资产解析：字段中文标注可被解析为 field 资产。"""
-        from app.graph.nodes import semantic_asset_resolution_node
+        from app.services.dataset_subagent import DatasetSubAgent
 
-        state = {
-            "question": "查询人员姓名明细",
-            "entities": {"metrics": [], "dimensions": []},
-            "schema_structured": {
+        sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
+        out = sub_agent.resolve_metric(
+            question="查询人员姓名明细",
+            entities={"metrics": [], "dimensions": []},
+            schema_structured={
                 "metrics": [],
                 "dimensions": [],
                 "terms": [],
@@ -753,22 +765,22 @@ class TestLangGraphNodes:
                 ],
                 "blueprints": [],
             },
-        }
-        result = semantic_asset_resolution_node(state)
+        )
 
-        fields = result["semantic_asset_resolution"]["fields"]
+        fields = out["semantic_asset_resolution"]["fields"]
         assert fields[0]["name"] == "person_name"
         assert fields[0]["asset_type"] == "field"
         assert fields[0]["match_type"] in ("display_name", "column_label", "synonym")
 
     def test_semantic_asset_resolution_term_linked_metric(self):
         """语义资产解析：命中业务术语后扩展显式关联指标。"""
-        from app.graph.nodes import semantic_asset_resolution_node
+        from app.services.dataset_subagent import DatasetSubAgent
 
-        state = {
-            "question": "日报怎么看",
-            "entities": {"metrics": [], "dimensions": []},
-            "schema_structured": {
+        sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
+        out = sub_agent.resolve_metric(
+            question="日报怎么看",
+            entities={"metrics": [], "dimensions": []},
+            schema_structured={
                 "metrics": [
                     {
                         "id": 3,
@@ -796,10 +808,9 @@ class TestLangGraphNodes:
                 ],
                 "blueprints": [],
             },
-        }
-        result = semantic_asset_resolution_node(state)
+        )
 
-        semantic = result["semantic_asset_resolution"]
+        semantic = out["semantic_asset_resolution"]
         assert semantic["terms"][0]["name"] == "daily_report"
         assert any(
             m["name"] == "daily_finish_rate" and m["match_type"] == "linked_term"
@@ -808,12 +819,13 @@ class TestLangGraphNodes:
 
     def test_semantic_asset_resolution_ambiguity(self):
         """语义资产解析：近似同名资产应输出歧义候选。"""
-        from app.graph.nodes import semantic_asset_resolution_node
+        from app.services.dataset_subagent import DatasetSubAgent
 
-        state = {
-            "question": "查询地区",
-            "entities": {"metrics": [], "dimensions": ["地区"]},
-            "schema_structured": {
+        sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
+        out = sub_agent.resolve_metric(
+            question="查询地区",
+            entities={"metrics": [], "dimensions": ["地区"]},
+            schema_structured={
                 "metrics": [],
                 "dimensions": [
                     {"id": 1, "name": "region", "display_name": "地区", "synonyms": []},
@@ -823,16 +835,17 @@ class TestLangGraphNodes:
                 "fields": [],
                 "blueprints": [],
             },
-        }
-        result = semantic_asset_resolution_node(state)
+        )
 
-        ambiguities = result["semantic_asset_resolution"]["ambiguities"]
+        # Phase 7 改写：needs_clarification 由 DatasetSubAgent 决策
+        assert out["status"] == "needs_clarification"
+        ambiguities = out["semantic_asset_resolution"]["ambiguities"]
         assert ambiguities
         assert {c["asset_id"] for c in ambiguities[0]["candidates"]} == {1, 2}
 
     def test_analysis_blueprint_execute_success(self, db_session, sample_dataset):
         """蓝图执行：执行只读 SQL 模板并写入结果。"""
-        from app.graph.nodes import analysis_blueprint_execute_node
+        from app.services.dataset_subagent import DatasetSubAgent
         from app.models.dataset import AnalysisBlueprint, BlueprintUsageLog
 
         bp = AnalysisBlueprint(
@@ -883,7 +896,15 @@ class TestLangGraphNodes:
             "dataset_id": sample_dataset.id,
             "blueprint_id": bp.id,
         }
-        result = analysis_blueprint_execute_node(db_session)(state)
+        sub = DatasetSubAgent(db=db_session, dataset_id=sample_dataset.id)
+        result = sub.resolve_analysis_blueprint(
+            blueprint_id=bp.id,
+            question=state.get("question") or "",
+            entry_route="analysis_blueprint",
+            original_question=state.get("original_question"),
+            resolved_question=state.get("resolved_question"),
+            time_context=state.get("time_context"),
+        )
 
         assert result["generation_mode"] == "analysis_blueprint"
         assert result["sql_result"]["row_count"] == 1
@@ -905,7 +926,7 @@ class TestLangGraphNodes:
         self, db_session, sample_dataset
     ):
         """手动语义蓝图：不要求 SQL，转为 QueryGraph 业务上下文。"""
-        from app.graph.nodes import analysis_blueprint_execute_node
+        from app.services.dataset_subagent import DatasetSubAgent
         from app.models.dataset import AnalysisBlueprint
 
         bp = AnalysisBlueprint(
@@ -939,12 +960,14 @@ class TestLangGraphNodes:
         db_session.commit()
         db_session.refresh(bp)
 
-        result = analysis_blueprint_execute_node(db_session)(
-            {
-                "question": "我要查询2024年杨凯的日报",
-                "dataset_id": sample_dataset.id,
-                "blueprint_id": bp.id,
-            }
+        sub = DatasetSubAgent(db=db_session, dataset_id=sample_dataset.id)
+        result = sub.resolve_analysis_blueprint(
+            blueprint_id=bp.id,
+            question="我要查询2024年杨凯的日报",
+            entry_route="analysis_blueprint",
+            original_question="我要查询2024年杨凯的日报",
+            resolved_question="我要查询2024年杨凯的日报",
+            time_context=None,
         )
 
         assert result["sql_result"] is None
@@ -975,7 +998,7 @@ class TestLangGraphNodes:
 
     def test_analysis_blueprint_execute_missing_required_param(self, db_session, sample_dataset):
         """蓝图执行：缺少必填参数时进入澄清。"""
-        from app.graph.nodes import analysis_blueprint_execute_node
+        from app.services.dataset_subagent import DatasetSubAgent
         from app.models.dataset import AnalysisBlueprint
 
         bp = AnalysisBlueprint(
@@ -989,12 +1012,14 @@ class TestLangGraphNodes:
         db_session.commit()
         db_session.refresh(bp)
 
-        result = analysis_blueprint_execute_node(db_session)(
-            {
-                "question": "跑毛利分析",
-                "dataset_id": sample_dataset.id,
-                "blueprint_id": bp.id,
-            }
+        sub = DatasetSubAgent(db=db_session, dataset_id=sample_dataset.id)
+        result = sub.resolve_analysis_blueprint(
+            blueprint_id=bp.id,
+            question="跑毛利分析",
+            entry_route="analysis_blueprint",
+            original_question="跑毛利分析",
+            resolved_question="跑毛利分析",
+            time_context=None,
         )
 
         assert result["sql_result"] is None
@@ -1003,7 +1028,7 @@ class TestLangGraphNodes:
 
     def test_analysis_blueprint_execute_blocks_unsafe_sql(self, db_session, sample_dataset):
         """蓝图执行：拦截非只读 SQL。"""
-        from app.graph.nodes import analysis_blueprint_execute_node
+        from app.services.dataset_subagent import DatasetSubAgent
         from app.models.dataset import AnalysisBlueprint
 
         bp = AnalysisBlueprint(
@@ -1016,16 +1041,18 @@ class TestLangGraphNodes:
         db_session.commit()
         db_session.refresh(bp)
 
-        result = analysis_blueprint_execute_node(db_session)(
-            {
-                "question": "执行危险蓝图",
-                "dataset_id": sample_dataset.id,
-                "blueprint_id": bp.id,
-            }
+        sub = DatasetSubAgent(db=db_session, dataset_id=sample_dataset.id)
+        result = sub.resolve_analysis_blueprint(
+            blueprint_id=bp.id,
+            question="执行危险蓝图",
+            entry_route="analysis_blueprint",
+            original_question="执行危险蓝图",
+            resolved_question="执行危险蓝图",
+            time_context=None,
         )
 
         assert result["sql_result"] is None
-        assert "drop" in result["error"].lower()
+        assert "drop" in (result.get("error") or "").lower()
 
     def test_entry_intent_knowledge_term(self, db_session, sample_dataset):
         """入口分类：知识解释命中业务术语。"""
@@ -1667,6 +1694,35 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         assert "person_name" in sql
         assert "person_money" in sql
 
+    def test_detail_query_uses_field_table_when_tables_json_missing(self, db_session):
+        """回归：明细查询没有 tables_json 时，应从 fields.table_name 确定主表。"""
+        from app.graph.nodes import dsl_compiler_node
+
+        structured = {
+            **self._FIELDS_STRUCTURED,
+            "tables_json": {},
+        }
+        state = {
+            "dsl": {
+                "metrics": [],
+                "fields": [
+                    {"name": "person_name", "asset_type": "field", "asset_id": 1},
+                    {"name": "dept_name", "asset_type": "field", "asset_id": 3},
+                ],
+            },
+            "schema_context": "【语义层】",
+            "schema_structured": structured,
+        }
+
+        result = dsl_compiler_node(db_session)(state)
+
+        assert result["error"] is None
+        sql = result["sql"]
+        assert "FROM" in sql
+        assert "eas_personofile" in sql
+        assert "person_name" in sql
+        assert "dept_name" in sql
+
     def test_validate_allows_empty_metrics_with_fields(self):
         """T-018：validate 节点允许 metrics 为空但 fields 非空的 DSL 通过"""
         from app.graph.nodes import dsl_validate_node
@@ -2004,53 +2060,17 @@ class TestWorkflowRouting:
         assert _lead_agent_router({"entry_route": "interpret_result"}) == "end"
 
     def test_lead_agent_router_analysis_blueprint(self):
-        """LeadAgent 入口路由：analysis_blueprint 进入分析蓝图执行。"""
+        """LeadAgent 入口路由：analysis_blueprint 已在 chat 层处理（Phase 5），图层直接 end。"""
         from app.graph.workflow import _lead_agent_router
 
-        assert (
-            _lead_agent_router({"entry_route": "analysis_blueprint"})
-            == "analysis_blueprint_execute"
-        )
+        assert _lead_agent_router({"entry_route": "analysis_blueprint"}) == "end"
 
     def test_lead_agent_router_default(self):
-        """LeadAgent 入口路由：默认进 clarification_resolution（query_graph 路径）。"""
+        """LeadAgent 入口路由：默认进 schema_recall（Phase 4: term 澄清由 chat 层处理）。"""
         from app.graph.workflow import _lead_agent_router
 
-        assert _lead_agent_router({"entry_route": "query_graph"}) == "clarification_resolution"
-
-    def test_clarification_resolution_router_resolved(self):
-        """澄清回复解析：resolved 进 schema_recall。"""
-        from app.graph.workflow import _clarification_resolution_router
-
-        assert (
-            _clarification_resolution_router(
-                {"clarification_resolution_result": {"status": "resolved"}}
-            )
-            == "schema_recall"
-        )
-
-    def test_analysis_blueprint_execution_router_success(self):
-        """蓝图执行成功后生成报告。"""
-        from app.graph.workflow import _analysis_blueprint_execution_router
-
-        assert _analysis_blueprint_execution_router({"sql_result": {"rows": []}}) == "report"
-
-    def test_analysis_blueprint_execution_router_failed(self):
-        """蓝图执行失败后直接结束。"""
-        from app.graph.workflow import _analysis_blueprint_execution_router
-
-        assert _analysis_blueprint_execution_router({"sql_result": None}) == "end"
-
-    def test_analysis_blueprint_execution_router_semantic_plan(self):
-        """手动语义蓝图执行后回到 QueryGraph。"""
-        from app.graph.workflow import _analysis_blueprint_execution_router
-
-        assert (
-            _analysis_blueprint_execution_router(
-                {"generation_mode": "analysis_blueprint_semantic", "sql_result": None}
-            )
-            == "schema_recall"
-        )
+        assert _lead_agent_router({"entry_route": "query_graph"}) == "schema_recall"
+        assert _lead_agent_router({"entry_route": "interpret_result"}) == "end"
 
     def test_dsl_validation_router_pass(self):
         """DSL 校验通过 → 编译"""
@@ -2625,6 +2645,94 @@ class TestChatStreamEvents:
         assert trace_index.message_id == events[-1]["message_id"]
         mock_wf.assert_not_called()
 
+    def test_chat_stream_pending_term_resolution_preempts_generic_clarify(
+        self, db_session, sample_dataset
+    ):
+        """pending 术语澄清回复必须先解析，不能被入口路由的普通 clarify 早退吞掉。"""
+        conv, pending = TestLangGraphNodes()._create_pending_term_clarification(
+            db_session,
+            sample_dataset,
+        )
+
+        def fake_route_query_intent(*args, **kwargs):
+            return {
+                "intent": "query",
+                "entities": {},
+                "entry_intent": "clarification",
+                "entry_route": "clarify",
+                "entry_reason": "短句或指代不清，无法可靠判断查询目标。",
+                "answer": "这个问题缺少明确对象。",
+                "route_payload": {"kind": "clarification", "missing": ["query_target"]},
+                "blueprint_id": None,
+                "blueprint_match": None,
+                "knowledge_term_id": None,
+            }
+
+        with patch("app.api.chat.route_query_intent", fake_route_query_intent), patch(
+            "app.api.chat.build_workflow"
+        ) as mock_wf:
+            events = _collect_stream_events(
+                {
+                    "question": "都不是",
+                    "conversation_id": conv.id,
+                    "dataset_id": sample_dataset.id,
+                },
+                db_session,
+            )
+
+        final = events[-1]
+        assert final["type"] == "final"
+        assert final["entry_route"] == "clarify"
+        assert final["route_payload"]["kind"] == "term_conflict_clarification"
+        assert "GMV" in final["answer"]
+        db_session.refresh(pending)
+        assert pending.status == "pending"
+        trace_index = db_session.query(models.ObservabilityTraceIndex).one()
+        assert trace_index.metadata_json["route_payload"]["kind"] == "term_conflict_clarification"
+        mock_wf.assert_not_called()
+
+    def test_chat_stream_direct_answer_early_return_writes_trace_index(
+        self, db_session, sample_dataset
+    ):
+        """入口路由早退也必须写 trace output、TraceIndex 和 final observability metadata。"""
+
+        def fake_route_query_intent(*args, **kwargs):
+            return {
+                "intent": "chitchat",
+                "entities": {},
+                "entry_intent": "chitchat",
+                "entry_route": "direct_answer",
+                "entry_reason": "粗粒度意图识别为闲聊，直接返回回答。",
+                "answer": "你好！",
+                "route_payload": {"kind": "direct_answer"},
+                "blueprint_id": None,
+                "blueprint_match": None,
+                "knowledge_term_id": None,
+            }
+
+        with patch("app.api.chat.route_query_intent", fake_route_query_intent), patch(
+            "app.api.chat.build_workflow"
+        ) as mock_wf:
+            events = _collect_stream_events(
+                {"question": "最近30日GMV趋势如何", "dataset_id": sample_dataset.id},
+                db_session,
+            )
+
+        final = events[-1]
+        assert final["type"] == "final"
+        assert final["entry_route"] == "direct_answer"
+        assert final["langfuse_trace_id"]
+        assert (
+            final["response_metadata"]["langfuse"]["trace_id"]
+            == final["langfuse_trace_id"]
+        )
+        assert final["response_metadata"]["observability"]
+        trace_index = db_session.query(models.ObservabilityTraceIndex).one()
+        assert trace_index.status == "success"
+        assert trace_index.entry_route == "direct_answer"
+        assert trace_index.message_id == final["message_id"]
+        mock_wf.assert_not_called()
+
 
 class TestSchemaFormatter:
     """SchemaFormatter 紧凑序列化工具单测。"""
@@ -2679,3 +2787,19 @@ class TestSchemaFormatter:
         result = format_fields_compact(fields)
         assert "order_amount" in result
         assert "[M,SUM]" in result
+
+    def test_lead_agent_router_analysis_blueprint_phase5_end(self):
+        """Phase 5: analysis_blueprint 已在 chat 层处理完，入口路由直接 end。"""
+        from app.graph.workflow import _lead_agent_router
+
+        # 蓝图成功（executed）/ 失败（error）走 chat 早退，不进 graph
+        assert _lead_agent_router({"entry_route": "analysis_blueprint"}) == "end"
+
+    def test_lead_agent_router_analysis_blueprint_semantic_legacy(self):
+        """Phase 5 兼容: 旧值 analysis_blueprint_semantic_execute → schema_recall。"""
+        from app.graph.workflow import _lead_agent_router
+
+        assert (
+            _lead_agent_router({"entry_route": "analysis_blueprint_semantic_execute"})
+            == "schema_recall"
+        )
