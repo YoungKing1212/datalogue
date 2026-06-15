@@ -55,6 +55,7 @@ from app.services.conversation_store import (
     pending_clarification_from_final_payload,
     session_key,
 )
+from app.services.message_gateway import classify_turn_event
 from app.utils.think import (
     filter_think_stream_chunk,
     flush_think_stream_state,
@@ -145,6 +146,7 @@ _STATE_OUTPUT_KEYS = {
     "generation_mode",
     "should_retry",
     "token_usage",
+    "turn_event",
 }
 
 TERM_CLARIFICATION_TTL_MINUTES = 30
@@ -657,6 +659,124 @@ def _route_block_answer(route_decision: dict) -> str:
     return "当前没有可用于自动路由的 current SubAgent Manifest，请先选择数据集或发布 Manifest 后再提问。"
 
 
+def _coerce_int(value: object) -> int | None:
+    """把会话状态中的 dataset_id 兼容转成 int，无法转换时返回 None。"""
+
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_dataset_by_name(db: Session, dataset_name: str) -> models.SemanticDataset | None:
+    """按展示名称查找数据集，供 Message Gateway 的选择事件使用。"""
+
+    name = (dataset_name or "").strip()
+    if not name:
+        return None
+    return (
+        db.query(models.SemanticDataset)
+        .filter(models.SemanticDataset.name == name)
+        .order_by(models.SemanticDataset.id.asc())
+        .first()
+    )
+
+
+def _has_last_success_task(multiturn_context: dict | None) -> bool:
+    """Task 1 最小判断：已有任意 SubAgent 胶囊即认为可承接上一轮成功查询。"""
+
+    context = multiturn_context or {}
+    return bool(context.get("capsule_metas"))
+
+
+def _gateway_lead_context(
+    *,
+    payload: schemas.ChatRequest,
+    route_decision: dict,
+    multiturn_context: dict | None,
+) -> dict:
+    """构造早退分支需要的最小 LeadAgent 上下文，避免触发 LeadAgent 路由。"""
+
+    return {
+        "route_decision": route_decision,
+        "schema_status": {},
+        "time_context": {},
+        "thread_context": multiturn_context or {},
+        "clarification": None,
+        "audit_trace": [],
+        "tool_policy": {},
+        "original_question": payload.question,
+        "resolved_question": payload.question,
+        "selected_skills": [],
+        "planned_tool_calls": [],
+        "executed_tool_calls": [],
+        "system_inferred_tool_calls": [],
+        "progressive_disclosure": None,
+        "disclosed_tools": [],
+        "skill_selection_reasoning_summary": None,
+        "tool_planning_reasoning_summary": None,
+        "policy_violations": [],
+        "planner_fallback": None,
+        "fallback_reason": None,
+        "planner_reasoning_summary": None,
+        "should_continue": False,
+    }
+
+
+def _gateway_route_decision(
+    *,
+    turn_event: dict,
+    dataset: models.SemanticDataset | None,
+    effective_dataset_id: int | None,
+) -> dict:
+    """把 Message Gateway 事件映射到现有 route_decision 结构。"""
+
+    event_type = turn_event.get("event_type")
+    if event_type == "dataset_select" and dataset is not None:
+        return {
+            "decision": "selected",
+            "dataset_id": int(dataset.id),
+            "dataset_name": dataset.name,
+            "score": 1.0,
+            "reason": "message_gateway_dataset_select",
+        }
+    return {
+        "decision": "blocked",
+        "dataset_id": effective_dataset_id,
+        "dataset_name": turn_event.get("dataset_name"),
+        "score": None,
+        "reason": f"message_gateway_{event_type}",
+    }
+
+
+def _gateway_routing(turn_event: dict, *, dataset_found: bool = True) -> dict:
+    """把 Message Gateway 事件转成 _early_route_return 可复用的 routing。"""
+
+    event_type = str(turn_event.get("event_type") or "message_gateway")
+    route_payload = {
+        "kind": "message_gateway",
+        "event_type": event_type,
+        "turn_event": turn_event,
+    }
+    answer = turn_event.get("answer")
+    entry_route = event_type
+    if event_type == "dataset_select" and not dataset_found:
+        dataset_name = turn_event.get("dataset_name") or "指定数据集"
+        answer = f"没有找到数据集「{dataset_name}」，请重新选择可用数据集。"
+        entry_route = "clarify"
+        route_payload["dataset_lookup"] = "not_found"
+    return {
+        "entry_intent": "message_gateway",
+        "entry_route": entry_route,
+        "entry_reason": f"message_gateway_{event_type}",
+        "answer": answer or "请告诉我要查询的数据、筛选条件或分析目标。",
+        "route_payload": route_payload,
+        "turn_event": turn_event,
+    }
+
+
 def _save_route_block_message(
     db: Session,
     *,
@@ -826,6 +946,90 @@ async def _stream_chat_singleturn(
         },
     )
 
+    active_dataset_id = (
+        _coerce_int((multiturn_context or {}).get("active_dataset_id"))
+        or effective_dataset_id
+    )
+    turn_event = classify_turn_event(
+        payload.question,
+        active_dataset_id=active_dataset_id,
+        has_pending_clarification=bool((multiturn_context or {}).get("pending_clarification")),
+        has_last_success_task=_has_last_success_task(multiturn_context),
+    )
+    tracer.start_span(
+        trace_context,
+        node="message-gateway",
+        display_name="message-gateway",
+        input_payload={
+            "question": payload.question,
+            "active_dataset_id": active_dataset_id,
+            "payload_dataset_id": payload.dataset_id,
+        },
+        trace_tags=["gateway"],
+    )
+    tracer.end_span(
+        trace_context,
+        node="message-gateway",
+        output_payload=turn_event,
+    )
+    if turn_event.get("event_type") == "dataset_select":
+        selected_dataset = _find_dataset_by_name(db, str(turn_event.get("dataset_name") or ""))
+        if selected_dataset is not None:
+            effective_dataset_id = int(selected_dataset.id)
+            if conv.dataset_id != effective_dataset_id:
+                conv.dataset_id = effective_dataset_id
+                db.commit()
+                db.refresh(conv)
+        route_decision = _gateway_route_decision(
+            turn_event=turn_event,
+            dataset=selected_dataset,
+            effective_dataset_id=effective_dataset_id,
+        )
+        lead_agent_context = _gateway_lead_context(
+            payload=payload,
+            route_decision=route_decision,
+            multiturn_context=multiturn_context,
+        )
+        async for sse_event in _early_route_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=effective_dataset_id,
+            lead_agent_context=lead_agent_context,
+            route_decision=route_decision,
+            trace_context=trace_context,
+            defer_trace_close=defer_trace_close,
+            obs_context_manager=obs_context_manager,
+            routing=_gateway_routing(turn_event, dataset_found=selected_dataset is not None),
+        ):
+            yield sse_event
+        return
+    if turn_event.get("event_type") == "clarify":
+        route_decision = _gateway_route_decision(
+            turn_event=turn_event,
+            dataset=None,
+            effective_dataset_id=effective_dataset_id,
+        )
+        lead_agent_context = _gateway_lead_context(
+            payload=payload,
+            route_decision=route_decision,
+            multiturn_context=multiturn_context,
+        )
+        async for sse_event in _early_route_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=effective_dataset_id,
+            lead_agent_context=lead_agent_context,
+            route_decision=route_decision,
+            trace_context=trace_context,
+            defer_trace_close=defer_trace_close,
+            obs_context_manager=obs_context_manager,
+            routing=_gateway_routing(turn_event),
+        ):
+            yield sse_event
+        return
+
     tracer.start_span(
         trace_context,
         node="lead.routing",
@@ -835,6 +1039,7 @@ async def _stream_chat_singleturn(
             "conversation_id": conv_id,
             "payload_dataset_id": payload.dataset_id,
             "conversation_dataset_id": conv.dataset_id,
+            "turn_event": turn_event,
         },
         trace_tags=["lead"],
     )
@@ -1004,6 +1209,7 @@ async def _stream_chat_singleturn(
         "prior_capsule": prior_capsule,
         "history": history,
         "lead_agent_context": lead_agent_context,
+        "turn_event": turn_event,
         "manifest_version": route_decision.get("manifest_version"),
         "bound_schema_version": route_decision.get("bound_schema_version"),
     }
@@ -1211,6 +1417,7 @@ async def _stream_chat_singleturn(
         "should_retry": False,
         "sql_retry_trace": [],
         "token_usage": None,
+        "turn_event": turn_event,
     }
 
     # 构建并运行工作流
@@ -1597,6 +1804,7 @@ async def _stream_chat_singleturn(
         "prior_capsule_status": final_state.get("prior_capsule_status"),
         "multiturn_context": final_state.get("multiturn_context"),
         "turn_type": final_state.get("turn_type"),
+        "turn_event": final_state.get("turn_event"),
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
         "candidate_assets": final_state.get("candidate_assets"),
@@ -1624,6 +1832,7 @@ async def _stream_chat_singleturn(
         "prior_capsule_status": final_state.get("prior_capsule_status"),
         "multiturn_context": final_state.get("multiturn_context"),
         "turn_type": final_state.get("turn_type"),
+        "turn_event": final_state.get("turn_event"),
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
         "candidate_assets": final_state.get("candidate_assets"),
@@ -1722,6 +1931,7 @@ async def _stream_chat_singleturn(
         "prior_capsule_status": final_state.get("prior_capsule_status"),
         "multiturn_context": final_state.get("multiturn_context"),
         "turn_type": final_state.get("turn_type"),
+        "turn_event": final_state.get("turn_event"),
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
         "candidate_assets": final_state.get("candidate_assets"),
@@ -2011,6 +2221,7 @@ def _early_trace_metadata(
         "route_decision": route_decision,
         "schema_status": lead_agent_context.get("schema_status"),
         "route_payload": final_state.get("route_payload"),
+        "turn_event": final_state.get("turn_event"),
         "response_metadata": response_metadata,
         "prompt_versions": trace_context.prompt_versions,
     }
@@ -2227,6 +2438,7 @@ async def _early_route_return(
         "entry_route": entry_route,
         "entry_reason": routing.get("entry_reason"),
         "route_payload": route_payload,
+        "turn_event": routing.get("turn_event") or route_payload.get("turn_event"),
         "time_context": lead_agent_context.get("time_context"),
         "blueprint_id": routing.get("blueprint_id"),
         "knowledge_term_id": routing.get("knowledge_term_id"),
@@ -2241,6 +2453,7 @@ async def _early_route_return(
         "schema_status": lead_agent_context.get("schema_status"),
         "route_payload": route_payload,
         "routing": routing,
+        "turn_event": final_state.get("turn_event"),
     })
     assistant_message = models.Message(
         conversation_id=conv.id,
@@ -2284,6 +2497,7 @@ async def _early_route_return(
             "schema_status": lead_agent_context.get("schema_status"),
             "clarification": None,
             "route_payload": route_payload,
+            "turn_event": final_state.get("turn_event"),
             "sql_result": None,
             "query_profile": None,
             "explainability": None,

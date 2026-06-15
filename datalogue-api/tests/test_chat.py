@@ -2895,6 +2895,23 @@ class TestChatStreamEvents:
         assert "内部推理" not in visible
         assert "<Thi" not in visible
 
+    def test_dataset_select_does_not_enter_workflow(self, db_session, sample_dataset):
+        """数据集选择事件应在 chat 入口早退，不能进入 LangGraph workflow。"""
+
+        with patch("app.api.chat.build_workflow") as mock_wf:
+            mock_wf.side_effect = AssertionError("dataset_select should not enter workflow")
+
+            events = _collect_stream_events(
+                {"question": f"选择：{sample_dataset.name}", "dataset_id": None},
+                db_session,
+            )
+
+        final = [event for event in events if event.get("type") == "final"][-1]
+
+        assert mock_wf.called is False
+        assert "已选择数据集" in final["answer"]
+        assert final["turn_event"]["event_type"] == "dataset_select"
+
     def test_chat_stream_final_and_message_metadata_include_query_profile(
         self, db_session, sample_dataset
     ):
