@@ -202,6 +202,134 @@ def test_subagent_run_blueprint_reference_marks_context_and_query_graph(monkeypa
     assert captured["kwargs"] == {"version": "v2"}
 
 
+def test_subagent_run_unwraps_node_output_before_merging(monkeypatch, db_session):
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _blueprint_recall_result(),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.plan_query",
+        lambda **kwargs: QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.77,
+        ),
+    )
+
+    class FakeRunner:
+        def __init__(self, graph, db):
+            pass
+
+        async def run(self, request, trace_context, initial_state, **kwargs):
+            yield {
+                "event": "on_chain_end",
+                "metadata": {"langgraph_node": "dsl_generate"},
+                "data": {
+                    "output": {
+                        "dsl_generate": {
+                            "answer": "完成",
+                            "sql": "select 1",
+                        }
+                    }
+                },
+            }
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
+        FakeRunner,
+    )
+
+    events = asyncio.run(
+        _collect(
+            DatasetSubAgent(db=db_session, dataset_id=10),
+            _request(),
+            graph=object(),
+        )
+    )
+
+    final_state = events[-1].payload["final_state"]
+
+    assert final_state["answer"] == "完成"
+    assert final_state["sql"] == "select 1"
+    assert "dsl_generate" not in final_state
+
+
+def test_subagent_run_blueprint_execute_uses_reference_blueprint_id(monkeypatch, db_session):
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _blueprint_recall_result(),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.plan_query",
+        lambda **kwargs: QueryPlan(
+            query_type="blueprint_query",
+            execution_strategy="blueprint_execute",
+            confidence=0.88,
+            reference_assets=[_blueprint_asset(usage="reference")],
+        ),
+    )
+
+    def fake_resolve(self, **kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "executed",
+            "blueprint_id": kwargs["blueprint_id"],
+            "blueprint_name": "个人日报查询",
+            "answer": None,
+            "sql": "select 1",
+            "sql_list": ["select 1"],
+            "sql_result": {"columns": ["value"], "rows": [[1]], "row_count": 1},
+            "error": None,
+            "route_payload": {"kind": "analysis_blueprint", "blueprint_id": kwargs["blueprint_id"]},
+            "should_retry": False,
+            "generation_mode": "analysis_blueprint",
+        }
+
+    monkeypatch.setattr(DatasetSubAgent, "resolve_analysis_blueprint", fake_resolve)
+
+    events = asyncio.run(
+        _collect(
+            DatasetSubAgent(db=db_session, dataset_id=10),
+            _request(),
+            graph=None,
+            initial_state={"question": "查询个人日报"},
+        )
+    )
+
+    final_state = events[-1].payload["final_state"]
+
+    assert captured["blueprint_id"] == 7
+    assert final_state["blueprint_id"] == 7
+    assert final_state["sql"] == "select 1"
+
+
+def test_subagent_run_query_graph_requires_graph(monkeypatch, db_session):
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _empty_recall_result(),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.plan_query",
+        lambda **kwargs: QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.7,
+        ),
+    )
+
+    try:
+        asyncio.run(_collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=None))
+    except ValueError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("query_graph without graph should raise ValueError")
+
+    assert "query_graph" in message
+    assert "dataset_id=10" in message
+
+
 def test_subagent_run_reject_result_is_not_error(monkeypatch, db_session):
     monkeypatch.setattr(
         "app.services.dataset_subagent.recall_candidate_assets",

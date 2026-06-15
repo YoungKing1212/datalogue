@@ -698,10 +698,114 @@ def _dsa_int_or_none(value: Any) -> int | None:
 
 
 def _dsa_plan_blueprint_id(query_plan: QueryPlan) -> Any:
-    for asset in query_plan.selected_assets:
-        if asset.asset_type == "blueprint":
-            return asset.asset_id
+    for assets in (query_plan.selected_assets, query_plan.reference_assets):
+        for asset in assets:
+            if asset.asset_type == "blueprint":
+                return asset.asset_id
     return None
+
+
+_DSA_STATE_OUTPUT_KEYS = {
+    "conversation_id",
+    "original_question",
+    "resolved_question",
+    "manifest_version",
+    "bound_schema_version",
+    "time_context",
+    "thread_context",
+    "route_decision",
+    "schema_status",
+    "lead_agent_context",
+    "skip_subagent_report",
+    "report_owner",
+    "subagent_report_skipped",
+    "lead_agent_report",
+    "intent",
+    "entities",
+    "entry_intent",
+    "entry_route",
+    "entry_reason",
+    "blueprint_id",
+    "blueprint_match",
+    "blueprint_context",
+    "knowledge_term_id",
+    "route_payload",
+    "clarification_response",
+    "clarification_resolution_result",
+    "prior_capsule",
+    "prior_capsule_status",
+    "out_capsule",
+    "multiturn_context",
+    "turn_type",
+    "merge_debug",
+    "selected_term_id",
+    "schema_context",
+    "schema_structured",
+    "ddl_context",
+    "query_constraints",
+    "dataset_context_debug",
+    "datasource_context",
+    "term_normalization",
+    "semantic_asset_resolution",
+    "metric_resolution",
+    "candidate_assets",
+    "query_plan",
+    "query_plan_debug",
+    "dataset_prompt_instructions",
+    "dsl",
+    "dsl_valid",
+    "sql",
+    "sql_result",
+    "datasource_dialect",
+    "sql_audit_result",
+    "sql_diagnosis",
+    "sql_retry_trace",
+    "answer",
+    "answer_explanation",
+    "sql_list",
+    "error",
+    "generation_mode",
+    "should_retry",
+    "token_usage",
+}
+
+
+def _dsa_is_state_output(value: dict[str, Any]) -> bool:
+    """判断字典是否像 QueryGraph 节点输出片段。"""
+    return bool(_DSA_STATE_OUTPUT_KEYS.intersection(value.keys()))
+
+
+def _dsa_find_state_output(value: object, lg_node: str = "", depth: int = 0) -> dict[str, Any]:
+    """递归查找 LangGraph/LCEL 事件里的真实 state 输出。"""
+    if depth > 5 or not isinstance(value, dict):
+        return {}
+
+    if lg_node and isinstance(value.get(lg_node), dict):
+        nested = _dsa_find_state_output(value[lg_node], lg_node, depth + 1)
+        return nested or value[lg_node]
+
+    if _dsa_is_state_output(value):
+        return value
+
+    for key in ("output", "__end__", "state", "result"):
+        nested = _dsa_find_state_output(value.get(key), lg_node, depth + 1)
+        if nested:
+            return nested
+
+    if len(value) == 1:
+        nested = _dsa_find_state_output(next(iter(value.values())), lg_node, depth + 1)
+        if nested:
+            return nested
+
+    return {}
+
+
+def _dsa_extract_graph_event_output(event: dict[str, Any]) -> dict[str, Any]:
+    """从 runner 事件中解出可合并的 QueryGraph state 片段。"""
+    metadata = event.get("metadata") or {}
+    lg_node = metadata.get("langgraph_node") or ""
+    output = (event.get("data") or {}).get("output") or {}
+    return _dsa_find_state_output(output, lg_node)
 
 
 def _dsa_build_run_routing(
@@ -893,6 +997,11 @@ class DatasetSubAgent:
             yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
             return
 
+        if graph is None:
+            raise ValueError(
+                f"DatasetSubAgent {strategy} strategy requires graph: dataset_id={request.dataset_id}"
+            )
+
         query_graph_state = _dsa_build_query_graph_state(
             state=state,
             request=request,
@@ -910,8 +1019,8 @@ class DatasetSubAgent:
             query_graph_state,
             **(graph_kwargs or {}),
         ):
-            output = ((event.get("data") or {}).get("output") or {})
-            if isinstance(output, dict):
+            output = _dsa_extract_graph_event_output(event)
+            if output:
                 final_state.update(output)
             yield SubAgentEvent(event_type="graph_event", payload={"event": event})
 
