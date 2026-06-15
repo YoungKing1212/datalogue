@@ -478,6 +478,8 @@ def _format_query_plan_for_prompt(query_plan: dict | None) -> str:
         lines.append(f"规划说明: {summary}")
     if execution_strategy == "blueprint_as_reference":
         lines.append("硬性要求: 命中的蓝图只能作为参考证据，不能原样执行蓝图 SQL。")
+    if len(lines) == 1:
+        return ""
     return "\n".join(lines)
 
 
@@ -489,7 +491,8 @@ def _append_query_planning_context(
     """在 DSL prompt 末尾追加查询规划和蓝图上下文，避免改变原有提示词顺序。"""
     if query_plan_prompt:
         human_text += f"\n\n{query_plan_prompt}"
-    if blueprint_context:
+    blueprint_context = (blueprint_context or "").strip()
+    if blueprint_context and blueprint_context not in human_text:
         human_text += f"\n\n{blueprint_context}"
     return human_text
 
