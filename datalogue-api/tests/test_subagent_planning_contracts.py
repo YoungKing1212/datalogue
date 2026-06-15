@@ -213,6 +213,25 @@ def test_query_plan_serializes_selected_reference_and_rejected_assets():
             "summary": "识别为明细查询",
             "why_not_blueprint_execute": "用户要求查询10条日志，不是个人日报固定分析。",
         },
+        decision_factors=[
+            {
+                "code": "detail_query_signal",
+                "message": "问题包含明细查询信号",
+                "evidence": ["10条", "日志"],
+            }
+        ],
+        planner_warnings=[
+            {
+                "code": "blueprint_reference_only",
+                "message": "蓝图只能作为参考，不能强执行。",
+            }
+        ],
+        governance_suggestions=[
+            {
+                "type": "asset_quality",
+                "message": "可补充用户日志表的业务字段说明。",
+            }
+        ],
     )
 
     payload = plan.to_dict()
@@ -221,6 +240,46 @@ def test_query_plan_serializes_selected_reference_and_rejected_assets():
     assert payload["selected_assets"][0]["asset_type"] == "field"
     assert payload["reference_assets"][0]["asset_type"] == "blueprint"
     assert payload["rejected_assets"][0]["reject_reason"] == "用户要求明细列表，不需要聚合指标"
+    assert payload["decision_factors"][0]["code"] == "detail_query_signal"
+    assert payload["planner_warnings"][0]["code"] == "blueprint_reference_only"
+    assert payload["governance_suggestions"][0]["type"] == "asset_quality"
+
+
+def test_normalize_query_plan_accepts_audit_fields():
+    raw = {
+        "query_type": "detail_query",
+        "execution_strategy": "query_graph",
+        "confidence": 0.81,
+        "planner_source": "llm",
+        "explanation": {"summary": "使用字段和表查询明细。"},
+        "decision_factors": [{"code": "field_match", "message": "命中字段"}],
+        "planner_warnings": [{"code": "low_blueprint_fit", "message": "蓝图不适用"}],
+        "governance_suggestions": [{"type": "term", "message": "补充失败日志术语"}],
+    }
+
+    plan = normalize_query_plan(raw)
+
+    assert plan.decision_factors == [{"code": "field_match", "message": "命中字段"}]
+    assert plan.planner_warnings == [{"code": "low_blueprint_fit", "message": "蓝图不适用"}]
+    assert plan.governance_suggestions == [{"type": "term", "message": "补充失败日志术语"}]
+
+
+def test_normalize_query_plan_rejects_malformed_audit_fields():
+    raw = {
+        "query_type": "detail_query",
+        "execution_strategy": "query_graph",
+        "confidence": 0.81,
+        "planner_source": "llm",
+        "explanation": {"summary": "使用字段和表查询明细。"},
+        "decision_factors": ["field_match"],
+    }
+
+    try:
+        normalize_query_plan(raw)
+    except QueryPlanValidationError as exc:
+        assert "decision_factors" in str(exc)
+    else:
+        raise AssertionError("audit fields must be list[object]")
 
 
 def test_subagent_event_type_cannot_be_overridden_by_payload():

@@ -1259,6 +1259,9 @@ async def _stream_chat_singleturn(
                         final_state["query_plan_debug"] = {
                             "planner_source": query_plan.get("planner_source"),
                             "fallback_reason": query_plan.get("fallback_reason"),
+                            "decision_factors": query_plan.get("decision_factors") or [],
+                            "planner_warnings": query_plan.get("planner_warnings") or [],
+                            "governance_suggestions": query_plan.get("governance_suggestions") or [],
                         }
                 step_traces.append(sse_payload)
                 yield _sse_data(sse_payload)
@@ -1271,6 +1274,9 @@ async def _stream_chat_singleturn(
                     final_state["query_plan_debug"] = {
                         "planner_source": query_plan.get("planner_source"),
                         "fallback_reason": query_plan.get("fallback_reason"),
+                        "decision_factors": query_plan.get("decision_factors") or [],
+                        "planner_warnings": query_plan.get("planner_warnings") or [],
+                        "governance_suggestions": query_plan.get("governance_suggestions") or [],
                     }
                 continue
 

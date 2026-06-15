@@ -128,6 +128,9 @@ class QueryPlan:
     fallback_reason: str | None = None
     planner_source: str = "rules"
     explanation: dict[str, Any] = field(default_factory=dict)
+    decision_factors: list[dict[str, Any]] = field(default_factory=list)
+    planner_warnings: list[dict[str, Any]] = field(default_factory=list)
+    governance_suggestions: list[dict[str, Any]] = field(default_factory=list)
     debug: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -152,6 +155,9 @@ class QueryPlan:
                 "fallback_reason": self.fallback_reason,
                 "planner_source": self.planner_source,
                 "explanation": self.explanation,
+                "decision_factors": self.decision_factors,
+                "planner_warnings": self.planner_warnings,
+                "governance_suggestions": self.governance_suggestions,
                 "debug": self.debug,
             }
         )
@@ -235,6 +241,19 @@ def _required_inputs_from_payload(items: Any) -> list[dict[str, Any]]:
     raise QueryPlanValidationError("required_inputs must be list[object] or object map")
 
 
+def _dict_list_from_payload(items: Any, field_name: str) -> list[dict[str, Any]]:
+    if items in (None, "", []):
+        return []
+    if not isinstance(items, list):
+        raise QueryPlanValidationError(f"{field_name} must be list[object]")
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise QueryPlanValidationError(f"{field_name} item must be object")
+        normalized.append(dict(item))
+    return normalized
+
+
 def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
     query_type = str(payload.get("query_type") or "")
     execution_strategy = str(payload.get("execution_strategy") or "")
@@ -257,5 +276,17 @@ def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
         fallback_reason=payload.get("fallback_reason"),
         planner_source=planner_source,
         explanation=dict(payload.get("explanation") or {}),
+        decision_factors=_dict_list_from_payload(
+            payload.get("decision_factors"),
+            "decision_factors",
+        ),
+        planner_warnings=_dict_list_from_payload(
+            payload.get("planner_warnings"),
+            "planner_warnings",
+        ),
+        governance_suggestions=_dict_list_from_payload(
+            payload.get("governance_suggestions"),
+            "governance_suggestions",
+        ),
         debug=dict(payload.get("debug") or {}),
     )

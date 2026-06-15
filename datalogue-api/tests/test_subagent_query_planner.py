@@ -57,14 +57,14 @@ def _table(name="user_logs"):
     }
 
 
-def _blueprint(parameters=None):
+def _blueprint(parameters=None, asset_id=7, name="个人日报查询", confidence=0.91):
     return CandidateAsset(
         asset_type="blueprint",
-        asset_id=7,
-        name="个人日报查询",
-        display_name="个人日报查询",
+        asset_id=asset_id,
+        name=name,
+        display_name=name,
         source="analysis_blueprint",
-        confidence=0.91,
+        confidence=confidence,
         metadata={"parameters": parameters or []},
     )
 
@@ -93,6 +93,48 @@ def test_fallback_blueprint_hit_detail_query_becomes_reference():
     assert plan.reference_assets[0].name == "个人日报查询"
     assert plan.reference_assets[0].usage == "reference"
     assert "不是固定蓝图分析" in plan.explanation["why_not_blueprint_execute"]
+    assert {factor["code"] for factor in plan.decision_factors} == {
+        "detail_query_signal",
+        "field_table_coverage",
+        "blueprint_reference",
+    }
+    assert plan.planner_warnings[0]["code"] == "blueprint_reference_only"
+
+
+def test_fallback_compares_multiple_blueprint_candidates():
+    plan = build_fallback_query_plan(
+        "查询张三昨天的个人日报",
+        [
+            _blueprint(asset_id=1, name="个人日报查询", confidence=0.92),
+            _blueprint(asset_id=2, name="团队日报汇总", confidence=0.71),
+        ],
+        routing={"entities": {"user_name": "张三", "start_date": "2026-06-14"}},
+    )
+
+    assert plan.execution_strategy == "blueprint_execute"
+    assert plan.selected_assets[0].asset_id == 1
+    assert plan.rejected_assets[0].asset_id == 2
+    assert "更匹配" in plan.rejected_assets[0].reject_reason
+    assert any(
+        factor["code"] == "blueprint_candidate_comparison"
+        for factor in plan.decision_factors
+    )
+
+
+def test_fallback_does_not_execute_unmatched_blueprint_candidate():
+    plan = build_fallback_query_plan(
+        "生成销售报告",
+        [
+            _blueprint(asset_id=1, name="个人日报查询", confidence=0.0),
+            _field("amount"),
+            _table("sales_orders"),
+        ],
+    )
+
+    assert plan.execution_strategy != "blueprint_execute"
+    assert not any(asset.asset_type == "blueprint" for asset in plan.selected_assets)
+    rejected_blueprint = next(asset for asset in plan.rejected_assets if asset.asset_type == "blueprint")
+    assert "没有有效匹配信号" in rejected_blueprint.reject_reason
 
 
 def test_fallback_blueprint_query_missing_required_input_clarifies():
@@ -168,6 +210,12 @@ def test_plan_query_with_llm_validates_and_returns_llm_plan(monkeypatch, db_sess
         "reference_assets": [_blueprint().to_dict()],
         "planner_source": "llm",
         "explanation": {"summary": "使用字段和表查询明细，蓝图仅作为参考。"},
+        "decision_factors": [
+            {"code": "detail_query_signal", "message": "命中明细查询信号。"}
+        ],
+        "planner_warnings": [
+            {"code": "blueprint_reference_only", "message": "蓝图仅作参考。"}
+        ],
     }
     fake_llm = FakeLLM(json.dumps(llm_payload, ensure_ascii=False))
 
@@ -185,6 +233,8 @@ def test_plan_query_with_llm_validates_and_returns_llm_plan(monkeypatch, db_sess
 
     assert plan.planner_source == "llm"
     assert plan.execution_strategy == "blueprint_as_reference"
+    assert plan.decision_factors[0]["code"] == "detail_query_signal"
+    assert plan.planner_warnings[0]["code"] == "blueprint_reference_only"
 
 
 def test_plan_query_falls_back_when_llm_raises(monkeypatch, db_session):
@@ -203,6 +253,8 @@ def test_plan_query_falls_back_when_llm_raises(monkeypatch, db_session):
     assert plan.planner_source == "fallback"
     assert plan.fallback_reason == "planner down"
     assert plan.execution_strategy == "query_graph"
+    assert plan.planner_warnings[0]["code"] == "planner_fallback"
+    assert plan.decision_factors
 
 
 def test_plan_query_falls_back_when_llm_raises_openai_connection_error(
@@ -224,6 +276,14 @@ def test_plan_query_falls_back_when_llm_raises_openai_connection_error(
     assert plan.planner_source == "fallback"
     assert plan.fallback_reason == "api connection failed"
     assert plan.execution_strategy == "query_graph"
+
+
+def test_fallback_reject_generates_governance_suggestions():
+    plan = build_fallback_query_plan("这个数据集支持什么天气预报")
+
+    assert plan.execution_strategy == "reject"
+    assert plan.decision_factors[0]["code"] == "insufficient_assets"
+    assert plan.governance_suggestions
 
 
 def test_plan_query_truncates_long_fallback_reason(monkeypatch, db_session):

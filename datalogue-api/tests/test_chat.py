@@ -2312,9 +2312,11 @@ class TestChatStreamEvents:
             "planner_source": "llm",
             "fallback_reason": None,
             "explanation": {"summary": "蓝图完全适用"},
+            "decision_factors": [{"code": "blueprint_matched", "message": "命中蓝图"}],
+            "planner_warnings": [{"code": "review", "message": "建议复核参数"}],
+            "governance_suggestions": [{"type": "blueprint", "message": "补充蓝图样例"}],
         }
         candidate_assets = {"summary": {"blueprint_count": 1}}
-        query_plan_debug = {"planner_source": "llm", "fallback_reason": None}
 
         class FakeSubAgent:
             def __init__(self, db, dataset_id):
@@ -2365,7 +2367,6 @@ class TestChatStreamEvents:
                             },
                             "query_plan": query_plan,
                             "candidate_assets": candidate_assets,
-                            "query_plan_debug": query_plan_debug,
                             "error": None,
                         }
                     },
@@ -2432,7 +2433,13 @@ class TestChatStreamEvents:
         assert final["answer"] == "蓝图执行完成"
         assert final["query_plan"]["execution_strategy"] == "blueprint_execute"
         assert final["candidate_assets"]["summary"]["blueprint_count"] == 1
-        assert final["query_plan_debug"] == query_plan_debug
+        assert final["query_plan_debug"] == {
+            "planner_source": "llm",
+            "fallback_reason": None,
+            "decision_factors": query_plan["decision_factors"],
+            "planner_warnings": query_plan["planner_warnings"],
+            "governance_suggestions": query_plan["governance_suggestions"],
+        }
 
     def test_sse_data_serializes_datetime_and_decimal(self):
         """SSE payload 应兼容 datetime 和 Decimal 等查询结果值。"""

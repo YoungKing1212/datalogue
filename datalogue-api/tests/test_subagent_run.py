@@ -305,6 +305,86 @@ def test_subagent_run_blueprint_execute_uses_reference_blueprint_id(monkeypatch,
     assert final_state["sql"] == "select 1"
 
 
+def test_subagent_run_blueprint_execute_merges_routing_params(monkeypatch, db_session):
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _blueprint_recall_result(),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.plan_query",
+        lambda **kwargs: QueryPlan(
+            query_type="blueprint_query",
+            execution_strategy="blueprint_execute",
+            confidence=0.9,
+            reference_assets=[_blueprint_asset(usage="reference")],
+        ),
+    )
+
+    def fake_resolve(self, **kwargs):
+        captured.update(kwargs)
+        input_params = kwargs.get("input_params") or {}
+        missing = [key for key in ("user_name", "start_date") if not input_params.get(key)]
+        if missing:
+            return {
+                "status": "clarification",
+                "blueprint_id": kwargs["blueprint_id"],
+                "blueprint_name": "个人日报查询",
+                "answer": "缺少参数",
+                "sql": None,
+                "sql_list": [],
+                "sql_result": None,
+                "error": "缺少参数",
+                "route_payload": {"kind": "clarification", "missing": missing},
+                "should_retry": False,
+                "generation_mode": None,
+            }
+        return {
+            "status": "executed",
+            "blueprint_id": kwargs["blueprint_id"],
+            "blueprint_name": "个人日报查询",
+            "answer": None,
+            "sql": "select 1",
+            "sql_list": ["select 1"],
+            "sql_result": {"columns": ["value"], "rows": [[1]], "row_count": 1},
+            "error": None,
+            "route_payload": {
+                "kind": "analysis_blueprint",
+                "blueprint_id": kwargs["blueprint_id"],
+                "params": input_params,
+            },
+            "should_retry": False,
+            "generation_mode": "analysis_blueprint",
+        }
+
+    monkeypatch.setattr(DatasetSubAgent, "resolve_analysis_blueprint", fake_resolve)
+
+    events = asyncio.run(
+        _collect(
+            DatasetSubAgent(db=db_session, dataset_id=10),
+            _request(),
+            graph=None,
+            initial_state={
+                "question": "查询 KenYang 2026-06-01 的个人日报",
+                "entities": {"user_name": "KenYang", "start_date": "2026-06-01"},
+                "route_payload": {
+                    "kind": "analysis_blueprint",
+                    "params": {"user_name": "route-user", "start_date": "2026-01-01"},
+                },
+            },
+        )
+    )
+
+    final_state = events[-1].payload["final_state"]
+
+    assert final_state["blueprint_outcome_status"] == "executed"
+    assert final_state["route_payload"]["params"]["user_name"] == "KenYang"
+    assert final_state["route_payload"]["params"]["start_date"] == "2026-06-01"
+    assert captured["input_params"]["user_name"] == "KenYang"
+    assert captured["input_params"]["start_date"] == "2026-06-01"
+
+
 def test_subagent_run_query_graph_requires_graph(monkeypatch, db_session):
     monkeypatch.setattr(
         "app.services.dataset_subagent.recall_candidate_assets",

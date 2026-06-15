@@ -34,6 +34,27 @@ const NODE_DISPLAY = {
   report_generator: '报告生成',
 };
 
+const QUERY_TYPE_LABELS = {
+  detail_query: '明细查询',
+  metric_query: '指标查询',
+  blueprint_query: '蓝图查询',
+  knowledge_qa: '知识问答',
+  ambiguous: '需要澄清',
+  unsupported: '暂不支持',
+};
+
+const EXECUTION_STRATEGY_LABELS = {
+  blueprint_execute: '直接执行蓝图',
+  blueprint_as_reference: '参考蓝图生成查询',
+  query_graph: '普通查询生成',
+  clarify: '需要补充信息',
+  reject: '无法处理',
+};
+
+function enumLabel(labels, value) {
+  return value ? labels[value] || value : null;
+}
+
 function summarizeCandidateAssets(candidateAssets) {
   const summary = candidateAssets?.summary;
   if (!summary || typeof summary !== 'object') return '';
@@ -72,10 +93,22 @@ function summarizeCandidateAssets(candidateAssets) {
 function summarizeQueryPlan(queryPlan) {
   if (!queryPlan || typeof queryPlan !== 'object') return '';
   const explanation = queryPlan.explanation || {};
+  const decisionFactors = Array.isArray(queryPlan.decision_factors)
+    ? queryPlan.decision_factors
+    : [];
+  const plannerWarnings = Array.isArray(queryPlan.planner_warnings)
+    ? queryPlan.planner_warnings
+    : [];
+  const firstFactor = decisionFactors.find((item) => item?.message)?.message;
+  const firstWarning = plannerWarnings.find((item) => item?.message)?.message;
   return [
-    queryPlan.query_type ? `类型 ${queryPlan.query_type}` : null,
-    queryPlan.execution_strategy ? `策略 ${queryPlan.execution_strategy}` : null,
+    queryPlan.query_type ? `类型 ${enumLabel(QUERY_TYPE_LABELS, queryPlan.query_type)}` : null,
+    queryPlan.execution_strategy
+      ? `策略 ${enumLabel(EXECUTION_STRATEGY_LABELS, queryPlan.execution_strategy)}`
+      : null,
     explanation.summary || null,
+    firstFactor ? `依据 ${firstFactor}` : null,
+    firstWarning ? `提示 ${firstWarning}` : null,
   ]
     .filter(Boolean)
     .join(' · ');

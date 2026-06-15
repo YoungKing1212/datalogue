@@ -830,6 +830,40 @@ def _dsa_build_run_routing(
     return {key: value for key, value in routing.items() if value not in (None, "", [], {})}
 
 
+def _dsa_clean_blueprint_input_params(value: Any) -> dict[str, Any]:
+    """提取可安全传给蓝图执行器的简单参数值。"""
+    if not isinstance(value, dict):
+        return {}
+
+    params: dict[str, Any] = {}
+    for key, param_value in value.items():
+        if not isinstance(key, str) or not key:
+            continue
+        if param_value in (None, "", [], {}):
+            continue
+        if isinstance(param_value, str | int | float | bool):
+            params[key] = param_value
+    return params
+
+
+def _dsa_route_payload_blueprint_input_params(route_payload: Any) -> dict[str, Any]:
+    """从 route_payload 中提取规划层已确认的蓝图参数。"""
+    if not isinstance(route_payload, dict):
+        return {}
+
+    params: dict[str, Any] = {}
+    for field in ("params", "input_params", "parameters"):
+        params.update(_dsa_clean_blueprint_input_params(route_payload.get(field)))
+    return params
+
+
+def _dsa_build_blueprint_execute_input_params(routing: dict[str, Any]) -> dict[str, Any]:
+    """合并蓝图执行参数：routing.entities 优先于 route_payload，time_context 在解析层兜底。"""
+    params = _dsa_route_payload_blueprint_input_params(routing.get("route_payload"))
+    params.update(_dsa_clean_blueprint_input_params(routing.get("entities")))
+    return params
+
+
 def _dsa_append_text(existing: Any, addition: str) -> str:
     existing_text = str(existing or "").strip()
     addition_text = str(addition or "").strip()
@@ -884,6 +918,9 @@ def _dsa_build_query_graph_state(
                 "confidence": query_plan.confidence,
                 "fallback_reason": query_plan.fallback_reason,
                 "explanation": query_plan.explanation,
+                "decision_factors": query_plan.decision_factors,
+                "planner_warnings": query_plan.planner_warnings,
+                "governance_suggestions": query_plan.governance_suggestions,
                 "debug": query_plan.debug,
             },
         }
@@ -1046,6 +1083,7 @@ class DatasetSubAgent:
             original_question=routing.get("original_question") or question,
             resolved_question=routing.get("resolved_question") or question,
             time_context=routing.get("time_context"),
+            input_params=_dsa_build_blueprint_execute_input_params(routing),
             trace_context=trace_context,
         )
         return {
@@ -1079,6 +1117,7 @@ class DatasetSubAgent:
         original_question: str | None = None,
         resolved_question: str | None = None,
         time_context: dict | None = None,
+        input_params: dict[str, Any] | None = None,
         tracer: Any | None = None,
         trace_context: Any | None = None,
     ) -> dict[str, Any]:
@@ -1115,6 +1154,7 @@ class DatasetSubAgent:
                 original_question=original_question,
                 resolved_question=resolved_question,
                 time_context=time_context,
+                input_params=input_params,
             )
             if span is not None:
                 try:
@@ -1150,6 +1190,7 @@ class DatasetSubAgent:
         original_question: str | None,
         resolved_question: str | None,
         time_context: dict | None,
+        input_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """resolve_analysis_blueprint 内部实现：5 分支决策 + 返回 13 字段 dict。"""
         # 分支 1：not_applicable —— 无 blueprint_id 或 entry_route 错
@@ -1239,7 +1280,10 @@ class DatasetSubAgent:
             self.db,
             bp,
             question=question,
-            input_params=blueprint_params_from_time_context(bp, time_context),
+            input_params={
+                **blueprint_params_from_time_context(bp, time_context),
+                **(input_params or {}),
+            },
             require_active=True,
             count_usage=True,
         )

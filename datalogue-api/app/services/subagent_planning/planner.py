@@ -32,6 +32,7 @@ from app.services.subagent_planning.contracts import (
 DETAIL_PATTERNS = ("明细", "列表", "日志", "记录", "最近", "前", "条", "limit")
 METRIC_PATTERNS = ("统计", "数量", "总数", "平均", "占比", "汇总", "趋势")
 BLUEPRINT_PATTERNS = ("日报", "周报", "月报", "分析", "报告")
+BLUEPRINT_MIN_CONFIDENCE = 0.05
 PROMPT_ASSET_LIMIT = 40
 LIGHTWEIGHT_METADATA_KEYS = {"table_name", "column_name", "parameters", "implementation_type"}
 PROMPT_TEXT_LIMIT = 120
@@ -193,11 +194,137 @@ def _with_usage(asset: CandidateAsset, usage: str) -> CandidateAsset:
     )
 
 
+def _asset_label(asset: CandidateAsset | None) -> str | None:
+    if not asset:
+        return None
+    return str(asset.display_name or asset.name or asset.asset_id)
+
+
+def _factor(code: str, message: str, evidence: Any = None) -> dict[str, Any]:
+    factor = {"code": code, "message": message}
+    if evidence not in (None, "", [], {}):
+        factor["evidence"] = evidence
+    return factor
+
+
+def _warning(code: str, message: str, evidence: Any = None) -> dict[str, Any]:
+    warning = {"code": code, "message": message}
+    if evidence not in (None, "", [], {}):
+        warning["evidence"] = evidence
+    return warning
+
+
+def _governance_suggestion(
+    suggestion_type: str,
+    message: str,
+    evidence: Any = None,
+) -> dict[str, Any]:
+    suggestion = {"type": suggestion_type, "message": message}
+    if evidence not in (None, "", [], {}):
+        suggestion["evidence"] = evidence
+    return suggestion
+
+
+def _fallback_warnings(fallback_reason: str | None) -> list[dict[str, Any]]:
+    if not fallback_reason:
+        return []
+    return [
+        _warning(
+            "planner_fallback",
+            "LLM 查询规划不可用或输出不合法，已切换到规则兜底。",
+            fallback_reason,
+        )
+    ]
+
+
+def _quality_suggestions(
+    *,
+    assets: list[CandidateAsset],
+    field_table_assets: list[CandidateAsset],
+    metric_dimension_assets: list[CandidateAsset],
+    blueprint: CandidateAsset | None,
+) -> list[dict[str, Any]]:
+    suggestions: list[dict[str, Any]] = []
+    if not assets:
+        suggestions.append(
+            _governance_suggestion(
+                "candidate_assets",
+                "当前问题没有召回候选资产，可补充表字段描述、业务术语或分析蓝图触发样例。",
+            )
+        )
+    if assets and not field_table_assets:
+        suggestions.append(
+            _governance_suggestion(
+                "schema_metadata",
+                "候选资产中缺少字段或表，建议补充数据集选表和字段业务描述。",
+            )
+        )
+    if assets and not metric_dimension_assets:
+        suggestions.append(
+            _governance_suggestion(
+                "semantic_assets",
+                "候选资产中缺少指标或维度，统计类问题可能需要补充语义资产。",
+            )
+        )
+    if blueprint and not blueprint.metadata.get("parameters"):
+        suggestions.append(
+            _governance_suggestion(
+                "blueprint_parameters",
+                "命中蓝图缺少参数定义，建议补齐 parameters 以提升规划稳定性。",
+                _asset_label(blueprint),
+            )
+        )
+    return suggestions
+
+
 def _top_asset(assets: list[CandidateAsset], asset_type: str) -> CandidateAsset | None:
     filtered = [asset for asset in assets if asset.asset_type == asset_type]
     if not filtered:
         return None
     return max(filtered, key=lambda asset: float(asset.confidence or 0))
+
+
+def _assets_by_type(
+    assets: list[CandidateAsset],
+    asset_type: str,
+    *,
+    matched_only: bool = False,
+) -> list[CandidateAsset]:
+    filtered = [asset for asset in assets if asset.asset_type == asset_type]
+    if matched_only:
+        filtered = [
+            asset for asset in filtered
+            if float(asset.confidence or 0) >= BLUEPRINT_MIN_CONFIDENCE or asset.match_signals
+        ]
+    return sorted(filtered, key=lambda asset: float(asset.confidence or 0), reverse=True)
+
+
+def _rejected_alternative_blueprints(blueprints: list[CandidateAsset]) -> list[CandidateAsset]:
+    rejected: list[CandidateAsset] = []
+    for asset in blueprints[1:]:
+        candidate = _with_usage(asset, "rejected")
+        candidate.reject_reason = "存在更匹配的蓝图候选，本蓝图仅作为备选未采用。"
+        rejected.append(candidate)
+    return rejected
+
+
+def _blueprint_comparison_factor(blueprints: list[CandidateAsset]) -> list[dict[str, Any]]:
+    if len(blueprints) <= 1:
+        return []
+    return [
+        _factor(
+            "blueprint_candidate_comparison",
+            "已比较多个蓝图候选，并选择最高匹配项。",
+            [
+                {
+                    "asset_id": asset.asset_id,
+                    "name": _asset_label(asset),
+                    "confidence": round(float(asset.confidence or 0), 4),
+                }
+                for asset in blueprints[:5]
+            ],
+        )
+    ]
 
 
 def build_fallback_query_plan(
@@ -208,7 +335,21 @@ def build_fallback_query_plan(
     fallback_reason: str | None = None,
 ) -> QueryPlan:
     assets = _assets(candidate_assets)
-    blueprint = _top_asset(assets, "blueprint")
+    all_blueprints = _assets_by_type(assets, "blueprint")
+    blueprints = _assets_by_type(assets, "blueprint", matched_only=True)
+    blueprint = blueprints[0] if blueprints else None
+    rejected_blueprints = [
+        *_rejected_alternative_blueprints(blueprints),
+        *[
+            _with_usage(asset, "rejected")
+            for asset in all_blueprints
+            if asset not in blueprints
+        ],
+    ]
+    for asset in rejected_blueprints:
+        if not asset.reject_reason:
+            asset.reject_reason = "蓝图候选没有有效匹配信号，不能用于执行或参考。"
+    blueprint_comparison_factors = _blueprint_comparison_factor(blueprints)
     field_table_assets = [asset for asset in assets if asset.asset_type in {"field", "table"}]
     metric_dimension_assets = [asset for asset in assets if asset.asset_type in {"metric", "dimension"}]
     is_detail_query = _contains_any(question, DETAIL_PATTERNS)
@@ -216,12 +357,20 @@ def build_fallback_query_plan(
     is_blueprint_query = _contains_any(question, BLUEPRINT_PATTERNS)
 
     required_inputs = _required_inputs(blueprint, routing)
+    common_warnings = _fallback_warnings(fallback_reason)
+    common_suggestions = _quality_suggestions(
+        assets=assets,
+        field_table_assets=field_table_assets,
+        metric_dimension_assets=metric_dimension_assets,
+        blueprint=blueprint,
+    )
     if is_blueprint_query and blueprint and required_inputs:
         return QueryPlan(
             query_type="blueprint_query",
             execution_strategy="clarify",
             confidence=0.78,
             required_inputs=required_inputs,
+            rejected_assets=rejected_blueprints,
             clarification={
                 "message": "需要补充蓝图查询的必要参数后才能继续。",
                 "required_inputs": required_inputs,
@@ -232,6 +381,14 @@ def build_fallback_query_plan(
                 "summary": "问题命中蓝图类查询，但缺少必填参数。",
                 "matched_blueprint": blueprint.display_name or blueprint.name,
             },
+            decision_factors=[
+                _factor("blueprint_query_signal", "问题包含蓝图类查询信号。", list(BLUEPRINT_PATTERNS)),
+                _factor("blueprint_matched", "候选蓝图得分最高。", _asset_label(blueprint)),
+                _factor("required_inputs_missing", "蓝图必填参数尚未满足。", required_inputs),
+                *blueprint_comparison_factors,
+            ],
+            planner_warnings=common_warnings,
+            governance_suggestions=common_suggestions,
         )
 
     if is_blueprint_query and blueprint:
@@ -240,12 +397,21 @@ def build_fallback_query_plan(
             execution_strategy="blueprint_execute",
             confidence=0.82,
             selected_assets=[_with_usage(blueprint, "selected")],
+            rejected_assets=rejected_blueprints,
             fallback_reason=fallback_reason or "blueprint_query_ready",
             planner_source="fallback",
             explanation={
                 "summary": "问题命中蓝图类查询，且必要参数已满足或无需参数。",
                 "matched_blueprint": blueprint.display_name or blueprint.name,
             },
+            decision_factors=[
+                _factor("blueprint_query_signal", "问题包含蓝图类查询信号。", list(BLUEPRINT_PATTERNS)),
+                _factor("blueprint_matched", "候选蓝图得分最高。", _asset_label(blueprint)),
+                _factor("required_inputs_ready", "蓝图必填参数已满足或无需参数。"),
+                *blueprint_comparison_factors,
+            ],
+            planner_warnings=common_warnings,
+            governance_suggestions=common_suggestions,
         )
 
     if is_detail_query and blueprint and field_table_assets:
@@ -255,6 +421,7 @@ def build_fallback_query_plan(
             confidence=0.74,
             selected_assets=[_with_usage(asset, "selected") for asset in field_table_assets],
             reference_assets=[_with_usage(blueprint, "reference")],
+            rejected_assets=rejected_blueprints,
             fallback_reason=fallback_reason or "detail_query_with_blueprint_reference",
             planner_source="fallback",
             explanation={
@@ -262,6 +429,25 @@ def build_fallback_query_plan(
                 "why_not_blueprint_execute": "用户问题不是固定蓝图分析，不能强制执行蓝图。",
                 "why_continue_without_metric": "明细查询不要求必须命中指标或维度。",
             },
+            decision_factors=[
+                _factor("detail_query_signal", "问题包含明细查询信号。", list(DETAIL_PATTERNS)),
+                _factor(
+                    "field_table_coverage",
+                    "已召回字段或表，可继续构建 QueryGraph。",
+                    [_asset_label(asset) for asset in field_table_assets[:8]],
+                ),
+                _factor("blueprint_reference", "蓝图可作为业务口径参考，但不适合强执行。", _asset_label(blueprint)),
+                *blueprint_comparison_factors,
+            ],
+            planner_warnings=[
+                *common_warnings,
+                _warning(
+                    "blueprint_reference_only",
+                    "用户问题是明细查询，命中蓝图只能作为参考，不能强套蓝图 SQL。",
+                    _asset_label(blueprint),
+                ),
+            ],
+            governance_suggestions=common_suggestions,
         )
 
     if is_detail_query and field_table_assets:
@@ -276,6 +462,16 @@ def build_fallback_query_plan(
                 "summary": "识别为明细查询，使用字段和表构建查询图。",
                 "why_continue_without_metric": "明细查询不要求必须命中指标或维度。",
             },
+            decision_factors=[
+                _factor("detail_query_signal", "问题包含明细查询信号。", list(DETAIL_PATTERNS)),
+                _factor(
+                    "field_table_coverage",
+                    "已召回字段或表，可继续构建 QueryGraph。",
+                    [_asset_label(asset) for asset in field_table_assets[:8]],
+                ),
+            ],
+            planner_warnings=common_warnings,
+            governance_suggestions=common_suggestions,
         )
 
     if is_metric_query and metric_dimension_assets:
@@ -287,16 +483,50 @@ def build_fallback_query_plan(
             fallback_reason=fallback_reason or "metric_query_semantic_asset_fallback",
             planner_source="fallback",
             explanation={"summary": "识别为指标类查询，使用指标或维度资产构建查询图。"},
+            decision_factors=[
+                _factor("metric_query_signal", "问题包含统计或聚合查询信号。", list(METRIC_PATTERNS)),
+                _factor(
+                    "semantic_asset_coverage",
+                    "已召回指标或维度，可继续构建 QueryGraph。",
+                    [_asset_label(asset) for asset in metric_dimension_assets[:8]],
+                ),
+            ],
+            planner_warnings=common_warnings,
+            governance_suggestions=common_suggestions,
         )
+
+    rejected_asset_keys = {
+        (asset.asset_type, str(asset.asset_id))
+        for asset in rejected_blueprints
+    }
+    rejected_assets = [
+        *rejected_blueprints,
+        *[
+            _with_usage(asset, "rejected")
+            for asset in assets
+            if (asset.asset_type, str(asset.asset_id)) not in rejected_asset_keys
+        ],
+    ]
 
     return QueryPlan(
         query_type="unsupported",
         execution_strategy="reject",
         confidence=0.2,
-        rejected_assets=[_with_usage(asset, "rejected") for asset in assets],
+        rejected_assets=rejected_assets,
         fallback_reason=fallback_reason or "insufficient_assets_for_rule_planning",
         planner_source="fallback",
         explanation={"summary": "候选资产不足，规则兜底无法形成可执行查询计划。"},
+        decision_factors=[
+            _factor("insufficient_assets", "候选资产不足或查询类型无法被规则稳定识别。"),
+        ],
+        planner_warnings=common_warnings,
+        governance_suggestions=common_suggestions
+        or [
+            _governance_suggestion(
+                "candidate_assets",
+                "建议补充业务术语、指标维度、字段描述或分析蓝图触发样例。",
+            )
+        ],
     )
 
 
@@ -308,6 +538,7 @@ def _planner_system_prompt() -> str:
             "JSON 必须符合 QueryPlan 契约：query_type、execution_strategy、confidence、planner_source、explanation。",
             "planner_source 必须为 llm。",
             "可选资产字段包括 selected_assets、reference_assets、rejected_assets、required_inputs、clarification、debug。",
+            "可选审计字段包括 decision_factors、planner_warnings、governance_suggestions，均为对象数组。",
             "execution_strategy 可选：blueprint_execute、blueprint_as_reference、query_graph、clarify、reject。",
             "明细查询命中 field/table 时，应优先 query_graph 或 blueprint_as_reference，不要因为缺少指标而 clarify。",
         ]

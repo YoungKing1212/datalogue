@@ -22,6 +22,28 @@ from app.services.dataset_context import build_dataset_query_context
 from app.services.subagent_planning.contracts import CandidateAsset
 
 LIGHTWEIGHT_CONTEXT_TOKEN_BUDGET = 2500
+SCORE_MODEL_VERSION = "candidate_asset_score_v2"
+MAX_CONFIDENCE = 0.99
+
+SIGNAL_WEIGHTS = {
+    "exact": 0.55,
+    "contains": 0.28,
+    "alias": 0.22,
+    "synonym": 0.22,
+    "trigger_example": 0.26,
+    "field_display": 0.35,
+    "table_context": 0.28,
+}
+
+SIGNAL_REASON_ORDER = {
+    "exact": 0,
+    "contains": 1,
+    "alias": 2,
+    "synonym": 3,
+    "trigger_example": 4,
+    "field_display": 5,
+    "table_context": 6,
+}
 
 
 def _as_mapping(value: Any) -> dict[str, Any] | None:
@@ -52,23 +74,99 @@ def _norm(text: Any) -> str:
     return re.sub(r"[\s_`'\".]+", "", str(text or "").strip().lower())
 
 
-def _score(question: str, *texts: Any) -> tuple[float, list[dict[str, Any]]]:
+def _has_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+
+def _matched_fragments(question: str, normalized: str) -> list[str]:
+    if not normalized or not question:
+        return []
+    if normalized in question:
+        return [normalized]
+    fragments: list[str] = []
+    seen: set[str] = set()
+    if _has_cjk(normalized):
+        cjk_text = "".join(re.findall(r"[\u4e00-\u9fff]+", normalized))
+        max_size = min(6, len(cjk_text))
+        for size in range(max_size, 1, -1):
+            for index in range(0, len(cjk_text) - size + 1):
+                fragment = cjk_text[index : index + size]
+                if fragment in seen or fragment not in question:
+                    continue
+                if any(fragment in existing for existing in fragments):
+                    continue
+                fragments.append(fragment)
+                seen.add(fragment)
+    for fragment in re.findall(r"[a-z0-9]{2,}", normalized):
+        if fragment in question and fragment not in seen:
+            fragments.append(fragment)
+            seen.add(fragment)
+    return fragments
+
+
+def _match_factor(question: str, normalized: str) -> tuple[float, str, list[str]]:
+    if normalized == question:
+        return 1.0, "full_exact", [normalized]
+    if normalized in question:
+        return 1.0, "phrase_in_question", [normalized]
+    if question in normalized:
+        return 0.9, "question_in_value", [question]
+    fragments = _matched_fragments(question, normalized)
+    if not fragments:
+        return 0.0, "", []
+    covered = sum(len(fragment) for fragment in fragments)
+    coverage = covered / max(1, min(len(question), len(normalized)))
+    if coverage >= 0.55:
+        return 0.85, "strong_overlap", fragments
+    return 0.65, "partial_overlap", fragments
+
+
+def _score_input(signal_type: str, *values: Any) -> dict[str, Any]:
+    return {"type": signal_type, "values": _text_values(*values)}
+
+
+def _score(question: str, *inputs: dict[str, Any]) -> tuple[float, list[dict[str, Any]]]:
     q = _norm(question)
     if not q:
         return 0.0, []
     signals: list[dict[str, Any]] = []
-    best = 0.0
-    for text in _text_values(*texts):
-        normalized = _norm(text)
-        if not normalized:
-            continue
-        if normalized == q:
-            best = max(best, 0.98)
-            signals.append({"type": "exact", "value": text, "score": 0.98})
-        elif normalized in q or q in normalized:
-            best = max(best, 0.82)
-            signals.append({"type": "contains", "value": text, "score": 0.82})
-    return best, signals
+    seen: set[tuple[str, str]] = set()
+    total = 0.0
+    for item in inputs:
+        signal_type = str(item.get("type") or "contains")
+        weight = float(item.get("weight") or SIGNAL_WEIGHTS.get(signal_type, SIGNAL_WEIGHTS["contains"]))
+        for text in _text_values(item.get("values")):
+            normalized = _norm(text)
+            if not normalized:
+                continue
+            factor, match, fragments = _match_factor(q, normalized)
+            if factor <= 0:
+                continue
+            key = (signal_type, normalized)
+            if key in seen:
+                continue
+            seen.add(key)
+            score = round(weight * factor, 4)
+            total += score
+            signals.append(
+                {
+                    "type": signal_type,
+                    "value": text,
+                    "score": score,
+                    "match": match,
+                    "fragments": fragments,
+                }
+            )
+    signals.sort(key=lambda item: item.get("score", 0), reverse=True)
+    return min(MAX_CONFIDENCE, round(total, 4)), signals
+
+
+def _match_reason(signals: list[dict[str, Any]]) -> str:
+    if not signals:
+        return "context_candidate"
+    types = {str(signal.get("type") or "") for signal in signals if signal.get("type")}
+    ordered = sorted(types, key=lambda value: SIGNAL_REASON_ORDER.get(value, 99))
+    return "+".join(ordered)
 
 
 def _asset(
@@ -90,8 +188,87 @@ def _asset(
         match_signals=signals,
         metadata=metadata,
         usage="candidate",
-        match_reason=signals[0]["type"] if signals else "context_candidate",
+        match_reason=_match_reason(signals),
     ).to_dict()
+
+
+def _table_context_by_name(structured: dict[str, Any]) -> dict[str, list[str]]:
+    tables_json = structured.get("tables_json") or {}
+    if not isinstance(tables_json, dict):
+        tables_json = {}
+    selected = tables_json.get("selected_tables") or tables_json.get("tables") or []
+    contexts: dict[str, list[str]] = {}
+    for item in selected:
+        if isinstance(item, str):
+            name = item
+            values = [item]
+        elif isinstance(item, dict):
+            name = str(item.get("name") or item.get("table_name") or "")
+            values = _text_values(
+                name,
+                item.get("display_name"),
+                item.get("description"),
+                item.get("comment"),
+                item.get("semantic"),
+            )
+        else:
+            continue
+        normalized = _norm(name)
+        if normalized:
+            contexts[normalized] = values
+    return contexts
+
+
+def _score_audit(assets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    by_type: dict[str, dict[str, Any]] = {}
+    scored_assets = 0
+    signal_types: set[str] = set()
+    for asset in assets:
+        asset_type = str(asset.get("asset_type") or "")
+        confidence = float(asset.get("confidence") or 0)
+        bucket = by_type.setdefault(
+            asset_type,
+            {
+                "asset_type": asset_type,
+                "count": 0,
+                "scored_count": 0,
+                "total_confidence": 0.0,
+                "max_confidence": 0.0,
+            },
+        )
+        bucket["count"] += 1
+        bucket["total_confidence"] += confidence
+        bucket["max_confidence"] = max(bucket["max_confidence"], confidence)
+        if confidence > 0:
+            scored_assets += 1
+            bucket["scored_count"] += 1
+        for signal in asset.get("match_signals") or []:
+            signal_type = signal.get("type")
+            if signal_type:
+                signal_types.add(str(signal_type))
+    top_asset_types: list[dict[str, Any]] = []
+    for item in by_type.values():
+        count = max(1, int(item["count"]))
+        top_asset_types.append(
+            {
+                "asset_type": item["asset_type"],
+                "count": item["count"],
+                "scored_count": item["scored_count"],
+                "max_confidence": round(float(item["max_confidence"]), 4),
+                "avg_confidence": round(float(item["total_confidence"]) / count, 4),
+            }
+        )
+    top_asset_types.sort(
+        key=lambda item: (item["max_confidence"], item["scored_count"], item["count"]),
+        reverse=True,
+    )
+    coverage = {
+        "total_assets": len(assets),
+        "scored_assets": scored_assets,
+        "scored_ratio": round(scored_assets / len(assets), 4) if assets else 0.0,
+        "signal_types": sorted(signal_types, key=lambda value: SIGNAL_REASON_ORDER.get(value, 99)),
+    }
+    return top_asset_types[:3], coverage
 
 
 def _table_assets(structured: dict[str, Any], question: str) -> list[dict[str, Any]]:
@@ -117,7 +294,18 @@ def _table_assets(structured: dict[str, Any], question: str) -> list[dict[str, A
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
-        confidence, signals = _score(question, name, metadata.get("description"))
+        confidence, signals = _score(
+            question,
+            _score_input("exact", name),
+            _score_input(
+                "table_context",
+                name,
+                metadata.get("display_name"),
+                metadata.get("description"),
+                metadata.get("comment"),
+                metadata.get("semantic"),
+            ),
+        )
         assets.append(_asset("table", name, name, "schema", confidence, signals, metadata))
     for field in structured.get("fields") or []:
         mapping = _as_mapping(field)
@@ -129,7 +317,7 @@ def _table_assets(structured: dict[str, Any], question: str) -> list[dict[str, A
             continue
         seen.add(normalized)
         metadata = {"table_name": name, "source": "fields"}
-        confidence, signals = _score(question, name)
+        confidence, signals = _score(question, _score_input("exact", name), _score_input("table_context", name))
         assets.append(_asset("table", name, name, "schema", confidence, signals, metadata))
     return assets
 
@@ -146,6 +334,7 @@ def build_candidate_assets_from_context(
     assets: list[dict[str, Any]] = []
     if not isinstance(structured, dict):
         structured = {}
+    table_contexts = _table_context_by_name(structured)
     for raw_blueprint in structured.get("blueprints") or []:
         blueprint = _as_mapping(raw_blueprint)
         if not blueprint:
@@ -156,11 +345,10 @@ def build_candidate_assets_from_context(
             continue
         confidence, signals = _score(
             question,
-            name,
-            blueprint.get("description"),
-            blueprint.get("when_to_use"),
-            blueprint.get("trigger_keywords"),
-            blueprint.get("trigger_examples"),
+            _score_input("exact", name),
+            _score_input("contains", blueprint.get("display_name"), blueprint.get("description"), blueprint.get("when_to_use")),
+            _score_input("alias", blueprint.get("trigger_keywords")),
+            _score_input("trigger_example", blueprint.get("trigger_examples")),
         )
         metadata = dict(blueprint)
         assets.append(
@@ -184,11 +372,9 @@ def build_candidate_assets_from_context(
             continue
         confidence, signals = _score(
             question,
-            name,
-            metric.get("display_name"),
-            metric.get("synonyms"),
-            metric.get("description"),
-            metric.get("expr"),
+            _score_input("exact", name),
+            _score_input("contains", metric.get("display_name"), metric.get("description"), metric.get("expr")),
+            _score_input("synonym", metric.get("synonyms")),
         )
         assets.append(
             _asset(
@@ -211,11 +397,9 @@ def build_candidate_assets_from_context(
             continue
         confidence, signals = _score(
             question,
-            name,
-            dimension.get("display_name"),
-            dimension.get("synonyms"),
-            dimension.get("description"),
-            dimension.get("expr"),
+            _score_input("exact", name),
+            _score_input("contains", dimension.get("display_name"), dimension.get("description"), dimension.get("expr")),
+            _score_input("synonym", dimension.get("synonyms")),
         )
         assets.append(
             _asset(
@@ -238,10 +422,10 @@ def build_candidate_assets_from_context(
             continue
         confidence, signals = _score(
             question,
-            name,
-            term.get("display_name"),
-            term.get("aliases"),
-            term.get("synonyms"),
+            _score_input("exact", name),
+            _score_input("contains", term.get("display_name"), term.get("description")),
+            _score_input("alias", term.get("aliases")),
+            _score_input("synonym", term.get("synonyms")),
         )
         assets.append(
             _asset(
@@ -265,18 +449,23 @@ def build_candidate_assets_from_context(
         asset_id = f"table:{table_name}.column:{column_name}"
         confidence, signals = _score(
             question,
-            column_name,
-            field.get("display_name"),
-            field.get("semantic"),
-            field.get("business_desc"),
-            field.get("effective_desc"),
-            field.get("column_comment"),
-            field.get("synonyms"),
-            field.get("description"),
-            table_name,
+            _score_input("exact", column_name),
+            _score_input(
+                "field_display",
+                field.get("display_name"),
+                field.get("semantic"),
+                field.get("business_desc"),
+                field.get("effective_desc"),
+                field.get("column_comment"),
+                field.get("description"),
+            ),
+            _score_input("synonym", field.get("synonyms")),
+            _score_input("table_context", table_name, table_contexts.get(_norm(table_name))),
         )
         assets.append(_asset("field", asset_id, column_name, "schema", confidence, signals, dict(field)))
     assets.extend(_table_assets(structured, question))
+    assets.sort(key=lambda item: item.get("confidence", 0), reverse=True)
+    top_asset_types, coverage = _score_audit(assets)
     summary = {
         "blueprint_count": sum(1 for asset in assets if asset["asset_type"] == "blueprint"),
         "metric_count": sum(1 for asset in assets if asset["asset_type"] == "metric"),
@@ -284,8 +473,10 @@ def build_candidate_assets_from_context(
         "term_count": sum(1 for asset in assets if asset["asset_type"] == "term"),
         "field_count": sum(1 for asset in assets if asset["asset_type"] == "field"),
         "table_count": sum(1 for asset in assets if asset["asset_type"] == "table"),
+        "score_model_version": SCORE_MODEL_VERSION,
+        "top_asset_types": top_asset_types,
+        "coverage": coverage,
     }
-    assets.sort(key=lambda item: item.get("confidence", 0), reverse=True)
     return {
         "dataset_id": dataset_id,
         "question": question,
@@ -295,6 +486,9 @@ def build_candidate_assets_from_context(
             "schema_source": "lightweight_schema_recall",
             "manifest_version": manifest_version,
             "bound_schema_version": bound_schema_version,
+            "score_model_version": SCORE_MODEL_VERSION,
+            "top_asset_types": top_asset_types,
+            "coverage": coverage,
             "dataset_context_debug": context.get("dataset_context_debug") or {},
         },
         "context": context,

@@ -174,9 +174,11 @@ def test_realistic_display_names_synonyms_and_trigger_examples_score():
     )
 
     scored = [asset for asset in result["assets"] if asset["asset_type"] in {"field", "blueprint", "metric"}]
+    blueprint = next(asset for asset in result["assets"] if asset["asset_type"] == "blueprint")
 
     assert any(asset["confidence"] > 0 for asset in scored)
     assert any(asset["match_signals"] for asset in scored)
+    assert any(signal["type"] == "trigger_example" for signal in blueprint["match_signals"])
 
 
 def test_blank_question_does_not_score_all_assets():
@@ -202,3 +204,132 @@ def test_blank_question_does_not_score_all_assets():
     assert result["assets"]
     assert all(asset["confidence"] == 0 for asset in result["assets"])
     assert all(asset["match_signals"] == [] for asset in result["assets"])
+
+
+def test_scoring_stacks_distinct_signals_and_caps_confidence():
+    context = {
+        "schema_structured": {
+            "terms": [
+                {
+                    "id": 1,
+                    "name": "失败日志",
+                    "display_name": "失败日志",
+                    "aliases": ["错误日志"],
+                    "synonyms": ["异常日志"],
+                }
+            ],
+            "fields": [
+                {
+                    "table_name": "user_logs",
+                    "column_name": "level",
+                    "display_name": "日志级别",
+                    "semantic": "失败日志状态",
+                    "synonyms": ["错误级别"],
+                },
+                {
+                    "table_name": "user_logs",
+                    "column_name": "status",
+                    "display_name": "日志状态",
+                    "semantic": "失败状态",
+                },
+            ],
+            "tables_json": {
+                "selected_tables": [
+                    {"name": "user_logs", "description": "用户失败日志明细表"},
+                ]
+            },
+        }
+    }
+
+    result = build_candidate_assets_from_context(
+        question="最近10条失败日志有哪些",
+        dataset_id=10,
+        context=context,
+        manifest_version="v1",
+        bound_schema_version="schema-1",
+    )
+
+    term = next(asset for asset in result["assets"] if asset["asset_type"] == "term")
+    level = next(asset for asset in result["assets"] if asset["asset_type"] == "field" and asset["name"] == "level")
+    table = next(asset for asset in result["assets"] if asset["asset_type"] == "table")
+
+    assert term["confidence"] == 0.99
+    assert level["confidence"] > 0.65
+    assert table["confidence"] > 0
+    assert {signal["type"] for signal in term["match_signals"]} >= {
+        "exact",
+        "contains",
+        "alias",
+        "synonym",
+    }
+    assert {signal["type"] for signal in level["match_signals"]} >= {"field_display", "table_context"}
+    assert any(signal["type"] == "table_context" for signal in table["match_signals"])
+    assert term["match_reason"].startswith("exact+")
+
+
+def test_user_log_question_scores_log_table_and_fields():
+    context = {
+        "schema_structured": {
+            "fields": [
+                {
+                    "table_name": "user_logs",
+                    "column_name": "created_at",
+                    "display_name": "日志时间",
+                    "semantic": "用户日志创建时间",
+                },
+                {
+                    "table_name": "user_logs",
+                    "column_name": "user_id",
+                    "display_name": "用户ID",
+                    "semantic": "用户标识",
+                },
+            ],
+            "tables_json": {
+                "selected_tables": [
+                    {"name": "user_logs", "description": "用户操作日志表"},
+                ]
+            },
+        }
+    }
+
+    result = build_candidate_assets_from_context(
+        question="查询10条用户日志",
+        dataset_id=10,
+        context=context,
+        manifest_version="v1",
+        bound_schema_version="schema-1",
+    )
+
+    table = next(asset for asset in result["assets"] if asset["asset_type"] == "table")
+    fields = [asset for asset in result["assets"] if asset["asset_type"] == "field"]
+
+    assert table["confidence"] > 0
+    assert all(field["confidence"] > 0 for field in fields)
+    assert any(signal["type"] == "table_context" for signal in table["match_signals"])
+    assert all(any(signal["type"] == "field_display" for signal in field["match_signals"]) for field in fields)
+
+
+def test_summary_and_recall_debug_include_score_audit_fields():
+    context = {
+        "schema_structured": {
+            "terms": [{"id": 1, "name": "失败日志"}],
+            "fields": [{"table_name": "user_logs", "column_name": "status", "display_name": "日志状态"}],
+            "tables_json": {"selected_tables": [{"name": "user_logs", "description": "日志表"}]},
+        }
+    }
+
+    result = build_candidate_assets_from_context(
+        question="最近10条失败日志有哪些",
+        dataset_id=10,
+        context=context,
+        manifest_version="v1",
+        bound_schema_version="schema-1",
+    )
+
+    assert result["summary"]["score_model_version"] == "candidate_asset_score_v2"
+    assert result["summary"]["top_asset_types"][0]["asset_type"] in {"term", "field", "table"}
+    assert result["summary"]["coverage"]["scored_assets"] > 0
+    assert result["summary"]["coverage"]["total_assets"] == len(result["assets"])
+    assert result["recall_debug"]["score_model_version"] == "candidate_asset_score_v2"
+    assert result["recall_debug"]["top_asset_types"] == result["summary"]["top_asset_types"]
+    assert "context" not in result["recall_debug"]

@@ -39,6 +39,10 @@ const BUSINESS_STEP_NAMES = {
 const QUERY_TYPE_LABELS = {
   detail_query: '明细查询',
   metric_query: '指标查询',
+  blueprint_query: '蓝图查询',
+  knowledge_qa: '知识问答',
+  ambiguous: '需要澄清',
+  unsupported: '暂不支持',
 };
 
 const EXECUTION_STRATEGY_LABELS = {
@@ -84,10 +88,25 @@ function formatQueryPlanDetails(queryPlan) {
   const explanation = queryPlan.explanation || {};
   const queryType = enumLabel(QUERY_TYPE_LABELS, queryPlan.query_type);
   const executionStrategy = enumLabel(EXECUTION_STRATEGY_LABELS, queryPlan.execution_strategy);
+  const decisionFactors = Array.isArray(queryPlan.decision_factors)
+    ? queryPlan.decision_factors
+    : [];
+  const plannerWarnings = Array.isArray(queryPlan.planner_warnings)
+    ? queryPlan.planner_warnings
+    : [];
+  const governanceSuggestions = Array.isArray(queryPlan.governance_suggestions)
+    ? queryPlan.governance_suggestions
+    : [];
+  const firstFactor = decisionFactors.find((item) => item?.message)?.message;
+  const firstWarning = plannerWarnings.find((item) => item?.message)?.message;
+  const firstSuggestion = governanceSuggestions.find((item) => item?.message)?.message;
   return [
     queryType ? `查询类型：${queryType}` : null,
     executionStrategy ? `执行策略：${executionStrategy}` : null,
     explanation.summary ? `说明：${explanation.summary}` : null,
+    firstFactor ? `依据：${firstFactor}` : null,
+    firstWarning ? `提示：${firstWarning}` : null,
+    firstSuggestion ? `治理建议：${firstSuggestion}` : null,
   ].filter(Boolean);
 }
 
