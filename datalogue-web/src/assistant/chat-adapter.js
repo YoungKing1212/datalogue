@@ -20,6 +20,8 @@ const NODE_DISPLAY = {
   intent_recognition: '意图识别',
   entry_intent_classification: '入口分类',
   analysis_blueprint_execute: '蓝图执行',
+  candidate_assets: '候选资产召回',
+  query_plan: '查询规划',
   schema_recall: 'Schema 召回',
   term_normalize_node: '术语归一化',
   semantic_asset_resolution_node: '语义资产解析',
@@ -31,6 +33,53 @@ const NODE_DISPLAY = {
   sql_audit: 'SQL 诊断',
   report_generator: '报告生成',
 };
+
+function summarizeCandidateAssets(candidateAssets) {
+  const summary = candidateAssets?.summary;
+  if (!summary || typeof summary !== 'object') return '';
+
+  const summaryFields = [
+    ['fields', '字段'],
+    ['field_count', '字段'],
+    ['columns', '字段'],
+    ['column_count', '字段'],
+    ['tables', '表'],
+    ['table_count', '表'],
+    ['blueprints', '蓝图'],
+    ['blueprint_count', '蓝图'],
+    ['metrics', '指标'],
+    ['metric_count', '指标'],
+    ['dimensions', '维度'],
+    ['dimension_count', '维度'],
+    ['terms', '术语'],
+    ['term_count', '术语'],
+  ];
+
+  const seen = new Set();
+  return summaryFields
+    .map(([key, label]) => {
+      if (seen.has(label)) return null;
+      const value = summary[key];
+      const count = Array.isArray(value) ? value.length : value;
+      if (count == null || count === '' || count === 0) return null;
+      seen.add(label);
+      return `${label} ${count} 个`;
+    })
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function summarizeQueryPlan(queryPlan) {
+  if (!queryPlan || typeof queryPlan !== 'object') return '';
+  const explanation = queryPlan.explanation || {};
+  return [
+    queryPlan.query_type ? `类型 ${queryPlan.query_type}` : null,
+    queryPlan.execution_strategy ? `策略 ${queryPlan.execution_strategy}` : null,
+    explanation.summary || null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
 
 /**
  * 把单个 step 事件格式化成 reasoning 文本（一行小卡片式）
@@ -48,6 +97,10 @@ function formatStepAsReasoning(ev) {
   } else if (ev.node === 'schema_recall') {
     const lines = ev.schema_summary || [];
     detail = lines.length ? lines.join(' / ') : '已检索相关表结构';
+  } else if (ev.node === 'candidate_assets') {
+    detail = summarizeCandidateAssets(ev.candidate_assets) || '已召回候选资产';
+  } else if (ev.node === 'query_plan') {
+    detail = summarizeQueryPlan(ev.query_plan) || '已生成查询规划';
   } else if (ev.node === 'term_normalize_node') {
     const normalization = ev.term_normalization || {};
     const matched = normalization.matched_terms?.length ?? 0;
@@ -313,6 +366,12 @@ export function makeChatAdapter({ datasetIdRef }) {
               sqlDiagnosis: finalPayload.sql_diagnosis || null,
               sqlAuditResult: finalPayload.sql_audit_result || null,
               answerExplanation: finalPayload.answer_explanation || null,
+              queryPlan: finalPayload.query_plan || finalPayload.queryPlan || null,
+              candidateAssets: finalPayload.candidate_assets || finalPayload.candidateAssets || null,
+              queryPlanDebug: finalPayload.query_plan_debug || finalPayload.queryPlanDebug || null,
+              query_plan: finalPayload.query_plan || null,
+              candidate_assets: finalPayload.candidate_assets || null,
+              query_plan_debug: finalPayload.query_plan_debug || null,
               queryProfile: finalPayload.query_profile || finalPayload.explainability?.query_profile || null,
               explainability: finalPayload.explainability || null,
               routeDecision: finalPayload.route_decision || null,
