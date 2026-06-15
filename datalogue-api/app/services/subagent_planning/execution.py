@@ -18,13 +18,25 @@ from typing import Any
 
 from app.services.subagent_planning.contracts import CandidateAsset, QueryPlan, SubAgentResult
 
+TEXT_LIMIT = 600
+SQL_LIMIT = 400
+PARAMETERS_LIMIT = 900
+TRUNCATED_SUFFIX = "...[已截断]"
 
-def _json_text(value: Any) -> str:
+
+def _truncate_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + TRUNCATED_SUFFIX
+
+
+def _compact_value(value: Any, limit: int = TEXT_LIMIT) -> str:
     if value in (None, "", [], {}):
         return ""
     if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return _truncate_text(value, limit)
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return _truncate_text(text, limit)
 
 
 def _asset_value(asset: CandidateAsset, key: str) -> Any:
@@ -33,6 +45,9 @@ def _asset_value(asset: CandidateAsset, key: str) -> Any:
 
 def build_blueprint_reference_context(plan: QueryPlan) -> str:
     """构造蓝图参考上下文，强调参考 SQL 不能被原样执行。"""
+    if plan.execution_strategy != "blueprint_as_reference":
+        return ""
+
     blueprint_assets = [
         asset for asset in plan.reference_assets
         if asset.asset_type == "blueprint"
@@ -60,15 +75,15 @@ def build_blueprint_reference_context(plan: QueryPlan) -> str:
             or metadata.get("raw_sql")
         )
         if description:
-            lines.append(f"- description: {_json_text(description)}")
+            lines.append(f"- description: {_compact_value(description)}")
         if when_to_use:
-            lines.append(f"- when_to_use: {_json_text(when_to_use)}")
+            lines.append(f"- when_to_use: {_compact_value(when_to_use)}")
         if parameters:
-            lines.append(f"- parameters: {_json_text(parameters)}")
+            lines.append(f"- parameters: {_compact_value(parameters, PARAMETERS_LIMIT)}")
         if sql_template:
             lines.append("- SQL 参考模板（只能作为参考证据，不能原样执行）:")
             lines.append("```sql")
-            lines.append(str(sql_template))
+            lines.append(_compact_value(sql_template, SQL_LIMIT))
             lines.append("```")
         sections.append("\n".join(lines))
 
@@ -76,10 +91,28 @@ def build_blueprint_reference_context(plan: QueryPlan) -> str:
 
 
 def _plan_assets_payload(plan: QueryPlan) -> dict[str, Any]:
+    assets = [
+        asset.to_dict()
+        for asset in [
+            *plan.selected_assets,
+            *plan.reference_assets,
+            *plan.rejected_assets,
+        ]
+    ]
+    by_type: dict[str, int] = {}
+    by_usage: dict[str, int] = {}
+    for asset in assets:
+        asset_type = str(asset.get("asset_type") or "unknown")
+        usage = str(asset.get("usage") or "candidate")
+        by_type[asset_type] = by_type.get(asset_type, 0) + 1
+        by_usage[usage] = by_usage.get(usage, 0) + 1
     return {
-        "selected_assets": [asset.to_dict() for asset in plan.selected_assets],
-        "reference_assets": [asset.to_dict() for asset in plan.reference_assets],
-        "rejected_assets": [asset.to_dict() for asset in plan.rejected_assets],
+        "assets": assets,
+        "summary": {
+            "total_count": len(assets),
+            "by_type": by_type,
+            "by_usage": by_usage,
+        },
     }
 
 
@@ -154,7 +187,6 @@ def build_reject_result(plan: QueryPlan) -> SubAgentResult:
         entry_route="reject",
         entry_intent="rejection",
         route_payload=route_payload,
-        error=answer,
     )
     return SubAgentResult(
         final_state=final_state,
