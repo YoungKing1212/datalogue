@@ -26,6 +26,13 @@ class FakeLLM:
         return FakeLLMResponse(self.content)
 
 
+class FakeOpenAIAPIConnectionError(Exception):
+    pass
+
+
+FakeOpenAIAPIConnectionError.__module__ = "openai"
+
+
 def _field(name="created_at"):
     return CandidateAsset(
         asset_type="field",
@@ -195,6 +202,27 @@ def test_plan_query_falls_back_when_llm_raises(monkeypatch, db_session):
 
     assert plan.planner_source == "fallback"
     assert plan.fallback_reason == "planner down"
+    assert plan.execution_strategy == "query_graph"
+
+
+def test_plan_query_falls_back_when_llm_raises_openai_connection_error(
+    monkeypatch,
+    db_session,
+):
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: FakeLLM(exc=FakeOpenAIAPIConnectionError("api connection failed")),
+    )
+
+    plan = plan_query(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": [_field().to_dict(), _table()]},
+    )
+
+    assert plan.planner_source == "fallback"
+    assert plan.fallback_reason == "api connection failed"
     assert plan.execution_strategy == "query_graph"
 
 

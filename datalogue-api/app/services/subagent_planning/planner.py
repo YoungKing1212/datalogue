@@ -49,6 +49,25 @@ LIGHTWEIGHT_ASSET_KEYS = {
     "reject_reason",
 }
 LIGHTWEIGHT_SIGNAL_KEYS = {"type", "value", "score", "field", "table", "name"}
+LLM_ERROR_MODULE_PREFIXES = ("openai", "httpx", "langchain_openai")
+LLM_ERROR_TYPE_KEYWORDS = (
+    "APIConnectionError",
+    "APIError",
+    "APITimeoutError",
+    "AuthenticationError",
+    "BadRequestError",
+    "ConnectError",
+    "ConnectionError",
+    "HTTPStatusError",
+    "OpenAIError",
+    "RateLimitError",
+    "ReadError",
+    "ReadTimeout",
+    "RequestError",
+    "Timeout",
+    "TimeoutException",
+    "TransportError",
+)
 
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
@@ -498,11 +517,27 @@ def _validate_hard_rules(
         raise QueryPlanValidationError("detail_query cannot clarify when field/table candidates exist")
 
 
+def _is_llm_call_error(exc: BaseException) -> bool:
+    if isinstance(exc, (RuntimeError, TimeoutError, ConnectionError)):
+        return True
+
+    for cls in type(exc).mro():
+        module = str(getattr(cls, "__module__", "") or "")
+        name = str(getattr(cls, "__name__", "") or "")
+        if module.startswith(LLM_ERROR_MODULE_PREFIXES) and any(
+            keyword in name for keyword in LLM_ERROR_TYPE_KEYWORDS
+        ):
+            return True
+    return False
+
+
 def _invoke_planner_llm(db: Any, messages: list[Any]) -> Any:
     try:
         llm = get_llm(temperature=0.0, role="lead_agent", db=db)
         return llm.invoke(messages)
-    except (RuntimeError, TimeoutError, ConnectionError) as exc:
+    except Exception as exc:
+        if not _is_llm_call_error(exc):
+            raise
         raise QueryPlanValidationError(_compact_error_text(exc)) from exc
 
 
