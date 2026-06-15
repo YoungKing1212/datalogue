@@ -426,3 +426,230 @@ def test_equivalence_with_frozen_phase0_fixtures():
         f"Builder 与 Phase 0 frozen fixtures 不等价 ({len(failures)} 失败):\n  "
         + "\n  ".join(failures)
     )
+
+
+def test_detail_query_followup_keeps_prior_without_metrics():
+    """明细查询有字段和主表即可承接追问，不应因为 metrics 为空降级。"""
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "prior_capsule": {
+                "query_context": {
+                    "query_type": "detail_query",
+                    "fields": [{"name": "rzrq"}],
+                    "main_table": "plan_task_daily_record",
+                    "question": "查询10条用户日志",
+                }
+            },
+        }
+    )
+
+    assert decision.turn_type == "continue"
+    assert (
+        decision.multiturn_context["merged_query_context"]["main_table"]
+        == "plan_task_daily_record"
+    )
+    assert decision.merge_debug["reason"] == "continue_turn_with_prior_query_context"
+
+
+def test_detail_query_followup_keeps_prior_with_query_plan_only():
+    """明细查询只有 query_plan 时也有可继承查询目标。"""
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "prior_capsule": {
+                "query_context": {
+                    "query_type": "detail_query",
+                    "query_plan": {
+                        "query_type": "detail_query",
+                        "select_fields": ["rzrq", "person_name"],
+                    },
+                    "question": "查询10条用户日志",
+                }
+            },
+        }
+    )
+
+    assert decision.turn_type == "continue"
+    assert decision.multiturn_context["merged_query_context"]["query_plan"]
+    assert decision.merge_debug["reason"] == "continue_turn_with_prior_query_context"
+
+
+def test_detail_query_followup_keeps_prior_with_dsl_only():
+    """明细查询只有 dsl 时也有可继承查询目标。"""
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "prior_capsule": {
+                "query_context": {
+                    "query_type": "detail_query",
+                    "dsl": {
+                        "select": ["rzrq", "person_name"],
+                        "from": "plan_task_daily_record",
+                    },
+                    "question": "查询10条用户日志",
+                }
+            },
+        }
+    )
+
+    assert decision.turn_type == "continue"
+    assert decision.multiturn_context["merged_query_context"]["dsl"]
+    assert decision.merge_debug["reason"] == "continue_turn_with_prior_query_context"
+
+
+def test_metric_query_without_metrics_still_downgrades_to_new_query():
+    """指标查询没有 metrics 仍然不能承接，避免把无目标上下文传给下游。"""
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看华东",
+            "turn_type": "continue",
+            "prior_capsule": {
+                "query_context": {
+                    "query_type": "metric_query",
+                    "dimensions": ["地区"],
+                    "question": "按地区统计销售情况",
+                }
+            },
+        }
+    )
+
+    assert decision.turn_type == "new"
+    assert decision.merge_debug["reason"] == "merged_metrics_empty_downgraded_to_new_query"
+
+
+def test_query_task_capsule_base_query_plan_fills_prior_context():
+    """prior_capsule 为空时，可从 query_task_capsule 的 base_query_plan 兜底承接。"""
+    from app.services.task_capsule import build_query_task_capsule
+
+    query_task_capsule = build_query_task_capsule(
+        question="只看汤杰",
+        turn_event={"event_type": "followup_refine"},
+        active_dataset_id=10,
+        last_success_task={
+            "question": "查询10条用户日志",
+            "dataset_id": 10,
+            "query_type": "detail_query",
+            "main_table": "plan_task_daily_record",
+            "query_plan": {
+                "query_type": "detail_query",
+                "select_fields": ["rzrq", "person_name"],
+            },
+        },
+    )
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "dataset_id": 10,
+            "prior_capsule": {},
+            "query_task_capsule": query_task_capsule,
+        }
+    )
+
+    assert decision.turn_type == "continue"
+    merged = decision.multiturn_context["merged_query_context"]
+    assert merged["main_table"] == "plan_task_daily_record"
+    assert merged["query_plan"]["query_type"] == "detail_query"
+    assert decision.multiturn_context["prior_query_context"]["question"] == "查询10条用户日志"
+    assert decision.synthesized_question == "基于上一轮问题「查询10条用户日志」，只看汤杰"
+
+
+def test_prior_capsule_query_context_takes_precedence_over_query_task_capsule():
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "dataset_id": 10,
+            "prior_capsule": {
+                "query_context": {
+                    "query_type": "detail_query",
+                    "main_table": "prior_capsule_table",
+                    "question": "上一轮来自 prior capsule",
+                }
+            },
+            "query_task_capsule": {
+                "turn_type": "followup_refine",
+                "dataset_id": 10,
+                "base_task_ref": "last_success_task",
+                "base_question": "查询10条用户日志",
+                "base_main_table": "query_task_capsule_table",
+                "base_query_plan": {"query_type": "detail_query"},
+            },
+        }
+    )
+
+    merged = decision.multiturn_context["merged_query_context"]
+    assert merged["main_table"] == "prior_capsule_table"
+    assert decision.multiturn_context["prior_query_context"]["question"] == "上一轮来自 prior capsule"
+
+
+def test_query_task_capsule_prior_context_requires_followup_refine():
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "dataset_id": 10,
+            "prior_capsule": {},
+            "query_task_capsule": {
+                "turn_type": "followup_explain",
+                "dataset_id": 10,
+                "base_task_ref": "last_success_task",
+                "base_main_table": "plan_task_daily_record",
+                "base_query_plan": {"query_type": "detail_query"},
+            },
+        }
+    )
+
+    assert decision.turn_type == "new"
+
+
+def test_query_task_capsule_prior_context_requires_base_task_ref():
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "dataset_id": 10,
+            "prior_capsule": {},
+            "query_task_capsule": {
+                "turn_type": "followup_refine",
+                "dataset_id": 10,
+                "base_main_table": "plan_task_daily_record",
+                "base_query_plan": {"query_type": "detail_query"},
+            },
+        }
+    )
+
+    assert decision.turn_type == "new"
+
+
+def test_query_task_capsule_prior_context_requires_same_dataset():
+    builder = MultiturnContextBuilder()
+    decision = builder.build(
+        {
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "dataset_id": 10,
+            "prior_capsule": {},
+            "query_task_capsule": {
+                "turn_type": "followup_refine",
+                "dataset_id": 11,
+                "base_task_ref": "last_success_task",
+                "base_main_table": "plan_task_daily_record",
+                "base_query_plan": {"query_type": "detail_query"},
+            },
+        }
+    )
+
+    assert decision.turn_type == "new"

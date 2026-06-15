@@ -223,6 +223,7 @@ def test_followup_capsule_uses_prior_detail_query_context():
     assert capsule["dataset_id"] == 10
     assert capsule["base_main_table"] == "plan_task_daily_record"
     assert capsule["base_query_plan"]["query_type"] == "detail_query"
+    assert capsule["base_question"] == "查询10条用户日志"
     assert "查询10条用户日志" in capsule["standalone_question"]
     assert "只看汤杰" in capsule["standalone_question"]
 
@@ -243,6 +244,7 @@ def test_followup_refine_does_not_inherit_when_dataset_mismatches():
 
     assert capsule["standalone_question"] == "只看汤杰"
     assert capsule["base_task_ref"] is None
+    assert capsule["base_question"] is None
     assert capsule["base_main_table"] is None
     assert capsule["base_query_plan"] is None
 
@@ -393,6 +395,32 @@ def test_capsule_metas_preserves_real_dataset_capsules_with_thread_state():
         assert "_thread" not in metas
         assert metas["10"]["dataset_id"] == "10"
         assert metas["10"]["updated_turn"] == 3
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_lead_multiturn_context_exposes_thread_last_success_task():
+    engine, session, store = _make_store()
+    try:
+        store.update_thread_state(
+            "session-lead-context",
+            {
+                "last_success_task": {
+                    "question": "查询10条用户日志",
+                    "query_type": "detail_query",
+                    "main_table": "plan_task_daily_record",
+                },
+                "active_task": {"turn_type": "followup_refine"},
+            },
+        )
+        state = store.load("session-lead-context")
+
+        context = store.lead_multiturn_context(state)
+
+        assert context["last_success_task"]["question"] == "查询10条用户日志"
+        assert context["active_task"]["turn_type"] == "followup_refine"
+        assert context["capsule_metas"] == {}
     finally:
         session.close()
         engine.dispose()

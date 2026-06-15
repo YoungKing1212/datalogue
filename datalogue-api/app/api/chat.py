@@ -56,6 +56,11 @@ from app.services.conversation_store import (
     session_key,
 )
 from app.services.message_gateway import classify_turn_event
+from app.services.task_capsule import (
+    build_query_task_capsule,
+    build_success_task_state,
+    has_query_target,
+)
 from app.utils.think import (
     filter_think_stream_chunk,
     flush_think_stream_state,
@@ -147,6 +152,7 @@ _STATE_OUTPUT_KEYS = {
     "should_retry",
     "token_usage",
     "turn_event",
+    "query_task_capsule",
 }
 
 TERM_CLARIFICATION_TTL_MINUTES = 30
@@ -685,10 +691,10 @@ def _find_dataset_by_name(db: Session, dataset_name: str) -> models.SemanticData
 
 
 def _has_last_success_task(multiturn_context: dict | None) -> bool:
-    """Task 1 最小判断：已有任意 SubAgent 胶囊即认为可承接上一轮成功查询。"""
+    """判断当前线程是否有可承接的上一轮成功查询。"""
 
     context = multiturn_context or {}
-    return bool(context.get("capsule_metas"))
+    return has_query_target(context.get("last_success_task"))
 
 
 def _gateway_lead_context(
@@ -1197,6 +1203,17 @@ async def _stream_chat_singleturn(
             dataset_id=effective_dataset_id,
             expected_schema_version=route_decision.get("bound_schema_version"),
         )
+    thread_last_success_task = (
+        (multiturn_context or {}).get("last_success_task")
+        if isinstance(multiturn_context, dict)
+        else None
+    )
+    query_task_capsule = build_query_task_capsule(
+        question=resolved_question,
+        turn_event=turn_event,
+        active_dataset_id=effective_dataset_id,
+        last_success_task=thread_last_success_task,
+    )
 
     # Phase 2: 在 LangGraph 之外完成多轮合并决策
     # - interpret 路径早退，不进 LangGraph
@@ -1210,6 +1227,7 @@ async def _stream_chat_singleturn(
         "history": history,
         "lead_agent_context": lead_agent_context,
         "turn_event": turn_event,
+        "query_task_capsule": query_task_capsule,
         "manifest_version": route_decision.get("manifest_version"),
         "bound_schema_version": route_decision.get("bound_schema_version"),
     }
@@ -1418,6 +1436,7 @@ async def _stream_chat_singleturn(
         "sql_retry_trace": [],
         "token_usage": None,
         "turn_event": turn_event,
+        "query_task_capsule": query_task_capsule,
     }
 
     # 构建并运行工作流
@@ -2031,6 +2050,23 @@ def _persist_completed_turn(
         subagent_capsules=updated_capsules,
         trace_context=trace_context_sink[0] if trace_context_sink else None,
     )
+    last_success_task = build_success_task_state(
+        question=payload_question,
+        dataset_id=_coerce_int(active_dataset_id),
+        query_plan=final_payload.get("query_plan"),
+        dsl=final_payload.get("dsl"),
+        sql=final_payload.get("sql"),
+        sql_result=final_payload.get("sql_result"),
+    )
+    if final_payload.get("error") is None and has_query_target(last_success_task):
+        store.update_thread_state(
+            final_session_id,
+            {
+                "last_success_task": last_success_task,
+                "active_task": None,
+            },
+            user_id=user_id,
+        )
     logger.info(
         "[_stream_chat] 多轮状态已写入: session_id=%s, turn_index=%s, active_dataset_id=%s",
         final_session_id,

@@ -2912,6 +2912,192 @@ class TestChatStreamEvents:
         assert "已选择数据集" in final["answer"]
         assert final["turn_event"]["event_type"] == "dataset_select"
 
+    def test_message_gateway_detects_thread_last_success_task(self):
+        """Thread Memory 的 last_success_task 应触发二轮 refine 判定。"""
+        from app.api.chat import _has_last_success_task
+
+        assert _has_last_success_task(
+            {
+                "last_success_task": {
+                    "query_type": "detail_query",
+                    "main_table": "plan_task_daily_record",
+                    "metrics": [],
+                }
+            }
+        ) is True
+        assert _has_last_success_task({"capsule_metas": {"10": {"dataset_id": "10"}}}) is False
+        assert _has_last_success_task({"last_success_task": {"query_type": "metric_query", "metrics": []}}) is False
+
+    def test_stream_chat_writes_last_success_task_and_reuses_it_next_turn(
+        self,
+        db_session,
+        sample_dataset,
+        monkeypatch,
+    ):
+        """第一轮成功查询应自动写入 _thread，第二轮无需手工 seed 即可承接。"""
+        from app.api.chat import _stream_chat
+        from app.services.conversation_store import ConversationStore
+
+        class MultiturnSettings:
+            MULTITURN_ENABLED = True
+            MULTITURN_LOCK_TTL_SECONDS = 300
+
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+        monkeypatch.setattr("app.api.chat.get_settings", lambda: MultiturnSettings())
+        captured_states = []
+
+        async def fake_astream_events(state, version):
+            captured_states.append(state)
+            yield {
+                "event": "on_chain_end",
+                "name": "report_generator",
+                "data": {
+                    "output": {
+                        **state,
+                        "answer": "查询完成",
+                        "query_plan": {
+                            "query_type": "detail_query",
+                            "execution_strategy": "query_graph",
+                            "debug": {"selected_main_table": "plan_task_daily_record"},
+                        },
+                        "dsl": {"fields": [{"name": "rzrq"}]},
+                        "sql": "SELECT rzrq FROM plan_task_daily_record LIMIT 10",
+                        "sql_list": ["SELECT rzrq FROM plan_task_daily_record LIMIT 10"],
+                        "sql_result": {
+                            "columns": ["rzrq"],
+                            "rows": [{"rzrq": "2024-01-01"}],
+                            "row_count": 1,
+                        },
+                    }
+                },
+                "metadata": {"langgraph_node": "report_generator"},
+            }
+
+        async def collect(question):
+            events = []
+            async for item in _stream_chat(
+                ChatRequest(
+                    question=question,
+                    dataset_id=sample_dataset.id,
+                    session_id="session-auto-last-success",
+                ),
+                db_session,
+            ):
+                events.append(json.loads(item["data"]))
+            return events
+
+        with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.DatasetSubAgent",
+            _graph_backed_fake_subagent_class(),
+        ):
+            mock_graph = MagicMock()
+            mock_graph.astream_events = fake_astream_events
+            mock_wf.return_value = mock_graph
+
+            first_events = asyncio.run(collect("查询10条用户日志"))
+            second_events = asyncio.run(collect("只看汤杰"))
+
+        assert any(event.get("type") == "final" for event in first_events)
+        assert any(event.get("type") == "final" for event in second_events)
+        thread_state = ConversationStore(db_session).get_thread_state("session-auto-last-success")
+        assert thread_state["last_success_task"]["main_table"] == "plan_task_daily_record"
+
+        second_state = captured_states[-1]
+        capsule = second_state["query_task_capsule"]
+        assert second_state["turn_event"]["event_type"] == "followup_refine"
+        assert capsule["base_task_ref"] == "last_success_task"
+        assert capsule["base_question"] == "查询10条用户日志"
+        assert second_state["merge_debug"]["used_prior"] is True
+        assert second_state["question"] == "基于上一轮问题「查询10条用户日志」，只看汤杰"
+
+    def test_singleturn_stream_injects_query_task_capsule_from_thread_memory(
+        self,
+        db_session,
+        sample_dataset,
+    ):
+        """真实 chat merge 前应从 Thread Memory 构建 query_task_capsule。"""
+        from app.api.chat import _stream_chat_singleturn
+        from app.services.conversation_store import ConversationStore
+
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+        store = ConversationStore(db_session)
+        conversation_state = store.load_or_create(
+            session_id="session-query-task-capsule",
+            user_id="1",
+        )
+        conversation_state.active_dataset_id = sample_dataset.id
+        db_session.add(conversation_state)
+        db_session.commit()
+        db_session.refresh(conversation_state)
+        store.update_thread_state(
+            "session-query-task-capsule",
+            {
+                "last_success_task": {
+                    "question": "查询10条用户日志",
+                    "dataset_id": sample_dataset.id,
+                    "query_type": "detail_query",
+                    "main_table": "plan_task_daily_record",
+                    "query_plan": {
+                        "query_type": "detail_query",
+                        "debug": {"selected_main_table": "plan_task_daily_record"},
+                    },
+                }
+            },
+        )
+        db_session.refresh(conversation_state)
+        captured = {}
+
+        async def fake_astream_events(state, version):
+            captured["initial_state"] = state
+            yield {
+                "event": "on_chain_end",
+                "name": "report_generator",
+                "data": {
+                    "output": {
+                        **state,
+                        "answer": "查询完成",
+                        "sql": "SELECT 1",
+                        "sql_list": ["SELECT 1"],
+                        "sql_result": {"columns": ["one"], "rows": [{"one": 1}], "row_count": 1},
+                    }
+                },
+                "metadata": {"langgraph_node": "report_generator"},
+            }
+
+        async def collect():
+            events = []
+            async for item in _stream_chat_singleturn(
+                ChatRequest(question="只看汤杰", dataset_id=sample_dataset.id),
+                db_session,
+                multiturn_context=store.lead_multiturn_context(conversation_state),
+                conversation_state=conversation_state,
+                conversation_store=store,
+                observability_session_id="session-query-task-capsule",
+            ):
+                events.append(json.loads(item["data"]))
+            return events
+
+        with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.DatasetSubAgent",
+            _graph_backed_fake_subagent_class(),
+        ):
+            mock_graph = MagicMock()
+            mock_graph.astream_events = fake_astream_events
+            mock_wf.return_value = mock_graph
+
+            events = asyncio.run(collect())
+
+        assert any(event.get("type") == "final" for event in events)
+        initial_state = captured["initial_state"]
+        capsule = initial_state["query_task_capsule"]
+        assert initial_state["turn_event"]["event_type"] == "followup_refine"
+        assert capsule["turn_type"] == "followup_refine"
+        assert capsule["base_task_ref"] == "last_success_task"
+        assert capsule["base_question"] == "查询10条用户日志"
+        assert capsule["base_main_table"] == "plan_task_daily_record"
+        assert initial_state["merge_debug"]["used_prior"] is True
+        assert initial_state["question"] == "基于上一轮问题「查询10条用户日志」，只看汤杰"
+
     def test_chat_stream_final_and_message_metadata_include_query_profile(
         self, db_session, sample_dataset
     ):

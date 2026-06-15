@@ -99,6 +99,7 @@ def build_query_task_capsule(
         "question": question,
         "standalone_question": question,
         "base_task_ref": None,
+        "base_question": None,
         "base_main_table": None,
         "base_query_plan": None,
     }
@@ -115,6 +116,7 @@ def build_query_task_capsule(
             {
                 "standalone_question": f"基于上一轮问题「{prior_question}」，{question}",
                 "base_task_ref": "last_success_task",
+                "base_question": prior_question,
                 "base_main_table": last_success_task.get("main_table"),
                 "base_query_plan": last_success_task.get("query_plan"),
             }

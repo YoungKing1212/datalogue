@@ -345,11 +345,24 @@ class MultiturnContextBuilder:
             merged["limit"] = delta["limit"]
         return merged
 
-    def has_query_metrics(self, query_context: dict) -> bool:
+    def has_query_target(self, query_context: dict) -> bool:
+        """判断上一轮上下文是否有可承接的查询目标。"""
+        query_type = query_context.get("query_type")
+        if query_type == "detail_query":
+            return bool(
+                query_context.get("fields")
+                or query_context.get("main_table")
+                or query_context.get("query_plan")
+                or query_context.get("dsl")
+            )
         metrics = query_context.get("metrics")
         if isinstance(metrics, list):
             return bool(metrics)
         return bool(metrics)
+
+    def has_query_metrics(self, query_context: dict) -> bool:
+        """兼容旧调用名；新语义由 has_query_target 统一承载。"""
+        return self.has_query_target(query_context)
 
     def blueprint_shortcut_candidate(
         self,
@@ -388,6 +401,38 @@ class MultiturnContextBuilder:
         multiturn = _as_dict(prior_capsule.get("multiturn_context"))
         value = multiturn.get("merged_query_context")
         return copy.deepcopy(value) if isinstance(value, dict) else {}
+
+    def task_capsule_prior_query_context(self, state: dict) -> dict:
+        """从 Task Capsule 的上一轮基础查询计划构造最小 prior 上下文。"""
+        capsule = _as_dict(state.get("query_task_capsule"))
+        if capsule.get("turn_type") != "followup_refine":
+            return {}
+        if capsule.get("base_task_ref") != "last_success_task":
+            return {}
+        capsule_dataset_id = capsule.get("dataset_id")
+        state_dataset_id = state.get("dataset_id")
+        if (
+            capsule_dataset_id is not None
+            and state_dataset_id is not None
+            and str(capsule_dataset_id) != str(state_dataset_id)
+        ):
+            return {}
+        base_query_plan = _as_dict(capsule.get("base_query_plan"))
+        base_main_table = capsule.get("base_main_table")
+        if not base_query_plan and not base_main_table:
+            return {}
+        prior_context: dict = {}
+        query_type = base_query_plan.get("query_type") or capsule.get("query_type")
+        if query_type:
+            prior_context["query_type"] = query_type
+        if base_query_plan:
+            prior_context["query_plan"] = copy.deepcopy(base_query_plan)
+        if base_main_table:
+            prior_context["main_table"] = base_main_table
+        question = capsule.get("base_question")
+        if question:
+            prior_context["question"] = question
+        return prior_context
 
     def prior_question(self, prior_capsule: dict, query_context: dict) -> str:
         """读取上一轮问题文本，作为继续追问时的问题补全来源。"""
@@ -441,6 +486,8 @@ class MultiturnContextBuilder:
         """组装 MergeDecision；节点薄壳据此拼 LangGraph output dict。"""
         prior_capsule = _as_dict(state.get("prior_capsule"))
         prior_query_context = self.prior_query_context(prior_capsule)
+        if not prior_query_context:
+            prior_query_context = self.task_capsule_prior_query_context(state)
         current_question = state.get("question") or ""
 
         if self.is_interpret_result_turn(state):
@@ -510,7 +557,7 @@ class MultiturnContextBuilder:
         merged_query_context = self.merge_query_context(
             prior_query_context, delta, question=current_question
         )
-        if not self.has_query_metrics(merged_query_context):
+        if not self.has_query_target(merged_query_context):
             multiturn_context = {
                 "turn_type": "new_query",
                 "prior_available": True,

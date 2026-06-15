@@ -20,6 +20,7 @@ from app.services.lead_agent import (
     build_lead_agent_context,
     build_resolved_question,
     build_tool_policy,
+    merge_multiturn_decision_for_chat,
     plan_tool_calls_with_llm,
     resolve_time_context,
 )
@@ -668,3 +669,32 @@ def test_planner_logs_prompt_and_response(monkeypatch, db_session, caplog):
     assert any("stage=skill_selector" in m for m in messages)
     assert any("stage=tool_planner" in m for m in messages)
     assert any("parse_ok=True" in m for m in messages)
+
+
+def test_merge_multiturn_decision_uses_query_task_capsule_prior_context():
+    """LeadAgent merge wrapper 应把 state 中的 query_task_capsule 交给 builder 兜底承接。"""
+    decision = merge_multiturn_decision_for_chat(
+        state={
+            "question": "只看汤杰",
+            "turn_type": "continue",
+            "dataset_id": 10,
+            "prior_capsule": {},
+            "query_task_capsule": {
+                "turn_type": "followup_refine",
+                "dataset_id": 10,
+                "base_task_ref": "last_success_task",
+                "base_question": "查询10条用户日志",
+                "standalone_question": "基于上一轮问题「查询10条用户日志」，只看汤杰",
+                "base_main_table": "plan_task_daily_record",
+                "base_query_plan": {
+                    "query_type": "detail_query",
+                    "select_fields": ["rzrq", "person_name"],
+                },
+            },
+        }
+    )
+
+    assert decision.turn_type == "continue"
+    merged = decision.multiturn_context["merged_query_context"]
+    assert merged["main_table"] == "plan_task_daily_record"
+    assert merged["query_plan"]["query_type"] == "detail_query"

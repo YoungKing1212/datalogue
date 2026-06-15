@@ -166,6 +166,9 @@ class ConversationStore:
         if not state:
             return {}
         messages = list(state.messages or [])
+        capsules = dict(state.subagent_capsules or {})
+        thread_state = capsules.get(THREAD_STATE_KEY)
+        thread_state = thread_state if isinstance(thread_state, dict) else {}
         last_user = next((item for item in reversed(messages) if item.get("role") == "user"), None)
         last_assistant = next(
             (item for item in reversed(messages) if item.get("role") == "assistant"),
@@ -180,6 +183,8 @@ class ConversationStore:
             "turn_index": state.turn_index,
             "last_question": (last_user or {}).get("content"),
             "last_answer_summary": (last_assistant or {}).get("content"),
+            "last_success_task": thread_state.get("last_success_task"),
+            "active_task": thread_state.get("active_task"),
             "capsule_metas": self.capsule_metas(state),
         }
 
