@@ -2,6 +2,8 @@ from app.services.subagent_planning.contracts import (
     CandidateAsset,
     QueryPlan,
     QueryPlanValidationError,
+    SubAgentEvent,
+    SubAgentResult,
     normalize_query_plan,
 )
 
@@ -48,6 +50,15 @@ def test_query_plan_rejects_invalid_execution_strategy():
         assert "execution_strategy" in str(exc)
     else:
         raise AssertionError("invalid execution_strategy should fail validation")
+
+
+def test_query_plan_constructor_rejects_invalid_strategy():
+    try:
+        QueryPlan(query_type="detail_query", execution_strategy="unknown", confidence=0.1)
+    except QueryPlanValidationError as exc:
+        assert "execution_strategy" in str(exc)
+    else:
+        raise AssertionError("QueryPlan constructor should validate execution_strategy")
 
 
 def test_query_plan_serializes_selected_reference_and_rejected_assets():
@@ -109,3 +120,33 @@ def test_query_plan_serializes_selected_reference_and_rejected_assets():
     assert payload["selected_assets"][0]["asset_type"] == "field"
     assert payload["reference_assets"][0]["asset_type"] == "blueprint"
     assert payload["rejected_assets"][0]["reject_reason"] == "用户要求明细列表，不需要聚合指标"
+
+
+def test_subagent_event_type_cannot_be_overridden_by_payload():
+    event = SubAgentEvent(event_type="query_plan", payload={"type": "wrong", "node": "query_plan"})
+
+    payload = event.to_sse_payload()
+
+    assert payload["type"] == "query_plan"
+    assert payload["node"] == "query_plan"
+
+
+def test_subagent_result_serializes_query_plan_and_trace_payload():
+    plan = QueryPlan(
+        query_type="detail_query",
+        execution_strategy="query_graph",
+        confidence=0.72,
+    )
+    result = SubAgentResult(
+        final_state={"answer": "已生成查询计划"},
+        query_plan=plan,
+        candidate_assets={"field": [{"name": "id"}]},
+        step_traces=[{"node": "query_plan"}],
+    )
+
+    payload = result.to_dict()
+
+    assert payload["final_state"]["answer"] == "已生成查询计划"
+    assert payload["query_plan"]["execution_strategy"] == "query_graph"
+    assert payload["candidate_assets"]["field"][0]["name"] == "id"
+    assert payload["step_traces"][0]["node"] == "query_plan"

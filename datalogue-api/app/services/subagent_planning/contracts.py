@@ -130,6 +130,14 @@ class QueryPlan:
     explanation: dict[str, Any] = field(default_factory=dict)
     debug: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.query_type not in QUERY_TYPES:
+            raise QueryPlanValidationError(f"query_type invalid: {self.query_type}")
+        if self.execution_strategy not in EXECUTION_STRATEGIES:
+            raise QueryPlanValidationError(f"execution_strategy invalid: {self.execution_strategy}")
+        if self.planner_source not in PLANNER_SOURCES:
+            raise QueryPlanValidationError(f"planner_source invalid: {self.planner_source}")
+
     def to_dict(self) -> dict[str, Any]:
         return jsonable_encoder(
             {
@@ -155,7 +163,7 @@ class SubAgentEvent:
     payload: dict[str, Any]
 
     def to_sse_payload(self) -> dict[str, Any]:
-        return jsonable_encoder({"type": self.event_type, **self.payload})
+        return jsonable_encoder({**self.payload, "type": self.event_type})
 
 
 @dataclass
@@ -164,6 +172,16 @@ class SubAgentResult:
     query_plan: QueryPlan
     candidate_assets: dict[str, Any]
     step_traces: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return jsonable_encoder(
+            {
+                "final_state": self.final_state,
+                "query_plan": self.query_plan.to_dict(),
+                "candidate_assets": self.candidate_assets,
+                "step_traces": self.step_traces,
+            }
+        )
 
 
 def _assets_from_payload(items: Any, usage: str) -> list[CandidateAsset]:
