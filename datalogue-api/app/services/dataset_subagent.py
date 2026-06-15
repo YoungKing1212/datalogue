@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +32,16 @@ from app.models.dataset import AnalysisBlueprint
 from app.services.analysis_blueprint import (
     blueprint_params_from_time_context,
     execute_analysis_blueprint,
+)
+from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
+from app.services.subagent_planning import (
+    QueryPlan,
+    SubAgentEvent,
+    build_blueprint_reference_context,
+    build_clarify_result,
+    build_reject_result,
+    plan_query,
+    recall_candidate_assets,
 )
 
 logger = logging.getLogger(__name__)
@@ -668,6 +679,265 @@ def _dsa_to_compat_metric_resolution(
     }
 
 
+def _dsa_public_candidate_assets(candidate_assets: dict[str, Any]) -> dict[str, Any]:
+    """对外暴露候选资产召回结构时移除内部 QueryGraph 上下文。"""
+    return {
+        key: value
+        for key, value in (candidate_assets or {}).items()
+        if key != "context"
+    }
+
+
+def _dsa_int_or_none(value: Any) -> int | None:
+    if value in (None, "", [], {}):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dsa_plan_blueprint_id(query_plan: QueryPlan) -> Any:
+    for assets in (query_plan.selected_assets, query_plan.reference_assets):
+        for asset in assets:
+            if asset.asset_type == "blueprint":
+                return asset.asset_id
+    return None
+
+
+_DSA_STATE_OUTPUT_KEYS = {
+    "conversation_id",
+    "original_question",
+    "resolved_question",
+    "manifest_version",
+    "bound_schema_version",
+    "time_context",
+    "thread_context",
+    "route_decision",
+    "schema_status",
+    "lead_agent_context",
+    "skip_subagent_report",
+    "report_owner",
+    "subagent_report_skipped",
+    "lead_agent_report",
+    "intent",
+    "entities",
+    "entry_intent",
+    "entry_route",
+    "entry_reason",
+    "blueprint_id",
+    "blueprint_match",
+    "blueprint_context",
+    "knowledge_term_id",
+    "route_payload",
+    "clarification_response",
+    "clarification_resolution_result",
+    "prior_capsule",
+    "prior_capsule_status",
+    "out_capsule",
+    "multiturn_context",
+    "turn_type",
+    "merge_debug",
+    "selected_term_id",
+    "schema_context",
+    "schema_structured",
+    "ddl_context",
+    "query_constraints",
+    "dataset_context_debug",
+    "datasource_context",
+    "term_normalization",
+    "semantic_asset_resolution",
+    "metric_resolution",
+    "candidate_assets",
+    "query_plan",
+    "query_plan_debug",
+    "dataset_prompt_instructions",
+    "dsl",
+    "dsl_valid",
+    "sql",
+    "sql_result",
+    "datasource_dialect",
+    "sql_audit_result",
+    "sql_diagnosis",
+    "sql_retry_trace",
+    "answer",
+    "answer_explanation",
+    "sql_list",
+    "error",
+    "generation_mode",
+    "should_retry",
+    "token_usage",
+}
+
+
+def _dsa_is_state_output(value: dict[str, Any]) -> bool:
+    """判断字典是否像 QueryGraph 节点输出片段。"""
+    return bool(_DSA_STATE_OUTPUT_KEYS.intersection(value.keys()))
+
+
+def _dsa_find_state_output(value: object, lg_node: str = "", depth: int = 0) -> dict[str, Any]:
+    """递归查找 LangGraph/LCEL 事件里的真实 state 输出。"""
+    if depth > 5 or not isinstance(value, dict):
+        return {}
+
+    if lg_node and isinstance(value.get(lg_node), dict):
+        nested = _dsa_find_state_output(value[lg_node], lg_node, depth + 1)
+        return nested or value[lg_node]
+
+    if _dsa_is_state_output(value):
+        return value
+
+    for key in ("output", "__end__", "state", "result"):
+        nested = _dsa_find_state_output(value.get(key), lg_node, depth + 1)
+        if nested:
+            return nested
+
+    if len(value) == 1:
+        nested = _dsa_find_state_output(next(iter(value.values())), lg_node, depth + 1)
+        if nested:
+            return nested
+
+    return {}
+
+
+def _dsa_extract_graph_event_output(event: dict[str, Any]) -> dict[str, Any]:
+    """从 runner 事件中解出可合并的 QueryGraph state 片段。"""
+    metadata = event.get("metadata") or {}
+    lg_node = metadata.get("langgraph_node") or ""
+    output = (event.get("data") or {}).get("output") or {}
+    return _dsa_find_state_output(output, lg_node)
+
+
+def _dsa_build_run_routing(
+    state: dict[str, Any],
+    request: DatasetSubAgentRequest,
+) -> dict[str, Any]:
+    """整理 LeadAgent 路由决策和 Graph initial_state，供查询规划器消费。"""
+    route_decision = dict(request.route_decision or {})
+    routing = {
+        **route_decision,
+        "entry_route": state.get("entry_route") or route_decision.get("entry_route") or route_decision.get("decision"),
+        "entry_intent": state.get("entry_intent") or route_decision.get("entry_intent") or state.get("intent"),
+        "entry_reason": state.get("entry_reason") or route_decision.get("reason"),
+        "blueprint_id": state.get("blueprint_id") or route_decision.get("blueprint_id"),
+        "blueprint_match": state.get("blueprint_match") or route_decision.get("blueprint_match"),
+        "entities": state.get("entities") or route_decision.get("entities") or {},
+        "route_payload": state.get("route_payload") or route_decision.get("route_payload") or {},
+        "original_question": state.get("original_question"),
+        "resolved_question": state.get("resolved_question"),
+        "time_context": state.get("time_context") or request.time_context,
+    }
+    return {key: value for key, value in routing.items() if value not in (None, "", [], {})}
+
+
+def _dsa_clean_blueprint_input_params(value: Any) -> dict[str, Any]:
+    """提取可安全传给蓝图执行器的简单参数值。"""
+    if not isinstance(value, dict):
+        return {}
+
+    params: dict[str, Any] = {}
+    for key, param_value in value.items():
+        if not isinstance(key, str) or not key:
+            continue
+        if param_value in (None, "", [], {}):
+            continue
+        if isinstance(param_value, str | int | float | bool):
+            params[key] = param_value
+    return params
+
+
+def _dsa_route_payload_blueprint_input_params(route_payload: Any) -> dict[str, Any]:
+    """从 route_payload 中提取规划层已确认的蓝图参数。"""
+    if not isinstance(route_payload, dict):
+        return {}
+
+    params: dict[str, Any] = {}
+    for field in ("params", "input_params", "parameters"):
+        params.update(_dsa_clean_blueprint_input_params(route_payload.get(field)))
+    return params
+
+
+def _dsa_build_blueprint_execute_input_params(routing: dict[str, Any]) -> dict[str, Any]:
+    """合并蓝图执行参数：routing.entities 优先于 route_payload，time_context 在解析层兜底。"""
+    params = _dsa_route_payload_blueprint_input_params(routing.get("route_payload"))
+    params.update(_dsa_clean_blueprint_input_params(routing.get("entities")))
+    return params
+
+
+def _dsa_append_text(existing: Any, addition: str) -> str:
+    existing_text = str(existing or "").strip()
+    addition_text = str(addition or "").strip()
+    if not existing_text:
+        return addition_text
+    if not addition_text:
+        return existing_text
+    return f"{existing_text}\n\n{addition_text}"
+
+
+def _dsa_build_query_graph_state(
+    *,
+    state: dict[str, Any],
+    request: DatasetSubAgentRequest,
+    question: str,
+    routing: dict[str, Any],
+    candidate_assets: dict[str, Any],
+    public_candidate_assets: dict[str, Any],
+    query_plan: QueryPlan,
+) -> dict[str, Any]:
+    """把候选资产上下文与查询计划注入 QueryGraph 初始状态。"""
+    context = candidate_assets.get("context") if isinstance(candidate_assets, dict) else {}
+    context = context if isinstance(context, dict) else {}
+    query_graph_state = dict(state)
+    query_graph_state.update(
+        {
+            "question": question,
+            "dataset_id": request.dataset_id,
+            "manifest_version": request.manifest_version,
+            "bound_schema_version": request.bound_schema_version,
+            "time_context": state.get("time_context") or request.time_context,
+            "thread_context": state.get("thread_context") or request.thread_context,
+            "route_decision": state.get("route_decision") or request.route_decision,
+            "schema_status": state.get("schema_status") or request.schema_status,
+            "lead_agent_context": state.get("lead_agent_context") or request.lead_agent_context,
+            "entry_route": "query_graph",
+            "entry_intent": routing.get("entry_intent") or query_plan.query_type,
+            "entry_reason": routing.get("entry_reason") or query_plan.fallback_reason,
+            "entities": routing.get("entities") or state.get("entities") or {},
+            "schema_context": context.get("schema_context"),
+            "schema_structured": context.get("schema_structured"),
+            "ddl_context": context.get("ddl_context"),
+            "query_constraints": context.get("query_constraints"),
+            "dataset_context_debug": context.get("dataset_context_debug"),
+            "datasource_context": context.get("datasource_context"),
+            "dataset_prompt_instructions": context.get("dataset_prompt_instructions"),
+            "candidate_assets": public_candidate_assets,
+            "query_plan": query_plan.to_dict(),
+            "query_plan_debug": {
+                "execution_strategy": query_plan.execution_strategy,
+                "planner_source": query_plan.planner_source,
+                "confidence": query_plan.confidence,
+                "fallback_reason": query_plan.fallback_reason,
+                "explanation": query_plan.explanation,
+                "decision_factors": query_plan.decision_factors,
+                "planner_warnings": query_plan.planner_warnings,
+                "governance_suggestions": query_plan.governance_suggestions,
+                "debug": query_plan.debug,
+            },
+        }
+    )
+    if query_plan.execution_strategy == "blueprint_as_reference":
+        reference_context = build_blueprint_reference_context(query_plan)
+        query_graph_state["blueprint_context"] = _dsa_append_text(
+            query_graph_state.get("blueprint_context"),
+            reference_context,
+        )
+        query_graph_state["dataset_prompt_instructions"] = _dsa_append_text(
+            query_graph_state.get("dataset_prompt_instructions"),
+            reference_context,
+        )
+    return query_graph_state
+
+
 # ============================================================
 # DatasetSubAgent 门面
 # ============================================================
@@ -686,6 +956,156 @@ class DatasetSubAgent:
     db: Session
     dataset_id: int
 
+    async def run(
+        self,
+        request: DatasetSubAgentRequest,
+        trace_context: Any | None,
+        *,
+        graph: Any,
+        initial_state: dict[str, Any] | None = None,
+        graph_kwargs: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[SubAgentEvent, None]:
+        """统一编排单数据集 SubAgent：资产召回、查询规划和策略执行。"""
+        state = dict(initial_state or {})
+        question = state.get("question") or request.question
+        routing = _dsa_build_run_routing(state, request)
+        multiturn_context = state.get("multiturn_context") or {}
+
+        candidate_assets = recall_candidate_assets(
+            self.db,
+            dataset_id=request.dataset_id,
+            question=question,
+            manifest_version=request.manifest_version,
+            bound_schema_version=request.bound_schema_version,
+        )
+        public_candidate_assets = _dsa_public_candidate_assets(candidate_assets)
+        yield SubAgentEvent(
+            event_type="candidate_assets",
+            payload={
+                "node": "candidate_assets",
+                "display_name": "候选资产召回",
+                "status": "done",
+                "candidate_assets": public_candidate_assets,
+            },
+        )
+
+        query_plan = plan_query(
+            db=self.db,
+            question=question,
+            routing=routing,
+            candidate_assets=public_candidate_assets,
+            multiturn_context=multiturn_context,
+            lead_agent_context=request.lead_agent_context,
+        )
+        query_plan_payload = query_plan.to_dict()
+        yield SubAgentEvent(
+            event_type="query_plan",
+            payload={
+                "node": "query_plan",
+                "display_name": "查询规划",
+                "status": "done",
+                "query_plan": query_plan_payload,
+            },
+        )
+
+        strategy = query_plan.execution_strategy
+        if strategy == "clarify":
+            result = build_clarify_result(query_plan)
+            final_state = dict(result.final_state)
+            final_state["candidate_assets"] = public_candidate_assets
+            yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
+            return
+
+        if strategy == "reject":
+            result = build_reject_result(query_plan)
+            final_state = dict(result.final_state)
+            final_state["candidate_assets"] = public_candidate_assets
+            yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
+            return
+
+        if strategy == "blueprint_execute":
+            final_state = self._run_blueprint_execute(
+                query_plan=query_plan,
+                question=question,
+                routing=routing,
+                candidate_assets=public_candidate_assets,
+                trace_context=trace_context,
+            )
+            yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
+            return
+
+        if graph is None:
+            raise ValueError(
+                f"DatasetSubAgent {strategy} strategy requires graph: dataset_id={request.dataset_id}"
+            )
+
+        query_graph_state = _dsa_build_query_graph_state(
+            state=state,
+            request=request,
+            question=question,
+            routing=routing,
+            candidate_assets=candidate_assets,
+            public_candidate_assets=public_candidate_assets,
+            query_plan=query_plan,
+        )
+        final_state = dict(query_graph_state)
+        runner = InProcessDatasetSubAgentRunner(graph, self.db)
+        async for event in runner.run(
+            request,
+            trace_context,
+            query_graph_state,
+            **(graph_kwargs or {}),
+        ):
+            output = _dsa_extract_graph_event_output(event)
+            if output:
+                final_state.update(output)
+            yield SubAgentEvent(event_type="graph_event", payload={"event": event})
+
+        final_state["query_plan"] = query_plan_payload
+        final_state["candidate_assets"] = public_candidate_assets
+        yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
+
+    def _run_blueprint_execute(
+        self,
+        *,
+        query_plan: QueryPlan,
+        question: str,
+        routing: dict[str, Any],
+        candidate_assets: dict[str, Any],
+        trace_context: Any | None,
+    ) -> dict[str, Any]:
+        """执行固定蓝图策略，并补齐 run 对外统一 final_state 字段。"""
+        blueprint_id = _dsa_plan_blueprint_id(query_plan) or routing.get("blueprint_id")
+        outcome = self.resolve_analysis_blueprint(
+            blueprint_id=_dsa_int_or_none(blueprint_id),
+            question=question,
+            entry_route="analysis_blueprint",
+            original_question=routing.get("original_question") or question,
+            resolved_question=routing.get("resolved_question") or question,
+            time_context=routing.get("time_context"),
+            input_params=_dsa_build_blueprint_execute_input_params(routing),
+            trace_context=trace_context,
+        )
+        return {
+            "query_plan": query_plan.to_dict(),
+            "candidate_assets": candidate_assets,
+            "answer": outcome.get("answer"),
+            "sql": outcome.get("sql"),
+            "sql_list": outcome.get("sql_list") or [],
+            "sql_result": outcome.get("sql_result"),
+            "error": outcome.get("error"),
+            "route_payload": outcome.get("route_payload") or {},
+            "should_retry": outcome.get("should_retry", False),
+            "entry_route": "analysis_blueprint",
+            "entry_intent": "analysis_blueprint",
+            "blueprint_id": outcome.get("blueprint_id") or _dsa_int_or_none(blueprint_id),
+            "blueprint_name": outcome.get("blueprint_name"),
+            "blueprint_context": outcome.get("blueprint_context"),
+            "generation_mode": outcome.get("generation_mode"),
+            "blueprint_outcome_status": outcome.get("status"),
+            "execution_time_ms": outcome.get("execution_time_ms"),
+        }
+
     # ──────────── Phase 5：分析蓝图解析 ────────────
 
     def resolve_analysis_blueprint(
@@ -697,6 +1117,7 @@ class DatasetSubAgent:
         original_question: str | None = None,
         resolved_question: str | None = None,
         time_context: dict | None = None,
+        input_params: dict[str, Any] | None = None,
         tracer: Any | None = None,
         trace_context: Any | None = None,
     ) -> dict[str, Any]:
@@ -733,6 +1154,7 @@ class DatasetSubAgent:
                 original_question=original_question,
                 resolved_question=resolved_question,
                 time_context=time_context,
+                input_params=input_params,
             )
             if span is not None:
                 try:
@@ -768,6 +1190,7 @@ class DatasetSubAgent:
         original_question: str | None,
         resolved_question: str | None,
         time_context: dict | None,
+        input_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """resolve_analysis_blueprint 内部实现：5 分支决策 + 返回 13 字段 dict。"""
         # 分支 1：not_applicable —— 无 blueprint_id 或 entry_route 错
@@ -857,7 +1280,10 @@ class DatasetSubAgent:
             self.db,
             bp,
             question=question,
-            input_params=blueprint_params_from_time_context(bp, time_context),
+            input_params={
+                **blueprint_params_from_time_context(bp, time_context),
+                **(input_params or {}),
+            },
             require_active=True,
             count_usage=True,
         )

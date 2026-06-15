@@ -22,6 +22,8 @@ const BUSINESS_STEP_NAMES = {
   intent_recognition: '识别意图',
   entry_intent_classification: '判断入口',
   analysis_blueprint_execute: '执行蓝图',
+  candidate_assets: '召回候选资产',
+  query_plan: '查询规划',
   schema_recall: '读取数据结构',
   term_normalize_node: '统一术语',
   semantic_asset_resolution_node: '匹配语义资产',
@@ -33,6 +35,27 @@ const BUSINESS_STEP_NAMES = {
   sql_audit: '诊断 SQL',
   report_generator: '组织回答',
 };
+
+const QUERY_TYPE_LABELS = {
+  detail_query: '明细查询',
+  metric_query: '指标查询',
+  blueprint_query: '蓝图查询',
+  knowledge_qa: '知识问答',
+  ambiguous: '需要澄清',
+  unsupported: '暂不支持',
+};
+
+const EXECUTION_STRATEGY_LABELS = {
+  blueprint_execute: '直接执行蓝图',
+  blueprint_as_reference: '参考蓝图生成查询',
+  query_graph: '普通查询生成',
+  clarify: '需要补充信息',
+  reject: '无法处理',
+};
+
+function enumLabel(labels, value) {
+  return value ? labels[value] || value : null;
+}
 
 function businessStepName(step) {
   return BUSINESS_STEP_NAMES[step?.node] || step?.display_name || step?.node || '执行步骤';
@@ -60,6 +83,81 @@ function resultRowCount(sqlResult) {
   return sqlResult.rows ?? sqlResult.rowCount ?? sqlResult.row_count ?? null;
 }
 
+function formatQueryPlanDetails(queryPlan) {
+  if (!queryPlan || typeof queryPlan !== 'object') return [];
+  const explanation = queryPlan.explanation || {};
+  const queryType = enumLabel(QUERY_TYPE_LABELS, queryPlan.query_type);
+  const executionStrategy = enumLabel(EXECUTION_STRATEGY_LABELS, queryPlan.execution_strategy);
+  const decisionFactors = Array.isArray(queryPlan.decision_factors)
+    ? queryPlan.decision_factors
+    : [];
+  const plannerWarnings = Array.isArray(queryPlan.planner_warnings)
+    ? queryPlan.planner_warnings
+    : [];
+  const governanceSuggestions = Array.isArray(queryPlan.governance_suggestions)
+    ? queryPlan.governance_suggestions
+    : [];
+  const firstFactor = decisionFactors.find((item) => item?.message)?.message;
+  const firstWarning = plannerWarnings.find((item) => item?.message)?.message;
+  const firstSuggestion = governanceSuggestions.find((item) => item?.message)?.message;
+  return [
+    queryType ? `查询类型：${queryType}` : null,
+    executionStrategy ? `执行策略：${executionStrategy}` : null,
+    explanation.summary ? `说明：${explanation.summary}` : null,
+    firstFactor ? `依据：${firstFactor}` : null,
+    firstWarning ? `提示：${firstWarning}` : null,
+    firstSuggestion ? `治理建议：${firstSuggestion}` : null,
+  ].filter(Boolean);
+}
+
+function formatCandidateAssetSummary(candidateAssets) {
+  const summary = candidateAssets?.summary;
+  if (!summary || typeof summary !== 'object') return [];
+  const summaryFields = [
+    ['fields', '字段'],
+    ['field_count', '字段'],
+    ['columns', '字段'],
+    ['column_count', '字段'],
+    ['tables', '表'],
+    ['table_count', '表'],
+    ['blueprints', '蓝图'],
+    ['blueprint_count', '蓝图'],
+    ['metrics', '指标'],
+    ['metric_count', '指标'],
+    ['dimensions', '维度'],
+    ['dimension_count', '维度'],
+    ['terms', '术语'],
+    ['term_count', '术语'],
+  ];
+  const seen = new Set();
+  return summaryFields
+    .map(([key, label]) => {
+      if (seen.has(label)) return null;
+      const value = summary[key];
+      const count = Array.isArray(value) ? value.length : value;
+      if (count == null || count === '' || count === 0) return null;
+      seen.add(label);
+      return `${label} ${count} 个`;
+    })
+    .filter(Boolean);
+}
+
+function StepDetail({ step }) {
+  const details =
+    step.node === 'query_plan' && step.query_plan
+      ? formatQueryPlanDetails(step.query_plan)
+      : step.node === 'candidate_assets' && step.candidate_assets
+      ? formatCandidateAssetSummary(step.candidate_assets)
+      : [];
+
+  if (details.length === 0) return null;
+  return (
+    <div style={{ marginLeft: 22, marginTop: -2, marginBottom: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+      {details.join(' · ')}
+    </div>
+  );
+}
+
 // ── 步骤列表 ──────────────────────────────────────────────
 function StepList({ steps, compact = false, sqlResult = null }) {
   if (!steps || steps.length === 0) return null;
@@ -77,19 +175,25 @@ function StepList({ steps, compact = false, sqlResult = null }) {
   return (
     <div>
       <div className="agent-section-label">执行过程</div>
-      {steps.map((step, i) => (
-        <div key={i} className="agent-step">
-          <div className={`agent-step-icon ${step.status}`}>
-            {step.status === 'done' && <Icon name="check" />}
+      {steps.map((step, i) => {
+        const key = `${step.node || 'step'}-${i}`;
+        return (
+          <div key={key}>
+            <div className="agent-step">
+              <div className={`agent-step-icon ${step.status}`}>
+                {step.status === 'done' && <Icon name="check" />}
+              </div>
+              <span className={`agent-step-label ${step.status === 'running' ? 'running' : ''}`}>
+                {businessStepName(step)}
+              </span>
+              {step.elapsed_ms != null && step.status === 'done' && (
+                <span className="agent-step-ms">{step.elapsed_ms}ms</span>
+              )}
+            </div>
+            <StepDetail step={step} />
           </div>
-          <span className={`agent-step-label ${step.status === 'running' ? 'running' : ''}`}>
-            {businessStepName(step)}
-          </span>
-          {step.elapsed_ms != null && step.status === 'done' && (
-            <span className="agent-step-ms">{step.elapsed_ms}ms</span>
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

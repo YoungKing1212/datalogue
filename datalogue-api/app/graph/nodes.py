@@ -459,6 +459,44 @@ def _format_query_context_for_prompt(multiturn_context: dict[str, Any] | None) -
     return json.dumps(jsonable_encoder(payload), ensure_ascii=False)[:3000]
 
 
+def _format_query_plan_for_prompt(query_plan: dict | None) -> str:
+    """把 SubAgent 查询规划压缩成 DSL 生成 prompt 可直接消费的约束文本。"""
+    if not isinstance(query_plan, dict):
+        return ""
+
+    query_type = query_plan.get("query_type") or ""
+    execution_strategy = query_plan.get("execution_strategy") or ""
+    explanation = query_plan.get("explanation") or {}
+    summary = explanation.get("summary") if isinstance(explanation, dict) else ""
+
+    lines = ["【查询规划】"]
+    if query_type:
+        lines.append(f"查询类型: {query_type}")
+    if execution_strategy:
+        lines.append(f"执行策略: {execution_strategy}")
+    if summary:
+        lines.append(f"规划说明: {summary}")
+    if execution_strategy == "blueprint_as_reference":
+        lines.append("硬性要求: 命中的蓝图只能作为参考证据，不能原样执行蓝图 SQL。")
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
+def _append_query_planning_context(
+    human_text: str,
+    query_plan_prompt: str,
+    blueprint_context: str,
+) -> str:
+    """在 DSL prompt 末尾追加查询规划和蓝图上下文，避免改变原有提示词顺序。"""
+    if query_plan_prompt:
+        human_text += f"\n\n{query_plan_prompt}"
+    blueprint_context = (blueprint_context or "").strip()
+    if blueprint_context and blueprint_context not in human_text:
+        human_text += f"\n\n{blueprint_context}"
+    return human_text
+
+
 def merge_prior_context_node(state: AgentState) -> Dict[str, Any]:
     """虚拟 span 节点：决策已由 LeadAgent `merge_multiturn_decision_for_chat` 在
     LangGraph 之外完成（Phase 2 上提）。本节点仅保留供 `_merge_prior_context_router`
@@ -1195,6 +1233,8 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
     query_constraints = normalize_query_constraints(state.get("query_constraints"))
     query_constraints_text = _query_constraints_text(state)
     multiturn_prompt = _format_query_context_for_prompt(state.get("multiturn_context"))
+    query_plan_prompt = _format_query_plan_for_prompt(state.get("query_plan"))
+    blueprint_context = (state.get("blueprint_context") or "").strip()
     if query_constraints["enabled"]:
         dsl_limit_example = query_constraints["default_limit"]
         semantic_time_rule = (
@@ -1228,6 +1268,11 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
             human_text += f"\n\n【多轮查询上下文】\n{multiturn_prompt}"
         if error:
             human_text += f"\n\n上一轮错误: {error}"
+        human_text = _append_query_planning_context(
+            human_text,
+            query_plan_prompt,
+            blueprint_context,
+        )
         human = HumanMessage(content=human_text)
         logger.debug(
             "【DSL生成提示词】路径=真实Schema\n[System]\n%s\n[Human]\n%s\n---END OF DSL PROMPT---",
@@ -1311,6 +1356,11 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
                 human_text += (
                     f"\n\n【数据集级 LLM 约束（硬性要求）】\n{dataset_prompt.strip()}"
                 )
+            human_text = _append_query_planning_context(
+                human_text,
+                query_plan_prompt,
+                blueprint_context,
+            )
             human = HumanMessage(content=human_text)
             logger.debug(
                 "【DSL生成提示词】路径=语义层-推断\n[System]\n%s\n[Human]\n%s\n---END OF DSL PROMPT---",
@@ -1428,6 +1478,11 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
             human_text += f"\n\n原始识别实体: {json.dumps(entities, ensure_ascii=False)}"
         if error:
             human_text += f"\n\n上一轮错误（请修正）: {error}"
+        human_text = _append_query_planning_context(
+            human_text,
+            query_plan_prompt,
+            blueprint_context,
+        )
         human = HumanMessage(content=human_text)
         logger.debug(
             "【DSL生成提示词】路径=语义层-确定性\n[System]\n%s\n[Human]\n%s\n---END OF DSL PROMPT---",
@@ -1467,6 +1522,11 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         human_text += f"\n\n【多轮查询上下文】\n{multiturn_prompt}"
     if error:
         human_text += f"\n\n上一轮错误: {error}"
+    human_text = _append_query_planning_context(
+        human_text,
+        query_plan_prompt,
+        blueprint_context,
+    )
     human = HumanMessage(content=human_text)
     logger.debug(
         "【DSL生成提示词】路径=无Schema\n[System]\n%s\n[Human]\n%s\n---END OF DSL PROMPT---",

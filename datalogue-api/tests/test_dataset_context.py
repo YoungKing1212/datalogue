@@ -102,3 +102,39 @@ def test_dataset_query_context_empty_assets_returns_minimal_context(
         "fields": 0,
         "selected_tables": 0,
     }
+
+
+def test_dataset_query_context_blueprints_keep_planning_metadata(
+    db_session, sample_dataset
+):
+    """蓝图候选需要保留参数和 SQL 模板，供 SubAgent 规划层判断澄清或参考。"""
+    from app.models.dataset import AnalysisBlueprint
+    from app.services.dataset_context import build_dataset_query_context
+
+    db_session.add(
+        AnalysisBlueprint(
+            dataset_id=sample_dataset.id,
+            name="个人日报查询",
+            description="按日期查询个人日报",
+            when_to_use="用户需要日报时使用",
+            trigger_keywords=["日报"],
+            parameters=[{"name": "start_date", "type": "date", "required": True}],
+            implementation_type="sql_template",
+            raw_sql="select * from daily_report where start_date = :start_date",
+            status="active",
+        )
+    )
+    db_session.commit()
+
+    result = build_dataset_query_context(
+        db_session,
+        sample_dataset.id,
+        question="查一下日报",
+    )
+
+    blueprint = result["schema_structured"]["blueprints"][0]
+
+    assert blueprint["description"] == "按日期查询个人日报"
+    assert blueprint["when_to_use"] == "用户需要日报时使用"
+    assert blueprint["parameters"][0]["name"] == "start_date"
+    assert blueprint["raw_sql"].startswith("select * from daily_report")

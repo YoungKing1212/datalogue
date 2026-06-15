@@ -75,6 +75,9 @@ class AgentState(TypedDict):
     term_normalization: Optional[dict]  # 业务术语归一化结果，含命中同义词和冲突澄清
     semantic_asset_resolution: Optional[dict]  # 术语/指标/维度/字段/蓝图统一资产解析结果
     metric_resolution: Optional[dict]  # 指标/维度解析结果，供意图卡和审计
+    candidate_assets: Optional[dict]  # SubAgent 统一候选资产召回结果，含 blueprint/metric/dimension/term/field/table
+    query_plan: Optional[dict]  # SubAgent 查询规划结果，决定 blueprint_execute/query_graph/clarify 等执行策略
+    query_plan_debug: Optional[dict]  # 查询规划调试信息，供 trace 和审计页使用
     # 数据集级 LLM 约束（硬性要求）— schema_recall_node 写入，report_generator 等
     # 不读 schema_context 的节点直接从这里取
     dataset_prompt_instructions: Optional[str]
