@@ -44,6 +44,7 @@ _KIND_TO_STATUS = {
 
 # 旧节点的 3 字段 fallback（not_applicable 类旧 fixture 只有这 3 字段）
 _OLD_NODE_FALLBACK_FIELDS = {"error", "should_retry", "sql_result"}
+_NON_SEMANTIC_SQL_RESULT_FIELDS = {"execution_time_ms"}
 
 
 def _setup_session(dataset_id: int = 1):
@@ -133,10 +134,27 @@ def _assert_expected(name: str, actual: dict, expected: dict, session) -> list[s
         if key in expected:
             _check(key, expected[key], actual.get(key))
 
+    def _normalize_sql_result(value):
+        """移除执行耗时等非语义字段，避免毫秒级抖动破坏 fixture 等价性。"""
+        if not isinstance(value, dict):
+            return value
+        return {
+            key: item
+            for key, item in value.items()
+            if key not in _NON_SEMANTIC_SQL_RESULT_FIELDS
+        }
+
     # 6) sql_result / sql / sql_list：仅当 expected 显式非 None
     for key in ("sql_result", "sql", "sql_list"):
         if expected.get(key) is not None:
-            _check(key, expected[key], actual.get(key))
+            if key == "sql_result":
+                _check(
+                    key,
+                    _normalize_sql_result(expected[key]),
+                    _normalize_sql_result(actual.get(key)),
+                )
+            else:
+                _check(key, expected[key], actual.get(key))
 
     return failures
 

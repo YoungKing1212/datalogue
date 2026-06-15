@@ -234,9 +234,14 @@ def _blueprint_structured(blueprint: AnalysisBlueprint) -> dict[str, Any]:
         "id": blueprint.id,
         "name": blueprint.name,
         "display_name": blueprint.name,
+        "description": blueprint.description,
+        "when_to_use": blueprint.when_to_use,
         "trigger_keywords": blueprint.trigger_keywords or [],
         "trigger_examples": blueprint.trigger_examples or [],
+        "parameters": blueprint.parameters or [],
         "implementation_type": blueprint.implementation_type,
+        "call_template": blueprint.call_template,
+        "raw_sql": blueprint.raw_sql,
     }
 
 
