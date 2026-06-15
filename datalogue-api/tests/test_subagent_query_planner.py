@@ -198,6 +198,47 @@ def test_plan_query_falls_back_when_llm_raises(monkeypatch, db_session):
     assert plan.execution_strategy == "query_graph"
 
 
+def test_plan_query_truncates_long_fallback_reason(monkeypatch, db_session):
+    long_reason = "planner down: " + "x" * 500
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: FakeLLM(exc=RuntimeError(long_reason)),
+    )
+
+    plan = plan_query(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": [_field().to_dict(), _table()]},
+    )
+
+    assert plan.planner_source == "fallback"
+    assert plan.fallback_reason.startswith("planner down: ")
+    assert len(plan.fallback_reason) <= 200
+
+
+def test_plan_query_does_not_swallow_prompt_assembly_errors(monkeypatch, db_session):
+    def _broken_prompt(**kwargs):
+        raise AssertionError("local prompt bug")
+
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner._planner_human_prompt",
+        _broken_prompt,
+    )
+
+    try:
+        plan_query(
+            db=db_session,
+            question="查询10条用户日志",
+            routing={"route": "dataset_subagent"},
+            candidate_assets={"assets": [_field().to_dict(), _table()]},
+        )
+    except AssertionError as exc:
+        assert str(exc) == "local prompt bug"
+    else:
+        raise AssertionError("prompt assembly errors should not fallback")
+
+
 def test_plan_query_falls_back_when_llm_clarifies_detail_query_with_field_table(
     monkeypatch,
     db_session,
@@ -304,3 +345,38 @@ def test_planner_human_prompt_uses_lightweight_whitelists():
     assert "full chat history" not in prompt
     assert "should_not_be_prompted" not in prompt
     assert "private reasoning" not in prompt
+
+
+def test_planner_human_prompt_truncates_nested_asset_text():
+    long_description = "参数说明" + "长" * 500
+    long_signal = "命中信号" + "值" * 500
+    long_reason = "匹配原因" + "多" * 500
+    long_display_name = "展示名" + "长" * 500
+    asset = _blueprint(
+        parameters=[
+            {
+                "name": "user_name",
+                "required": True,
+                "description": long_description,
+                "default": "默认值" + "大" * 500,
+            }
+        ]
+    ).to_dict()
+    asset["display_name"] = long_display_name
+    asset["match_reason"] = long_reason
+    asset["match_signals"] = [{"type": "keyword", "value": long_signal, "score": 0.9}]
+
+    prompt = _planner_human_prompt(
+        question="查一下日报",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": [asset]},
+    )
+    prompt_asset = json.loads(prompt)["candidate_assets"][0]
+
+    assert len(prompt_asset["display_name"]) <= 123
+    assert len(prompt_asset["match_reason"]) <= 123
+    assert len(prompt_asset["match_signals"][0]["value"]) <= 123
+    assert len(prompt_asset["metadata"]["parameters"][0]["description"]) <= 123
+    assert len(prompt_asset["metadata"]["parameters"][0]["default"]) <= 123
+    assert long_description not in prompt
+    assert long_signal not in prompt

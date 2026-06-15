@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from json import JSONDecodeError
 from copy import deepcopy
 from typing import Any
 
@@ -33,6 +34,9 @@ METRIC_PATTERNS = ("统计", "数量", "总数", "平均", "占比", "汇总", "
 BLUEPRINT_PATTERNS = ("日报", "周报", "月报", "分析", "报告")
 PROMPT_ASSET_LIMIT = 40
 LIGHTWEIGHT_METADATA_KEYS = {"table_name", "column_name", "parameters", "implementation_type"}
+PROMPT_TEXT_LIMIT = 120
+PROMPT_LIST_LIMIT = 20
+PROMPT_DEPTH_LIMIT = 4
 LIGHTWEIGHT_ASSET_KEYS = {
     "asset_type",
     "asset_id",
@@ -291,17 +295,44 @@ def _planner_system_prompt() -> str:
     )
 
 
-def _compact_error_text(exc: Exception, max_length: int = 300) -> str:
+def _compact_error_text(exc: Exception, max_length: int = 200) -> str:
     text = str(exc) or exc.__class__.__name__
     if len(text) <= max_length:
         return text
-    return f"{text[:max_length]}..."
+    return f"{text[: max_length - 3]}..."
+
+
+def _truncate_text(value: str, max_length: int = PROMPT_TEXT_LIMIT) -> str:
+    if len(value) <= max_length:
+        return value
+    return f"{value[: max_length - 3]}..."
+
+
+def _compact_prompt_value(value: Any, *, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return _truncate_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if depth >= PROMPT_DEPTH_LIMIT:
+        return _truncate_text(str(value))
+    if isinstance(value, list):
+        return [_compact_prompt_value(item, depth=depth + 1) for item in value[:PROMPT_LIST_LIMIT]]
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_prompt_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:PROMPT_LIST_LIMIT]
+        }
+    return _truncate_text(str(value))
 
 
 def _pick_keys(payload: Any, keys: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
-    return {key: payload[key] for key in keys if key in payload and payload[key] not in (None, "", [], {})}
+    return {
+        key: _compact_prompt_value(payload[key])
+        for key in keys
+        if key in payload and payload[key] not in (None, "", [], {})
+    }
 
 
 def _manifest_summary(value: Any) -> Any:
@@ -388,7 +419,7 @@ def _lightweight_asset(asset: CandidateAsset) -> dict[str, Any]:
     if signals:
         compact["match_signals"] = signals[:5]
     metadata = {
-        key: value
+        key: _compact_prompt_value(value)
         for key, value in (payload.get("metadata") or {}).items()
         if key in LIGHTWEIGHT_METADATA_KEYS and value not in (None, "", [], {})
     }
@@ -467,6 +498,14 @@ def _validate_hard_rules(
         raise QueryPlanValidationError("detail_query cannot clarify when field/table candidates exist")
 
 
+def _invoke_planner_llm(db: Any, messages: list[Any]) -> Any:
+    try:
+        llm = get_llm(temperature=0.0, role="lead_agent", db=db)
+        return llm.invoke(messages)
+    except (RuntimeError, TimeoutError, ConnectionError) as exc:
+        raise QueryPlanValidationError(_compact_error_text(exc)) from exc
+
+
 def plan_query(
     *,
     db: Any,
@@ -489,13 +528,21 @@ def plan_query(
         ),
     ]
     try:
-        llm = get_llm(temperature=0.0, role="lead_agent", db=db)
-        response = llm.invoke(messages)
+        response = _invoke_planner_llm(db, messages)
+    except QueryPlanValidationError as exc:
+        return build_fallback_query_plan(
+            question=question,
+            routing=routing,
+            candidate_assets=candidate_assets,
+            fallback_reason=_compact_error_text(exc),
+        )
+
+    try:
         payload = _safe_json_parse(getattr(response, "content", response))
         plan = normalize_query_plan(payload)
         _validate_hard_rules(plan, question=question, candidate_assets=candidate_assets)
         return plan
-    except Exception as exc:
+    except (JSONDecodeError, QueryPlanValidationError, ValueError, TypeError) as exc:
         return build_fallback_query_plan(
             question=question,
             routing=routing,
