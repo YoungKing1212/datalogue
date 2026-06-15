@@ -130,6 +130,34 @@ def test_dsl_prompt_does_not_duplicate_reference_blueprint(monkeypatch):
     assert "blueprint_as_reference" in human_prompt
 
 
+def test_dsl_prompt_does_not_duplicate_reference_blueprint_from_dataset_prompt(monkeypatch):
+    """当数据集级约束已包含蓝图上下文时，推断路径不应再次追加同一份文本。"""
+    from app.graph import nodes as nodes_module
+
+    fake_llm = _FakeLLMResponse()
+    monkeypatch.setattr(nodes_module, "get_llm", lambda **_kwargs: fake_llm)
+
+    state = _base_state(
+        schema_context="【语义层】\n数据集: 日志数据集",
+        ddl_context="表: user_logs | 列: id (int), content (text)",
+        metric_resolution={
+            "all_matched": False,
+            "unresolved": ["用户日志"],
+            "metrics": [],
+            "dimensions": [],
+        },
+        dataset_prompt_instructions=REFERENCE_BLUEPRINT,
+    )
+
+    nodes_module.dsl_generate_node(state, db=None)
+
+    human_prompt = fake_llm.messages[1].content
+    assert "【数据集级 LLM 约束（硬性要求）】" in human_prompt
+    assert human_prompt.count(REFERENCE_BLUEPRINT) == 1
+    assert "查询规划" in human_prompt
+    assert "blueprint_as_reference" in human_prompt
+
+
 def test_format_query_plan_for_prompt_ignores_invalid_or_empty_plan():
     """helper 只在 query_plan 有有效规划字段时输出提示词片段。"""
     from app.graph.nodes import _format_query_plan_for_prompt
