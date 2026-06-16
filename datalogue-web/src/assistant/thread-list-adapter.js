@@ -22,6 +22,39 @@ import {
 // 内存缓存：localThreadId -> { remoteId, externalId }
 const idMap = new Map();
 const reverseIdMap = new Map();
+let lastInitializedThread = null;
+
+export function resolveRemoteId(localThreadId) {
+  return idMap.get(String(localThreadId ?? ''))?.remoteId ?? null;
+}
+
+export function resolveRecentInitializedRemoteId(maxAgeMs = 10000) {
+  if (!lastInitializedThread) return null;
+  return Date.now() - lastInitializedThread.createdAt <= maxAgeMs
+    ? lastInitializedThread.remoteId
+    : null;
+}
+
+function rememberResolvedConversation(localThreadId, actualConvId) {
+  if (localThreadId == null || actualConvId == null) return;
+  const localId = String(localThreadId);
+  const remoteId = String(actualConvId);
+  if (!localId || !remoteId) return;
+
+  const previous = idMap.get(localId);
+  if (previous?.remoteId && previous.remoteId !== remoteId) {
+    reverseIdMap.delete(previous.remoteId);
+  }
+  idMap.set(localId, { remoteId, externalId: previous?.externalId });
+  reverseIdMap.set(remoteId, localId);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('datalogue:conv-resolved', (event) => {
+    const { localThreadId, actualConvId } = event.detail || {};
+    rememberResolvedConversation(localThreadId, actualConvId);
+  });
+}
 
 /**
  * 把后端 MessageOut 转成 assistant-ui 的 ThreadMessage
@@ -226,6 +259,7 @@ export class DatalogueThreadListAdapter {
     const externalId = conv.thread_id || undefined;
     idMap.set(threadId, { remoteId, externalId });
     reverseIdMap.set(remoteId, threadId);
+    lastInitializedThread = { localId: String(threadId), remoteId, createdAt: Date.now() };
     return { remoteId, externalId };
   }
 

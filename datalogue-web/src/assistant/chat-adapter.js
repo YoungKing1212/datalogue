@@ -12,6 +12,7 @@
 // 每次 yield content 数组是完整覆盖，所以本地累加器维护 reasonings + accText。
 
 import { streamChatEvents } from '../api/client';
+import { resolveRecentInitializedRemoteId, resolveRemoteId } from './thread-list-adapter';
 
 const BUSINESS_SESSION_PREFIX = 'assistant-thread';
 
@@ -223,6 +224,12 @@ function normalizeConversationId(threadId) {
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
+function conversationIdFromCurrentRoute() {
+  if (typeof window === 'undefined') return null;
+  const match = window.location.pathname.match(/^\/chat\/(\d+)(?:\/|$)/);
+  return match ? normalizeConversationId(match[1]) : null;
+}
+
 function normalizeSessionPart(value) {
   return String(value || '')
     .trim()
@@ -258,6 +265,19 @@ function emitTrace(ev) {
   }
 }
 
+function emitResolvedConversation(localThreadId, actualConvId) {
+  if (actualConvId == null) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('datalogue:conv-resolved', {
+        detail: { localThreadId, actualConvId },
+      }),
+    );
+  } catch (_e) {
+    /* SSR 保护 */
+  }
+}
+
 /**
  * 构造 ChatModelAdapter
  * @param {object} opts
@@ -271,7 +291,11 @@ export function makeChatAdapter({ datasetIdRef }) {
       const question = extractQuestion(messages);
       if (!question) return;
 
-      const convId = normalizeConversationId(unstable_threadId);
+      const resolvedRemoteId =
+        resolveRemoteId(unstable_threadId) || resolveRecentInitializedRemoteId();
+      const convId = resolvedRemoteId
+        ? normalizeConversationId(resolvedRemoteId)
+        : conversationIdFromCurrentRoute() || normalizeConversationId(unstable_threadId);
       const businessSessionId = buildBusinessSessionId({
         threadId: unstable_threadId,
         conversationId: convId,
@@ -336,6 +360,7 @@ export function makeChatAdapter({ datasetIdRef }) {
           yield { content: buildContent() };
         } else if (ev.type === 'lead_agent_tools') {
           emitTrace(ev);
+          emitResolvedConversation(unstable_threadId, ev.thread_context?.conversation_id);
           reasonings.push({
             type: 'reasoning',
             text: formatLeadAgentToolsAsReasoning(ev),
@@ -370,6 +395,7 @@ export function makeChatAdapter({ datasetIdRef }) {
 
       if (finalPayload) {
         emitTrace(finalPayload);
+        emitResolvedConversation(unstable_threadId, finalPayload.conversation_id);
 
         // 收敛：text 用 final.answer 兜底（report_generator token 可能没全到）
         const finalText = finalPayload.answer || accText;

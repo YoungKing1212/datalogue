@@ -11,6 +11,7 @@
 # Created On  : 2026-06-10
 # ============================================================
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 from app.core.config import Settings
@@ -217,6 +218,44 @@ def test_get_llm_uses_litellm_sdk_adapter(db_session):
     assert llm.temperature == 0.1
     assert llm.timeout == 30
     assert llm.datalogue_thinking_enabled is False
+
+
+def test_litellm_chat_client_astream_yields_chunks():
+    """LiteLLM SDK 适配器应兼容报告节点使用的 astream 接口。"""
+    from app.graph.llm import LiteLLMChatClient
+    from langchain_core.messages import HumanMessage
+
+    captured = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+
+        async def chunks():
+            yield {"choices": [{"delta": {"content": "查询"}}]}
+            yield {"choices": [{"delta": {"content": "完成"}}]}
+
+        return chunks()
+
+    client = LiteLLMChatClient(
+        model="openai/test-model",
+        api_key="sk-test",
+        api_base="http://localhost:4000/v1",
+        temperature=0.1,
+        timeout=12,
+        model_kwargs={},
+        thinking_enabled=False,
+    )
+
+    async def collect():
+        return [chunk async for chunk in client.astream([HumanMessage(content="生成报告")])]
+
+    with patch("litellm.acompletion", fake_acompletion):
+        chunks = asyncio.run(collect())
+
+    assert [chunk.content for chunk in chunks] == ["查询", "完成"]
+    assert captured["model"] == "openai/test-model"
+    assert captured["api_base"] == "http://localhost:4000/v1"
+    assert captured["stream"] is True
 
 
 def test_llm_model_test_endpoint_persists_result(client, db_session):

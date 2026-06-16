@@ -229,6 +229,21 @@ class LiteLLMChatClient:
                     response_metadata={"provider": "litellm_sdk", "model": self.model},
                 )
 
+    async def astream(self, messages: list[BaseMessage] | list[Any]):
+        try:
+            import litellm
+        except ImportError as exc:  # pragma: no cover - 依赖缺失时由运行环境暴露
+            raise RuntimeError("当前环境未安装 litellm，无法创建 LLM 客户端") from exc
+
+        stream = await litellm.acompletion(**self._completion_kwargs(messages, stream=True))
+        async for chunk in stream:
+            content = _litellm_chunk_content(chunk)
+            if content:
+                yield AIMessageChunk(
+                    content=content,
+                    response_metadata={"provider": "litellm_sdk", "model": self.model},
+                )
+
 
 def get_llm(
     temperature: float = 0.0,

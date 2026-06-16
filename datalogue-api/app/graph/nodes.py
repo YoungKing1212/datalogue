@@ -635,12 +635,19 @@ def _append_query_planning_context(
     return human_text
 
 
+_TRUSTED_FALLBACK_SQL_TEMPLATES = {"dataset10_log_detail"}
+
+
 def _template_sql_from_query_plan(query_plan: dict | None) -> str:
     if not isinstance(query_plan, dict):
         return ""
-    if query_plan.get("planner_source") != "template":
-        return ""
     debug = query_plan.get("debug") if isinstance(query_plan.get("debug"), dict) else {}
+    planner_source = query_plan.get("planner_source")
+    template_name = str(debug.get("template_name") or "").strip()
+    if planner_source != "template" and not (
+        planner_source == "fallback" and template_name in _TRUSTED_FALLBACK_SQL_TEMPLATES
+    ):
+        return ""
     sql = debug.get("sql_template")
     return str(sql).strip() if sql else ""
 

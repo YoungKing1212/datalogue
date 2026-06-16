@@ -243,6 +243,14 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
       const ev = e.detail;
       if (!ev) return;
 
+      const syncSelectedDataset = (routeDecision) => {
+        const datasetId = routeDecision?.dataset_id == null ? null : Number(routeDecision.dataset_id);
+        if (routeDecision?.decision === 'selected' && datasetId != null) {
+          const matched = datasetList.find((item) => Number(item.id) === datasetId);
+          if (matched) setSelectedDs(matched);
+        }
+      };
+
       if (ev.type === 'lead_agent_tools') {
         setTraceSteps((prev) => {
           const toolStep = {
@@ -269,11 +277,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
             : [toolStep, ...prev];
         });
       } else if (ev.type === 'route_decision') {
-        const datasetId = ev.dataset_id == null ? null : Number(ev.dataset_id);
-        if (ev.decision === 'selected' && datasetId != null) {
-          const matched = datasetList.find((item) => Number(item.id) === datasetId);
-          if (matched) setSelectedDs(matched);
-        }
+        syncSelectedDataset(ev);
         setTraceSteps((prev) => {
           const routeStep = {
             node: 'manifest_route',
@@ -334,6 +338,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
           });
         }
       } else if (ev.type === 'final') {
+        syncSelectedDataset(ev.route_decision || ev.response_metadata?.route_decision);
         setTraceMeta({
           traceId: ev.langfuse_trace_id || null,
           sessionId: ev.langfuse_session_id || null,

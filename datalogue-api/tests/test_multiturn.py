@@ -312,6 +312,7 @@ def test_conversation_store_resolves_dataset_pending_clarification(db_session):
     state = store.load_or_create(session_id="session-dataset-pending", user_id="u1")
     state.pending_clarification = {
         "kind": "dataset_choice",
+        "original_question": "查询销售明细",
         "candidates": [
             {"index": 1, "dataset_id": 10, "dataset_name": "销售数据集"},
             {"index": 2, "dataset_id": 11, "dataset_name": "库存数据集"},
@@ -330,6 +331,7 @@ def test_conversation_store_resolves_dataset_pending_clarification(db_session):
     assert result["status"] == "resolved"
     assert result["type"] == "dataset"
     assert result["dataset_id"] == 10
+    assert result["original_question"] == "查询销售明细"
     assert result["clear_pending"] is True
 
 

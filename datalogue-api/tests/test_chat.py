@@ -197,6 +197,34 @@ class TestChatAPI:
         assert result["llm_skipped_reason"] == "query_plan_template_sql"
         assert result["sql"] == sql
 
+    def test_dsl_generate_fallback_template_plan_skips_llm(self, monkeypatch):
+        """LLM planner 失败后的可信模板 fallback 也应直接产出 SQL。"""
+        from app.graph.nodes import dsl_generate_node
+
+        def fail_get_llm(*_args, **_kwargs):
+            raise AssertionError("fallback template path should not create llm")
+
+        monkeypatch.setattr("app.graph.nodes.get_llm", fail_get_llm)
+        sql = "SELECT * FROM plan_task_daily_record LIMIT 10"
+
+        result = dsl_generate_node(
+            {
+                "question": "查询10条用户日志",
+                "query_plan": {
+                    "planner_source": "fallback",
+                    "fallback_reason": "llm_planner_unavailable",
+                    "debug": {
+                        "template_name": "dataset10_log_detail",
+                        "sql_template": sql,
+                    },
+                },
+            }
+        )
+
+        assert result["generation_mode"] == "template"
+        assert result["llm_skipped_reason"] == "query_plan_template_sql"
+        assert result["sql"] == sql
+
     def test_sql_execute_preserves_upstream_compile_error(self, db_session):
         """上游 SQL 编译失败时，不应被 SQL 执行节点覆盖成笼统的 SQL 为空。"""
         from app.graph.nodes import sql_execute_node
@@ -3102,6 +3130,116 @@ class TestChatStreamEvents:
         assert mock_wf.called is False
         assert "已选择数据集" in final["answer"]
         assert final["turn_event"]["event_type"] == "dataset_select"
+
+    def test_dataset_pending_selection_restores_original_question(
+        self,
+        db_session,
+        sample_dataset,
+        monkeypatch,
+    ):
+        """有数据集挂起澄清时，选择数据集后应恢复上一轮原问题继续查询。"""
+        from app.api.chat import _stream_chat
+        from app.services.conversation_store import ConversationStore
+
+        class MultiturnSettings:
+            MULTITURN_ENABLED = True
+            MULTITURN_LOCK_TTL_SECONDS = 300
+
+        session_id = "session-dataset-selection-restore"
+        original_question = "最近30日GMV趋势如何"
+        selection_text = f"选择：{sample_dataset.name}"
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+        monkeypatch.setattr("app.api.chat.get_settings", lambda: MultiturnSettings())
+
+        store = ConversationStore(db_session)
+        conversation_state = store.load_or_create(session_id=session_id, user_id="1")
+        conversation_state.pending_clarification = {
+            "kind": "dataset_choice",
+            "original_question": original_question,
+            "candidates": [
+                {
+                    "index": 1,
+                    "dataset_id": sample_dataset.id,
+                    "dataset_name": sample_dataset.name,
+                }
+            ],
+        }
+        db_session.add(conversation_state)
+        db_session.commit()
+        db_session.refresh(conversation_state)
+
+        captured_states = []
+
+        async def fake_astream_events(state, version):
+            captured_states.append(state)
+            yield {
+                "event": "on_chain_end",
+                "name": "report_generator",
+                "data": {
+                    "output": {
+                        **state,
+                        "answer": "查询完成",
+                        "query_plan": {
+                            "query_type": "detail_query",
+                            "execution_strategy": "query_graph",
+                            "debug": {"selected_main_table": "orders"},
+                        },
+                        "dsl": {"fields": [{"name": "gmv"}]},
+                        "sql": "SELECT 1",
+                        "sql_list": ["SELECT 1"],
+                        "sql_result": {
+                            "columns": ["one"],
+                            "rows": [{"one": 1}],
+                            "row_count": 1,
+                        },
+                    }
+                },
+                "metadata": {"langgraph_node": "report_generator"},
+            }
+
+        async def collect():
+            events = []
+            async for item in _stream_chat(
+                ChatRequest(question=selection_text, session_id=session_id),
+                db_session,
+            ):
+                events.append(json.loads(item["data"]))
+            return events
+
+        fake_subagent_class = _graph_backed_fake_subagent_class()
+        with patch("app.api.chat.build_workflow") as mock_wf, patch(
+            "app.api.chat.DatasetSubAgent",
+            fake_subagent_class,
+        ):
+            mock_graph = MagicMock()
+            mock_graph.astream_events = fake_astream_events
+            mock_wf.return_value = mock_graph
+
+            events = asyncio.run(collect())
+
+        final = [event for event in events if event.get("type") == "final"][-1]
+        initial_state = captured_states[-1]
+        user_message = (
+            db_session.query(models.Message)
+            .filter(models.Message.role == "user")
+            .order_by(models.Message.id.desc())
+            .first()
+        )
+        saved_state = store.load(session_id)
+        thread_state = store.get_thread_state(session_id)
+
+        assert "已选择数据集" not in final["answer"]
+        assert final["answer"] == "查询完成"
+        assert initial_state["original_question"] == original_question
+        assert selection_text not in initial_state["question"]
+        assert "GMV趋势" in initial_state["question"]
+        assert initial_state["dataset_id"] == sample_dataset.id
+        assert initial_state["turn_event"]["event_type"] == "new_query"
+        assert user_message.content == selection_text
+        assert saved_state.pending_clarification is None
+        assert saved_state.active_dataset_id == str(sample_dataset.id)
+        assert thread_state["last_success_task"]["question"] == original_question
+        assert fake_subagent_class.captured_runs[-1]["request"].question == initial_state["question"]
 
     def test_message_gateway_detects_thread_last_success_task(self):
         """Thread Memory 的 last_success_task 应触发二轮 refine 判定。"""

@@ -912,6 +912,7 @@ async def _stream_chat_singleturn(
     multiturn_context: dict | None = None,
     conversation_state: models.ConversationState | None = None,
     conversation_store: ConversationStore | None = None,
+    pending_resolution: dict | None = None,
     observability_session_id: str | None = None,
     trace_context_sink: list | None = None,
     defer_trace_close: bool = False,
@@ -963,6 +964,31 @@ async def _stream_chat_singleturn(
         )
     )
     db.commit()
+
+    if (
+        isinstance(pending_resolution, dict)
+        and pending_resolution.get("status") == "resolved"
+        and pending_resolution.get("type") == "dataset"
+    ):
+        restored_question = str(pending_resolution.get("original_question") or "").strip()
+        restored_dataset_id = _coerce_int(pending_resolution.get("dataset_id"))
+        if restored_dataset_id is not None:
+            effective_dataset_id = restored_dataset_id
+            if conv.dataset_id != effective_dataset_id:
+                conv.dataset_id = effective_dataset_id
+                db.commit()
+                db.refresh(conv)
+        if restored_question:
+            multiturn_context = dict(multiturn_context or {})
+            multiturn_context["pending_clarification"] = None
+            multiturn_context["active_dataset_id"] = effective_dataset_id
+            payload = payload.model_copy(
+                update={
+                    "question": restored_question,
+                    "dataset_id": effective_dataset_id,
+                    "clarification_response": None,
+                }
+            )
 
     tracer = get_observability_tracer()
     trace_context = tracer.create_trace_context(
@@ -2121,6 +2147,11 @@ def _persist_completed_turn(
         final_payload,
         original_question=payload_question,
     )
+    executed_question = (
+        final_payload.get("original_question")
+        or final_payload.get("resolved_question")
+        or payload_question
+    )
     store.append_completed_turn(
         session_id=final_session_id,
         question=payload_question,
@@ -2140,7 +2171,7 @@ def _persist_completed_turn(
         trace_context=trace_context_sink[0] if trace_context_sink else None,
     )
     last_success_task = build_success_task_state(
-        question=payload_question,
+        question=executed_question,
         dataset_id=_coerce_int(active_dataset_id),
         query_plan=final_payload.get("query_plan"),
         dsl=final_payload.get("dsl"),
@@ -2234,6 +2265,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             multiturn_context=store.lead_multiturn_context(state),
             conversation_state=state,
             conversation_store=store,
+            pending_resolution=pending_resolution,
             observability_session_id=business_session_id,
             trace_context_sink=trace_context_sink,
             defer_trace_close=True,

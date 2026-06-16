@@ -210,6 +210,7 @@ class ConversationStore:
                     "status": "resolved",
                     "type": "dataset",
                     "dataset_id": selected_dataset_id,
+                    "original_question": pending.get("original_question"),
                     "clear_pending": True,
                     "reason": "dataset_candidate_selected",
                 }
