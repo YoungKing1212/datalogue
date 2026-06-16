@@ -714,7 +714,7 @@ function TermClarificationCard({ clarification, routePayload, onSelect }) {
   );
 }
 
-function TraceLinkCard({ traceId, sessionId, observability }) {
+function TraceLinkCard({ traceId, sessionId, observability, stepTrace = [] }) {
   if (!traceId && !sessionId) return null;
 
   const baseUrl = observability?.base_url || observability?.baseUrl || null;
@@ -744,6 +744,16 @@ function TraceLinkCard({ traceId, sessionId, observability }) {
     const panelObservability = observability
       ? { ...observability, trace_url: traceUrl || observability.trace_url || observability.traceUrl || null }
       : { trace_url: traceUrl, base_url: baseUrl, project_id: projectId };
+    window.dispatchEvent(new CustomEvent('datalogue:run-start'));
+    if (Array.isArray(stepTrace)) {
+      for (const step of stepTrace) {
+        if (step && typeof step === 'object') {
+          window.dispatchEvent(new CustomEvent('datalogue:trace', {
+            detail: { ...step, type: 'step' },
+          }));
+        }
+      }
+    }
     const detail = {
       type: 'final',
       langfuse_trace_id: traceId || null,
@@ -806,6 +816,7 @@ export function AIMessage({ showSql = true }) {
   const langfuseTraceId = custom.langfuseTraceId || null;
   const langfuseSessionId = custom.langfuseSessionId || null;
   const observability = custom.observability || null;
+  const stepTrace = custom.stepTrace || [];
   const savedFeedback = custom.feedback || null;
 
   const handleSelectClarification = (candidate, optionIndex, label, kind = 'term') => {
@@ -911,6 +922,7 @@ export function AIMessage({ showSql = true }) {
         traceId={langfuseTraceId}
         sessionId={langfuseSessionId}
         observability={observability}
+        stepTrace={stepTrace}
       />
 
       {/* SQL 执行结果表格 */}

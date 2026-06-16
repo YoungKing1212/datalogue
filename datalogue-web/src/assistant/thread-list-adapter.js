@@ -125,6 +125,7 @@ function messagesFromBackend(detail) {
           langfuseTraceId: m.response_metadata?.langfuse?.trace_id || null,
           langfuseSessionId: m.response_metadata?.langfuse?.session_id || null,
           observability: m.response_metadata?.observability || m.response_metadata?.langfuse || null,
+          stepTrace: traces,
           feedback: m.response_metadata?.feedback || null,
         },
       },

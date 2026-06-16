@@ -16,6 +16,8 @@ import { Icon } from './icons';
 //   traceMeta        {traceId, sessionId, messageId, observability} Langfuse 观测元数据
 
 const BUSINESS_STEP_NAMES = {
+  message_gateway: 'message_gateway',
+  'message-gateway': 'message_gateway',
   lead_agent_tools: 'lead_agent_tools',
   manifest_route: 'manifest_route',
   clarification_resolution: 'clarification_resolution',
@@ -142,18 +144,108 @@ function formatCandidateAssetSummary(candidateAssets) {
     .filter(Boolean);
 }
 
+function compactJson(value) {
+  if (!value || typeof value !== 'object') return '';
+  return JSON.stringify(value, null, 2);
+}
+
+function StructuredBlock({ title, value }) {
+  const body = compactJson(value);
+  if (!body) return null;
+  return (
+    <details
+      open
+      style={{
+        border: '1px solid var(--hairline)',
+        borderRadius: 6,
+        background: 'var(--surface)',
+        marginTop: 6,
+        overflow: 'hidden',
+      }}
+    >
+      <summary
+        style={{
+          cursor: 'pointer',
+          color: 'var(--text-2)',
+          fontSize: 11,
+          fontWeight: 600,
+          padding: '6px 8px',
+        }}
+      >
+        {title}
+      </summary>
+      <pre
+        style={{
+          margin: 0,
+          padding: '0 8px 8px',
+          maxHeight: 180,
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          color: 'var(--text-3)',
+          fontSize: 11,
+          lineHeight: 1.5,
+          fontFamily: 'var(--font-mono)',
+        }}
+      >
+        {body}
+      </pre>
+    </details>
+  );
+}
+
 function StepDetail({ step }) {
+  const isMessageGateway = isMessageGatewayStep(step);
+  const turnEvent = step.turn_event || step.payload?.turn_event;
+  const queryTaskCapsule = step.query_task_capsule || step.payload?.query_task_capsule;
   const details =
-    step.node === 'query_plan' && step.query_plan
+    isMessageGateway && turnEvent
+      ? [
+          turnEvent.event_type ? `Turn Event：${turnEvent.event_type}` : null,
+          queryTaskCapsule?.turn_type ? `Capsule：${queryTaskCapsule.turn_type}` : null,
+          queryTaskCapsule?.standalone_question
+            ? `问题：${queryTaskCapsule.standalone_question}`
+            : null,
+        ].filter(Boolean)
+      : step.node === 'query_plan' && step.query_plan
       ? formatQueryPlanDetails(step.query_plan)
       : step.node === 'candidate_assets' && step.candidate_assets
       ? formatCandidateAssetSummary(step.candidate_assets)
       : [];
 
-  if (details.length === 0) return null;
+  if (details.length === 0 && !isMessageGateway) return null;
   return (
     <div style={{ marginLeft: 22, marginTop: -2, marginBottom: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
-      {details.join(' · ')}
+      {details.length > 0 && <div>{details.join(' · ')}</div>}
+      {isMessageGateway && (
+        <>
+          <StructuredBlock title="Turn Event" value={turnEvent} />
+          <StructuredBlock title="Query Task Capsule" value={queryTaskCapsule} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function isMessageGatewayStep(step) {
+  return step?.node === 'message_gateway' || step?.node === 'message-gateway';
+}
+
+function findMessageGatewayStep(steps) {
+  return (steps || []).find(isMessageGatewayStep) || null;
+}
+
+function GatewayContext({ steps }) {
+  const gatewayStep = findMessageGatewayStep(steps);
+  if (!gatewayStep) return null;
+  const turnEvent = gatewayStep.turn_event || gatewayStep.payload?.turn_event;
+  const queryTaskCapsule = gatewayStep.query_task_capsule || gatewayStep.payload?.query_task_capsule;
+  if (!turnEvent && !queryTaskCapsule) return null;
+  return (
+    <div>
+      <div className="agent-section-label">Message Gateway</div>
+      <StructuredBlock title="Turn Event" value={turnEvent} />
+      <StructuredBlock title="Query Task Capsule" value={queryTaskCapsule} />
     </div>
   );
 }
@@ -439,6 +531,7 @@ function AgentPanel({
       <div className="agent-panel-body">
         <TraceSummary traceMeta={traceMeta} />
         <StepList steps={steps} compact={executionSettled} sqlResult={sqlResult} />
+        {executionSettled && <GatewayContext steps={steps} />}
         <IntentCard intent={intent} metricResolution={metricResolution} generationMode={generationMode} />
         <SqlPreview sql={sql} />
         <ResultSummary sqlResult={sqlResult} />

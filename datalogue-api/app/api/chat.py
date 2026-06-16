@@ -15,6 +15,7 @@
 
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -73,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 # 节点名称到前端/Trace 展示名的映射；展示名统一使用原始节点名，便于按节点检索 trace。
 _NODE_DISPLAY_NAMES = {
+    "message_gateway": "message_gateway",
     "merge_prior_context": "merge_prior_context",
     "clarification_resolution": "clarification_resolution",
     "intent_recognition": "intent_recognition",
@@ -91,6 +93,64 @@ _NODE_DISPLAY_NAMES = {
     "report_generator": "report_generator",
     "lead_agent_report_generator": "lead_agent_report_generator",
 }
+
+_TRACE_CAPSULE_BLOCKED_KEYS = {
+    "data",
+    "direct_sql",
+    "dsl",
+    "raw",
+    "raw_sql",
+    "records",
+    "result",
+    "result_rows",
+    "rows",
+    "sample_rows",
+    "sql",
+    "sql_result",
+}
+_TRACE_CAPSULE_SQL_VALUE_RE = re.compile(
+    r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
+    r".{0,200}\b(from|into|set|table|join|where|values)\b"
+)
+
+
+def _safe_trace_capsule_value(value: Any, *, key_name: str = "") -> Any:
+    key_lower = key_name.lower()
+    if key_lower in _TRACE_CAPSULE_BLOCKED_KEYS or "sql" in key_lower:
+        return None
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            safe_item = _safe_trace_capsule_value(item, key_name=key)
+            if safe_item in (None, "", [], {}):
+                continue
+            sanitized[key] = safe_item
+        return sanitized
+    if isinstance(value, list):
+        return [
+            item
+            for item in (
+                _safe_trace_capsule_value(item, key_name=key_name)
+                for item in value[:8]
+            )
+            if item not in (None, "", [], {})
+        ]
+    if isinstance(value, str):
+        text = value.strip()
+        if _TRACE_CAPSULE_SQL_VALUE_RE.search(text):
+            return None
+        return text[:500]
+    return value
+
+
+def _safe_query_task_capsule_for_trace(capsule: Any) -> dict | None:
+    """返回可用于 SSE、落库和前端展示的 QueryTaskCapsule 安全视图。"""
+    if not isinstance(capsule, dict):
+        return None
+    safe_capsule = _safe_trace_capsule_value(capsule)
+    return safe_capsule if isinstance(safe_capsule, dict) and safe_capsule else None
 
 _STATE_OUTPUT_KEYS = {
     "conversation_id",
@@ -1214,6 +1274,22 @@ async def _stream_chat_singleturn(
         active_dataset_id=effective_dataset_id,
         last_success_task=thread_last_success_task,
     )
+    trace_query_task_capsule = _safe_query_task_capsule_for_trace(query_task_capsule)
+    step_traces: list[dict] = []  # 收集推理步骤供历史加载时恢复思维链
+    gateway_step_payload = {
+        "type": "step",
+        "node": "message_gateway",
+        "display_name": _NODE_DISPLAY_NAMES["message_gateway"],
+        "status": "done",
+        "turn_event": turn_event,
+        "query_task_capsule": trace_query_task_capsule,
+        "payload": {
+            "turn_event": turn_event,
+            "query_task_capsule": trace_query_task_capsule,
+        },
+    }
+    step_traces.append(gateway_step_payload)
+    yield _sse_data(gateway_step_payload)
 
     # Phase 2: 在 LangGraph 之外完成多轮合并决策
     # - interpret 路径早退，不进 LangGraph
@@ -1252,6 +1328,8 @@ async def _stream_chat_singleturn(
             turn_type=merge_decision.turn_type,
             multiturn_context=merge_decision.multiturn_context,
             merge_debug=merge_decision.merge_debug,
+            gateway_step_payload=gateway_step_payload,
+            query_task_capsule=trace_query_task_capsule,
         ):
             yield sse_event
         return
@@ -1334,6 +1412,8 @@ async def _stream_chat_singleturn(
             defer_trace_close=defer_trace_close,
             obs_context_manager=obs_context_manager,
             routing=routing,
+            gateway_step_payload=gateway_step_payload,
+            query_task_capsule=trace_query_task_capsule,
         ):
             yield sse_event
         return
@@ -1350,6 +1430,8 @@ async def _stream_chat_singleturn(
             defer_trace_close=defer_trace_close,
             obs_context_manager=obs_context_manager,
             routing=routing,
+            gateway_step_payload=gateway_step_payload,
+            query_task_capsule=trace_query_task_capsule,
         ):
             yield sse_event
         return
@@ -1468,7 +1550,6 @@ async def _stream_chat_singleturn(
         # 同一 langgraph_node 名称可能重复出现，只取每个节点的第一次事件
         reported_running: set[str] = set()
         reported_done: set[str] = set()
-        step_traces: list[dict] = []  # 收集推理步骤供历史加载时恢复思维链
         graph_report_think_state = new_think_stream_state()
 
         async for sub_event in sub_agent.run(
@@ -1803,6 +1884,9 @@ async def _stream_chat_singleturn(
         query_profile=query_profile,
         answer_explanation=answer_explanation,
     )
+    trace_query_task_capsule = _safe_query_task_capsule_for_trace(
+        final_state.get("query_task_capsule")
+    )
     trace_metadata = {
         "status": "failed" if error else "success",
         "execution_path": execution_path,
@@ -1826,6 +1910,7 @@ async def _stream_chat_singleturn(
         "multiturn_context": final_state.get("multiturn_context"),
         "turn_type": final_state.get("turn_type"),
         "turn_event": final_state.get("turn_event"),
+        "query_task_capsule": trace_query_task_capsule,
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
         "candidate_assets": final_state.get("candidate_assets"),
@@ -1854,6 +1939,7 @@ async def _stream_chat_singleturn(
         "multiturn_context": final_state.get("multiturn_context"),
         "turn_type": final_state.get("turn_type"),
         "turn_event": final_state.get("turn_event"),
+        "query_task_capsule": trace_query_task_capsule,
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
         "candidate_assets": final_state.get("candidate_assets"),
@@ -1953,6 +2039,7 @@ async def _stream_chat_singleturn(
         "multiturn_context": final_state.get("multiturn_context"),
         "turn_type": final_state.get("turn_type"),
         "turn_event": final_state.get("turn_event"),
+        "query_task_capsule": trace_query_task_capsule,
         "merge_debug": final_state.get("merge_debug"),
         "out_capsule": final_state.get("out_capsule"),
         "candidate_assets": final_state.get("candidate_assets"),
@@ -2346,6 +2433,8 @@ async def _interpret_early_return(
     turn_type: str,
     multiturn_context: dict | None,
     merge_debug: dict,
+    gateway_step_payload: dict | None = None,
+    query_task_capsule: dict | None = None,
 ):
     """interpret_result 早退：保存助手消息、emit SSE final 事件，不走 LangGraph。
 
@@ -2369,6 +2458,8 @@ async def _interpret_early_return(
         "multiturn_context": multiturn_context,
         "merge_debug": merge_debug,
         "turn_type": turn_type,
+        "turn_event": gateway_step_payload.get("turn_event") if isinstance(gateway_step_payload, dict) else None,
+        "query_task_capsule": query_task_capsule,
         "sql_result": None,
     }
     response_metadata = jsonable_encoder({
@@ -2381,13 +2472,24 @@ async def _interpret_early_return(
         "route_payload": route_payload,
         "multiturn_context": multiturn_context,
         "merge_debug": merge_debug,
+        "turn_event": final_state.get("turn_event"),
+        "query_task_capsule": query_task_capsule,
     })
+    step_trace = [
+        step
+        for step in (
+            gateway_step_payload,
+            _lead_agent_event(lead_agent_context),
+            _route_decision_event(route_decision),
+        )
+        if step
+    ]
     assistant_message = models.Message(
         conversation_id=conv.id,
         role="assistant",
         content=answer,
         sql_list=[],
-        step_trace=[_lead_agent_event(lead_agent_context), _route_decision_event(route_decision)],
+        step_trace=step_trace,
         response_metadata=response_metadata,
     )
     db.add(assistant_message)
@@ -2432,6 +2534,8 @@ async def _interpret_early_return(
             "schema_status": lead_agent_context.get("schema_status"),
             "clarification": None,
             "route_payload": route_payload,
+            "turn_event": final_state.get("turn_event"),
+            "query_task_capsule": query_task_capsule,
             "sql_result": None,
             "query_profile": None,
             "explainability": None,
@@ -2460,6 +2564,8 @@ async def _early_route_return(
     defer_trace_close: bool,
     obs_context_manager: Any,
     routing: dict,
+    gateway_step_payload: dict | None = None,
+    query_task_capsule: dict | None = None,
 ):
     """Phase 3: LeadAgent 入口路由早退（chitchat/reject/knowledge_qa/clarify）。
 
@@ -2477,6 +2583,7 @@ async def _early_route_return(
         "entry_reason": routing.get("entry_reason"),
         "route_payload": route_payload,
         "turn_event": routing.get("turn_event") or route_payload.get("turn_event"),
+        "query_task_capsule": query_task_capsule,
         "time_context": lead_agent_context.get("time_context"),
         "blueprint_id": routing.get("blueprint_id"),
         "knowledge_term_id": routing.get("knowledge_term_id"),
@@ -2492,13 +2599,23 @@ async def _early_route_return(
         "route_payload": route_payload,
         "routing": routing,
         "turn_event": final_state.get("turn_event"),
+        "query_task_capsule": query_task_capsule,
     })
+    step_trace = [
+        step
+        for step in (
+            gateway_step_payload,
+            _lead_agent_event(lead_agent_context),
+            _route_decision_event(route_decision),
+        )
+        if step
+    ]
     assistant_message = models.Message(
         conversation_id=conv.id,
         role="assistant",
         content=answer,
         sql_list=[],
-        step_trace=[_lead_agent_event(lead_agent_context), _route_decision_event(route_decision)],
+        step_trace=step_trace,
         response_metadata=response_metadata,
     )
     db.add(assistant_message)
@@ -2536,6 +2653,7 @@ async def _early_route_return(
             "clarification": None,
             "route_payload": route_payload,
             "turn_event": final_state.get("turn_event"),
+            "query_task_capsule": query_task_capsule,
             "sql_result": None,
             "query_profile": None,
             "explainability": None,

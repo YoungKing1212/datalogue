@@ -2332,6 +2332,187 @@ class TestChatStreamEvents:
     """测试 /api/chat/stream SSE 事件格式（astream_events）"""
 
     @pytest.mark.asyncio
+    async def test_stream_message_gateway_step_and_final_include_turn_event_and_task_capsule(
+        self,
+        monkeypatch,
+        db_session,
+        sample_dataset,
+    ):
+        """message_gateway step 与 final payload 应暴露 turn_event / query_task_capsule。"""
+        from app.api.chat import _stream_chat_singleturn
+
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+
+        route_decision = {
+            "decision": "selected",
+            "dataset_id": sample_dataset.id,
+            "dataset_name": sample_dataset.name,
+            "manifest_version": "v-test",
+            "bound_schema_version": "schema-test",
+            "score": 1.0,
+            "reason": "测试固定路由",
+        }
+        lead_agent_context = {
+            "route_decision": route_decision,
+            "effective_dataset_id": sample_dataset.id,
+            "should_continue": True,
+            "resolved_question": "查询10条用户日志",
+            "time_context": {},
+            "thread_context": {},
+            "schema_status": {"status": "ok", "structured": {"terms": []}},
+            "selected_skills": [],
+            "planned_tool_calls": [],
+            "executed_tool_calls": [],
+            "policy_violations": [],
+            "audit_trace": {},
+            "multiturn_classification": {},
+        }
+
+        async def fake_astream_events(state, version):
+            yield {
+                "event": "on_chain_end",
+                "name": "sql_execute",
+                "data": {
+                    "output": {
+                        **state,
+                        "answer": "查询完成",
+                        "entry_intent": "detail_query",
+                        "entry_route": "query_graph",
+                        "sql": "SELECT rzrq FROM plan_task_daily_record LIMIT 10",
+                        "sql_list": ["SELECT rzrq FROM plan_task_daily_record LIMIT 10"],
+                        "sql_result": {
+                            "columns": ["rzrq"],
+                            "rows": [{"rzrq": "2024-01-01"}],
+                            "row_count": 1,
+                        },
+                        "query_plan": {
+                            "query_type": "detail_query",
+                            "execution_strategy": "query_graph",
+                            "debug": {"selected_main_table": "plan_task_daily_record"},
+                        },
+                        "error": None,
+                    }
+                },
+                "metadata": {"langgraph_node": "sql_execute"},
+            }
+
+        monkeypatch.setattr("app.api.chat.build_workflow", lambda db: MagicMock(astream_events=fake_astream_events))
+        monkeypatch.setattr("app.api.chat.DatasetSubAgent", _graph_backed_fake_subagent_class())
+        monkeypatch.setattr("app.api.chat.build_lead_agent_context", lambda *args, **kwargs: lead_agent_context)
+        monkeypatch.setattr("app.api.chat.resolve_term_clarification", lambda *args, **kwargs: {"status": "none"})
+        monkeypatch.setattr(
+            "app.api.chat.route_query_intent",
+            lambda *args, **kwargs: {
+                "intent": "query",
+                "entities": {},
+                "entry_intent": "detail_query",
+                "entry_route": "query_graph",
+                "entry_reason": "测试进入查询图",
+                "route_payload": {"kind": "query_graph"},
+            },
+        )
+
+        events = []
+        async for item in _stream_chat_singleturn(
+            ChatRequest(question="查询10条用户日志", dataset_id=sample_dataset.id),
+            db_session,
+        ):
+            events.append(json.loads(item["data"]))
+
+        gateway_step = next(
+            event
+            for event in events
+            if event.get("type") == "step" and event.get("node") == "message_gateway"
+        )
+        final = [event for event in events if event.get("type") == "final"][-1]
+
+        assert gateway_step["display_name"] == "message_gateway"
+        assert gateway_step["status"] == "done"
+        assert gateway_step["turn_event"]["event_type"] == "new_query"
+        assert gateway_step["query_task_capsule"]["dataset_id"] == sample_dataset.id
+        assert gateway_step["payload"]["turn_event"] == gateway_step["turn_event"]
+        assert gateway_step["payload"]["query_task_capsule"] == gateway_step["query_task_capsule"]
+        assert final["turn_event"] == gateway_step["turn_event"]
+        assert final["query_task_capsule"] == gateway_step["query_task_capsule"]
+        assistant_message = db_session.get(models.Message, final["message_id"])
+        assert assistant_message is not None
+        assert any(
+            step.get("node") == "message_gateway"
+            and step.get("query_task_capsule") == gateway_step["query_task_capsule"]
+            for step in (assistant_message.step_trace or [])
+        )
+
+    @pytest.mark.asyncio
+    async def test_interpret_early_return_keeps_gateway_step_and_task_capsule(
+        self,
+        monkeypatch,
+        db_session,
+        sample_dataset,
+    ):
+        """interpret_result 早退也应保留 message_gateway step 和安全任务胶囊。"""
+        from app.api.chat import _stream_chat_singleturn
+        from app.services.multiturn_context import MergeDecision
+
+        route_decision = {
+            "decision": "selected",
+            "dataset_id": sample_dataset.id,
+            "dataset_name": sample_dataset.name,
+            "manifest_version": "v-test",
+            "bound_schema_version": "schema-test",
+        }
+        lead_agent_context = {
+            "route_decision": route_decision,
+            "effective_dataset_id": sample_dataset.id,
+            "should_continue": True,
+            "resolved_question": "这个结果说明什么",
+            "time_context": {},
+            "thread_context": {},
+            "schema_status": {"status": "ok"},
+            "selected_skills": [],
+            "planned_tool_calls": [],
+            "executed_tool_calls": [],
+            "policy_violations": [],
+            "audit_trace": {},
+            "multiturn_classification": {},
+        }
+        merge_decision = MergeDecision(
+            turn_type="interpret",
+            multiturn_context={"turn_type": "interpret"},
+            interpret_payload={
+                "answer": "这是对上一轮结果的解释。",
+                "entry_intent": "interpret",
+                "entry_route": "interpret_result",
+            },
+            merge_debug={"reason": "test_interpret"},
+        )
+
+        monkeypatch.setattr("app.api.chat.build_lead_agent_context", lambda *args, **kwargs: lead_agent_context)
+        monkeypatch.setattr("app.api.chat.merge_multiturn_decision_for_chat", lambda *args, **kwargs: merge_decision)
+        monkeypatch.setattr("app.api.chat.route_query_intent", MagicMock())
+
+        with patch("app.api.chat.build_workflow") as mock_wf:
+            events = []
+            async for item in _stream_chat_singleturn(
+                ChatRequest(question="这个结果说明什么", dataset_id=sample_dataset.id),
+                db_session,
+            ):
+                events.append(json.loads(item["data"]))
+
+        gateway_step = next(
+            event
+            for event in events
+            if event.get("type") == "step" and event.get("node") == "message_gateway"
+        )
+        final = [event for event in events if event.get("type") == "final"][-1]
+        assert final["entry_route"] == "interpret_result"
+        assert final["turn_event"] == gateway_step["turn_event"]
+        assert final["query_task_capsule"] == gateway_step["query_task_capsule"]
+        assistant_message = db_session.get(models.Message, final["message_id"])
+        assert assistant_message is not None
+        assert any(step.get("node") == "message_gateway" for step in assistant_message.step_trace or [])
+        mock_wf.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_stream_chat_emits_query_plan_step(self, monkeypatch, db_session, sample_dataset):
         """单轮 chat 应透传 DatasetSubAgent 的查询规划事件和最终状态。"""
         from app.api.chat import _stream_chat_singleturn
@@ -3053,7 +3234,10 @@ class TestChatStreamEvents:
                     "main_table": "plan_task_daily_record",
                     "query_plan": {
                         "query_type": "detail_query",
-                        "debug": {"selected_main_table": "plan_task_daily_record"},
+                        "debug": {
+                            "selected_main_table": "plan_task_daily_record",
+                            "sql_template": "SELECT rzrq FROM plan_task_daily_record LIMIT 10",
+                        },
                     },
                 }
             },
@@ -3110,8 +3294,24 @@ class TestChatStreamEvents:
         assert capsule["base_task_ref"] == "last_success_task"
         assert capsule["base_question"] == "查询10条用户日志"
         assert capsule["base_main_table"] == "plan_task_daily_record"
+        assert capsule["base_query_plan"]["debug"]["sql_template"].startswith("SELECT")
         assert initial_state["merge_debug"]["used_prior"] is True
         assert initial_state["question"] == "基于上一轮问题「查询10条用户日志」，只看汤杰"
+        gateway_step = next(
+            event
+            for event in events
+            if event.get("type") == "step" and event.get("node") == "message_gateway"
+        )
+        assert "sql_template" not in json.dumps(gateway_step["query_task_capsule"], ensure_ascii=False)
+        final = [event for event in events if event.get("type") == "final"][-1]
+        assert final["turn_event"] == initial_state["turn_event"]
+        assert final["query_task_capsule"]["base_query_plan"]["debug"] == {
+            "selected_main_table": "plan_task_daily_record"
+        }
+        assert "sql_template" not in json.dumps(final["query_task_capsule"], ensure_ascii=False)
+        assistant_message = db_session.get(models.Message, final["message_id"])
+        assert assistant_message is not None
+        assert "sql_template" not in json.dumps(assistant_message.step_trace, ensure_ascii=False)
         request = fake_subagent_class.captured_runs[-1]["request"]
         assert request.query_task_capsule == capsule
         assert request.turn_event == initial_state["turn_event"]
@@ -3494,8 +3694,16 @@ class TestChatStreamEvents:
             )
 
         final = events[-1]
+        gateway_step = next(
+            event
+            for event in events
+            if event.get("type") == "step" and event.get("node") == "message_gateway"
+        )
         assert final["type"] == "final"
         assert final["entry_route"] == "direct_answer"
+        assert gateway_step["query_task_capsule"]["dataset_id"] == sample_dataset.id
+        assert final["query_task_capsule"] == gateway_step["query_task_capsule"]
+        assert final["response_metadata"]["query_task_capsule"] == gateway_step["query_task_capsule"]
         assert final["langfuse_trace_id"]
         assert (
             final["response_metadata"]["langfuse"]["trace_id"]
@@ -3506,6 +3714,9 @@ class TestChatStreamEvents:
         assert trace_index.status == "success"
         assert trace_index.entry_route == "direct_answer"
         assert trace_index.message_id == final["message_id"]
+        assistant_message = db_session.get(models.Message, final["message_id"])
+        assert assistant_message is not None
+        assert any(step.get("node") == "message_gateway" for step in assistant_message.step_trace or [])
         mock_wf.assert_not_called()
 
 

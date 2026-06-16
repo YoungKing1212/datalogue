@@ -310,6 +310,7 @@ export function makeChatAdapter({ datasetIdRef }) {
 
       // 流式累加器
       const reasonings = []; // ReasoningMessagePart[]
+      const stepTrace = [];
       let accText = '';      // 已累积的 text
       let finalPayload = null;
 
@@ -344,6 +345,7 @@ export function makeChatAdapter({ datasetIdRef }) {
         } else if (ev.type === 'step') {
           // 通知 AgentPanel（保持现有行为）
           emitTrace(ev);
+          stepTrace.push(ev);
           // 只把"完成"的节点累积为 reasoning（running 状态等完成时再算）
           if (ev.status === 'done' && ev.node !== 'error') {
             reasonings.push({
@@ -428,6 +430,7 @@ export function makeChatAdapter({ datasetIdRef }) {
               langfuseTraceId: finalPayload.langfuse_trace_id || null,
               langfuseSessionId: finalPayload.langfuse_session_id || null,
               observability: finalPayload.observability || null,
+              stepTrace,
             },
           },
         };
