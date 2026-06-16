@@ -1454,6 +1454,8 @@ async def _stream_chat_singleturn(
         lead_agent_context=lead_agent_context,
         prior_capsule=prior_capsule,
         prior_capsule_status=prior_capsule_status,
+        query_task_capsule=query_task_capsule,
+        turn_event=turn_event,
         trace_id=trace_context.trace_id,
         parent_observation_id=None,
     )

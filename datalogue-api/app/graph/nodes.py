@@ -505,14 +505,130 @@ def _format_query_plan_for_prompt(query_plan: dict | None) -> str:
     return "\n".join(lines)
 
 
+_TASK_CAPSULE_BLOCKED_PROMPT_KEYS = {
+    "data",
+    "dataset",
+    "direct_sql",
+    "dsl",
+    "raw",
+    "raw_sql",
+    "records",
+    "result",
+    "result_rows",
+    "rows",
+    "sample_rows",
+    "sql",
+    "sql_result",
+}
+_TASK_CAPSULE_ALLOWED_REF_KEYS = {"id", "ref", "task_id", "type"}
+_TASK_CAPSULE_SQL_VALUE_RE = re.compile(
+    r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
+    r".{0,200}\b(from|into|set|table|join|where|values)\b"
+)
+_TASK_CAPSULE_STRUCTURED_VALUE_RE = re.compile(
+    r"(?is)(?:\b(rows|records|data|result_rows|raw_sql|sql_result|sql|dsl)\b\s*[:=])"
+    r"|(?:[\"'](?:rows|records|data|result_rows|raw_sql|sql_result|sql|dsl)[\"']\s*:)"
+    r"|```"
+)
+_TASK_CAPSULE_SECRET_VALUE_RE = re.compile(r"(?i)\b(password|secret|access_token|secret_token)\b")
+_TASK_CAPSULE_TABLE_NAME_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$"
+)
+
+
+def _sanitize_task_capsule_prompt_value(value: Any, *, key_name: str = "") -> Any:
+    key_lower = key_name.lower()
+    if key_lower in _TASK_CAPSULE_BLOCKED_PROMPT_KEYS or "sql" in key_lower:
+        return None
+    if isinstance(value, dict):
+        allowed_keys = _TASK_CAPSULE_ALLOWED_REF_KEYS if key_lower == "base_task_ref" else None
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            item_key_lower = key.lower()
+            if allowed_keys is not None and item_key_lower not in allowed_keys:
+                continue
+            if item_key_lower in _TASK_CAPSULE_BLOCKED_PROMPT_KEYS or "sql" in item_key_lower:
+                continue
+            safe_item = _sanitize_task_capsule_prompt_value(item, key_name=key)
+            if safe_item in (None, "", [], {}):
+                continue
+            sanitized[key] = safe_item
+            if len(sanitized) >= 8:
+                break
+        return sanitized
+    if isinstance(value, list):
+        sanitized_list = [
+            item
+            for item in (
+                _sanitize_task_capsule_prompt_value(item, key_name=key_name)
+                for item in value[:5]
+            )
+            if item not in (None, "", [], {})
+        ]
+        return sanitized_list
+    if isinstance(value, str):
+        text = value.strip()
+        if key_lower == "base_main_table" and not _TASK_CAPSULE_TABLE_NAME_RE.fullmatch(text):
+            return None
+        if (
+            _TASK_CAPSULE_SQL_VALUE_RE.search(text)
+            or _TASK_CAPSULE_STRUCTURED_VALUE_RE.search(text)
+            or _TASK_CAPSULE_SECRET_VALUE_RE.search(text)
+        ):
+            return None
+        return text[:300]
+    return value
+
+
+def _task_capsule_prompt_value(value: Any, *, key_name: str = "") -> str:
+    safe_value = _sanitize_task_capsule_prompt_value(value, key_name=key_name)
+    if isinstance(safe_value, dict):
+        return json.dumps(safe_value, ensure_ascii=False)
+    if isinstance(safe_value, list):
+        return json.dumps(safe_value, ensure_ascii=False)
+    return str(safe_value)
+
+
+def _format_task_capsule_for_prompt(capsule: Any) -> str:
+    """把 QueryTaskCapsule 压缩成 DSL prompt 可消费的安全字段摘要。"""
+    if not isinstance(capsule, dict):
+        return ""
+
+    lines = ["【任务胶囊】"]
+    for key in (
+        "turn_type",
+        "base_task_ref",
+        "base_main_table",
+        "standalone_question",
+        "base_question",
+    ):
+        value = capsule.get(key)
+        if value in (None, "", [], {}):
+            continue
+        prompt_value = _task_capsule_prompt_value(value, key_name=key)
+        if prompt_value in ("", "{}", "[]", "None"):
+            continue
+        lines.append(f"{key}: {prompt_value}")
+
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _append_query_planning_context(
     human_text: str,
     query_plan_prompt: str,
+    task_capsule_prompt: str,
     blueprint_context: str,
 ) -> str:
     """在 DSL prompt 末尾追加查询规划和蓝图上下文，避免改变原有提示词顺序。"""
     if query_plan_prompt:
         human_text += f"\n\n{query_plan_prompt}"
+    task_capsule_prompt = (task_capsule_prompt or "").strip()
+    if task_capsule_prompt and task_capsule_prompt not in human_text:
+        human_text += f"\n\n{task_capsule_prompt}"
     blueprint_context = (blueprint_context or "").strip()
     if blueprint_context and blueprint_context not in human_text:
         human_text += f"\n\n{blueprint_context}"
@@ -1430,6 +1546,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
     query_constraints_text = _query_constraints_text(state)
     multiturn_prompt = _format_query_context_for_prompt(state.get("multiturn_context"))
     query_plan_prompt = _format_query_plan_for_prompt(state.get("query_plan"))
+    task_capsule_prompt = _format_task_capsule_for_prompt(state.get("query_task_capsule"))
     blueprint_context = (state.get("blueprint_context") or "").strip()
     if query_constraints["enabled"]:
         dsl_limit_example = query_constraints["default_limit"]
@@ -1481,6 +1598,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         human_text = _append_query_planning_context(
             human_text,
             query_plan_prompt,
+            task_capsule_prompt,
             blueprint_context,
         )
         human = HumanMessage(content=human_text)
@@ -1569,6 +1687,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
             human_text = _append_query_planning_context(
                 human_text,
                 query_plan_prompt,
+                task_capsule_prompt,
                 blueprint_context,
             )
             human = HumanMessage(content=human_text)
@@ -1696,6 +1815,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         human_text = _append_query_planning_context(
             human_text,
             query_plan_prompt,
+            task_capsule_prompt,
             blueprint_context,
         )
         human = HumanMessage(content=human_text)
@@ -1740,6 +1860,7 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
     human_text = _append_query_planning_context(
         human_text,
         query_plan_prompt,
+        task_capsule_prompt,
         blueprint_context,
     )
     human = HumanMessage(content=human_text)

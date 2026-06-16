@@ -876,6 +876,79 @@ def _dsa_build_run_routing(
     return {key: value for key, value in routing.items() if value not in (None, "", [], {})}
 
 
+def _dsa_request_task_capsule(request: DatasetSubAgentRequest) -> dict[str, Any] | None:
+    capsule = request.query_task_capsule
+    return capsule if isinstance(capsule, dict) else None
+
+
+def _dsa_request_turn_event(
+    request: DatasetSubAgentRequest,
+    capsule: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if isinstance(request.turn_event, dict):
+        return request.turn_event
+    turn_event = (capsule or {}).get("turn_event") if isinstance(capsule, dict) else None
+    return turn_event if isinstance(turn_event, dict) else None
+
+
+def _dsa_state_task_capsule(state: dict[str, Any]) -> dict[str, Any] | None:
+    capsule = state.get("query_task_capsule")
+    return capsule if isinstance(capsule, dict) else None
+
+
+def _dsa_task_capsule_standalone_question(capsule: dict[str, Any] | None) -> str | None:
+    standalone_question = (capsule or {}).get("standalone_question") if isinstance(capsule, dict) else None
+    if standalone_question is None:
+        return None
+    text = str(standalone_question).strip()
+    return text or None
+
+
+def _dsa_task_capsule_base_question(capsule: dict[str, Any] | None) -> str | None:
+    if not isinstance(capsule, dict):
+        return None
+    for key in ("base_question", "original_question"):
+        value = capsule.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _dsa_prepare_task_capsule_state(
+    state: dict[str, Any],
+    request: DatasetSubAgentRequest,
+) -> tuple[dict[str, Any], str]:
+    """把 request 级 QueryTaskCapsule 补齐到 SubAgent state，供直调路径消费。"""
+
+    current_question = state.get("question")
+    request_capsule = _dsa_request_task_capsule(request)
+    state_capsule = _dsa_state_task_capsule(state)
+    capsule = state_capsule or request_capsule
+    if capsule is not None and state_capsule is None:
+        state["query_task_capsule"] = capsule
+
+    if state.get("turn_event") is None:
+        turn_event = _dsa_request_turn_event(request, capsule)
+        if turn_event is not None:
+            state["turn_event"] = turn_event
+
+    if state.get("original_question") in (None, ""):
+        original_question = current_question or request.question
+        if original_question:
+            state["original_question"] = original_question
+
+    standalone_question = _dsa_task_capsule_standalone_question(capsule)
+    if standalone_question:
+        state["question"] = standalone_question
+    elif not state.get("question"):
+        state["question"] = request.question
+
+    return state, str(state.get("question") or request.question)
+
+
 def _dsa_clean_blueprint_input_params(value: Any) -> dict[str, Any]:
     """提取可安全传给蓝图执行器的简单参数值。"""
     if not isinstance(value, dict):
@@ -933,10 +1006,18 @@ def _dsa_build_query_graph_state(
     """把候选资产上下文与查询计划注入 QueryGraph 初始状态。"""
     context = candidate_assets.get("context") if isinstance(candidate_assets, dict) else {}
     context = context if isinstance(context, dict) else {}
+    task_capsule = _dsa_state_task_capsule(state) or _dsa_request_task_capsule(request)
+    turn_event = state.get("turn_event")
+    if turn_event is None:
+        turn_event = _dsa_request_turn_event(request, task_capsule)
     query_graph_state = dict(state)
     query_graph_state.update(
         {
             "question": question,
+            "original_question": state.get("original_question")
+            or request.question,
+            "query_task_capsule": task_capsule,
+            "turn_event": turn_event,
             "dataset_id": request.dataset_id,
             "manifest_version": request.manifest_version,
             "bound_schema_version": request.bound_schema_version,
@@ -1012,8 +1093,7 @@ class DatasetSubAgent:
         graph_kwargs: dict[str, Any] | None = None,
     ) -> AsyncGenerator[SubAgentEvent, None]:
         """统一编排单数据集 SubAgent：资产召回、查询规划和策略执行。"""
-        state = dict(initial_state or {})
-        question = state.get("question") or request.question
+        state, question = _dsa_prepare_task_capsule_state(dict(initial_state or {}), request)
         routing = _dsa_build_run_routing(state, request)
         multiturn_context = state.get("multiturn_context") or {}
         tracer = get_observability_tracer()

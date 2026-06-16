@@ -279,6 +279,131 @@ def test_subagent_run_blueprint_reference_marks_context_and_query_graph(monkeypa
     assert captured["kwargs"] == {"version": "v2"}
 
 
+def test_subagent_run_uses_request_task_capsule_when_initial_state_missing(monkeypatch, db_session):
+    captured: dict[str, Any] = {}
+    capsule = {
+        "turn_type": "followup",
+        "base_task_ref": {"task_id": "task-1"},
+        "base_main_table": "plan_task_daily_record",
+        "standalone_question": "查询杨凯最近7天的个人日报",
+        "base_question": "查询杨凯的个人日报",
+    }
+    turn_event = {"event_id": "turn-2", "turn_type": "followup"}
+    request = DatasetSubAgentRequest(
+        **(_request().__dict__ | {"query_task_capsule": capsule, "turn_event": turn_event})
+    )
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _blueprint_recall_result(),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.plan_query",
+        lambda **kwargs: QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.77,
+        ),
+    )
+
+    class FakeRunner:
+        def __init__(self, graph, db):
+            pass
+
+        async def run(self, request, trace_context, initial_state, **kwargs):
+            captured["initial_state"] = initial_state
+            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
+        FakeRunner,
+    )
+
+    events = asyncio.run(
+        _collect(
+            DatasetSubAgent(db=db_session, dataset_id=10),
+            request,
+            graph=object(),
+        )
+    )
+
+    initial_state = captured["initial_state"]
+    assert events[-1].event_type == "result"
+    assert initial_state["query_task_capsule"] == capsule
+    assert initial_state["turn_event"] == turn_event
+    assert initial_state["question"] == "查询杨凯最近7天的个人日报"
+    assert initial_state["original_question"] == "查询个人日报"
+
+
+def test_subagent_run_preserves_existing_task_capsule_over_request(monkeypatch, db_session):
+    captured: dict[str, Any] = {}
+    request_capsule = {
+        "turn_type": "followup",
+        "base_task_ref": {"task_id": "request-task"},
+        "standalone_question": "请求里的独立问题",
+        "base_question": "请求里的原始问题",
+    }
+    existing_capsule = {
+        "turn_type": "refine",
+        "base_task_ref": {"task_id": "state-task"},
+        "base_main_table": "existing_table",
+        "standalone_question": "已有状态里的独立问题",
+        "base_question": "已有状态里的原始问题",
+    }
+    existing_turn_event = {"event_id": "state-turn"}
+    request = DatasetSubAgentRequest(
+        **(
+            _request().__dict__
+            | {"query_task_capsule": request_capsule, "turn_event": {"event_id": "request-turn"}}
+        )
+    )
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _blueprint_recall_result(),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.plan_query",
+        lambda **kwargs: QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.77,
+        ),
+    )
+
+    class FakeRunner:
+        def __init__(self, graph, db):
+            pass
+
+        async def run(self, request, trace_context, initial_state, **kwargs):
+            captured["initial_state"] = initial_state
+            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
+        FakeRunner,
+    )
+
+    asyncio.run(
+        _collect(
+            DatasetSubAgent(db=db_session, dataset_id=10),
+            request,
+            graph=object(),
+            initial_state={
+                "question": "初始问题",
+                "query_task_capsule": existing_capsule,
+                "turn_event": existing_turn_event,
+            },
+        )
+    )
+
+    initial_state = captured["initial_state"]
+    assert initial_state["query_task_capsule"] == existing_capsule
+    assert initial_state["turn_event"] == existing_turn_event
+    assert initial_state["question"] == "已有状态里的独立问题"
+    assert initial_state["original_question"] == "初始问题"
+
+
 def test_subagent_run_unwraps_node_output_before_merging(monkeypatch, db_session):
     monkeypatch.setattr(
         "app.services.dataset_subagent.recall_candidate_assets",

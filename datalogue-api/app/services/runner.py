@@ -39,6 +39,8 @@ class DatasetSubAgentRequest:
     lead_agent_context: dict[str, Any]
     prior_capsule: dict[str, Any] | None = None
     prior_capsule_status: dict[str, Any] | None = None
+    query_task_capsule: dict[str, Any] | None = None
+    turn_event: dict[str, Any] | None = None
     trace_id: str | None = None
     parent_observation_id: str | None = None
 

@@ -158,6 +158,116 @@ def test_dsl_prompt_does_not_duplicate_reference_blueprint_from_dataset_prompt(m
     assert "blueprint_as_reference" in human_prompt
 
 
+def test_dsl_prompt_includes_task_capsule_without_raw_sql(monkeypatch):
+    """DSL prompt 应追加任务胶囊摘要，但不能泄露 SQL 或结果行。"""
+    from app.graph import nodes as nodes_module
+
+    fake_llm = _FakeLLMResponse()
+    monkeypatch.setattr(nodes_module, "get_llm", lambda **_kwargs: fake_llm)
+
+    state = _base_state(
+        schema_context="【数据源真实表结构】\n表: user_logs | 列: id (int), content (text)",
+        query_task_capsule={
+            "turn_type": "followup",
+            "base_task_ref": {
+                "task_id": "task-1",
+                "type": "last_success_task",
+                "raw_sql": "select secret_token from audit_log",
+                "result_rows": [{"secret_token": "abc123"}],
+                "records": [{"password": "hidden"}],
+                "data": [{"payload": "full row"}],
+            },
+            "base_main_table": "user_logs",
+            "standalone_question": "查询最近7天的用户日志",
+            "base_question": "查询用户日志",
+            "raw_sql": "select password from users",
+        },
+    )
+
+    nodes_module.dsl_generate_node(state, db=None)
+
+    human_prompt = fake_llm.messages[1].content
+    assert "【任务胶囊】" in human_prompt
+    assert "turn_type: followup" in human_prompt
+    assert 'base_task_ref: {"task_id": "task-1", "type": "last_success_task"}' in human_prompt
+    assert "base_main_table: user_logs" in human_prompt
+    assert "standalone_question: 查询最近7天的用户日志" in human_prompt
+    assert "base_question: 查询用户日志" in human_prompt
+    assert "select secret_token" not in human_prompt
+    assert "select password" not in human_prompt
+    assert "abc123" not in human_prompt
+    assert "hidden" not in human_prompt
+    assert "full row" not in human_prompt
+
+
+def test_dsl_prompt_drops_sensitive_task_capsule_values(monkeypatch):
+    """任务胶囊允许字段的 value 被污染时，也不能进入 DSL prompt。"""
+    from app.graph import nodes as nodes_module
+
+    fake_llm = _FakeLLMResponse()
+    monkeypatch.setattr(nodes_module, "get_llm", lambda **_kwargs: fake_llm)
+
+    state = _base_state(
+        schema_context="【数据源真实表结构】\n表: user_logs | 列: id (int), content (text)",
+        query_task_capsule={
+            "turn_type": "followup",
+            "base_task_ref": {"task_id": "task-1"},
+            "base_main_table": "user_logs where password = 'hidden'",
+            "standalone_question": "查询日志；SELECT password FROM users",
+            "base_question": '{"dsl": {"fields": ["secret"]}, "rows": [{"password": "hidden"}]}',
+        },
+    )
+
+    nodes_module.dsl_generate_node(state, db=None)
+
+    human_prompt = fake_llm.messages[1].content
+    assert "【任务胶囊】" in human_prompt
+    assert "turn_type: followup" in human_prompt
+    assert 'base_task_ref: {"task_id": "task-1"}' in human_prompt
+    assert "base_main_table:" not in human_prompt
+    assert "standalone_question:" not in human_prompt
+    assert "base_question:" not in human_prompt
+    assert "SELECT password" not in human_prompt
+    assert "where password" not in human_prompt
+    assert '"dsl"' not in human_prompt
+    assert '"rows"' not in human_prompt
+    assert "hidden" not in human_prompt
+
+
+def test_dsl_prompt_does_not_duplicate_task_capsule(monkeypatch):
+    """当任务胶囊文本已在 prompt 中时，不应再次追加同一段。"""
+    from app.graph import nodes as nodes_module
+
+    task_capsule_text = (
+        "【任务胶囊】\n"
+        "turn_type: followup\n"
+        "base_main_table: user_logs\n"
+        "standalone_question: 查询最近7天的用户日志\n"
+        "base_question: 查询用户日志"
+    )
+    fake_llm = _FakeLLMResponse()
+    monkeypatch.setattr(nodes_module, "get_llm", lambda **_kwargs: fake_llm)
+
+    state = _base_state(
+        schema_context=(
+            "【数据源真实表结构】\n"
+            "表: user_logs | 列: id (int), content (text)\n\n"
+            f"{task_capsule_text}"
+        ),
+        query_task_capsule={
+            "turn_type": "followup",
+            "base_main_table": "user_logs",
+            "standalone_question": "查询最近7天的用户日志",
+            "base_question": "查询用户日志",
+        },
+    )
+
+    nodes_module.dsl_generate_node(state, db=None)
+
+    human_prompt = fake_llm.messages[1].content
+    assert human_prompt.count("【任务胶囊】") == 1
+
+
 def test_semantic_prompt_uses_progressive_disclosure(monkeypatch):
     """语义层确定性路径应使用渐进式披露，避免重复灌入完整 schema_context。"""
     from app.graph import nodes as nodes_module

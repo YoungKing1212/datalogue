@@ -70,6 +70,8 @@ def _graph_backed_fake_subagent_class():
     from app.services.subagent_planning import SubAgentEvent
 
     class FakeSubAgent:
+        captured_runs = []
+
         def __init__(self, db, dataset_id):
             self.db = db
             self.dataset_id = dataset_id
@@ -84,6 +86,14 @@ def _graph_backed_fake_subagent_class():
             return {"status": "not_applicable"}
 
         async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+            type(self).captured_runs.append(
+                {
+                    "request": request,
+                    "trace_context": trace_context,
+                    "initial_state": initial_state or {},
+                    "graph_kwargs": graph_kwargs or {},
+                }
+            )
             version = (graph_kwargs or {}).get("version", "v2")
             async for event in graph.astream_events(initial_state or {}, version):
                 yield SubAgentEvent(event_type="graph_event", payload={"event": event})
@@ -2986,9 +2996,10 @@ class TestChatStreamEvents:
                 events.append(json.loads(item["data"]))
             return events
 
+        fake_subagent_class = _graph_backed_fake_subagent_class()
         with patch("app.api.chat.build_workflow") as mock_wf, patch(
             "app.api.chat.DatasetSubAgent",
-            _graph_backed_fake_subagent_class(),
+            fake_subagent_class,
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3009,6 +3020,9 @@ class TestChatStreamEvents:
         assert capsule["base_question"] == "查询10条用户日志"
         assert second_state["merge_debug"]["used_prior"] is True
         assert second_state["question"] == "基于上一轮问题「查询10条用户日志」，只看汤杰"
+        second_request = fake_subagent_class.captured_runs[-1]["request"]
+        assert second_request.query_task_capsule == capsule
+        assert second_request.turn_event == second_state["turn_event"]
 
     def test_singleturn_stream_injects_query_task_capsule_from_thread_memory(
         self,
@@ -3077,9 +3091,10 @@ class TestChatStreamEvents:
                 events.append(json.loads(item["data"]))
             return events
 
+        fake_subagent_class = _graph_backed_fake_subagent_class()
         with patch("app.api.chat.build_workflow") as mock_wf, patch(
             "app.api.chat.DatasetSubAgent",
-            _graph_backed_fake_subagent_class(),
+            fake_subagent_class,
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3097,6 +3112,9 @@ class TestChatStreamEvents:
         assert capsule["base_main_table"] == "plan_task_daily_record"
         assert initial_state["merge_debug"]["used_prior"] is True
         assert initial_state["question"] == "基于上一轮问题「查询10条用户日志」，只看汤杰"
+        request = fake_subagent_class.captured_runs[-1]["request"]
+        assert request.query_task_capsule == capsule
+        assert request.turn_event == initial_state["turn_event"]
 
     def test_chat_stream_final_and_message_metadata_include_query_profile(
         self, db_session, sample_dataset
