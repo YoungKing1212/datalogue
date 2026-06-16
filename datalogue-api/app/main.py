@@ -21,9 +21,14 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api import router as api_router
 
-# 初始化带颜色的日志
+# 初始化带颜色的日志，可选持久化到文件
 settings = get_settings()
-setup_logging(settings.LOG_LEVEL)
+setup_logging(
+    level=settings.LOG_LEVEL,
+    log_dir=settings.LOG_DIR,
+    max_bytes=settings.LOG_MAX_BYTES,
+    backup_count=settings.LOG_BACKUP_COUNT,
+)
 
 
 @asynccontextmanager

@@ -31,6 +31,12 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
+    # 日志文件目录；空字符串表示不写文件（仅 stdout）
+    LOG_DIR: str = "logs"
+    # 单个日志文件最大字节数（默认 10MB）
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024
+    # 保留的轮转文件份数
+    LOG_BACKUP_COUNT: int = 7
 
     LANGFUSE_ENABLED: bool = False
     # Langfuse Python SDK v4 使用 base_url；保留 HOST 兼容旧配置和文档。
