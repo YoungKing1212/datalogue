@@ -1,8 +1,11 @@
 .superpowers/
 .claude/
 .playwright-mcp/
+.playwright-cli/
 .agents/skills/
+.gstack/
 .codex/config.toml
+.codex/项目记忆.md
 .cubestore/
 .codegraph/
 .worktrees/
