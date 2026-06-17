@@ -314,6 +314,11 @@ def plan_tool_calls_with_llm(
     )
     skill_generation = None
     tool_generation = None
+
+    # TODO(Phase 3): 当 LEAD_AGENT_USE_PROGRESSIVE_ASSETS 开启且已锁定数据集时，
+    #  在这里调用 recall_candidate_assets -> filter_lead_planner_assets ->
+    #  project_assets_for_lead_planner(stage="skill_selection")，并把结果注入
+    #  skill_input 的 candidate_assets 字段。
     raw_skill_input = {
         "question": question,
         "conversation": conversation_summary,
@@ -432,6 +437,11 @@ def plan_tool_calls_with_llm(
         selected_skill_names = skill_selection["selected_skills"]
         selected_skill_payloads = _skill_payloads_by_name(skills, selected_skill_names)
         disclosed_tool_schemas = _tool_schemas_for_skills(selected_skill_names, skills, tool_policy)
+
+        # TODO(Phase 3): 当 LEAD_AGENT_USE_PROGRESSIVE_ASSETS 开启时，
+        #  在这里对过滤后的资产重新投影：
+        #  project_assets_for_lead_planner(filtered_assets, stage="tool_planning")
+        #  并把结果注入 planner_input 的 candidate_assets 字段。
         tool_prompt = prompt_manager.get_text_prompt(
             LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME,
             fallback=LEAD_AGENT_TOOL_PLANNER_SYSTEM,
