@@ -123,7 +123,71 @@ function formatStepAsReasoning(step) {
   return detail ? `${label}：${detail} ${elapsed}` : `${label} ${elapsed}`.trim();
 }
 
-function messagesFromBackend(detail) {
+function lastTraceByNode(traces, node) {
+  for (let i = traces.length - 1; i >= 0; i -= 1) {
+    const step = traces[i];
+    if (step?.node === node) return step;
+  }
+  return null;
+}
+
+function sqlResultFromTrace(traces) {
+  const executeStep = lastTraceByNode(traces, 'sql_execute');
+  if (!executeStep || !Array.isArray(executeStep.rows)) return null;
+  return {
+    rows: executeStep.rows,
+    columns: executeStep.columns || [],
+    column_labels: executeStep.column_labels || {},
+    elapsed_ms: executeStep.elapsed_ms,
+    row_count: executeStep.row_count ?? executeStep.rows.length,
+  };
+}
+
+export function buildHistoryMessageCustom(message, traces = []) {
+  const metadata = message?.response_metadata || {};
+  const compilerStep = lastTraceByNode(traces, 'dsl_compiler');
+
+  return {
+    sql: metadata.sql || compilerStep?.sql || null,
+    sqlResult: metadata.sql_result || metadata.sqlResult || sqlResultFromTrace(traces),
+    sqlDiagnosis: metadata.sql_diagnosis || null,
+    sqlAuditResult: metadata.sql_audit_result || null,
+    answerExplanation: metadata.answer_explanation || null,
+    queryPlan: metadata.query_plan || metadata.queryPlan || null,
+    candidateAssets: metadata.candidate_assets || metadata.candidateAssets || null,
+    queryPlanDebug: metadata.query_plan_debug || metadata.queryPlanDebug || null,
+    query_plan: metadata.query_plan || null,
+    candidate_assets: metadata.candidate_assets || null,
+    query_plan_debug: metadata.query_plan_debug || null,
+    queryProfile: metadata.query_profile || metadata.explainability?.query_profile || null,
+    explainability: metadata.explainability || null,
+    routeDecision: metadata.route_decision || null,
+    dsl: metadata.dsl || null,
+    routePayload: metadata.route_payload || null,
+    clarification: metadata.route_payload?.kind === 'term_conflict_clarification'
+      ? {
+          kind: 'term_conflict',
+          clarificationId: metadata.route_payload.clarification_id,
+          candidates: metadata.route_payload.candidates || [],
+          expiresAt: metadata.route_payload.expires_at || null,
+        }
+      : metadata.clarification || null,
+    clarificationResolution: metadata.clarification_resolution || null,
+    termNormalization: metadata.term_normalization || null,
+    semanticAssetResolution: metadata.semantic_asset_resolution || null,
+    metricResolution: metadata.metric_resolution || null,
+    generationMode: metadata.generation_mode || null,
+    intent: metadata.intent || null,
+    messageId: message?.id || null,
+    langfuseTraceId: metadata.langfuse?.trace_id || null,
+    langfuseSessionId: metadata.langfuse?.session_id || null,
+    observability: metadata.observability || metadata.langfuse || null,
+    stepTrace: traces,
+    feedback: metadata.feedback || null,
+  };
+}
+
+export function messagesFromBackend(detail) {
   const msgs = detail?.messages || [];
   const out = [];
   for (let i = 0; i < msgs.length; i++) {
@@ -149,18 +213,7 @@ function messagesFromBackend(detail) {
       createdAt: m.created_at ? new Date(m.created_at) : new Date(),
       status: m.role === 'assistant' ? { type: 'complete', reason: 'stop' } : undefined,
       metadata: {
-        custom: {
-          routePayload: m.response_metadata?.route_payload || null,
-          answerExplanation: m.response_metadata?.answer_explanation || null,
-          queryProfile: m.response_metadata?.query_profile || m.response_metadata?.explainability?.query_profile || null,
-          explainability: m.response_metadata?.explainability || null,
-          messageId: m.id || null,
-          langfuseTraceId: m.response_metadata?.langfuse?.trace_id || null,
-          langfuseSessionId: m.response_metadata?.langfuse?.session_id || null,
-          observability: m.response_metadata?.observability || m.response_metadata?.langfuse || null,
-          stepTrace: traces,
-          feedback: m.response_metadata?.feedback || null,
-        },
+        custom: buildHistoryMessageCustom(m, traces),
       },
     });
   }
