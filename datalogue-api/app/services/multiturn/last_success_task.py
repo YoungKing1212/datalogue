@@ -110,6 +110,7 @@ class LastSuccessTask(BaseModel):
     metrics_applied: list[dict[str, Any]] = Field(default_factory=list)
 
     sql_hash: str | None = None
+    result_ref: str | None = None
     result_digest: dict[str, Any] = Field(default_factory=dict)
     resolved_question: str | None = None
 
@@ -198,6 +199,7 @@ def build_last_success_task(
     schema_version: str | None = None,
     manifest_version: str | None = None,
     turn_index: int | None = None,
+    result_ref: str | None = None,
     max_tokens: int = MAX_LAST_SUCCESS_TASK_TOKENS,
 ) -> dict[str, Any]:
     """从本轮最终状态抽取严格白名单的 last_success_task。"""
@@ -224,6 +226,7 @@ def build_last_success_task(
         time_window=_extract_time_window(dsl_payload),
         metrics_applied=_extract_list(dsl_payload, "metrics", "metric_clauses"),
         sql_hash=_hash_sql(sql),
+        result_ref=result_ref,
         result_digest=minimal_result_digest(sql_result),
         resolved_question=question,
     )

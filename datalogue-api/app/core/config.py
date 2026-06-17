@@ -59,6 +59,20 @@ class Settings(BaseSettings):
     MULTITURN_BLUEPRINT_SHORTCUT_ENABLED: bool = False
     # LeadAgent Planner 输入投影灰度开关；默认关闭，生产按环境变量切流。
     LEAD_AGENT_PLANNER_USE_PROJECTION: bool = False
+    LEAD_AGENT_ENABLE_DATASET_FANOUT: bool = False
+
+    QUERY_ARTIFACT_TTL_SECONDS: int = 7 * 24 * 60 * 60
+    QUERY_ARTIFACT_MAX_BYTES: int = 2 * 1024 * 1024
+    QUERY_ARTIFACT_CLEANUP_INTERVAL_SECONDS: int = 300
+    QUERY_ARTIFACT_CLEANUP_BATCH_SIZE: int = 500
+
+    SUBAGENT_FANOUT_MAX_PARALLEL: int = 3
+
+    SUBAGENT_RUNNER_MODE: str = "in_process"
+    SUBAGENT_REMOTE_BASE_URL: Optional[str] = None
+    SUBAGENT_REMOTE_API_KEY: Optional[str] = None
+    SUBAGENT_REMOTE_TIMEOUT_SECONDS: float = 60.0
+    SUBAGENT_REMOTE_RETRIES: int = 0
 
     # ============================================================
     # LeadAgent 渐进式资产注入（Progressive Asset Integration）

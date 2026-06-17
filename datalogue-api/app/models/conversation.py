@@ -124,6 +124,24 @@ class TraceAnnotationCandidate(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class QueryArtifact(Base):
+    __tablename__ = "query_artifact"
+
+    id = Column(Integer, primary_key=True, index=True)
+    artifact_id = Column(String(120), nullable=False, unique=True, index=True)
+    kind = Column(String(40), nullable=False, index=True)
+    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversation.id"), nullable=True, index=True)
+    message_id = Column(Integer, ForeignKey("message.id"), nullable=True, index=True)
+    trace_id = Column(String(120), nullable=True, index=True)
+    content_json = Column(_json_type())
+    content_text = Column(Text)
+    content_mime = Column(String(80), nullable=False, default="application/json", server_default="application/json")
+    size_bytes = Column(Integer, nullable=False, default=0, server_default="0")
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class ConversationState(Base):
     __tablename__ = "conversation_state"
 

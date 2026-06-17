@@ -3531,6 +3531,25 @@ class TestChatStreamEvents:
         assert final["query_profile"]["sql"]["row_count"] == 1
         assert final["query_profile"]["query_context"]["inheritance"]["inherited"] is True
         assert final["query_profile"]["execution_summary"]["stages"]
+        assert "control_plane" not in final
+        assert "last_success_task" not in final
+        assert final["sql_result"] is None
+        assert final["result_ref"].startswith("artifact:")
+        assert final["report_ref"].startswith("artifact:")
+        subagent_tool_result = metadata["subagent_tool_result"]
+        assert set(subagent_tool_result) == {
+            "status",
+            "dataset_id",
+            "display_summary",
+            "clarification_question",
+            "error_summary",
+            "report_ref",
+        }
+        assert subagent_tool_result["status"] == "ok"
+        assert subagent_tool_result["dataset_id"] == sample_dataset.id
+        assert subagent_tool_result["report_ref"] == final["report_ref"]
+        assert "control_plane" not in assistant_message.response_metadata
+        assert assistant_message.response_metadata["subagent_tool_result"] == subagent_tool_result
 
     def test_chat_stream_step_event_structure(self, client, sample_dataset):
         """step 事件必须含 node 和 status 字段"""

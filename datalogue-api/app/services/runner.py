@@ -15,11 +15,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import json
 from typing import Any
 
+import httpx
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.services.observability.tracer import ObservabilityTraceContext, get_observability_tracer
 
 
@@ -111,6 +114,127 @@ class InProcessDatasetSubAgentRunner:
                 },
                 error=error,
             )
+
+
+class RemoteDatasetSubAgentRunner:
+    """通过内部 A2A HTTP 流式协议调用远端 DatasetSubAgent 服务。"""
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        timeout_seconds: float | None = None,
+        retries: int | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        settings = get_settings()
+        resolved_base_url = base_url or settings.SUBAGENT_REMOTE_BASE_URL
+        if not resolved_base_url:
+            raise ValueError("SUBAGENT_REMOTE_BASE_URL is required for remote subagent runner")
+        self.base_url = resolved_base_url.rstrip("/")
+        self.api_key = api_key if api_key is not None else settings.SUBAGENT_REMOTE_API_KEY
+        self.timeout_seconds = float(
+            timeout_seconds
+            if timeout_seconds is not None
+            else settings.SUBAGENT_REMOTE_TIMEOUT_SECONDS
+        )
+        self.retries = int(
+            retries
+            if retries is not None
+            else settings.SUBAGENT_REMOTE_RETRIES
+        )
+        self.client = client or httpx.AsyncClient(timeout=self.timeout_seconds)
+
+    async def run(
+        self,
+        request: DatasetSubAgentRequest,
+        trace_context: ObservabilityTraceContext | None,
+        initial_state: dict[str, Any],
+        dataset_name: str = "",
+        **graph_kwargs,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        payload = {
+            "request": asdict(request),
+            "initial_state": initial_state,
+            "dataset_name": dataset_name,
+            "graph_kwargs": graph_kwargs,
+            "trace_context": {
+                "trace_id": getattr(trace_context, "trace_id", None) or request.trace_id,
+                "parent_observation_id": request.parent_observation_id
+                or getattr(trace_context, "root_observation_id", None),
+            },
+        }
+        headers = {"Accept": "application/x-ndjson"}
+        if self.api_key:
+            headers["X-Datalogue-Internal-Token"] = self.api_key
+
+        try:
+            response = await self._post_with_retries(payload, headers)
+            if response.status_code >= 400:
+                yield self._safe_error_event(
+                    f"remote subagent request failed with status {response.status_code}"
+                )
+                return
+            async for event in self._iter_events(response):
+                yield event
+        except TimeoutError as exc:
+            yield self._safe_error_event(f"remote subagent timeout: {exc}")
+        except httpx.TimeoutException as exc:
+            yield self._safe_error_event(f"remote subagent timeout: {exc}")
+        except Exception as exc:
+            yield self._safe_error_event(f"remote subagent error: {exc}")
+
+    async def _post_with_retries(
+        self,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        last_exc: Exception | None = None
+        for attempt in range(max(0, self.retries) + 1):
+            try:
+                return await self.client.post(
+                    f"{self.base_url}/internal/subagent/run",
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout_seconds,
+                )
+            except httpx.TimeoutException:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self.retries:
+                    raise
+        raise last_exc or RuntimeError("remote subagent request failed")
+
+    async def _iter_events(
+        self,
+        response: httpx.Response,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        async for line in response.aiter_lines():
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith("data:"):
+                text = text[5:].strip()
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                yield payload
+
+    @staticmethod
+    def _safe_error_event(raw_error: str) -> dict[str, Any]:
+        return {
+            "event_type": "result",
+            "payload": {
+                "final_state": {
+                    "error": "remote_subagent_error",
+                    "raw_error": raw_error,
+                }
+            },
+        }
 
 
 def _is_merge_prior_context_end_event(event: dict[str, Any]) -> bool:

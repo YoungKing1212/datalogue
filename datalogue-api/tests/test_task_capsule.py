@@ -217,7 +217,7 @@ def test_build_success_task_state_falls_back_to_dsl_main_table():
     assert state["main_table"] == "plan_task_daily_record"
 
 
-def test_build_success_task_state_json_encodes_sample_rows():
+def test_build_success_task_state_omits_sample_rows():
     state = build_success_task_state(
         question="查询金额",
         dataset_id=10,

@@ -50,7 +50,12 @@ from app.services.lead_agent_routing import (
 from app.services.dataset_subagent import DatasetSubAgent
 from app.services.multiturn_context import MergeDecision
 from app.services.report_generation import stream_sql_result_report
-from app.services.runner import DatasetSubAgentRequest
+from app.services.runner import DatasetSubAgentRequest, RemoteDatasetSubAgentRunner
+from app.services.artifact_store import ArtifactStore
+from app.services.subagent_tool_adapter import (
+    SubAgentInvocation,
+    SubAgentToolAdapter,
+)
 from app.services.conversation_store import (
     ConversationStore,
     pending_clarification_from_final_payload,
@@ -225,6 +230,27 @@ TERM_CLARIFICATION_TTL_MINUTES = 30
 def _sse_data(payload: dict) -> dict:
     """将 SSE payload 转成 JSON 字符串，兼容 datetime/date/Decimal 等对象。"""
     return {"data": json.dumps(jsonable_encoder(payload), ensure_ascii=False)}
+
+
+def _subagent_event_type(sub_event: Any) -> str:
+    if isinstance(sub_event, dict):
+        return str(sub_event.get("event_type") or "")
+    return str(getattr(sub_event, "event_type", ""))
+
+
+def _subagent_event_payload(sub_event: Any) -> dict:
+    if isinstance(sub_event, dict):
+        payload = sub_event.get("payload")
+        return payload if isinstance(payload, dict) else {}
+    payload = getattr(sub_event, "payload", None)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _subagent_event_to_sse_payload(sub_event: Any) -> dict:
+    if hasattr(sub_event, "to_sse_payload"):
+        return sub_event.to_sse_payload()
+    payload = _subagent_event_payload(sub_event)
+    return jsonable_encoder({**payload, "type": _subagent_event_type(sub_event)})
 
 
 def _is_state_output(value: dict) -> bool:
@@ -951,6 +977,7 @@ async def _stream_chat_singleturn(
     pending_resolution: dict | None = None,
     observability_session_id: str | None = None,
     trace_context_sink: list | None = None,
+    subagent_control_plane_sink: list | None = None,
     defer_trace_close: bool = False,
 ):
     """SSE 流式问数：驱动 LangGraph 工作流，逐步发送节点进度事件。"""
@@ -1624,22 +1651,36 @@ async def _stream_chat_singleturn(
         reported_done: set[str] = set()
         graph_report_think_state = new_think_stream_state()
 
-        async for sub_event in sub_agent.run(
-            subagent_request,
-            trace_context,
-            graph=app_graph,
-            initial_state=initial_state,
-            graph_kwargs={
-                "dataset_name": route_decision.get("dataset_name") or "",
-                "version": "v2",
-            },
-        ):
-            if sub_event.event_type in {"candidate_assets", "query_plan"}:
-                sse_payload = sub_event.to_sse_payload()
+        graph_kwargs = {
+            "dataset_name": route_decision.get("dataset_name") or "",
+            "version": "v2",
+        }
+        if getattr(get_settings(), "SUBAGENT_RUNNER_MODE", "in_process") == "remote":
+            subagent_events = RemoteDatasetSubAgentRunner().run(
+                subagent_request,
+                trace_context,
+                initial_state,
+                dataset_name=route_decision.get("dataset_name") or "",
+                **graph_kwargs,
+            )
+        else:
+            subagent_events = sub_agent.run(
+                subagent_request,
+                trace_context,
+                graph=app_graph,
+                initial_state=initial_state,
+                graph_kwargs=graph_kwargs,
+            )
+
+        async for sub_event in subagent_events:
+            sub_event_type = _subagent_event_type(sub_event)
+            sub_event_payload = _subagent_event_payload(sub_event)
+            if sub_event_type in {"candidate_assets", "query_plan"}:
+                sse_payload = _subagent_event_to_sse_payload(sub_event)
                 sse_payload["type"] = "step"
-                if sub_event.event_type == "candidate_assets":
+                if sub_event_type == "candidate_assets":
                     final_state["candidate_assets"] = sse_payload.get("candidate_assets")
-                elif sub_event.event_type == "query_plan":
+                elif sub_event_type == "query_plan":
                     query_plan = sse_payload.get("query_plan") or {}
                     final_state["query_plan"] = query_plan
                     if final_state.get("query_plan_debug") is None:
@@ -1654,8 +1695,8 @@ async def _stream_chat_singleturn(
                 yield _sse_data(sse_payload)
                 continue
 
-            if sub_event.event_type == "result":
-                final_state.update(sub_event.payload.get("final_state") or {})
+            if sub_event_type == "result":
+                final_state.update(sub_event_payload.get("final_state") or {})
                 if final_state.get("query_plan_debug") is None:
                     query_plan = final_state.get("query_plan") or {}
                     final_state["query_plan_debug"] = {
@@ -1667,11 +1708,11 @@ async def _stream_chat_singleturn(
                     }
                 continue
 
-            if sub_event.event_type == "graph_event":
-                event = sub_event.payload["event"]
+            if sub_event_type == "graph_event":
+                event = sub_event_payload["event"]
             else:
-                sse_payload = sub_event.to_sse_payload()
-                sse_payload.setdefault("node", sub_event.event_type)
+                sse_payload = _subagent_event_to_sse_payload(sub_event)
+                sse_payload.setdefault("node", sub_event_type)
                 node_name = str(sse_payload.get("node"))
                 sse_payload.setdefault(
                     "display_name",
@@ -1924,6 +1965,37 @@ async def _stream_chat_singleturn(
     final_state["answer"] = answer
     answer_explanation = jsonable_encoder(build_answer_explanation(final_state))
     final_state["answer_explanation"] = answer_explanation
+    subagent_tool_result = SubAgentToolAdapter(
+        artifact_store=ArtifactStore(db),
+    ).assemble_from_final_state(
+        SubAgentInvocation(
+            dataset_id=int(effective_dataset_id) if effective_dataset_id is not None else 0,
+            question=payload.question,
+            resolved_question=lead_agent_context.get("resolved_question") or payload.question,
+            turn_index=getattr(conversation_state, "turn_index", None),
+            prior_capsule_status=final_state.get("prior_capsule_status") or prior_capsule_status,
+        ),
+        final_state,
+        conversation_id=conv_id,
+        trace_id=trace_context.trace_id,
+    )
+    subagent_tool_visible = jsonable_encoder(
+        subagent_tool_result.llm_visible.model_dump(mode="json")
+    )
+    subagent_tool_trace = jsonable_encoder(subagent_tool_result.trace_metadata)
+    subagent_control_plane = jsonable_encoder(
+        subagent_tool_result.control_plane.model_dump(
+            mode="json",
+            exclude={"raw_error"},
+        )
+    )
+    if subagent_control_plane_sink is not None:
+        subagent_control_plane_sink.clear()
+        subagent_control_plane_sink.append(subagent_control_plane)
+    if subagent_control_plane.get("result_ref"):
+        final_state["result_ref"] = subagent_control_plane.get("result_ref")
+    if subagent_control_plane.get("report_ref"):
+        final_state["report_ref"] = subagent_control_plane.get("report_ref")
 
     sql = final_state.get("sql")
     sql_list = final_state.get("sql_list") or []
@@ -1988,6 +2060,8 @@ async def _stream_chat_singleturn(
         "candidate_assets": final_state.get("candidate_assets"),
         "query_plan": final_state.get("query_plan"),
         "query_plan_debug": final_state.get("query_plan_debug"),
+        "subagent_tool_result": subagent_tool_visible,
+        "subagent_tool_trace": subagent_tool_trace,
         "multiturn_metrics": multiturn_observability_metrics,
         "query_profile": query_profile,
         "explainability": explainability,
@@ -2017,6 +2091,7 @@ async def _stream_chat_singleturn(
         "candidate_assets": final_state.get("candidate_assets"),
         "query_plan": final_state.get("query_plan"),
         "query_plan_debug": final_state.get("query_plan_debug"),
+        "subagent_tool_result": subagent_tool_visible,
         "route_payload": final_state.get("route_payload"),
         "clarification_resolution": final_state.get("clarification_resolution_result"),
         "query_profile": query_profile,
@@ -2126,7 +2201,9 @@ async def _stream_chat_singleturn(
         "datasource_context": final_state.get("datasource_context"),
         "dsl": final_state.get("dsl"),
         "generation_mode": final_state.get("generation_mode"),
-        "sql_result": final_state.get("sql_result"),
+        "sql_result": None,
+        "result_ref": final_state.get("result_ref"),
+        "report_ref": final_state.get("report_ref"),
         "sql_diagnosis": sql_diagnosis,
         "sql_audit_result": final_state.get("sql_audit_result"),
         "sql_retry_trace": sql_retry_trace,
@@ -2163,6 +2240,7 @@ def _persist_completed_turn(
     pending_resolution: dict,
     payload_question: str,
     trace_context_sink: list,
+    subagent_control_plane: dict | None = None,
 ) -> bool:
     """把完成轮的胶囊、状态、澄清和追踪写入 ConversationStore。
 
@@ -2184,10 +2262,14 @@ def _persist_completed_turn(
         or final_payload.get("dataset_id")
         or effective_payload.dataset_id
     )
+    control_plane = subagent_control_plane if isinstance(subagent_control_plane, dict) else {}
+    control_plane_capsule = (
+        control_plane.get("capsule") if isinstance(control_plane.get("capsule"), dict) else None
+    )
     updated_capsules = store.with_updated_capsule(
         final_state,
         dataset_id=active_dataset_id,
-        capsule=final_payload.get("out_capsule"),
+        capsule=control_plane_capsule or final_payload.get("out_capsule"),
     )
     pending_for_store = pending_clarification_from_final_payload(
         final_payload,
@@ -2219,45 +2301,50 @@ def _persist_completed_turn(
     last_success_task = None
     last_success_task_write_status: dict[str, Any] = {"status": "not_built"}
     route_decision = final_payload.get("route_decision") or {}
-    try:
-        last_success_task = build_success_task_state(
-            question=executed_question,
-            dataset_id=_coerce_int(active_dataset_id),
-            query_plan=final_payload.get("query_plan"),
-            dsl=final_payload.get("dsl"),
-            sql=final_payload.get("sql"),
-            sql_result=final_payload.get("sql_result"),
-            schema_version=route_decision.get("bound_schema_version")
-            or final_payload.get("bound_schema_version"),
-            manifest_version=route_decision.get("manifest_version")
-            or final_payload.get("manifest_version"),
-            turn_index=getattr(final_state, "turn_index", None),
-        )
-        last_success_task_write_status = {"status": "ready"}
-    except CapsuleSizeExceededError as exc:
-        last_success_task_write_status = {
-            "status": "skipped",
-            "reason": "size_exceeded",
-            "estimated_tokens": exc.estimated_tokens,
-            "max_tokens": exc.max_tokens,
-        }
-        logger.warning(
-            "[_stream_chat] last_success_task 超出预算，跳过写入: session_id=%s, estimated_tokens=%s, max_tokens=%s",
-            final_session_id,
-            exc.estimated_tokens,
-            exc.max_tokens,
-        )
-    except Exception as exc:  # noqa: BLE001
-        last_success_task_write_status = {
-            "status": "skipped",
-            "reason": "build_failed",
-            "error": str(exc),
-        }
-        logger.warning(
-            "[_stream_chat] last_success_task 构造失败，跳过写入: session_id=%s, error=%s",
-            final_session_id,
-            exc,
-        )
+    control_plane_task = control_plane.get("last_success_task")
+    if isinstance(control_plane_task, dict):
+        last_success_task = control_plane_task
+        last_success_task_write_status = {"status": "ready", "source": "subagent_control_plane"}
+    else:
+        try:
+            last_success_task = build_success_task_state(
+                question=executed_question,
+                dataset_id=_coerce_int(active_dataset_id),
+                query_plan=final_payload.get("query_plan"),
+                dsl=final_payload.get("dsl"),
+                sql=final_payload.get("sql"),
+                sql_result=final_payload.get("sql_result"),
+                schema_version=route_decision.get("bound_schema_version")
+                or final_payload.get("bound_schema_version"),
+                manifest_version=route_decision.get("manifest_version")
+                or final_payload.get("manifest_version"),
+                turn_index=getattr(final_state, "turn_index", None),
+            )
+            last_success_task_write_status = {"status": "ready", "source": "final_payload"}
+        except CapsuleSizeExceededError as exc:
+            last_success_task_write_status = {
+                "status": "skipped",
+                "reason": "size_exceeded",
+                "estimated_tokens": exc.estimated_tokens,
+                "max_tokens": exc.max_tokens,
+            }
+            logger.warning(
+                "[_stream_chat] last_success_task 超出预算，跳过写入: session_id=%s, estimated_tokens=%s, max_tokens=%s",
+                final_session_id,
+                exc.estimated_tokens,
+                exc.max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_success_task_write_status = {
+                "status": "skipped",
+                "reason": "build_failed",
+                "error": str(exc),
+            }
+            logger.warning(
+                "[_stream_chat] last_success_task 构造失败，跳过写入: session_id=%s, error=%s",
+                final_session_id,
+                exc,
+            )
     if final_payload.get("error") is None and has_query_target(last_success_task):
         store.update_thread_state(
             final_session_id,
@@ -2326,6 +2413,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     final_payload: dict | None = None
     completed = False
     trace_context_sink: list = []
+    subagent_control_plane_sink: list = []
     effective_payload = payload
     pending_resolution = store.resolve_pending_clarification(
         state,
@@ -2358,6 +2446,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             pending_resolution=pending_resolution,
             observability_session_id=business_session_id,
             trace_context_sink=trace_context_sink,
+            subagent_control_plane_sink=subagent_control_plane_sink,
             defer_trace_close=True,
         ):
             data = event.get("data") if isinstance(event, dict) else None
@@ -2380,6 +2469,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                                 pending_resolution=pending_resolution,
                                 payload_question=payload.question,
                                 trace_context_sink=trace_context_sink,
+                                subagent_control_plane=(
+                                    subagent_control_plane_sink[0]
+                                    if subagent_control_plane_sink
+                                    else None
+                                ),
                             )
                         except Exception as persist_exc:  # noqa: BLE001
                             logger.exception(
