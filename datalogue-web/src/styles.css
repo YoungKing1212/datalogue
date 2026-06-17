@@ -2335,10 +2335,18 @@ input:focus, textarea:focus, button:focus { outline: none; }
   color: var(--text-3);
   font-size: 11px;
 }
-.blueprint-step-card {
+.blueprint-step-view {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  gap: 9px;
+  gap: 10px;
+}
+.blueprint-step-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
 }
 .blueprint-step-card > span {
   width: 22px;
@@ -2350,26 +2358,128 @@ input:focus, textarea:focus, button:focus { outline: none; }
   color: var(--accent);
   font-size: 11px;
   font-weight: 700;
+  flex-shrink: 0;
 }
-.blueprint-step-card strong {
-  display: block;
-  margin-bottom: 4px;
+.step-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.step-card-header .step-badge {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.step-card-header strong {
   font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.blueprint-step-rules {
+.step-card-body {
+  display: grid;
+  gap: 10px;
+}
+.step-section {
   display: grid;
   gap: 5px;
-  margin-top: 8px;
 }
-.blueprint-step-rules em {
-  display: block;
-  padding: 6px 8px;
-  border-radius: 6px;
+.step-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.step-section p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.step-rule-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.step-rule-list li {
+  margin-bottom: 3px;
+}
+.step-empty-text {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.step-output-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.step-output-tag {
+  padding: 3px 8px;
+  border-radius: 5px;
   background: var(--bg-2);
   color: var(--text-2);
   font-size: 11px;
-  font-style: normal;
-  line-height: 1.45;
+  line-height: 1.4;
+}
+.step-output-tag-more {
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+.step-confidence-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+.step-confidence-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), oklch(0.65 0.14 245));
+  transition: width 0.25s ease;
+}
+.step-confidence-text {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+.step-card-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.step-json-toggle {
+  height: auto;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.step-json-toggle:hover {
+  color: var(--accent);
+}
+.step-json-block {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--hairline);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-x: auto;
 }
 .blueprint-test-workbench,
 .blueprint-usage-panel {

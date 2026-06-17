@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './icons';
+import { BlueprintStepView } from './blueprint-step-view';
 import {
   analyzeBlueprintDescription,
   analyzeBlueprintSql,
@@ -1012,11 +1013,7 @@ function BlueprintDetail({ datasetId, blueprint, onChanged }) {
           />
         )}
         {activeTab === 'steps' && (
-          <StructuredList
-            emptyText="暂无业务逻辑步骤"
-            items={blueprint.steps || []}
-            renderItem={(item, idx) => <StepCard key={item.id || item.name || idx} item={item} index={idx} />}
-          />
+          <BlueprintStepView steps={blueprint.steps || []} />
         )}
         {activeTab === 'test' && (
           <BlueprintTestPanel
@@ -1155,50 +1152,6 @@ function OutputColumnCard({ item }) {
       <div className="blueprint-card-meta">
         {item.format && <span>格式: {item.format}</span>}
         {item.source && <span>来源: {item.source}</span>}
-      </div>
-    </div>
-  );
-}
-
-function StepCard({ item, index }) {
-  if (typeof item === 'string') {
-    return (
-      <div className="blueprint-step-card">
-        <span>{index + 1}</span>
-        <div>
-          <strong>{`步骤 ${index + 1}`}</strong>
-          <p>{item}</p>
-        </div>
-      </div>
-    );
-  }
-
-  const stepNo = item.step || index + 1;
-  const description = item.description || item.purpose || item.action || item.logic || '';
-  const rules = item.key_rules || item.rules || [];
-  const outputs = item.output_columns || item.outputs || [];
-
-  return (
-    <div className="blueprint-step-card">
-      <span>{stepNo}</span>
-      <div>
-        <strong>{item.name || item.title || `步骤 ${index + 1}`}</strong>
-        <p>{description || '暂无步骤说明'}</p>
-        {rules.length ? (
-          <div className="blueprint-step-rules">
-            {rules.slice(0, 4).map(rule => (
-              <em key={rule}>{rule}</em>
-            ))}
-          </div>
-        ) : null}
-        {outputs.length ? (
-          <div className="blueprint-card-meta">
-            <span>
-              输出: {outputs.slice(0, 6).join(', ')}
-              {outputs.length > 6 ? ' ...' : ''}
-            </span>
-          </div>
-        ) : null}
       </div>
     </div>
   );
