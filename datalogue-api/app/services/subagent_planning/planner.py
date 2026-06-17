@@ -752,6 +752,11 @@ def _planner_system_prompt() -> str:
             "可选审计字段包括 decision_factors、planner_warnings、governance_suggestions，均为对象数组。",
             "execution_strategy 可选：blueprint_execute、blueprint_as_reference、query_graph、clarify、reject。",
             "明细查询命中 field/table 时，应优先 query_graph 或 blueprint_as_reference，不要因为缺少指标而 clarify。",
+            "当候选资产目录不足以生成可靠 SQL 时，可以输出 asset_detail_requests，请求目录中的资产详情。",
+            "asset_detail_requests 只能请求本轮候选资产目录中的 metric、dimension、table、blueprint。",
+            "表详情优先请求 full_schema；如果返回 too_large，再使用 field_search 自然语言搜索字段。",
+            "资产详情最多 3 轮；3 轮后仍缺上下文时，不允许硬生成 SQL，必须输出 clarify 或 reject。",
+            "如果无法确定时间字段、join 字段、指标口径或业务过滤条件，应在 missing_context 和 why_not_generate_sql 中说明原因。",
         ]
     )
 

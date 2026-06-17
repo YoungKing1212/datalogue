@@ -11,6 +11,7 @@ from app.services.subagent_planning.contracts import (
 )
 from app.services.subagent_planning.planner import (
     _planner_human_prompt,
+    _planner_system_prompt,
     build_fallback_query_plan,
     plan_query,
     plan_query_with_detail_context,
@@ -342,6 +343,15 @@ def test_normalize_query_plan_accepts_asset_detail_audit_fields():
     assert plan.why_not_generate_sql == "无法确定时间字段。"
     assert plan.risk_flags == ["wide_table"]
     assert plan.execution_strategy == "reject"
+
+
+def test_planner_system_prompt_includes_asset_detail_loop_rules():
+    prompt = _planner_system_prompt()
+
+    assert "asset_detail_requests" in prompt
+    assert "最多 3 轮" in prompt
+    assert "不允许硬生成 SQL" in prompt
+    assert "目录中的资产" in prompt
 
 
 def test_fallback_blueprint_query_with_inputs_executes_blueprint():
