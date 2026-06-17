@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     SUBAGENT_REMOTE_TIMEOUT_SECONDS: float = 60.0
     SUBAGENT_REMOTE_RETRIES: int = 0
 
+    SUBAGENT_PLANNER_DETAIL_LOOP_ENABLED: bool = False
+    SUBAGENT_PLANNER_DETAIL_MAX_ROUNDS: int = 3
+    SUBAGENT_PLANNER_DETAIL_MAX_REQUESTS_PER_ROUND: int = 5
+    SUBAGENT_PLANNER_FIELD_SEARCH_DEFAULT_TOP_K: int = 30
+    SUBAGENT_PLANNER_FIELD_SEARCH_MAX_TOP_K: int = 50
+    SUBAGENT_PLANNER_TABLE_FULL_FIELD_LIMIT: int = 120
+    SUBAGENT_PLANNER_TABLE_COMPACT_FIELD_LIMIT: int = 300
+
     # ============================================================
     # LeadAgent 渐进式资产注入（Progressive Asset Integration）
     # ============================================================

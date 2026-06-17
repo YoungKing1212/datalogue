@@ -1181,3 +1181,30 @@ def plan_query(
         except Exception:
             pass
         return plan
+
+
+def plan_query_with_detail_context(
+    *,
+    db: Any,
+    question: str,
+    routing: Any,
+    lightweight_catalog: dict[str, Any],
+    asset_details: list[dict[str, Any]],
+    previous_detail_requests: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+    multiturn_context: Any = None,
+    lead_agent_context: Any = None,
+) -> QueryPlan | dict[str, Any]:
+    return plan_query(
+        db=db,
+        question=question,
+        routing=routing,
+        candidate_assets=lightweight_catalog,
+        multiturn_context={
+            "summary": multiturn_context,
+            "asset_details": asset_details,
+            "previous_detail_requests": previous_detail_requests,
+            "warnings": warnings,
+        },
+        lead_agent_context=lead_agent_context,
+    )

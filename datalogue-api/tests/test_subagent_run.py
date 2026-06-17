@@ -14,7 +14,10 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from app.services.dataset_subagent import DatasetSubAgent
 from app.services.runner import DatasetSubAgentRequest
@@ -164,6 +167,118 @@ def test_subagent_run_emits_candidate_assets_and_query_plan(monkeypatch, db_sess
     assert "context" not in events[0].payload["candidate_assets"]
     assert events[-1].payload["final_state"]["entry_route"] == "clarify"
     assert events[-1].payload["final_state"]["candidate_assets"]["assets"] == []
+
+
+@pytest.mark.asyncio
+async def test_dataset_subagent_uses_detail_loop_when_enabled(monkeypatch, db_session):
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.get_settings",
+        lambda: SimpleNamespace(
+            SUBAGENT_PLANNER_DETAIL_LOOP_ENABLED=True,
+            SUBAGENT_PLANNER_DETAIL_MAX_ROUNDS=3,
+            SUBAGENT_PLANNER_DETAIL_MAX_REQUESTS_PER_ROUND=5,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _blueprint_recall_result(),
+    )
+
+    class FakeLoop:
+        def __init__(self, *, max_rounds, max_requests_per_round, planner_call):
+            captured["loop_init"] = {
+                "max_rounds": max_rounds,
+                "max_requests_per_round": max_requests_per_round,
+                "planner_call": planner_call,
+            }
+
+        def run(self, **kwargs):
+            captured["loop_run"] = kwargs
+            return SimpleNamespace(
+                query_plan=QueryPlan(
+                    query_type="ambiguous",
+                    execution_strategy="clarify",
+                    confidence=0.71,
+                    clarification={"message": "请补充查询对象。"},
+                    asset_detail_coverage={"7": {"coverage": "full"}},
+                    risk_flags=["partial_asset_detail"],
+                ),
+                detail_rounds=1,
+                attempted_detail_requests=[
+                    {"asset_type": "table", "asset_id": 7, "detail_type": "full"}
+                ],
+                warnings=[{"code": "detail_warning", "message": "测试告警"}],
+                sql_generation_context={"coverage": {}},
+            )
+
+    monkeypatch.setattr("app.services.dataset_subagent.PlannerDetailLoop", FakeLoop)
+
+    events = await _collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=None)
+
+    assert [event.event_type for event in events] == [
+        "candidate_assets",
+        "asset_detail",
+        "query_plan",
+        "result",
+    ]
+    assert captured["loop_init"]["max_rounds"] == 3
+    assert captured["loop_init"]["max_requests_per_round"] == 5
+    assert captured["loop_init"]["planner_call"].__name__ == "plan_query_with_detail_context"
+    assert captured["loop_run"]["candidate_assets"]["context"]["schema_context"] == "schema text"
+
+    asset_detail_payload = events[1].payload
+    assert asset_detail_payload["display_name"] == "subagent.asset_detail"
+    assert asset_detail_payload["detail_rounds"] == 1
+    assert asset_detail_payload["requested_count"] == 1
+    assert asset_detail_payload["coverage"] == {"7": {"coverage": "full"}}
+    assert asset_detail_payload["risk_flags"] == ["partial_asset_detail"]
+    assert asset_detail_payload["warnings"] == [{"code": "detail_warning", "message": "测试告警"}]
+
+    final_state = events[-1].payload["final_state"]
+    assert final_state["candidate_assets"]["summary"]["blueprint_count"] == 1
+    assert final_state["sql_generation_context"] == {"coverage": {}}
+
+
+@pytest.mark.asyncio
+async def test_dataset_subagent_keeps_direct_planner_when_detail_loop_disabled(
+    monkeypatch, db_session
+):
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.get_settings",
+        lambda: SimpleNamespace(SUBAGENT_PLANNER_DETAIL_LOOP_ENABLED=False),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _blueprint_recall_result(),
+    )
+
+    def fake_plan_query(**kwargs):
+        captured["plan_query"] = kwargs
+        return QueryPlan(
+            query_type="ambiguous",
+            execution_strategy="clarify",
+            confidence=0.62,
+            clarification={"message": "请补充查询对象。"},
+        )
+
+    class UnexpectedLoop:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("detail loop should stay disabled")
+
+    monkeypatch.setattr("app.services.dataset_subagent.plan_query", fake_plan_query)
+    monkeypatch.setattr("app.services.dataset_subagent.PlannerDetailLoop", UnexpectedLoop)
+
+    events = await _collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=None)
+
+    assert [event.event_type for event in events] == ["candidate_assets", "query_plan", "result"]
+    assert captured["plan_query"]["candidate_assets"]["summary"]["blueprint_count"] == 1
+    assert "context" not in captured["plan_query"]["candidate_assets"]
+    assert "asset_detail" not in [event.event_type for event in events]
+    assert "sql_generation_context" not in events[-1].payload["final_state"]
 
 
 def test_subagent_run_records_candidate_assets_and_query_plan_spans(monkeypatch, db_session):

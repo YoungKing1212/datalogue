@@ -43,7 +43,11 @@ from app.services.subagent_planning.execution import (
     build_clarify_result,
     build_reject_result,
 )
-from app.services.subagent_planning.planner import build_fallback_query_plan, plan_query
+from app.services.subagent_planning.planner import (
+    build_fallback_query_plan,
+    plan_query,
+    plan_query_with_detail_context,
+)
 from app.services.subagent_planning.sql_context import build_sql_generation_context
 
 __all__ = [
@@ -70,6 +74,7 @@ __all__ = [
     "build_sql_generation_context",
     "normalize_query_plan",
     "plan_query",
+    "plan_query_with_detail_context",
     "project_lightweight_asset_catalog",
     "recall_candidate_assets",
     "validate_asset_detail_requests",

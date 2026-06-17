@@ -29,6 +29,7 @@ from typing import Any
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.dataset import AnalysisBlueprint
 from app.services.analysis_blueprint import (
     blueprint_params_from_time_context,
@@ -37,12 +38,14 @@ from app.services.analysis_blueprint import (
 from app.services.observability.tracer import get_observability_tracer
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
 from app.services.subagent_planning import (
+    PlannerDetailLoop,
     QueryPlan,
     SubAgentEvent,
     build_blueprint_reference_context,
     build_clarify_result,
     build_reject_result,
     plan_query,
+    plan_query_with_detail_context,
     recall_candidate_assets,
 )
 
@@ -1153,6 +1156,10 @@ class DatasetSubAgent:
             },
         )
 
+        settings = get_settings()
+        detail_loop_enabled = bool(settings.SUBAGENT_PLANNER_DETAIL_LOOP_ENABLED)
+        detail_loop_result = None
+        sql_generation_context: dict[str, Any] | None = None
         query_plan_span_started_at = time.monotonic()
         try:
             tracer.start_span(
@@ -1175,14 +1182,31 @@ class DatasetSubAgent:
         except Exception:
             logger.warning("tracer.start_span 失败 node=subagent.query_plan", exc_info=True)
         try:
-            query_plan = plan_query(
-                db=self.db,
-                question=question,
-                routing=routing,
-                candidate_assets=public_candidate_assets,
-                multiturn_context=multiturn_context,
-                lead_agent_context=request.lead_agent_context,
-            )
+            if detail_loop_enabled:
+                detail_loop = PlannerDetailLoop(
+                    max_rounds=settings.SUBAGENT_PLANNER_DETAIL_MAX_ROUNDS,
+                    max_requests_per_round=settings.SUBAGENT_PLANNER_DETAIL_MAX_REQUESTS_PER_ROUND,
+                    planner_call=plan_query_with_detail_context,
+                )
+                detail_loop_result = detail_loop.run(
+                    db=self.db,
+                    question=question,
+                    routing=routing,
+                    candidate_assets=candidate_assets,
+                    multiturn_context=multiturn_context,
+                    lead_agent_context=request.lead_agent_context,
+                )
+                query_plan = detail_loop_result.query_plan
+                sql_generation_context = detail_loop_result.sql_generation_context
+            else:
+                query_plan = plan_query(
+                    db=self.db,
+                    question=question,
+                    routing=routing,
+                    candidate_assets=public_candidate_assets,
+                    multiturn_context=multiturn_context,
+                    lead_agent_context=request.lead_agent_context,
+                )
         except Exception as exc:
             _dsa_end_span(
                 tracer,
@@ -1200,6 +1224,22 @@ class DatasetSubAgent:
             started_at=query_plan_span_started_at,
             output_payload=_dsa_query_plan_span_output(query_plan),
         )
+        if detail_loop_result is not None:
+            yield SubAgentEvent(
+                event_type="asset_detail",
+                payload={
+                    "node": "asset_detail",
+                    "display_name": "subagent.asset_detail",
+                    "status": "done",
+                    "detail_rounds": detail_loop_result.detail_rounds,
+                    "requested_count": len(detail_loop_result.attempted_detail_requests),
+                    "coverage": query_plan.asset_detail_coverage
+                    or (sql_generation_context or {}).get("coverage")
+                    or {},
+                    "risk_flags": query_plan.risk_flags,
+                    "warnings": detail_loop_result.warnings,
+                },
+            )
         yield SubAgentEvent(
             event_type="query_plan",
             payload={
@@ -1215,6 +1255,8 @@ class DatasetSubAgent:
             result = build_clarify_result(query_plan)
             final_state = dict(result.final_state)
             final_state["candidate_assets"] = public_candidate_assets
+            if sql_generation_context is not None:
+                final_state["sql_generation_context"] = sql_generation_context
             yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
             return
 
@@ -1222,6 +1264,8 @@ class DatasetSubAgent:
             result = build_reject_result(query_plan)
             final_state = dict(result.final_state)
             final_state["candidate_assets"] = public_candidate_assets
+            if sql_generation_context is not None:
+                final_state["sql_generation_context"] = sql_generation_context
             yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
             return
 
@@ -1233,6 +1277,8 @@ class DatasetSubAgent:
                 candidate_assets=public_candidate_assets,
                 trace_context=trace_context,
             )
+            if sql_generation_context is not None:
+                final_state["sql_generation_context"] = sql_generation_context
             yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
             return
 
@@ -1250,6 +1296,8 @@ class DatasetSubAgent:
             public_candidate_assets=public_candidate_assets,
             query_plan=query_plan,
         )
+        if sql_generation_context is not None:
+            query_graph_state["sql_generation_context"] = sql_generation_context
         final_state = dict(query_graph_state)
         runner = InProcessDatasetSubAgentRunner(graph, self.db)
         async for event in runner.run(
