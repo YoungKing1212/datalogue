@@ -17,6 +17,10 @@
 import json
 
 from app.core.config import Settings
+from app.prompts.lead_agent import (
+    LEAD_AGENT_SKILL_SELECTOR_SYSTEM,
+    LEAD_AGENT_TOOL_PLANNER_SYSTEM,
+)
 from app.services.lead_agent import plan_tool_calls_with_llm
 
 
@@ -234,3 +238,19 @@ def test_progressive_assets_empty_when_recall_fails(monkeypatch, db_session, sam
     skill_meta = tracer.started[0]["metadata"]
     assert skill_meta["candidate_asset_recall_called"] is True
     assert skill_meta["candidate_asset_count"] == 0
+
+
+def test_skill_selector_prompt_mentions_candidate_assets():
+    """Skill Selector 的 system prompt 必须说明 candidate_assets 字段及使用规则。"""
+    assert "candidate_assets" in LEAD_AGENT_SKILL_SELECTOR_SYSTEM
+    assert "asset_type" in LEAD_AGENT_SKILL_SELECTOR_SYSTEM
+    assert "confidence" in LEAD_AGENT_SKILL_SELECTOR_SYSTEM
+    assert "blueprint" in LEAD_AGENT_SKILL_SELECTOR_SYSTEM
+
+
+def test_tool_planner_prompt_mentions_candidate_assets():
+    """Tool Planner 的 system prompt 必须说明 candidate_assets 字段及使用规则。"""
+    assert "candidate_assets" in LEAD_AGENT_TOOL_PLANNER_SYSTEM
+    assert "asset_type" in LEAD_AGENT_TOOL_PLANNER_SYSTEM
+    assert "confidence" in LEAD_AGENT_TOOL_PLANNER_SYSTEM
+    assert "subagent_dispatch" in LEAD_AGENT_TOOL_PLANNER_SYSTEM
