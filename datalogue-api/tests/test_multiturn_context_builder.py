@@ -527,22 +527,27 @@ def test_metric_query_without_metrics_still_downgrades_to_new_query():
 
 def test_query_task_capsule_base_query_plan_fills_prior_context():
     """prior_capsule 为空时，可从 query_task_capsule 的 base_query_plan 兜底承接。"""
-    from app.services.task_capsule import build_query_task_capsule
+    from app.services.task_capsule import build_query_task_capsule, build_success_task_state
+
+    last_success_task = build_success_task_state(
+        question="查询10条用户日志",
+        dataset_id=10,
+        query_plan={
+            "query_type": "detail_query",
+            "execution_strategy": "query_graph",
+            "planner_source": "deterministic",
+            "debug": {"selected_main_table": "plan_task_daily_record"},
+        },
+        dsl={"fields": [{"table_name": "plan_task_daily_record", "name": "rzrq"}]},
+        sql="SELECT rzrq, person_name FROM plan_task_daily_record LIMIT 10",
+        sql_result={"columns": ["rzrq", "person_name"], "rows": []},
+    )
 
     query_task_capsule = build_query_task_capsule(
         question="只看汤杰",
         turn_event={"event_type": "followup_refine"},
         active_dataset_id=10,
-        last_success_task={
-            "question": "查询10条用户日志",
-            "dataset_id": 10,
-            "query_type": "detail_query",
-            "main_table": "plan_task_daily_record",
-            "query_plan": {
-                "query_type": "detail_query",
-                "select_fields": ["rzrq", "person_name"],
-            },
-        },
+        last_success_task=last_success_task,
     )
     builder = MultiturnContextBuilder()
     decision = builder.build(

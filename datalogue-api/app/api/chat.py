@@ -62,6 +62,10 @@ from app.services.task_capsule import (
     build_success_task_state,
     has_query_target,
 )
+from app.services.multiturn.last_success_task import (
+    CapsuleSizeExceededError,
+    evaluate_last_success_task,
+)
 from app.utils.think import (
     filter_think_stream_chunk,
     flush_think_stream_state,
@@ -750,11 +754,43 @@ def _find_dataset_by_name(db: Session, dataset_name: str) -> models.SemanticData
     )
 
 
-def _has_last_success_task(multiturn_context: dict | None) -> bool:
+def _current_manifest_versions(db: Session, dataset_id: int | None) -> dict[str, str | None]:
+    """读取当前数据集 manifest 版本，用于 Message Gateway 前的继承预校验。"""
+
+    if dataset_id is None:
+        return {"manifest_version": None, "schema_version": None}
+    manifest = (
+        db.query(models.DatasetSubAgentManifest)
+        .filter(
+            models.DatasetSubAgentManifest.dataset_id == dataset_id,
+            models.DatasetSubAgentManifest.is_current.is_(True),
+        )
+        .order_by(models.DatasetSubAgentManifest.created_at.desc())
+        .first()
+    )
+    if manifest is None:
+        return {"manifest_version": None, "schema_version": None}
+    return {
+        "manifest_version": manifest.manifest_version,
+        "schema_version": manifest.bound_schema_version,
+    }
+
+
+def _thread_last_success_task(multiturn_context: dict | None) -> dict | None:
+    context = multiturn_context or {}
+    task = context.get("last_success_task")
+    return task if isinstance(task, dict) else None
+
+
+def _has_last_success_task(
+    multiturn_context: dict | None,
+    last_success_task_status: dict | None = None,
+) -> bool:
     """判断当前线程是否有可承接的上一轮成功查询。"""
 
-    context = multiturn_context or {}
-    return has_query_target(context.get("last_success_task"))
+    if isinstance(last_success_task_status, dict):
+        return last_success_task_status.get("status") == "loaded"
+    return has_query_target(_thread_last_success_task(multiturn_context))
 
 
 def _gateway_lead_context(
@@ -1042,11 +1078,22 @@ async def _stream_chat_singleturn(
         _coerce_int((multiturn_context or {}).get("active_dataset_id"))
         or effective_dataset_id
     )
+    thread_last_success_task = _thread_last_success_task(multiturn_context)
+    current_manifest_versions = _current_manifest_versions(db, active_dataset_id)
+    _, last_success_task_status = evaluate_last_success_task(
+        thread_last_success_task,
+        active_dataset_id=active_dataset_id,
+        current_schema_version=current_manifest_versions.get("schema_version"),
+        current_manifest_version=current_manifest_versions.get("manifest_version"),
+    )
     turn_event = classify_turn_event(
         payload.question,
         active_dataset_id=active_dataset_id,
         has_pending_clarification=bool((multiturn_context or {}).get("pending_clarification")),
-        has_last_success_task=_has_last_success_task(multiturn_context),
+        has_last_success_task=_has_last_success_task(
+            multiturn_context,
+            last_success_task_status,
+        ),
     )
     tracer.start_span(
         trace_context,
@@ -1289,16 +1336,12 @@ async def _stream_chat_singleturn(
             dataset_id=effective_dataset_id,
             expected_schema_version=route_decision.get("bound_schema_version"),
         )
-    thread_last_success_task = (
-        (multiturn_context or {}).get("last_success_task")
-        if isinstance(multiturn_context, dict)
-        else None
-    )
     query_task_capsule = build_query_task_capsule(
         question=resolved_question,
         turn_event=turn_event,
         active_dataset_id=effective_dataset_id,
         last_success_task=thread_last_success_task,
+        last_success_task_status=last_success_task_status,
     )
     trace_query_task_capsule = _safe_query_task_capsule_for_trace(query_task_capsule)
     step_traces: list[dict] = []  # 收集推理步骤供历史加载时恢复思维链
@@ -1312,6 +1355,7 @@ async def _stream_chat_singleturn(
         "payload": {
             "turn_event": turn_event,
             "query_task_capsule": trace_query_task_capsule,
+            "last_success_task_status": last_success_task_status,
         },
     }
     step_traces.append(gateway_step_payload)
@@ -1330,6 +1374,7 @@ async def _stream_chat_singleturn(
         "lead_agent_context": lead_agent_context,
         "turn_event": turn_event,
         "query_task_capsule": query_task_capsule,
+        "last_success_task_status": last_success_task_status,
         "manifest_version": route_decision.get("manifest_version"),
         "bound_schema_version": route_decision.get("bound_schema_version"),
     }
@@ -1499,6 +1544,7 @@ async def _stream_chat_singleturn(
         "clarification_resolution_result": term_resolution.get("clarification_resolution_result"),
         "prior_capsule": prior_capsule,
         "prior_capsule_status": prior_capsule_status,
+        "last_success_task_status": last_success_task_status,
         "out_capsule": None,
         "multiturn_context": merge_decision.multiturn_context,
         "turn_type": merge_decision.turn_type,
@@ -2170,20 +2216,64 @@ def _persist_completed_turn(
         subagent_capsules=updated_capsules,
         trace_context=trace_context_sink[0] if trace_context_sink else None,
     )
-    last_success_task = build_success_task_state(
-        question=executed_question,
-        dataset_id=_coerce_int(active_dataset_id),
-        query_plan=final_payload.get("query_plan"),
-        dsl=final_payload.get("dsl"),
-        sql=final_payload.get("sql"),
-        sql_result=final_payload.get("sql_result"),
-    )
+    last_success_task = None
+    last_success_task_write_status: dict[str, Any] = {"status": "not_built"}
+    route_decision = final_payload.get("route_decision") or {}
+    try:
+        last_success_task = build_success_task_state(
+            question=executed_question,
+            dataset_id=_coerce_int(active_dataset_id),
+            query_plan=final_payload.get("query_plan"),
+            dsl=final_payload.get("dsl"),
+            sql=final_payload.get("sql"),
+            sql_result=final_payload.get("sql_result"),
+            schema_version=route_decision.get("bound_schema_version")
+            or final_payload.get("bound_schema_version"),
+            manifest_version=route_decision.get("manifest_version")
+            or final_payload.get("manifest_version"),
+            turn_index=getattr(final_state, "turn_index", None),
+        )
+        last_success_task_write_status = {"status": "ready"}
+    except CapsuleSizeExceededError as exc:
+        last_success_task_write_status = {
+            "status": "skipped",
+            "reason": "size_exceeded",
+            "estimated_tokens": exc.estimated_tokens,
+            "max_tokens": exc.max_tokens,
+        }
+        logger.warning(
+            "[_stream_chat] last_success_task 超出预算，跳过写入: session_id=%s, estimated_tokens=%s, max_tokens=%s",
+            final_session_id,
+            exc.estimated_tokens,
+            exc.max_tokens,
+        )
+    except Exception as exc:  # noqa: BLE001
+        last_success_task_write_status = {
+            "status": "skipped",
+            "reason": "build_failed",
+            "error": str(exc),
+        }
+        logger.warning(
+            "[_stream_chat] last_success_task 构造失败，跳过写入: session_id=%s, error=%s",
+            final_session_id,
+            exc,
+        )
     if final_payload.get("error") is None and has_query_target(last_success_task):
         store.update_thread_state(
             final_session_id,
             {
                 "last_success_task": last_success_task,
                 "active_task": None,
+                "last_success_task_write_status": last_success_task_write_status,
+            },
+            user_id=user_id,
+        )
+    elif final_payload.get("error") is None:
+        store.update_thread_state(
+            final_session_id,
+            {
+                "active_task": None,
+                "last_success_task_write_status": last_success_task_write_status,
             },
             user_id=user_id,
         )

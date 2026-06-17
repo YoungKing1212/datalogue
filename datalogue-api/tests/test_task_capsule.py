@@ -17,10 +17,17 @@ import json
 from datetime import datetime
 from decimal import Decimal
 
+import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
+from app.services.multiturn.last_success_task import (
+    CapsuleSizeExceededError,
+    LastSuccessTask,
+    build_last_success_task,
+)
 from app.services.conversation_store import ConversationStore
 from app.services.task_capsule import (
     build_query_task_capsule,
@@ -87,10 +94,38 @@ def test_metric_query_without_metrics_has_no_target():
     assert has_query_target(task) is False
 
 
-def test_build_success_task_state_keeps_query_plan_dsl_sql_and_result_digest():
+def test_build_success_task_state_keeps_only_minimal_snapshot():
     query_plan = {
         "query_type": "detail_query",
-        "debug": {"selected_main_table": "plan_task_daily_record"},
+        "execution_strategy": "query_graph",
+        "planner_source": "deterministic",
+        "selected_assets": [
+            {
+                "asset_type": "field",
+                "name": "rzrq",
+                "display_name": "日志日期",
+                "metadata": {
+                    "table_name": "plan_task_daily_record",
+                    "column_name": "rzrq",
+                    "sample_values": ["2024-01-01"],
+                    "ai_description": "large metadata should not persist",
+                },
+                "match_signals": [{"kind": "keyword"}],
+            }
+        ],
+        "rejected_assets": [{"metadata": {"call_template": "SELECT ..."}}],
+        "decision_factors": [{"reason": "debug only"}],
+        "debug": {
+            "selected_main_table": "plan_task_daily_record",
+            "join_hints": [
+                {
+                    "left_table": "plan_task_daily_record",
+                    "left_column": "account",
+                    "right_table": "eas_personofile",
+                    "right_column": "person_card",
+                }
+            ],
+        },
     }
     dsl = {"fields": [{"name": "rzrq"}]}
     sql = "SELECT rzrq FROM plan_task_daily_record LIMIT 10"
@@ -102,18 +137,35 @@ def test_build_success_task_state_keeps_query_plan_dsl_sql_and_result_digest():
         dsl=dsl,
         sql=sql,
         sql_result={"columns": ["rzrq"], "rows": [{"rzrq": "2024-01-01"}], "row_count": 1},
+        schema_version="schema-v1",
+        manifest_version="v1",
+        turn_index=2,
     )
 
+    assert state["capsule_version"] == "last_success_task.v1"
     assert state["dataset_id"] == 10
     assert state["query_type"] == "detail_query"
     assert state["main_table"] == "plan_task_daily_record"
-    assert state["query_plan"] == query_plan
-    assert state["dsl"] == dsl
-    assert state["sql"] == sql
+    assert state["schema_version"] == "schema-v1"
+    assert state["manifest_version"] == "v1"
+    assert state["turn_index"] == 2
+    assert "query_plan" not in state
+    assert "dsl" not in state
+    assert "sql" not in state
+    assert "rejected_assets" not in json.dumps(state, ensure_ascii=False)
+    assert "sample_values" not in json.dumps(state, ensure_ascii=False)
+    assert state["selected_field_refs"] == [
+        {
+            "table": "plan_task_daily_record",
+            "column": "rzrq",
+            "role": "select_only",
+            "alias": "日志日期",
+        }
+    ]
+    assert state["join_topology"][0]["left_table"] == "plan_task_daily_record"
     assert state["result_digest"] == {
         "row_count": 1,
         "columns": ["rzrq"],
-        "sample_rows": [{"rzrq": "2024-01-01"}],
     }
 
 
@@ -123,6 +175,7 @@ def test_build_success_task_state_prefers_debug_selected_main_table():
         dataset_id=10,
         query_plan={
             "query_type": "detail_query",
+            "execution_strategy": "query_graph",
             "main_table": "wrong_top_level_table",
             "debug": {"selected_main_table": "plan_task_daily_record"},
         },
@@ -138,7 +191,11 @@ def test_build_success_task_state_falls_back_to_query_plan_main_table():
     state = build_success_task_state(
         question="查询10条用户日志",
         dataset_id=10,
-        query_plan={"query_type": "detail_query", "main_table": "plan_task_daily_record"},
+        query_plan={
+            "query_type": "detail_query",
+            "execution_strategy": "query_graph",
+            "main_table": "plan_task_daily_record",
+        },
         dsl={"main_table": "wrong_dsl_table", "fields": [{"name": "rzrq"}]},
         sql="SELECT rzrq FROM plan_task_daily_record LIMIT 10",
         sql_result={"columns": ["rzrq"], "rows": [], "row_count": 0},
@@ -151,7 +208,7 @@ def test_build_success_task_state_falls_back_to_dsl_main_table():
     state = build_success_task_state(
         question="查询10条用户日志",
         dataset_id=10,
-        query_plan={"query_type": "detail_query"},
+        query_plan={"query_type": "detail_query", "execution_strategy": "query_graph"},
         dsl={"main_table": "plan_task_daily_record", "fields": [{"name": "rzrq"}]},
         sql="SELECT rzrq FROM plan_task_daily_record LIMIT 10",
         sql_result={"columns": ["rzrq"], "rows": [], "row_count": 0},
@@ -164,7 +221,7 @@ def test_build_success_task_state_json_encodes_sample_rows():
     state = build_success_task_state(
         question="查询金额",
         dataset_id=10,
-        query_plan={"query_type": "detail_query"},
+        query_plan={"query_type": "detail_query", "execution_strategy": "query_graph"},
         dsl={"fields": [{"name": "amount"}]},
         sql="SELECT amount, created_at FROM payment",
         sql_result={
@@ -180,28 +237,130 @@ def test_build_success_task_state_json_encodes_sample_rows():
     )
 
     json.dumps(state["result_digest"])
-    assert state["result_digest"]["sample_rows"] == [
-        {"amount": 12.34, "created_at": "2026-06-15T10:30:00"}
-    ]
+    assert state["result_digest"] == {"row_count": 1, "columns": ["amount", "created_at"]}
 
 
-def test_build_success_task_state_limits_sample_rows_to_five():
+def test_build_success_task_state_omits_sample_rows():
     rows = [{"idx": idx} for idx in range(6)]
 
     state = build_success_task_state(
         question="查询日志",
         dataset_id=10,
-        query_plan={"query_type": "detail_query"},
+        query_plan={"query_type": "detail_query", "execution_strategy": "query_graph"},
         dsl={"fields": [{"name": "idx"}]},
         sql="SELECT idx FROM logs LIMIT 6",
         sql_result={"columns": ["idx"], "rows": rows, "row_count": 6},
     )
 
     assert state["result_digest"]["row_count"] == 6
-    assert state["result_digest"]["sample_rows"] == rows[:5]
+    assert "sample_rows" not in state["result_digest"]
+
+
+def test_last_success_task_forbids_extra_fields():
+    with pytest.raises(ValidationError):
+        LastSuccessTask.model_validate(
+            {
+                "capsule_version": "last_success_task.v1",
+                "question": "查询日志",
+                "query_type": "detail_query",
+                "main_table": "plan_task_daily_record",
+                "selected_field_refs": [],
+                "query_plan": {"debug": "should not be allowed"},
+            }
+        )
+
+
+def test_last_success_task_size_guard_raises():
+    with pytest.raises(CapsuleSizeExceededError):
+        build_last_success_task(
+            question="查询日志",
+            dataset_id=10,
+            query_plan={
+                "query_type": "detail_query",
+                "execution_strategy": "query_graph",
+                "debug": {"selected_main_table": "plan_task_daily_record"},
+            },
+            dsl={"fields": [{"name": "idx"}]},
+            sql="SELECT idx FROM logs",
+            sql_result={"columns": ["idx"], "rows": []},
+            max_tokens=1,
+        )
 
 
 def test_followup_capsule_uses_prior_detail_query_context():
+    last_success_task = build_success_task_state(
+        question="查询10条用户日志",
+        dataset_id=10,
+        query_plan={
+            "query_type": "detail_query",
+            "execution_strategy": "query_graph",
+            "planner_source": "deterministic",
+            "debug": {
+                "selected_main_table": "plan_task_daily_record",
+                "join_hints": [
+                    {
+                        "left_table": "plan_task_daily_record",
+                        "left_column": "account",
+                        "right_table": "eas_personofile",
+                        "right_column": "person_card",
+                    }
+                ],
+            },
+        },
+        dsl={"fields": [{"name": "rzrq"}]},
+        sql="SELECT rzrq FROM plan_task_daily_record LIMIT 10",
+        sql_result={"columns": ["rzrq"], "rows": []},
+        schema_version="schema-v1",
+        manifest_version="v1",
+    )
+    capsule = build_query_task_capsule(
+        question="只看汤杰",
+        turn_event={"event_type": "followup_refine", "delta_intent": "add_filter"},
+        active_dataset_id=10,
+        last_success_task=last_success_task,
+    )
+
+    assert capsule["turn_type"] == "followup_refine"
+    assert capsule["dataset_id"] == 10
+    assert capsule["base_main_table"] == "plan_task_daily_record"
+    assert capsule["base_query_plan"]["query_type"] == "detail_query"
+    assert "selected_assets" not in capsule["base_query_plan"]
+    assert capsule["base_query_plan"]["debug"]["selected_main_table"] == "plan_task_daily_record"
+    assert capsule["base_question"] == "查询10条用户日志"
+    assert capsule["inheritance_status"]["status"] == "loaded"
+    assert "查询10条用户日志" in capsule["standalone_question"]
+    assert "只看汤杰" in capsule["standalone_question"]
+
+
+def test_followup_refine_does_not_inherit_when_dataset_mismatches():
+    last_success_task = build_success_task_state(
+        question="查询10条用户日志",
+        dataset_id=11,
+        query_plan={
+            "query_type": "detail_query",
+            "execution_strategy": "query_graph",
+            "debug": {"selected_main_table": "plan_task_daily_record"},
+        },
+        dsl={"fields": [{"name": "rzrq"}]},
+        sql="SELECT rzrq FROM plan_task_daily_record LIMIT 10",
+        sql_result={"columns": ["rzrq"], "rows": []},
+    )
+    capsule = build_query_task_capsule(
+        question="只看汤杰",
+        turn_event={"event_type": "followup_refine", "delta_intent": "add_filter"},
+        active_dataset_id=10,
+        last_success_task=last_success_task,
+    )
+
+    assert capsule["standalone_question"] == "只看汤杰"
+    assert capsule["base_task_ref"] is None
+    assert capsule["base_question"] is None
+    assert capsule["base_main_table"] is None
+    assert capsule["base_query_plan"] is None
+    assert capsule["inheritance_status"]["reason"] == "dataset_mismatch"
+
+
+def test_followup_refine_does_not_inherit_legacy_last_success_task():
     capsule = build_query_task_capsule(
         question="只看汤杰",
         turn_event={"event_type": "followup_refine", "delta_intent": "add_filter"},
@@ -211,42 +370,13 @@ def test_followup_capsule_uses_prior_detail_query_context():
             "dataset_id": 10,
             "query_type": "detail_query",
             "main_table": "plan_task_daily_record",
-            "query_plan": {
-                "query_type": "detail_query",
-                "debug": {"selected_main_table": "plan_task_daily_record"},
-            },
-            "dsl": {"fields": [{"name": "rzrq"}]},
+            "query_plan": {"selected_assets": [{"metadata": {"huge": "payload"}}]},
         },
     )
 
-    assert capsule["turn_type"] == "followup_refine"
-    assert capsule["dataset_id"] == 10
-    assert capsule["base_main_table"] == "plan_task_daily_record"
-    assert capsule["base_query_plan"]["query_type"] == "detail_query"
-    assert capsule["base_question"] == "查询10条用户日志"
-    assert "查询10条用户日志" in capsule["standalone_question"]
-    assert "只看汤杰" in capsule["standalone_question"]
-
-
-def test_followup_refine_does_not_inherit_when_dataset_mismatches():
-    capsule = build_query_task_capsule(
-        question="只看汤杰",
-        turn_event={"event_type": "followup_refine", "delta_intent": "add_filter"},
-        active_dataset_id=10,
-        last_success_task={
-            "question": "查询10条用户日志",
-            "dataset_id": 11,
-            "query_type": "detail_query",
-            "main_table": "plan_task_daily_record",
-            "query_plan": {"query_type": "detail_query"},
-        },
-    )
-
-    assert capsule["standalone_question"] == "只看汤杰"
     assert capsule["base_task_ref"] is None
-    assert capsule["base_question"] is None
-    assert capsule["base_main_table"] is None
     assert capsule["base_query_plan"] is None
+    assert capsule["inheritance_status"]["reason"] == "unsupported_capsule_version"
 
 
 def test_followup_refine_does_not_inherit_when_prior_has_no_query_target():

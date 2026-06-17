@@ -3351,8 +3351,9 @@ class TestChatStreamEvents:
         """真实 chat merge 前应从 Thread Memory 构建 query_task_capsule。"""
         from app.api.chat import _stream_chat_singleturn
         from app.services.conversation_store import ConversationStore
+        from app.services.task_capsule import build_success_task_state
 
-        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+        manifest = publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
         store = ConversationStore(db_session)
         conversation_state = store.load_or_create(
             session_id="session-query-task-capsule",
@@ -3362,23 +3363,27 @@ class TestChatStreamEvents:
         db_session.add(conversation_state)
         db_session.commit()
         db_session.refresh(conversation_state)
+        last_success_task = build_success_task_state(
+            question="查询10条用户日志",
+            dataset_id=sample_dataset.id,
+            query_plan={
+                "query_type": "detail_query",
+                "execution_strategy": "query_graph",
+                "planner_source": "deterministic",
+                "debug": {
+                    "selected_main_table": "plan_task_daily_record",
+                    "sql_template": "SELECT rzrq FROM plan_task_daily_record LIMIT 10",
+                },
+            },
+            dsl={"fields": [{"table_name": "plan_task_daily_record", "name": "rzrq"}]},
+            sql="SELECT rzrq FROM plan_task_daily_record LIMIT 10",
+            sql_result={"columns": ["rzrq"], "rows": [], "row_count": 0},
+            schema_version=manifest.bound_schema_version,
+            manifest_version=manifest.manifest_version,
+        )
         store.update_thread_state(
             "session-query-task-capsule",
-            {
-                "last_success_task": {
-                    "question": "查询10条用户日志",
-                    "dataset_id": sample_dataset.id,
-                    "query_type": "detail_query",
-                    "main_table": "plan_task_daily_record",
-                    "query_plan": {
-                        "query_type": "detail_query",
-                        "debug": {
-                            "selected_main_table": "plan_task_daily_record",
-                            "sql_template": "SELECT rzrq FROM plan_task_daily_record LIMIT 10",
-                        },
-                    },
-                }
-            },
+            {"last_success_task": last_success_task},
         )
         db_session.refresh(conversation_state)
         captured = {}
@@ -3432,7 +3437,8 @@ class TestChatStreamEvents:
         assert capsule["base_task_ref"] == "last_success_task"
         assert capsule["base_question"] == "查询10条用户日志"
         assert capsule["base_main_table"] == "plan_task_daily_record"
-        assert capsule["base_query_plan"]["debug"]["sql_template"].startswith("SELECT")
+        assert capsule["base_query_plan"]["debug"]["selected_main_table"] == "plan_task_daily_record"
+        assert "sql_template" not in json.dumps(capsule["base_query_plan"], ensure_ascii=False)
         assert initial_state["merge_debug"]["used_prior"] is True
         assert initial_state["question"] == "基于上一轮问题「查询10条用户日志」，只看汤杰"
         gateway_step = next(
