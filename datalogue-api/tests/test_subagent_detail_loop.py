@@ -108,6 +108,9 @@ def test_detail_loop_rejects_out_of_scope_request_and_retries_planner():
     )
     assert result.query_plan.execution_strategy == "reject"
     assert result.warnings[0]["error_code"] == "asset_not_in_recall_scope"
+    planner_warnings = result.query_plan.to_dict()["planner_warnings"]
+    assert planner_warnings[0]["code"] == "asset_not_in_recall_scope"
+    assert planner_warnings[0]["request"]["asset_id"] == "not_recalled"
 
 
 def test_detail_loop_forces_reject_after_max_rounds_when_planner_keeps_requesting():
@@ -158,3 +161,68 @@ def test_detail_loop_forces_reject_after_max_rounds_when_planner_keeps_requestin
     assert result.query_plan.execution_strategy == "reject"
     assert result.query_plan.fallback_reason == "max_detail_rounds_exceeded"
     assert result.query_plan.why_not_generate_sql == "达到 3 轮资产详情请求后仍未形成可执行计划。"
+
+
+def test_detail_loop_clamps_max_rounds_to_three_when_configured_higher():
+    request = {
+        "asset_type": "table",
+        "asset_id": "plan_task_daily_record",
+        "detail_level": "full_schema",
+        "purpose": "sql_generation",
+        "reason": "持续请求",
+    }
+    planner = ScriptedPlanner([{"asset_detail_requests": [request]} for _ in range(5)])
+    loop = PlannerDetailLoop(max_rounds=5, max_requests_per_round=5, planner_call=planner)
+
+    result = loop.run(
+        db=None,
+        question="查询用户任务日志",
+        routing={"dataset_id": 10},
+        candidate_assets=_candidate_assets(),
+    )
+
+    assert len(planner.calls) == 3
+    assert result.detail_rounds == 3
+    assert result.query_plan.fallback_reason == "max_detail_rounds_exceeded"
+
+
+def test_detail_loop_truncates_oversized_request_batch_before_audit_and_hydration():
+    requests = [
+        {
+            "asset_type": "table",
+            "asset_id": "plan_task_daily_record",
+            "detail_level": "full_schema",
+            "purpose": "sql_generation",
+            "reason": f"第 {index} 个请求",
+        }
+        for index in range(4)
+    ]
+    planner = ScriptedPlanner(
+        [
+            {"asset_detail_requests": requests},
+            QueryPlan(
+                query_type="detail_query",
+                execution_strategy="query_graph",
+                confidence=0.8,
+                planner_source="llm",
+            ),
+        ]
+    )
+    loop = PlannerDetailLoop(max_rounds=3, max_requests_per_round=2, planner_call=planner)
+
+    result = loop.run(
+        db=None,
+        question="查询用户任务日志",
+        routing={"dataset_id": 10},
+        candidate_assets=_candidate_assets(),
+    )
+
+    assert len(result.attempted_detail_requests) == 2
+    assert len(planner.calls[1]["previous_detail_requests"]) == 2
+    assert len(result.asset_details) == 2
+    summary_warning = result.warnings[0]
+    assert summary_warning["code"] == "asset_detail_request_limit_exceeded"
+    assert summary_warning["requested_count"] == 4
+    assert summary_warning["max_requests"] == 2
+    assert len(summary_warning["request"]["sampled_requests"]) == 2
+    assert len(result.query_plan.to_dict()["attempted_detail_requests"]) == 2

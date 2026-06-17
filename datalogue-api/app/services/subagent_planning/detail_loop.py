@@ -52,7 +52,7 @@ class PlannerDetailLoop:
         planner_call: PlannerCall,
         detail_service: Any = None,
     ) -> None:
-        self.max_rounds = max(1, max_rounds)
+        self.max_rounds = min(3, max(1, max_rounds))
         self.max_requests_per_round = max(1, max_requests_per_round)
         self.planner_call = planner_call
         self.detail_service = detail_service
@@ -123,13 +123,27 @@ class PlannerDetailLoop:
                     detail_rounds=detail_rounds,
                 )
 
-            attempted_detail_requests.extend(request.to_dict() for request in requests)
+            if len(requests) > self.max_requests_per_round:
+                warnings.append(
+                    self._request_limit_warning(
+                        requested_count=len(requests),
+                        sampled_requests=[
+                            request.to_dict()
+                            for request in requests[: self.max_requests_per_round]
+                        ],
+                    )
+                )
+            scoped_requests = requests[: self.max_requests_per_round]
+            attempted_detail_requests.extend(request.to_dict() for request in scoped_requests)
             validation = validate_asset_detail_requests(
-                requests,
+                scoped_requests,
                 allowed_scope=allowed_scope,
                 max_requests=self.max_requests_per_round,
             )
-            warnings.extend(error.to_dict() for error in validation.errors)
+            warnings.extend(
+                self._warning_from_validation_error(error.to_dict())
+                for error in validation.errors
+            )
             for request in validation.valid_requests:
                 asset_details.append(detail_service.get_detail(request))
             detail_rounds += 1
@@ -174,6 +188,34 @@ class PlannerDetailLoop:
             risk_flags=["planner_detail_loop_invalid_response"],
         )
 
+    def _request_limit_warning(
+        self,
+        *,
+        requested_count: int,
+        sampled_requests: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "code": "asset_detail_request_limit_exceeded",
+            "error_code": "asset_detail_request_limit_exceeded",
+            "message": (
+                f"资产详情请求数量超过单轮上限 {self.max_requests_per_round}，"
+                f"仅保留前 {self.max_requests_per_round} 个请求。"
+            ),
+            "request": {"sampled_requests": sampled_requests},
+            "requested_count": requested_count,
+            "max_requests": self.max_requests_per_round,
+        }
+
+    def _warning_from_validation_error(self, warning: dict[str, Any]) -> dict[str, Any]:
+        code = str(warning.get("code") or warning.get("error_code") or "asset_detail_warning")
+        return {
+            **warning,
+            "code": code,
+            "error_code": code,
+            "message": str(warning.get("message") or ""),
+            "request": warning.get("request") if isinstance(warning.get("request"), dict) else {},
+        }
+
     def _attach_detail_audit(
         self,
         plan: QueryPlan,
@@ -188,12 +230,31 @@ class PlannerDetailLoop:
         plan.asset_detail_coverage = {
             str(detail.request.asset_id): detail.coverage for detail in asset_details
         }
+        plan.planner_warnings = [
+            *(plan.planner_warnings or []),
+            *[self._planner_warning_from_detail_warning(warning) for warning in warnings],
+        ]
 
         risk_flags = set(plan.risk_flags or [])
         for warning in warnings:
-            error_code = warning.get("error_code") if isinstance(warning, dict) else None
-            if error_code:
-                risk_flags.add(str(error_code))
+            if not isinstance(warning, dict):
+                continue
+            code = warning.get("code") or warning.get("error_code")
+            if code:
+                risk_flags.add(str(code))
         for detail in asset_details:
             risk_flags.update(str(flag) for flag in detail.risk_flags)
         plan.risk_flags = sorted(risk_flags)
+
+    def _planner_warning_from_detail_warning(self, warning: dict[str, Any]) -> dict[str, Any]:
+        normalized = self._warning_from_validation_error(warning)
+        return {
+            "code": normalized["code"],
+            "message": normalized["message"],
+            "request": normalized["request"],
+            **{
+                key: value
+                for key, value in normalized.items()
+                if key not in {"code", "error_code", "message", "request"}
+            },
+        }
