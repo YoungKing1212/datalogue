@@ -202,6 +202,9 @@ class AssetDetailService:
 
     def _get_table_full_schema(self, request: AssetDetailRequest) -> AssetDetailResult:
         asset = self._find_asset(request.asset_type, request.asset_id)
+        if asset is None:
+            return self._asset_missing_result(request)
+
         table_name = self._table_name(asset, request)
         fields = self._table_fields(table_name)
         field_count = len(fields)
@@ -248,12 +251,15 @@ class AssetDetailService:
 
     def _get_table_field_search(self, request: AssetDetailRequest) -> AssetDetailResult:
         asset = self._find_asset(request.asset_type, request.asset_id)
+        if asset is None:
+            return self._asset_missing_result(request)
+
         table_name = self._table_name(asset, request)
         fields = self._table_fields(table_name)
         requested_top_k = request.top_k or self.field_search_default_top_k
         capped_top_k = min(max(1, requested_top_k), self.field_search_max_top_k)
         scored_fields = [self._score_field(field, request.query) for field in fields]
-        matched_fields = [field for field in scored_fields if field["final_score"] > 0]
+        matched_fields = [field for field in scored_fields if field["text_score"] > 0]
         matched_fields.sort(
             key=lambda item: (
                 item["final_score"],
@@ -301,6 +307,18 @@ class AssetDetailService:
             "match_signals": asset.get("match_signals") if isinstance(asset.get("match_signals"), list) else [],
         }
         return AssetDetailResult(request=request, coverage="full", payload=payload)
+
+    def _asset_missing_result(self, request: AssetDetailRequest) -> AssetDetailResult:
+        return AssetDetailResult(
+            request=request,
+            coverage="empty",
+            payload={
+                "asset_type": request.asset_type,
+                "asset_id": request.asset_id,
+            },
+            risk_flags=["asset_missing"],
+            error_code="asset_not_found",
+        )
 
     def _find_asset(self, asset_type: str, asset_id: str) -> dict[str, Any] | None:
         for raw_asset in self.assets:

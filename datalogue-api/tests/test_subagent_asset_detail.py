@@ -66,6 +66,31 @@ def test_table_full_schema_returns_full_for_normal_table():
     assert len(result.payload["fields"]) == 12
 
 
+def test_table_full_schema_returns_compacted_for_medium_wide_table():
+    table_asset, fields = _table_asset(121)
+    for field in fields:
+        field["business_desc"] = "用于业务解释的字段说明"
+    service = AssetDetailService(
+        candidate_assets={"assets": [table_asset], "context": {"schema_structured": {"fields": fields}}},
+        full_field_limit=120,
+        compact_field_limit=300,
+    )
+    result = service.get_detail(
+        AssetDetailRequest(
+            asset_type="table",
+            asset_id="wide_table",
+            detail_level="full_schema",
+            purpose="sql_generation",
+            reason="生成 SQL",
+        )
+    )
+    assert result.coverage == "full_compacted"
+    assert result.payload["field_count"] == 121
+    assert result.payload["returned_field_count"] == 121
+    assert len(result.payload["fields"]) == 121
+    assert "business_desc" not in result.payload["fields"][0]
+
+
 def test_table_full_schema_returns_too_large_without_fields_for_wide_table():
     table_asset, fields = _table_asset(301)
     service = AssetDetailService(
@@ -87,6 +112,34 @@ def test_table_full_schema_returns_too_large_without_fields_for_wide_table():
     assert result.payload["returned_field_count"] == 0
     assert result.payload["fields"] == []
     assert result.payload["available_detail_requests"] == ["field_search"]
+
+
+def test_table_full_schema_fails_closed_when_asset_missing_from_candidates():
+    secret_fields = [
+        {
+            "table_name": "secret_table",
+            "column_name": "secret_col",
+            "data_type": "varchar",
+            "column_comment": "敏感字段",
+        }
+    ]
+    service = AssetDetailService(
+        candidate_assets={"assets": [], "context": {"schema_structured": {"fields": secret_fields}}},
+    )
+    result = service.get_detail(
+        AssetDetailRequest(
+            asset_type="table",
+            asset_id="secret_table",
+            detail_level="full_schema",
+            purpose="sql_generation",
+            reason="生成 SQL",
+        )
+    )
+    assert result.coverage == "empty"
+    assert result.error_code == "asset_not_found"
+    assert "asset_missing" in result.risk_flags
+    assert "fields" not in result.payload
+    assert "secret_col" not in str(result.payload)
 
 
 def test_field_search_defaults_top_k_and_caps_to_maximum_with_boost():
@@ -116,3 +169,25 @@ def test_field_search_defaults_top_k_and_caps_to_maximum_with_boost():
     assert created_at["boost_reason"] == "time_field_candidate"
     assert "text_score" in created_at
     assert "final_score" in created_at
+
+
+def test_field_search_returns_empty_when_query_has_no_textual_match():
+    table_asset, fields = _table_asset(80)
+    service = AssetDetailService(
+        candidate_assets={"assets": [table_asset], "context": {"schema_structured": {"fields": fields}}},
+        field_search_default_top_k=30,
+        field_search_max_top_k=50,
+    )
+    result = service.get_detail(
+        AssetDetailRequest(
+            asset_type="table",
+            asset_id="wide_table",
+            detail_level="field_search",
+            purpose="sql_generation",
+            reason="搜索字段",
+            query="完全无关",
+        )
+    )
+    assert result.coverage == "empty"
+    assert result.payload["returned_count"] == 0
+    assert result.payload["fields"] == []
