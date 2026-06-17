@@ -266,6 +266,58 @@ def _dict_list_from_payload(items: Any, field_name: str) -> list[dict[str, Any]]
     return normalized
 
 
+def _int_from_payload(value: Any, field_name: str) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise QueryPlanValidationError(f"{field_name} must be int")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError as exc:
+            raise QueryPlanValidationError(f"{field_name} must be int") from exc
+    raise QueryPlanValidationError(f"{field_name} must be int")
+
+
+def _strict_dict_list_from_payload(items: Any, field_name: str) -> list[dict[str, Any]]:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise QueryPlanValidationError(f"{field_name} must be list[object]")
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise QueryPlanValidationError(f"{field_name} item must be object")
+        normalized.append(dict(item))
+    return normalized
+
+
+def _dict_from_payload(value: Any, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise QueryPlanValidationError(f"{field_name} must be object")
+    return dict(value)
+
+
+def _string_list_from_payload(items: Any, field_name: str) -> list[str]:
+    if items is None:
+        return []
+    if isinstance(items, str) or not isinstance(items, list):
+        raise QueryPlanValidationError(f"{field_name} must be list[string]")
+    return [str(item) for item in items]
+
+
+def _optional_string_from_payload(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    raise QueryPlanValidationError(f"{field_name} must be string")
+
+
 def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
     query_type = str(payload.get("query_type") or "")
     execution_strategy = str(payload.get("execution_strategy") or "")
@@ -300,11 +352,23 @@ def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
             payload.get("governance_suggestions"),
             "governance_suggestions",
         ),
-        detail_rounds=int(payload.get("detail_rounds") or 0),
-        attempted_detail_requests=list(payload.get("attempted_detail_requests") or []),
-        asset_detail_coverage=dict(payload.get("asset_detail_coverage") or {}),
-        missing_context=[str(item) for item in list(payload.get("missing_context") or [])],
-        why_not_generate_sql=payload.get("why_not_generate_sql"),
-        risk_flags=[str(item) for item in list(payload.get("risk_flags") or [])],
+        detail_rounds=_int_from_payload(payload.get("detail_rounds"), "detail_rounds"),
+        attempted_detail_requests=_strict_dict_list_from_payload(
+            payload.get("attempted_detail_requests"),
+            "attempted_detail_requests",
+        ),
+        asset_detail_coverage=_dict_from_payload(
+            payload.get("asset_detail_coverage"),
+            "asset_detail_coverage",
+        ),
+        missing_context=_string_list_from_payload(
+            payload.get("missing_context"),
+            "missing_context",
+        ),
+        why_not_generate_sql=_optional_string_from_payload(
+            payload.get("why_not_generate_sql"),
+            "why_not_generate_sql",
+        ),
+        risk_flags=_string_list_from_payload(payload.get("risk_flags"), "risk_flags"),
         debug=dict(payload.get("debug") or {}),
     )

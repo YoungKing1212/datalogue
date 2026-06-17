@@ -322,7 +322,13 @@ def test_normalize_query_plan_accepts_asset_detail_audit_fields():
     )
 
     assert plan.detail_rounds == 3
+    assert plan.attempted_detail_requests == [
+        {"asset_type": "table", "asset_id": "wide_table"}
+    ]
+    assert plan.asset_detail_coverage == {"wide_table": "too_large"}
     assert plan.missing_context == ["缺少时间字段"]
+    assert plan.why_not_generate_sql == "无法确定时间字段。"
+    assert plan.risk_flags == ["wide_table"]
     assert plan.execution_strategy == "reject"
 
 
