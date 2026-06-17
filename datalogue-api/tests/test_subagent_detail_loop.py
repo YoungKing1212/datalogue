@@ -1,5 +1,7 @@
+from app.services.subagent_planning.asset_detail import AssetDetailRequest, AssetDetailResult
 from app.services.subagent_planning.contracts import CandidateAsset, QueryPlan
 from app.services.subagent_planning.detail_loop import PlannerDetailLoop, PlannerLoopResult
+from app.services.subagent_planning.sql_context import build_sql_generation_context
 
 
 class ScriptedPlanner:
@@ -123,6 +125,41 @@ def test_detail_loop_returns_sql_generation_context_without_embedding_details_in
     assert sql_context["coverage"] == {"plan_task_daily_record": "full"}
     assert sql_context["selected_assets"][0]["asset_id"] == "plan_task_daily_record"
     assert "table_schemas" not in result.query_plan.to_dict()
+
+
+def test_sql_generation_context_deep_copies_payload_and_merges_risk_flags():
+    detail = AssetDetailResult(
+        request=AssetDetailRequest(
+            asset_type="table",
+            asset_id="plan_task_daily_record",
+            detail_level="full_schema",
+            purpose="sql_generation",
+        ),
+        coverage="full",
+        payload={
+            "fields": [{"name": "field_0", "metadata": {"source": "schema"}}],
+            "metadata": {"owner": "origin"},
+        },
+        risk_flags=["detail_risk", "shared_risk"],
+    )
+    query_plan = QueryPlan(
+        query_type="detail_query",
+        execution_strategy="query_graph",
+        confidence=0.8,
+        risk_flags=["plan_risk", "shared_risk"],
+    )
+
+    sql_context = build_sql_generation_context(
+        query_plan=query_plan,
+        asset_details=[detail],
+        lightweight_catalog={"summary": {"schema_version": "v1", "manifest_version": "m1"}},
+    )
+    sql_context["table_schemas"][0]["fields"][0]["name"] = "mutated"
+    sql_context["table_schemas"][0]["metadata"]["owner"] = "mutated"
+
+    assert detail.payload["fields"][0]["name"] == "field_0"
+    assert detail.payload["metadata"]["owner"] == "origin"
+    assert sql_context["risk_flags"] == ["detail_risk", "plan_risk", "shared_risk"]
 
 
 def test_detail_loop_rejects_out_of_scope_request_and_retries_planner():

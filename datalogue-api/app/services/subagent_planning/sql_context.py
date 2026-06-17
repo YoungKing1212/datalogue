@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from app.services.subagent_planning.asset_detail import AssetDetailResult
@@ -42,7 +43,7 @@ def build_sql_generation_context(
         "manifest_version": summary.get("manifest_version"),
     }
 
-    risk_flags: set[str] = set()
+    risk_flags: set[str] = {str(flag) for flag in query_plan.risk_flags}
     for detail in asset_details:
         asset_id = str(detail.request.asset_id)
         context["coverage"][asset_id] = detail.coverage
@@ -74,6 +75,6 @@ def _detail_bucket(detail: AssetDetailResult) -> str | None:
 
 
 def _payload_with_asset_id(payload: dict[str, Any], asset_id: str) -> dict[str, Any]:
-    copied_payload = dict(payload if isinstance(payload, dict) else {})
+    copied_payload = deepcopy(payload if isinstance(payload, dict) else {})
     copied_payload["asset_id"] = asset_id
     return copied_payload
