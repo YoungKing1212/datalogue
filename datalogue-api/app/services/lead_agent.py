@@ -20,7 +20,7 @@ import re
 from calendar import monthrange
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -32,10 +32,16 @@ from app.graph.llm import get_llm
 from app.prompts.lead_agent import LEAD_AGENT_SKILL_SELECTOR_SYSTEM, LEAD_AGENT_TOOL_PLANNER_SYSTEM
 from app.services.dataset_manifest import build_dataset_schema_version
 from app.services.dataset_router import route_dataset_for_question
+from app.services.lead_agent_planner_projection import (
+    DEFAULT_MAX_PRIOR_TURNS,
+    PROJECTION_SCHEMA_VERSION,
+    build_projection_metrics,
+    build_skill_selector_input,
+    build_tool_planner_input,
+)
 from app.services.llm_config import resolve_llm_config
 from app.services.multiturn_context import MergeDecision, MultiturnContextBuilder
 from app.services.observability.prompts import get_prompt_manager
-from app.services.lead_agent_routing import route_query_intent
 from app.utils.json_utils import safe_json_parse
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -84,10 +90,16 @@ class PlannedToolCall:
 
 LEAD_SKILLS = (
     LeadSkill("TimeUnderstandingSkill", "解析用户问题中的时间线索。", ("time",)),
-    LeadSkill("ConversationContinuitySkill", "处理会话上下文和显式数据集锁定。", ("thread_context",)),
-    LeadSkill("DatasetRoutingSkill", "选择或确认候选数据集。", ("manifest_router", "clarification")),
+    LeadSkill(
+        "ConversationContinuitySkill", "处理会话上下文和显式数据集锁定。", ("thread_context",)
+    ),
+    LeadSkill(
+        "DatasetRoutingSkill", "选择或确认候选数据集。", ("manifest_router", "clarification")
+    ),
     LeadSkill("SchemaFreshnessSkill", "检查 Manifest 绑定 schema 是否过期。", ("schema_status",)),
-    LeadSkill("SubAgentDelegationSkill", "判断是否可以把问题交给 SubAgent。", ("subagent_dispatch",)),
+    LeadSkill(
+        "SubAgentDelegationSkill", "判断是否可以把问题交给 SubAgent。", ("subagent_dispatch",)
+    ),
     LeadSkill("AuditSkill", "记录 LeadAgent 工具规划和执行轨迹。", ("audit_trace",)),
 )
 
@@ -101,8 +113,10 @@ def build_tool_policy(
     """ToolPolicy：生成 LeadAgent 本轮可用工具和硬性边界。"""
 
     conversation_dataset_id = conversation.dataset_id if conversation else None
-    locked_dataset_id = payload_dataset_id if payload_dataset_id is not None else (
-        active_dataset_id if active_dataset_id is not None else conversation_dataset_id
+    locked_dataset_id = (
+        payload_dataset_id
+        if payload_dataset_id is not None
+        else (active_dataset_id if active_dataset_id is not None else conversation_dataset_id)
     )
     dataset_lock_source = "none"
     if payload_dataset_id is not None:
@@ -271,7 +285,7 @@ def plan_tool_calls_with_llm(
     if deterministic_plan:
         if tracer is not None and trace_context is not None:
             try:
-                span = tracer.start_span(
+                tracer.start_span(
                     trace_context,
                     node="llm.lead_agent_tool_planner",
                     display_name="llm.lead_agent_tool_planner",
@@ -293,14 +307,36 @@ def plan_tool_calls_with_llm(
     if not availability["available"]:
         return build_fallback_plan(reason=availability["reason"])
 
+    use_projection = bool(get_settings().LEAD_AGENT_PLANNER_USE_PROJECTION)
+    projection_recent_context = _build_projection_recent_context(
+        conversation_summary=conversation_summary,
+        tool_policy=tool_policy,
+    )
     skill_generation = None
     tool_generation = None
-    skill_input = {
+    raw_skill_input = {
         "question": question,
         "conversation": conversation_summary,
         "tool_policy": tool_policy,
         "skills": skills,
     }
+    skill_input = (
+        build_skill_selector_input(
+            question=question,
+            candidate_skills=skills,
+            recent_context=projection_recent_context,
+        )
+        if use_projection
+        else raw_skill_input
+    )
+    skill_projection_metrics = (
+        build_projection_metrics(
+            raw_payload=raw_skill_input,
+            projected_payload=skill_input,
+        )
+        if use_projection
+        else None
+    )
     try:
         prompt_manager = get_prompt_manager()
         skill_prompt = prompt_manager.get_text_prompt(
@@ -327,6 +363,16 @@ def plan_tool_calls_with_llm(
                     "tool_policy": tool_policy,
                     "skills": [item.get("name") for item in skills],
                     "tool_schemas_disclosed": [],
+                    "projection_enabled": use_projection,
+                    **(
+                        {
+                            "projection_metrics": skill_projection_metrics,
+                            "projection_schema_version": PROJECTION_SCHEMA_VERSION,
+                            **skill_projection_metrics,
+                        }
+                        if use_projection and skill_projection_metrics is not None
+                        else {}
+                    ),
                 },
             )
         logger.info(
@@ -369,6 +415,15 @@ def plan_tool_calls_with_llm(
                     "planner_fallback": not bool(skill_selection),
                     "progressive_disclosure": True,
                     "disclosure_stage": "skill_selection",
+                    "projection_enabled": use_projection,
+                    **(
+                        {
+                            "projection_schema_version": PROJECTION_SCHEMA_VERSION,
+                            "projection_metrics": skill_projection_metrics,
+                        }
+                        if use_projection and skill_projection_metrics is not None
+                        else {}
+                    ),
                 },
             )
         if not skill_selection:
@@ -381,13 +436,31 @@ def plan_tool_calls_with_llm(
             LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME,
             fallback=LEAD_AGENT_TOOL_PLANNER_SYSTEM,
         )
-        planner_input = {
+        raw_planner_input = {
             "question": question,
             "conversation": conversation_summary,
             "tool_policy": tool_policy,
             "selected_skills": selected_skill_payloads,
             "tool_schemas": disclosed_tool_schemas,
         }
+        planner_input = (
+            build_tool_planner_input(
+                question=question,
+                selected_skills=selected_skill_names,
+                candidate_tools=disclosed_tool_schemas,
+                recent_context=projection_recent_context,
+            )
+            if use_projection
+            else raw_planner_input
+        )
+        planner_projection_metrics = (
+            build_projection_metrics(
+                raw_payload=raw_planner_input,
+                projected_payload=planner_input,
+            )
+            if use_projection
+            else None
+        )
         tool_messages = [
             SystemMessage(content=tool_prompt.content),
             HumanMessage(content=json.dumps(planner_input, ensure_ascii=False, default=str)),
@@ -407,6 +480,16 @@ def plan_tool_calls_with_llm(
                     "selected_skills": selected_skill_names,
                     "disclosed_tools": [item.get("name") for item in disclosed_tool_schemas],
                     "tool_policy": tool_policy,
+                    "projection_enabled": use_projection,
+                    **(
+                        {
+                            "projection_metrics": planner_projection_metrics,
+                            "projection_schema_version": PROJECTION_SCHEMA_VERSION,
+                            **planner_projection_metrics,
+                        }
+                        if use_projection and planner_projection_metrics is not None
+                        else {}
+                    ),
                 },
             )
         logger.info(
@@ -452,6 +535,15 @@ def plan_tool_calls_with_llm(
                     "selected_skills": selected_skill_names,
                     "disclosed_tools": [item.get("name") for item in disclosed_tool_schemas],
                     "normalized_plan": normalized,
+                    "projection_enabled": use_projection,
+                    **(
+                        {
+                            "projection_schema_version": PROJECTION_SCHEMA_VERSION,
+                            "projection_metrics": planner_projection_metrics,
+                        }
+                        if use_projection and planner_projection_metrics is not None
+                        else {}
+                    ),
                 },
             )
         if not normalized:
@@ -481,11 +573,97 @@ def plan_tool_calls_with_llm(
                     "error": str(exc),
                 },
             )
-    logger.exception(
-        "LeadAgent Planner 调用失败，使用安全降级计划: %s",
-        exc,
+        logger.exception(
+            "LeadAgent Planner 调用失败，使用安全降级计划: %s",
+            exc,
+        )
+        return build_fallback_plan(reason="planner_llm_error")
+
+
+def _build_projection_recent_context(
+    *,
+    conversation_summary: Mapping[str, Any] | None,
+    tool_policy: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """把 LeadAgent 控制面状态翻译为 Planner 投影输入的 recent_context。
+
+    只携带 Planner 投影契约需要的字段（dataset_id、routing_path、
+    turn_policy、prior_turns），避免把完整 conversation_summary/multiturn_context
+    注入 LLM payload。
+    """
+
+    conversation_summary = conversation_summary or {}
+    tool_policy = tool_policy or {}
+
+    recent: dict[str, Any] = {}
+    summary_dataset_id = conversation_summary.get("dataset_id")
+    locked_dataset_id = tool_policy.get("locked_dataset_id")
+    if locked_dataset_id is not None:
+        recent["dataset_id"] = locked_dataset_id
+    elif summary_dataset_id is not None:
+        recent["dataset_id"] = summary_dataset_id
+
+    payload_dataset_id = conversation_summary.get("payload_dataset_id")
+    conversation_dataset_id = conversation_summary.get("conversation_dataset_id")
+    summary_routing_path = conversation_summary.get("routing_path") or conversation_summary.get(
+        "entry_route"
     )
-    return build_fallback_plan(reason="planner_llm_error")
+    if summary_routing_path:
+        recent["routing_path"] = summary_routing_path
+    elif payload_dataset_id is not None:
+        recent["routing_path"] = "payload"
+    elif conversation_dataset_id is not None:
+        recent["routing_path"] = "conversation"
+    else:
+        recent["routing_path"] = "pending"
+
+    multiturn_classification = conversation_summary.get("multiturn_classification") or {}
+    turn_policy: dict[str, Any] = {}
+    turn_intent = str(multiturn_classification.get("intent") or "").strip()
+    if turn_intent:
+        turn_policy["intent"] = turn_intent
+    should_inherit_dataset = multiturn_classification.get("should_inherit_dataset")
+    if isinstance(should_inherit_dataset, bool):
+        turn_policy["should_inherit_dataset"] = should_inherit_dataset
+
+    for key in (
+        "dataset_lock_source",
+        "explicit_dataset_locked",
+        "inherited_dataset_locked",
+    ):
+        value = tool_policy.get(key)
+        if value is not None:
+            turn_policy[key] = value
+    if turn_policy:
+        recent["turn_policy"] = turn_policy
+
+    prior_turns = conversation_summary.get("prior_turns") or conversation_summary.get("history")
+    if isinstance(prior_turns, list | tuple):
+        recent["prior_turns"] = list(prior_turns)[-DEFAULT_MAX_PRIOR_TURNS:]
+
+    raw_multiturn_context = conversation_summary.get("multiturn_context")
+    multiturn_context = raw_multiturn_context if isinstance(raw_multiturn_context, dict) else {}
+    prior_turn: dict[str, Any] = {}
+    last_question = multiturn_context.get("last_question") or multiturn_context.get(
+        "last_resolved_question"
+    )
+    if last_question:
+        prior_turn["question"] = last_question
+    inheritance_summary = multiturn_context.get("inheritance_summary")
+    if inheritance_summary:
+        prior_turn["inheritance_summary"] = inheritance_summary
+    if prior_turn:
+        prior_routing_path: str | None = None
+        for key in ("routing_path", "prior_routing_path", "last_routing_path"):
+            value = multiturn_context.get(key)
+            if isinstance(value, str) and value.strip():
+                prior_routing_path = value.strip()
+                break
+        if prior_routing_path:
+            prior_turn["routing_path"] = prior_routing_path
+        recent.setdefault("prior_turns", []).append(prior_turn)
+
+    return recent
 
 
 def _conversation_summary(
@@ -536,9 +714,7 @@ def _normalize_planner_plan(value: dict[str, Any]) -> dict[str, Any] | None:
     if not tool_calls:
         return None
     selected_skills = [
-        str(item).strip()
-        for item in value.get("selected_skills") or []
-        if str(item).strip()
+        str(item).strip() for item in value.get("selected_skills") or [] if str(item).strip()
     ]
     return {
         "reasoning_summary": str(value.get("reasoning_summary") or "").strip(),
@@ -547,7 +723,9 @@ def _normalize_planner_plan(value: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _normalize_skill_selection(value: dict[str, Any], skills: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _normalize_skill_selection(
+    value: dict[str, Any], skills: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     available_names = {str(item.get("name")) for item in skills if item.get("name")}
@@ -662,8 +840,10 @@ def resolve_thread_context(
     """ThreadContextTool：整理会话级锁定信息和本轮显式数据集选择。"""
 
     conversation_dataset_id = conversation.dataset_id if conversation else None
-    locked_dataset_id = payload_dataset_id if payload_dataset_id is not None else (
-        active_dataset_id if active_dataset_id is not None else conversation_dataset_id
+    locked_dataset_id = (
+        payload_dataset_id
+        if payload_dataset_id is not None
+        else (active_dataset_id if active_dataset_id is not None else conversation_dataset_id)
     )
     dataset_lock_source = "none"
     if payload_dataset_id is not None:
@@ -746,7 +926,9 @@ def check_schema_status(db: Session, route_decision: dict[str, Any]) -> dict[str
         "manifest_version": manifest_version,
         "bound_schema_version": bound_schema_version,
         "latest_schema_version": latest_schema_version,
-        "reason": "Manifest 绑定 schema 已过期。" if stale else "Manifest 绑定 schema 与当前数据集一致。",
+        "reason": (
+            "Manifest 绑定 schema 已过期。" if stale else "Manifest 绑定 schema 与当前数据集一致。"
+        ),
     }
 
 
@@ -847,9 +1029,9 @@ def build_subagent_capsule(
         "multiturn_classification": multiturn_classification,
         "execution_mode": execution_mode,
         "should_generate_query": execution_mode != "interpret_result",
-        "interpretation_source": "prior_capsule.result_digest"
-        if execution_mode == "interpret_result"
-        else None,
+        "interpretation_source": (
+            "prior_capsule.result_digest" if execution_mode == "interpret_result" else None
+        ),
         "state_boundary": "LeadAgent 只持有跨轮控制面状态；SubAgent 只读写当前数据集内状态。",
     }
 
@@ -976,7 +1158,9 @@ def execute_tool_plan(
     schema_status = results["schema_status"]
     if schema_status is None:
         schema_status = check_schema_status(db, route_decision)
-        system_inferred_tool_calls.append({"tool": "schema_status", "reason": "system_required_after_route"})
+        system_inferred_tool_calls.append(
+            {"tool": "schema_status", "reason": "system_required_after_route"}
+        )
     clarification = results["clarification"]
     if clarification is None:
         clarification = build_clarification(route_decision, schema_status)
@@ -1025,7 +1209,10 @@ def execute_tool_plan(
         "clarification": clarification,
         "dispatch": dispatch,
         "audit_trace": audit_trace,
-        "executed_tool_calls": [*executed_tool_calls, {"tool": "audit_trace", "reason": "系统审计"}],
+        "executed_tool_calls": [
+            *executed_tool_calls,
+            {"tool": "audit_trace", "reason": "系统审计"},
+        ],
         "system_inferred_tool_calls": system_inferred_tool_calls,
         "policy_violations": policy_violations,
         "requires_fallback": False,
@@ -1112,7 +1299,8 @@ def _execute_single_tool(
         schema_status = results["schema_status"] or check_schema_status(db, route_decision)
         results["schema_status"] = schema_status
         results["dispatch"] = build_subagent_dispatch(
-            question=results["resolved_question"] or build_resolved_question(
+            question=results["resolved_question"]
+            or build_resolved_question(
                 question,
                 results["time_context"],
             ),
@@ -1140,13 +1328,19 @@ def validate_tool_execution(
     if dispatch and not route_decision:
         violations.append({"tool": "subagent_dispatch", "reason": "dispatch_without_route"})
     if dispatch and route_decision and route_decision.get("decision") not in {"selected", "locked"}:
-        violations.append({"tool": "subagent_dispatch", "reason": "dispatch_without_confirmed_dataset"})
+        violations.append(
+            {"tool": "subagent_dispatch", "reason": "dispatch_without_confirmed_dataset"}
+        )
     if tool_policy.get("explicit_dataset_locked") and route_decision:
         locked_dataset_id = tool_policy.get("locked_dataset_id")
         if route_decision.get("dataset_id") != locked_dataset_id:
             violations.append({"tool": "manifest_router", "reason": "explicit_dataset_changed"})
     schema_status = results.get("schema_status")
-    if schema_status and schema_status.get("stale") and schema_status.get("status") != "needs_review":
+    if (
+        schema_status
+        and schema_status.get("stale")
+        and schema_status.get("status") != "needs_review"
+    ):
         violations.append({"tool": "schema_status", "reason": "stale_schema_not_recorded"})
     return violations
 
@@ -1157,7 +1351,9 @@ def _requires_fallback(
 ) -> bool:
     if not results.get("route_decision"):
         return True
-    missing_required = any(item.get("reason") == "required_tool_missing" for item in validation_violations)
+    missing_required = any(
+        item.get("reason") == "required_tool_missing" for item in validation_violations
+    )
     return missing_required
 
 
@@ -1238,7 +1434,9 @@ def normalize_multiturn_context(multiturn_context: dict[str, Any] | None) -> dic
     )
     active_dataset = multiturn_context.get("active_dataset")
     if active_dataset_id is None and isinstance(active_dataset, dict):
-        active_dataset_id = _coerce_int(active_dataset.get("id") or active_dataset.get("dataset_id"))
+        active_dataset_id = _coerce_int(
+            active_dataset.get("id") or active_dataset.get("dataset_id")
+        )
 
     inheritance_summary = _string_or_none(
         multiturn_context.get("inheritance_summary")
@@ -1278,7 +1476,11 @@ def classify_multiturn_turn(
         intent = "interpret"
         confidence = 0.78
         reason = "命中解释上一轮结果的表达，优先继承 active_dataset_id。"
-    elif payload_dataset_id is not None and active_dataset_id is not None and payload_dataset_id != active_dataset_id:
+    elif (
+        payload_dataset_id is not None
+        and active_dataset_id is not None
+        and payload_dataset_id != active_dataset_id
+    ):
         intent = "switch"
         confidence = 0.92
         reason = "本轮显式选择的数据集与 active_dataset_id 不同。"
@@ -1290,7 +1492,11 @@ def classify_multiturn_turn(
         intent = "continue"
         confidence = 0.8
         reason = "命中续问表达，继承 active_dataset_id。"
-    elif active_dataset_id is not None and payload_dataset_id is None and conversation_dataset_id is None:
+    elif (
+        active_dataset_id is not None
+        and payload_dataset_id is None
+        and conversation_dataset_id is None
+    ):
         intent = "continue"
         confidence = 0.62
         reason = "存在 active_dataset_id 且本轮没有显式切换，按续问处理。"
@@ -1331,18 +1537,30 @@ def _looks_like_chitchat(normalized_question: str) -> bool:
 
 def _looks_like_interpret_question(normalized_question: str) -> bool:
     return bool(
-        re.search(r"(解释|说明|解读|什么意思|怎么看|为什么|原因|上面.*结果|刚才.*结果)", normalized_question)
+        re.search(
+            r"(解释|说明|解读|什么意思|怎么看|为什么|原因|上面.*结果|刚才.*结果)",
+            normalized_question,
+        )
     )
 
 
 def _looks_like_dataset_switch(normalized_question: str) -> bool:
-    return bool(re.search(r"(切换|换到|改用|重新选择|选择.*数据集|使用.*数据集|换.*数据集)", normalized_question))
+    return bool(
+        re.search(
+            r"(切换|换到|改用|重新选择|选择.*数据集|使用.*数据集|换.*数据集)", normalized_question
+        )
+    )
 
 
 def _looks_like_followup(normalized_question: str) -> bool:
     if len(normalized_question) <= 18:
         return True
-    return bool(re.search(r"(继续|刚才|上面|上一轮|这个|那个|这些|再看|拆分|细分|换成|改成|同比|环比)", normalized_question))
+    return bool(
+        re.search(
+            r"(继续|刚才|上面|上一轮|这个|那个|这些|再看|拆分|细分|换成|改成|同比|环比)",
+            normalized_question,
+        )
+    )
 
 
 def _first_int(payload: dict[str, Any], *keys: str) -> int | None:
@@ -1545,7 +1763,8 @@ def build_lead_agent_context(
         "fallback_reason": plan.get("fallback_reason"),
         "planner_reasoning_summary": plan.get("reasoning_summary"),
         "original_question": question,
-        "resolved_question": execution.get("resolved_question") or build_resolved_question(
+        "resolved_question": execution.get("resolved_question")
+        or build_resolved_question(
             question,
             execution.get("time_context"),
         ),
@@ -1843,7 +2062,9 @@ def _prior_detected_time_range(prior_time_context: dict[str, Any] | None) -> dic
     return detected if isinstance(detected, dict) else None
 
 
-def _relative_prior_month(question: str, prior_detected: dict[str, Any] | None) -> dict[str, str] | None:
+def _relative_prior_month(
+    question: str, prior_detected: dict[str, Any] | None
+) -> dict[str, str] | None:
     """基于上一轮时间范围解析“再看上个月”，避免始终按今天倒推。"""
 
     if not prior_detected or not re.search(r"上月|上个月", question):
