@@ -1,3 +1,5 @@
+import json
+
 from app.services.subagent_planning.asset_detail import AssetDetailRequest, AssetDetailResult
 from app.services.subagent_planning.contracts import CandidateAsset, QueryPlan
 from app.services.subagent_planning.detail_loop import PlannerDetailLoop, PlannerLoopResult
@@ -313,3 +315,80 @@ def test_detail_loop_truncates_oversized_request_batch_before_audit_and_hydratio
     assert summary_warning["max_requests"] == 2
     assert len(summary_warning["request"]["sampled_requests"]) == 2
     assert len(result.query_plan.to_dict()["attempted_detail_requests"]) == 2
+
+
+def test_detail_loop_sanitizes_oversized_request_audit_without_mutating_detail_request():
+    long_reason = "需要定位字段" + "长" * 500
+    long_query = "SELECT * FROM private_schema.secret_table WHERE expr = 'raw_payload'" + "x" * 500
+    requests = [
+        {
+            "asset_type": "table",
+            "asset_id": "plan_task_daily_record",
+            "detail_level": "field_search",
+            "purpose": "sql_generation",
+            "reason": long_reason,
+            "query": long_query,
+            "top_k": 5,
+        },
+        {
+            "asset_type": "table",
+            "asset_id": "not_recalled",
+            "detail_level": "full_schema",
+            "purpose": "sql_generation",
+            "reason": long_reason,
+            "query": long_query,
+        },
+    ]
+    planner = ScriptedPlanner(
+        [
+            {"asset_detail_requests": requests},
+            QueryPlan(
+                query_type="detail_query",
+                execution_strategy="query_graph",
+                confidence=0.8,
+                planner_source="llm",
+            ),
+        ]
+    )
+
+    class CapturingDetailService:
+        def __init__(self):
+            self.requests = []
+
+        def get_detail(self, request):
+            self.requests.append(request)
+            return AssetDetailResult(
+                request=request,
+                coverage="partial",
+                payload={"fields": [{"name": "field_0"}]},
+            )
+
+    detail_service = CapturingDetailService()
+    loop = PlannerDetailLoop(
+        max_rounds=3,
+        max_requests_per_round=5,
+        planner_call=planner,
+        detail_service=detail_service,
+    )
+
+    result = loop.run(
+        db=None,
+        question="查询用户任务日志",
+        routing={"dataset_id": 10},
+        candidate_assets=_candidate_assets(),
+    )
+
+    assert detail_service.requests[0].query == long_query
+    assert len(result.attempted_detail_requests[0]["reason"]) <= 180
+    assert result.attempted_detail_requests[0]["query"] == "[removed_detail_context]"
+    audit_text = json.dumps(
+        {
+            "attempted": result.attempted_detail_requests,
+            "warnings": result.warnings,
+            "planner_warnings": result.query_plan.to_dict()["planner_warnings"],
+        },
+        ensure_ascii=False,
+    )
+    assert "private_schema.secret_table" not in audit_text
+    assert "SELECT * FROM" not in audit_text
+    assert "raw_payload" not in audit_text

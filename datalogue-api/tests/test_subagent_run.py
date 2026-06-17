@@ -189,6 +189,12 @@ def _table_schema_recall_result() -> dict[str, Any]:
             "data_type": "varchar",
             "column_comment": "账号",
         },
+        {
+            "table_name": "plan_task_daily_record",
+            "column_name": "private_salary_shadow",
+            "data_type": "decimal",
+            "column_comment": "仅用于泄露回灌测试的敏感字段",
+        },
     ]
     return {
         "dataset_id": 10,
@@ -346,11 +352,31 @@ async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
                 "display_name": "计划任务日报记录表",
                 "source": "schema",
                 "confidence": 0.91,
-                "metadata": {"table_name": "plan_task_daily_record"},
+                "metadata": {
+                    "table_name": "plan_task_daily_record",
+                    "fields": [{"name": "private_salary_shadow"}],
+                    "sql_template": "SELECT * FROM secret_table",
+                    "expr": "private_salary_shadow > 0",
+                    "asset_detail_context": {"payload": {"fields": ["private_salary_shadow"]}},
+                },
             }
         ],
         "planner_source": "llm",
-        "explanation": {"summary": "已获取日报表字段，可进入 QueryGraph。"},
+        "explanation": {
+            "summary": "fields: private_salary_shadow; sql_template: SELECT * FROM secret_table",
+            "payload": {"fields": [{"name": "private_salary_shadow"}]},
+        },
+        "planner_warnings": [
+            {
+                "code": "echo",
+                "message": "sql_template: SELECT * FROM secret_table",
+                "expr": "private_salary_shadow > 0",
+            }
+        ],
+        "debug": {
+            "asset_detail_context": {"payload": {"fields": ["private_salary_shadow"]}},
+            "safe_note": "保留短说明",
+        },
     }
     fake_llm = SequentialFakeLLM(
         [
@@ -396,12 +422,29 @@ async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
     events = await _collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=object())
 
     asset_detail_event = next(event for event in events if event.event_type == "asset_detail")
+    query_plan_event = next(event for event in events if event.event_type == "query_plan")
     final_state = events[-1].payload["final_state"]
     table_schemas = final_state["sql_generation_context"]["table_schemas"]
+    query_plan_text = json.dumps(query_plan_event.payload["query_plan"], ensure_ascii=False)
+    initial_plan_text = json.dumps(captured["initial_state"]["query_plan"], ensure_ascii=False)
 
     assert asset_detail_event.payload["requested_count"] > 0
     assert table_schemas[0]["table_name"] == "plan_task_daily_record"
-    assert [field["name"] for field in table_schemas[0]["fields"]] == ["id", "rzrq", "account"]
+    assert [field["name"] for field in table_schemas[0]["fields"]] == [
+        "id",
+        "rzrq",
+        "account",
+        "private_salary_shadow",
+    ]
+    assert "private_salary_shadow" in json.dumps(table_schemas, ensure_ascii=False)
+    for leaked_text in ("private_salary_shadow", "SELECT * FROM secret_table"):
+        assert leaked_text not in query_plan_text
+        assert leaked_text not in initial_plan_text
+    assert query_plan_event.payload["query_plan"]["selected_assets"][0]["metadata"] == {
+        "schema_version": "schema-v1",
+        "manifest_version": "manifest-v1",
+    }
+    assert query_plan_event.payload["query_plan"]["debug"] == {"safe_note": "保留短说明"}
     assert captured["initial_state"]["sql_generation_context"]["table_schemas"] == table_schemas
     assert len(fake_llm.messages) == 2
     second_prompt = json.loads(fake_llm.messages[1][1].content)

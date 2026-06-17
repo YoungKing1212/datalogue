@@ -44,6 +44,10 @@ LIGHTWEIGHT_METADATA_KEYS = {"table_name", "column_name", "parameters", "impleme
 PROMPT_TEXT_LIMIT = 120
 PROMPT_LIST_LIMIT = 20
 PROMPT_DEPTH_LIMIT = 4
+PUBLIC_TEXT_LIMIT = 240
+PUBLIC_LIST_LIMIT = 12
+PUBLIC_DICT_LIMIT = 20
+PUBLIC_DEPTH_LIMIT = 4
 LIGHTWEIGHT_ASSET_KEYS = {
     "asset_type",
     "asset_id",
@@ -56,6 +60,39 @@ LIGHTWEIGHT_ASSET_KEYS = {
     "reject_reason",
 }
 LIGHTWEIGHT_SIGNAL_KEYS = {"type", "value", "score", "field", "table", "name"}
+DETAIL_LOOP_DANGEROUS_PUBLIC_KEYS = {
+    "asset_detail_context",
+    "columns",
+    "column_defs",
+    "ddl",
+    "expr",
+    "field_list",
+    "fields",
+    "payload",
+    "raw_schema",
+    "schema",
+    "schema_context",
+    "schema_structured",
+    "sql",
+    "sql_template",
+    "table_schemas",
+}
+DETAIL_LOOP_DANGEROUS_TEXT_MARKERS = (
+    "asset_detail_context",
+    "sql_template",
+    "table_schemas",
+    "create table",
+    "select * from",
+    "\"fields\"",
+    "'fields'",
+    "fields:",
+    "field_list",
+    "schema:",
+    "payload:",
+    "expr:",
+    "字段列表",
+    "字段明细",
+)
 LLM_ERROR_MODULE_PREFIXES = ("openai", "httpx", "langchain_openai", "litellm")
 LLM_ERROR_TYPE_KEYWORDS = (
     "APIConnectionError",
@@ -797,6 +834,178 @@ def _compact_prompt_value(value: Any, *, depth: int = 0) -> Any:
     return _truncate_text(str(value))
 
 
+def _detail_loop_public_key_is_dangerous(key: Any) -> bool:
+    normalized = str(key or "").strip().lower()
+    return normalized in DETAIL_LOOP_DANGEROUS_PUBLIC_KEYS
+
+
+def _detail_loop_public_text(value: str) -> str:
+    normalized = value.lower()
+    if any(marker in normalized for marker in DETAIL_LOOP_DANGEROUS_TEXT_MARKERS):
+        return "[removed_detail_context]"
+    return _truncate_text(value, PUBLIC_TEXT_LIMIT)
+
+
+def _sanitize_public_value(value: Any, *, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return _detail_loop_public_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if depth >= PUBLIC_DEPTH_LIMIT:
+        return _detail_loop_public_text(str(value))
+    if isinstance(value, list):
+        sanitized_items = []
+        for item in value[:PUBLIC_LIST_LIMIT]:
+            sanitized = _sanitize_public_value(item, depth=depth + 1)
+            if sanitized not in (None, "", [], {}):
+                sanitized_items.append(sanitized)
+        return sanitized_items
+    if isinstance(value, dict):
+        sanitized_dict: dict[str, Any] = {}
+        for key, item in list(value.items())[:PUBLIC_DICT_LIMIT]:
+            if _detail_loop_public_key_is_dangerous(key):
+                continue
+            sanitized = _sanitize_public_value(item, depth=depth + 1)
+            if sanitized not in (None, "", [], {}):
+                sanitized_dict[str(key)] = sanitized
+        return sanitized_dict
+    return _detail_loop_public_text(str(value))
+
+
+def _sanitize_public_dict(value: Any) -> dict[str, Any]:
+    sanitized = _sanitize_public_value(value)
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _sanitize_public_dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    sanitized_items = []
+    for item in value[:PUBLIC_LIST_LIMIT]:
+        sanitized = _sanitize_public_value(item)
+        if isinstance(sanitized, dict) and sanitized:
+            sanitized_items.append(sanitized)
+    return sanitized_items
+
+
+def _sanitize_public_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    sanitized_items = []
+    for item in value[:PUBLIC_LIST_LIMIT]:
+        sanitized = _sanitize_public_value(item)
+        if sanitized not in (None, "", [], {}):
+            sanitized_items.append(str(sanitized))
+    return sanitized_items
+
+
+def _lightweight_asset_index(lightweight_catalog: CandidateAssetInput) -> dict[tuple[str, str], dict[str, Any]]:
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in _asset_items(lightweight_catalog):
+        if not isinstance(item, dict):
+            continue
+        asset_type = str(item.get("asset_type") or "")
+        asset_id = item.get("asset_id")
+        if not asset_type or asset_id in (None, ""):
+            continue
+        index[(asset_type, str(asset_id))] = item
+    return index
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _rebuild_detail_loop_asset(
+    asset: CandidateAsset,
+    *,
+    usage: str,
+    lightweight_assets: dict[tuple[str, str], dict[str, Any]],
+) -> CandidateAsset:
+    lightweight = lightweight_assets.get((asset.asset_type, str(asset.asset_id))) or {}
+    metadata = {
+        key: _sanitize_public_value(lightweight[key])
+        for key in ("schema_version", "manifest_version")
+        if lightweight.get(key) not in (None, "", [], {})
+    }
+    match_signals = _sanitize_public_value(lightweight.get("match_signals") or [])
+    return CandidateAsset(
+        asset_type=str(lightweight.get("asset_type") or asset.asset_type),
+        asset_id=lightweight.get("asset_id", asset.asset_id),
+        name=str(lightweight.get("name") or asset.name or lightweight.get("asset_id") or asset.asset_id),
+        display_name=_sanitize_public_value(lightweight.get("display_name") or asset.display_name),
+        source=str(lightweight.get("source") or "recall"),
+        confidence=_safe_float(lightweight.get("confidence"), asset.confidence),
+        match_signals=match_signals if isinstance(match_signals, list) else [],
+        metadata=metadata,
+        usage=usage,
+        match_reason=_sanitize_public_value(asset.match_reason),
+        reject_reason=_sanitize_public_value(asset.reject_reason),
+    )
+
+
+def _rebuild_detail_loop_assets(
+    assets: list[CandidateAsset],
+    *,
+    usage: str,
+    lightweight_assets: dict[tuple[str, str], dict[str, Any]],
+) -> list[CandidateAsset]:
+    rebuilt = []
+    for asset in assets[:PUBLIC_LIST_LIMIT]:
+        rebuilt.append(
+            _rebuild_detail_loop_asset(
+                asset,
+                usage=usage,
+                lightweight_assets=lightweight_assets,
+            )
+        )
+    return rebuilt
+
+
+def _sanitize_detail_loop_query_plan(
+    plan: QueryPlan,
+    *,
+    lightweight_catalog: CandidateAssetInput,
+) -> QueryPlan:
+    lightweight_assets = _lightweight_asset_index(lightweight_catalog)
+    plan.selected_assets = _rebuild_detail_loop_assets(
+        plan.selected_assets,
+        usage="selected",
+        lightweight_assets=lightweight_assets,
+    )
+    plan.reference_assets = _rebuild_detail_loop_assets(
+        plan.reference_assets,
+        usage="reference",
+        lightweight_assets=lightweight_assets,
+    )
+    plan.rejected_assets = _rebuild_detail_loop_assets(
+        plan.rejected_assets,
+        usage="rejected",
+        lightweight_assets=lightweight_assets,
+    )
+    plan.explanation = _sanitize_public_dict(plan.explanation)
+    plan.decision_factors = _sanitize_public_dict_list(plan.decision_factors)
+    plan.planner_warnings = _sanitize_public_dict_list(plan.planner_warnings)
+    plan.governance_suggestions = _sanitize_public_dict_list(plan.governance_suggestions)
+    plan.required_inputs = _sanitize_public_dict_list(plan.required_inputs)
+    plan.debug = _sanitize_public_dict(plan.debug)
+    plan.asset_detail_coverage = _sanitize_public_dict(plan.asset_detail_coverage)
+    plan.attempted_detail_requests = _sanitize_public_dict_list(plan.attempted_detail_requests)
+    plan.clarification = (
+        _sanitize_public_dict(plan.clarification) if isinstance(plan.clarification, dict) else None
+    )
+    plan.missing_context = _sanitize_public_string_list(plan.missing_context)
+    plan.risk_flags = _sanitize_public_string_list(plan.risk_flags)
+    if plan.why_not_generate_sql is not None:
+        plan.why_not_generate_sql = str(_sanitize_public_value(plan.why_not_generate_sql))
+    if plan.fallback_reason is not None:
+        plan.fallback_reason = str(_sanitize_public_value(plan.fallback_reason))
+    return plan
+
+
 def _pick_keys(payload: Any, keys: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -1350,6 +1559,10 @@ def plan_query_with_detail_context(
 
         plan = normalize_query_plan(payload)
         _validate_hard_rules(plan, question=question, candidate_assets=lightweight_catalog)
+        plan = _sanitize_detail_loop_query_plan(
+            plan,
+            lightweight_catalog=lightweight_catalog,
+        )
         try:
             tracer.end_generation(
                 generation,

@@ -22,6 +22,7 @@ from app.services.subagent_planning.asset_catalog import (
     project_lightweight_asset_catalog,
 )
 from app.services.subagent_planning.asset_detail import (
+    AssetDetailRequest,
     AssetDetailResult,
     AssetDetailService,
     validate_asset_detail_requests,
@@ -31,6 +32,84 @@ from app.services.subagent_planning.planner import parse_asset_detail_requests
 from app.services.subagent_planning.sql_context import build_sql_generation_context
 
 PlannerCall = Callable[..., QueryPlan | dict[str, Any]]
+
+AUDIT_TEXT_LIMIT = 180
+AUDIT_LIST_LIMIT = 8
+AUDIT_DICT_LIMIT = 16
+AUDIT_DEPTH_LIMIT = 4
+AUDIT_DANGEROUS_KEYS = {
+    "asset_detail_context",
+    "columns",
+    "column_defs",
+    "ddl",
+    "expr",
+    "field_list",
+    "fields",
+    "payload",
+    "raw_schema",
+    "schema",
+    "schema_context",
+    "schema_structured",
+    "sql",
+    "sql_template",
+    "table_schemas",
+}
+AUDIT_DANGEROUS_TEXT_MARKERS = (
+    "asset_detail_context",
+    "sql_template",
+    "table_schemas",
+    "create table",
+    "select * from",
+    "\"fields\"",
+    "'fields'",
+    "fields:",
+    "field_list",
+    "schema:",
+    "payload:",
+    "expr:",
+    "字段列表",
+    "字段明细",
+)
+
+
+def _truncate_audit_text(value: str, max_length: int = AUDIT_TEXT_LIMIT) -> str:
+    if any(marker in value.lower() for marker in AUDIT_DANGEROUS_TEXT_MARKERS):
+        return "[removed_detail_context]"
+    if len(value) <= max_length:
+        return value
+    return f"{value[: max_length - 3]}..."
+
+
+def _sanitize_audit_value(value: Any, *, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return _truncate_audit_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if depth >= AUDIT_DEPTH_LIMIT:
+        return _truncate_audit_text(str(value))
+    if isinstance(value, list):
+        sanitized_items = []
+        for item in value[:AUDIT_LIST_LIMIT]:
+            sanitized = _sanitize_audit_value(item, depth=depth + 1)
+            if sanitized not in (None, "", [], {}):
+                sanitized_items.append(sanitized)
+        return sanitized_items
+    if isinstance(value, dict):
+        sanitized_dict: dict[str, Any] = {}
+        for key, item in list(value.items())[:AUDIT_DICT_LIMIT]:
+            if str(key or "").strip().lower() in AUDIT_DANGEROUS_KEYS:
+                continue
+            sanitized = _sanitize_audit_value(item, depth=depth + 1)
+            if sanitized not in (None, "", [], {}):
+                sanitized_dict[str(key)] = sanitized
+        return sanitized_dict
+    return _truncate_audit_text(str(value))
+
+
+def _sanitize_detail_request_for_audit(request: AssetDetailRequest | dict[str, Any]) -> dict[str, Any]:
+    payload = request.to_dict() if isinstance(request, AssetDetailRequest) else dict(request or {})
+    sanitized = _sanitize_audit_value(payload)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 @dataclass
@@ -129,13 +208,15 @@ class PlannerDetailLoop:
                     self._request_limit_warning(
                         requested_count=len(requests),
                         sampled_requests=[
-                            request.to_dict()
+                            _sanitize_detail_request_for_audit(request)
                             for request in requests[: self.max_requests_per_round]
                         ],
                     )
                 )
             scoped_requests = requests[: self.max_requests_per_round]
-            attempted_detail_requests.extend(request.to_dict() for request in scoped_requests)
+            attempted_detail_requests.extend(
+                _sanitize_detail_request_for_audit(request) for request in scoped_requests
+            )
             validation = validate_asset_detail_requests(
                 scoped_requests,
                 allowed_scope=allowed_scope,
@@ -226,7 +307,11 @@ class PlannerDetailLoop:
                 f"资产详情请求数量超过单轮上限 {self.max_requests_per_round}，"
                 f"仅保留前 {self.max_requests_per_round} 个请求。"
             ),
-            "request": {"sampled_requests": sampled_requests},
+            "request": {
+                "sampled_requests": [
+                    _sanitize_detail_request_for_audit(request) for request in sampled_requests
+                ]
+            },
             "requested_count": requested_count,
             "max_requests": self.max_requests_per_round,
         }
@@ -238,7 +323,9 @@ class PlannerDetailLoop:
             "code": code,
             "error_code": code,
             "message": str(warning.get("message") or ""),
-            "request": warning.get("request") if isinstance(warning.get("request"), dict) else {},
+            "request": _sanitize_detail_request_for_audit(warning.get("request"))
+            if isinstance(warning.get("request"), dict)
+            else {},
         }
 
     def _attach_detail_audit(
@@ -251,7 +338,9 @@ class PlannerDetailLoop:
         warnings: list[dict[str, Any]],
     ) -> None:
         plan.detail_rounds = detail_rounds
-        plan.attempted_detail_requests = list(attempted_detail_requests)
+        plan.attempted_detail_requests = [
+            _sanitize_detail_request_for_audit(request) for request in attempted_detail_requests
+        ]
         plan.asset_detail_coverage = {
             str(detail.request.asset_id): detail.coverage for detail in asset_details
         }
