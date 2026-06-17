@@ -4,7 +4,11 @@ from app.services.observability.context import (
     ObservabilityRequestContext,
     set_observability_context,
 )
-from app.services.subagent_planning.contracts import CandidateAsset
+from app.services.subagent_planning.contracts import (
+    CandidateAsset,
+    QueryPlan,
+    normalize_query_plan,
+)
 from app.services.subagent_planning.planner import (
     _planner_human_prompt,
     build_fallback_query_plan,
@@ -274,6 +278,52 @@ def test_fallback_accepts_keyword_routing_and_fallback_reason():
     assert plan.query_type == "detail_query"
     assert plan.execution_strategy == "query_graph"
     assert plan.fallback_reason == "llm_plan_invalid"
+
+
+def test_query_plan_serializes_asset_detail_audit_fields():
+    plan = QueryPlan(
+        query_type="detail_query",
+        execution_strategy="clarify",
+        confidence=0.4,
+        planner_source="fallback",
+        detail_rounds=3,
+        attempted_detail_requests=[{"asset_type": "table", "asset_id": "wide_table"}],
+        asset_detail_coverage={"wide_table": "too_large"},
+        missing_context=["字段无法定位"],
+        why_not_generate_sql="3 轮详情请求后仍缺少可用字段。",
+        risk_flags=["wide_table"],
+    )
+
+    payload = plan.to_dict()
+
+    assert payload["detail_rounds"] == 3
+    assert payload["attempted_detail_requests"][0]["asset_id"] == "wide_table"
+    assert payload["asset_detail_coverage"] == {"wide_table": "too_large"}
+    assert payload["missing_context"] == ["字段无法定位"]
+    assert payload["why_not_generate_sql"] == "3 轮详情请求后仍缺少可用字段。"
+    assert payload["risk_flags"] == ["wide_table"]
+
+
+def test_normalize_query_plan_accepts_asset_detail_audit_fields():
+    plan = normalize_query_plan(
+        {
+            "query_type": "detail_query",
+            "execution_strategy": "reject",
+            "confidence": 0.2,
+            "planner_source": "llm",
+            "explanation": {"summary": "上下文不足"},
+            "detail_rounds": 3,
+            "attempted_detail_requests": [{"asset_type": "table", "asset_id": "wide_table"}],
+            "asset_detail_coverage": {"wide_table": "too_large"},
+            "missing_context": ["缺少时间字段"],
+            "why_not_generate_sql": "无法确定时间字段。",
+            "risk_flags": ["wide_table"],
+        }
+    )
+
+    assert plan.detail_rounds == 3
+    assert plan.missing_context == ["缺少时间字段"]
+    assert plan.execution_strategy == "reject"
 
 
 def test_fallback_blueprint_query_with_inputs_executes_blueprint():

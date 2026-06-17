@@ -131,6 +131,12 @@ class QueryPlan:
     decision_factors: list[dict[str, Any]] = field(default_factory=list)
     planner_warnings: list[dict[str, Any]] = field(default_factory=list)
     governance_suggestions: list[dict[str, Any]] = field(default_factory=list)
+    detail_rounds: int = 0
+    attempted_detail_requests: list[dict[str, Any]] = field(default_factory=list)
+    asset_detail_coverage: dict[str, Any] = field(default_factory=dict)
+    missing_context: list[str] = field(default_factory=list)
+    why_not_generate_sql: str | None = None
+    risk_flags: list[str] = field(default_factory=list)
     debug: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -158,6 +164,12 @@ class QueryPlan:
                 "decision_factors": self.decision_factors,
                 "planner_warnings": self.planner_warnings,
                 "governance_suggestions": self.governance_suggestions,
+                "detail_rounds": self.detail_rounds,
+                "attempted_detail_requests": self.attempted_detail_requests,
+                "asset_detail_coverage": self.asset_detail_coverage,
+                "missing_context": self.missing_context,
+                "why_not_generate_sql": self.why_not_generate_sql,
+                "risk_flags": self.risk_flags,
                 "debug": self.debug,
             }
         )
@@ -288,5 +300,11 @@ def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
             payload.get("governance_suggestions"),
             "governance_suggestions",
         ),
+        detail_rounds=int(payload.get("detail_rounds") or 0),
+        attempted_detail_requests=list(payload.get("attempted_detail_requests") or []),
+        asset_detail_coverage=dict(payload.get("asset_detail_coverage") or {}),
+        missing_context=[str(item) for item in list(payload.get("missing_context") or [])],
+        why_not_generate_sql=payload.get("why_not_generate_sql"),
+        risk_flags=[str(item) for item in list(payload.get("risk_flags") or [])],
         debug=dict(payload.get("debug") or {}),
     )
