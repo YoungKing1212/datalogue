@@ -27,6 +27,12 @@ from app.services.subagent_planning.asset_catalog import (
     build_allowed_asset_scope,
     project_lightweight_asset_catalog,
 )
+from app.services.subagent_planning.asset_detail import (
+    AssetDetailRequest,
+    AssetDetailResult,
+    AssetDetailService,
+    validate_asset_detail_requests,
+)
 from app.services.subagent_planning.asset_recall import (
     build_candidate_assets_from_context,
     recall_candidate_assets,
@@ -40,6 +46,9 @@ from app.services.subagent_planning.planner import build_fallback_query_plan, pl
 
 __all__ = [
     "ALLOWED_CATALOG_ASSET_TYPES",
+    "AssetDetailRequest",
+    "AssetDetailResult",
+    "AssetDetailService",
     "CANDIDATE_ASSET_TYPES",
     "EXECUTION_STRATEGIES",
     "QUERY_TYPES",
@@ -58,4 +67,5 @@ __all__ = [
     "plan_query",
     "project_lightweight_asset_catalog",
     "recall_candidate_assets",
+    "validate_asset_detail_requests",
 ]
