@@ -19,6 +19,7 @@ from typing import Any
 
 ALLOWED_CATALOG_ASSET_TYPES = {"metric", "dimension", "table", "blueprint"}
 DESCRIPTION_KEYS = ("description", "comment", "semantic", "business_desc", "when_to_use")
+SAFE_SIGNAL_KEYS = ("type", "match", "score", "fragments")
 
 
 def project_lightweight_asset_catalog(
@@ -119,7 +120,12 @@ def _round_confidence(value: Any) -> float:
 def _match_signals(value: Any, limit: int) -> list[Any]:
     if not isinstance(value, list):
         return []
-    return value[: max(0, limit)]
+    signals = []
+    for signal in value[: max(0, limit)]:
+        if not isinstance(signal, dict):
+            continue
+        signals.append({key: signal[key] for key in SAFE_SIGNAL_KEYS if key in signal})
+    return signals
 
 
 def _is_blank_asset_id(value: Any) -> bool:
