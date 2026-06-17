@@ -85,7 +85,9 @@ def _graph_backed_fake_subagent_class():
         def resolve_analysis_blueprint(self, **kwargs):
             return {"status": "not_applicable"}
 
-        async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+        async def run(
+            self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None
+        ):
             type(self).captured_runs.append(
                 {
                     "request": request,
@@ -150,9 +152,24 @@ class TestChatAPI:
         catalog = _format_dsl_asset_catalog(
             {
                 "fields": [
-                    {"id": 1, "name": "rzrq", "column_name": "rzrq", "table_name": "plan_task_daily_record"},
-                    {"id": 2, "name": "zt", "column_name": "zt", "table_name": "plan_task_daily_record"},
-                    {"id": 3, "name": "person_money", "column_name": "person_money", "table_name": "eas_personofile"},
+                    {
+                        "id": 1,
+                        "name": "rzrq",
+                        "column_name": "rzrq",
+                        "table_name": "plan_task_daily_record",
+                    },
+                    {
+                        "id": 2,
+                        "name": "zt",
+                        "column_name": "zt",
+                        "table_name": "plan_task_daily_record",
+                    },
+                    {
+                        "id": 3,
+                        "name": "person_money",
+                        "column_name": "person_money",
+                        "table_name": "eas_personofile",
+                    },
                 ]
             },
             {
@@ -282,7 +299,9 @@ class TestChatAPI:
             conversation_id=conv.id,
             role="assistant",
             content="回答内容",
-            response_metadata={"langfuse": {"trace_id": "trace-test", "session_id": "session-test"}},
+            response_metadata={
+                "langfuse": {"trace_id": "trace-test", "session_id": "session-test"}
+            },
         )
         db_session.add(msg)
         db_session.commit()
@@ -637,14 +656,14 @@ class TestLangGraphNodes:
         db_session.refresh(pending)
         return conv, pending
 
-    def test_chat_stream_conflict_creates_pending_clarification(
-        self, db_session, sample_dataset
-    ):
+    def test_chat_stream_conflict_creates_pending_clarification(self, db_session, sample_dataset):
         """聊天流：术语冲突 final payload 会创建 pending_clarification。"""
         from app.api.chat import _ensure_pending_term_clarification
         from app.models.conversation import Conversation, PendingClarification
 
-        conv = Conversation(title="冲突会话", thread_id="thread-conflict", dataset_id=sample_dataset.id)
+        conv = Conversation(
+            title="冲突会话", thread_id="thread-conflict", dataset_id=sample_dataset.id
+        )
         db_session.add(conv)
         db_session.commit()
         payload = {
@@ -689,7 +708,9 @@ class TestLangGraphNodes:
             definition="用户实际支付金额",
             status="active",
         )
-        conv = Conversation(title="候选补齐", thread_id="thread-candidate-label", dataset_id=sample_dataset.id)
+        conv = Conversation(
+            title="候选补齐", thread_id="thread-candidate-label", dataset_id=sample_dataset.id
+        )
         db_session.add_all([term, conv])
         db_session.commit()
 
@@ -711,7 +732,6 @@ class TestLangGraphNodes:
     def test_clarification_resolution_selected_term_id(self, db_session, sample_dataset):
         """澄清解析：结构化 selected_term_id 可恢复原问题。"""
         from app.services.lead_agent_routing import resolve_term_clarification
-        from app.models.conversation import PendingClarification
 
         conv, pending = self._create_pending_term_clarification(db_session, sample_dataset)
         result = resolve_term_clarification(
@@ -765,7 +785,9 @@ class TestLangGraphNodes:
 
         assert result["selected_term_id"] == 2
         assert result["status"] == "resolved"
-        assert result["clarification_resolution_result"]["selected_term"]["display_name"] == "实付金额"
+        assert (
+            result["clarification_resolution_result"]["selected_term"]["display_name"] == "实付金额"
+        )
 
     def test_clarification_resolution_invalid_reply(self, db_session, sample_dataset):
         """澄清解析：无效回复继续提示候选并保持 pending。"""
@@ -834,7 +856,10 @@ class TestLangGraphNodes:
         # 在 Phase 6 集成块内 _early_route_return 完成；LangGraph 不再承担冲突判定。
         # 验证：route_query_intent 决策 entry_route=schema_recall 时直接进 schema_recall，
         # 已不再路由到 term_normalize_node 或 semantic_asset_resolution_node。
-        state_clarify = {"entry_route": "schema_recall", "route_payload": {"kind": "term_conflict_clarification"}}
+        state_clarify = {
+            "entry_route": "schema_recall",
+            "route_payload": {"kind": "term_conflict_clarification"},
+        }
         assert _lead_agent_router(state_clarify) == "schema_recall"
         state_normal = {"entry_route": "schema_recall", "route_payload": {}}
         assert _lead_agent_router(state_normal) == "schema_recall"
@@ -845,9 +870,7 @@ class TestLangGraphNodes:
 
         sub_agent = DatasetSubAgent(db=None, dataset_id=1)  # type: ignore[arg-type]
         schema_structured = {
-            "metrics": [
-                {"id": 1, "name": "gmv", "display_name": "GMV", "synonyms": []}
-            ],
+            "metrics": [{"id": 1, "name": "gmv", "display_name": "GMV", "synonyms": []}],
             "dimensions": [],
             "fields": [],
             "terms": [
@@ -880,8 +903,7 @@ class TestLangGraphNodes:
         )
 
         assert any(
-            t["name"] == "sales_term"
-            for t in metric_outcome["semantic_asset_resolution"]["terms"]
+            t["name"] == "sales_term" for t in metric_outcome["semantic_asset_resolution"]["terms"]
         )
         assert any(
             m["name"] == "gmv" and m["match_type"] == "linked_term"
@@ -1069,9 +1091,7 @@ class TestLangGraphNodes:
         assert bp.usage_count == 1
         assert db_session.query(BlueprintUsageLog).filter_by(blueprint_id=bp.id).count() == 1
 
-    def test_analysis_blueprint_semantic_plan_enters_query_graph(
-        self, db_session, sample_dataset
-    ):
+    def test_analysis_blueprint_semantic_plan_enters_query_graph(self, db_session, sample_dataset):
         """手动语义蓝图：不要求 SQL，转为 QueryGraph 业务上下文。"""
         from app.services.dataset_subagent import DatasetSubAgent
         from app.models.dataset import AnalysisBlueprint
@@ -1584,9 +1604,7 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
             "dsl": {
                 "metrics": ["gmv"],
                 "terms": [{"name": "净销售额", "asset_type": "term", "asset_id": 10}],
-                "blueprints": [
-                    {"name": "门店经营分析", "asset_type": "blueprint", "asset_id": 20}
-                ],
+                "blueprints": [{"name": "门店经营分析", "asset_type": "blueprint", "asset_id": 20}],
             },
             "schema_structured": {
                 "metrics": [{"id": 1, "name": "gmv"}],
@@ -1975,9 +1993,7 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
         state = {
             "dsl": {
                 "metrics": ["total_money"],
-                "filters": [
-                    {"field": "person_name", "op": "in", "values": ["李四", "王五"]}
-                ],
+                "filters": [{"field": "person_name", "op": "in", "values": ["李四", "王五"]}],
             },
             "schema_context": "【语义层】",
             "schema_structured": structured,
@@ -2042,7 +2058,11 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
 
             async def _fake_astream(messages):
                 captured["human"] = messages[1].content
-                yield type("C", (), {"content": "<think>内部推理</think>结论：表现稳定。", "usage_metadata": None})()
+                yield type(
+                    "C",
+                    (),
+                    {"content": "<think>内部推理</think>结论：表现稳定。", "usage_metadata": None},
+                )()
 
             mock_llm.astream = _fake_astream
             mock_get_llm.return_value = mock_llm
@@ -2252,7 +2272,9 @@ class TestAnswerExplanation:
 
         explanation = build_answer_explanation(
             {
-                "dsl": {"direct_sql": "SELECT * FROM daily_report WHERE person_name = :person_name"},
+                "dsl": {
+                    "direct_sql": "SELECT * FROM daily_report WHERE person_name = :person_name"
+                },
                 "sql": "SELECT * FROM daily_report WHERE person_name = '杨凯'",
                 "sql_result": {"columns": ["person_name"], "rows": [{"person_name": "杨凯"}]},
                 "generation_mode": "analysis_blueprint",
@@ -2424,10 +2446,16 @@ class TestChatStreamEvents:
                 "metadata": {"langgraph_node": "sql_execute"},
             }
 
-        monkeypatch.setattr("app.api.chat.build_workflow", lambda db: MagicMock(astream_events=fake_astream_events))
+        monkeypatch.setattr(
+            "app.api.chat.build_workflow", lambda db: MagicMock(astream_events=fake_astream_events)
+        )
         monkeypatch.setattr("app.api.chat.DatasetSubAgent", _graph_backed_fake_subagent_class())
-        monkeypatch.setattr("app.api.chat.build_lead_agent_context", lambda *args, **kwargs: lead_agent_context)
-        monkeypatch.setattr("app.api.chat.resolve_term_clarification", lambda *args, **kwargs: {"status": "none"})
+        monkeypatch.setattr(
+            "app.api.chat.build_lead_agent_context", lambda *args, **kwargs: lead_agent_context
+        )
+        monkeypatch.setattr(
+            "app.api.chat.resolve_term_clarification", lambda *args, **kwargs: {"status": "none"}
+        )
         monkeypatch.setattr(
             "app.api.chat.route_query_intent",
             lambda *args, **kwargs: {
@@ -2514,8 +2542,12 @@ class TestChatStreamEvents:
             merge_debug={"reason": "test_interpret"},
         )
 
-        monkeypatch.setattr("app.api.chat.build_lead_agent_context", lambda *args, **kwargs: lead_agent_context)
-        monkeypatch.setattr("app.api.chat.merge_multiturn_decision_for_chat", lambda *args, **kwargs: merge_decision)
+        monkeypatch.setattr(
+            "app.api.chat.build_lead_agent_context", lambda *args, **kwargs: lead_agent_context
+        )
+        monkeypatch.setattr(
+            "app.api.chat.merge_multiturn_decision_for_chat", lambda *args, **kwargs: merge_decision
+        )
         monkeypatch.setattr("app.api.chat.route_query_intent", MagicMock())
 
         with patch("app.api.chat.build_workflow") as mock_wf:
@@ -2537,7 +2569,9 @@ class TestChatStreamEvents:
         assert final["query_task_capsule"] == gateway_step["query_task_capsule"]
         assistant_message = db_session.get(models.Message, final["message_id"])
         assert assistant_message is not None
-        assert any(step.get("node") == "message_gateway" for step in assistant_message.step_trace or [])
+        assert any(
+            step.get("node") == "message_gateway" for step in assistant_message.step_trace or []
+        )
         mock_wf.assert_not_called()
 
     @pytest.mark.asyncio
@@ -2570,7 +2604,9 @@ class TestChatStreamEvents:
             def resolve_analysis_blueprint(self, **kwargs):
                 raise AssertionError("chat should not call resolve_analysis_blueprint before run")
 
-            async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+            async def run(
+                self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None
+            ):
                 yield SubAgentEvent(
                     event_type="candidate_assets",
                     payload={
@@ -2674,11 +2710,13 @@ class TestChatStreamEvents:
             events.append(json.loads(item["data"]))
 
         candidate_steps = [
-            event for event in events
+            event
+            for event in events
             if event.get("type") == "step" and event.get("node") == "candidate_assets"
         ]
         query_plan_steps = [
-            event for event in events
+            event
+            for event in events
             if event.get("type") == "step" and event.get("node") == "query_plan"
         ]
         final = [event for event in events if event.get("type") == "final"][-1]
@@ -2693,7 +2731,9 @@ class TestChatStreamEvents:
         assert final["query_plan_debug"] == query_plan_debug
 
     @pytest.mark.asyncio
-    async def test_blueprint_route_enters_subagent_run(self, monkeypatch, db_session, sample_dataset):
+    async def test_blueprint_route_enters_subagent_run(
+        self, monkeypatch, db_session, sample_dataset
+    ):
         """蓝图命中不能在 chat 层直接早退，应进入 SubAgent.run 做规划后执行。"""
         from app.api.chat import _stream_chat_singleturn
         from app.services.subagent_planning import SubAgentEvent
@@ -2725,7 +2765,9 @@ class TestChatStreamEvents:
             def resolve_analysis_blueprint(self, **kwargs):
                 raise AssertionError("chat should not call resolve_analysis_blueprint before run")
 
-            async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+            async def run(
+                self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None
+            ):
                 called["run"] = True
                 yield SubAgentEvent(
                     event_type="candidate_assets",
@@ -3002,9 +3044,12 @@ class TestChatStreamEvents:
     def test_chat_stream_event_types(self, client, sample_dataset):
         """SSE 流式接口每个事件必须含 type 字段，值为 step / token / final 之一"""
         payload = {"question": "查询所有订单", "dataset_id": sample_dataset.id}
-        with patch("app.api.chat.build_workflow") as mock_wf, patch(
-            "app.api.chat.DatasetSubAgent",
-            _graph_backed_fake_subagent_class(),
+        with (
+            patch("app.api.chat.build_workflow") as mock_wf,
+            patch(
+                "app.api.chat.DatasetSubAgent",
+                _graph_backed_fake_subagent_class(),
+            ),
         ):
             # 模拟 astream_events 返回两个 step 事件和一个 final 事件
             async def fake_astream_events(state, version):
@@ -3057,16 +3102,14 @@ class TestChatStreamEvents:
 
             assert resp.status_code == 200
 
-            lines = [l for l in resp.text.split("\n") if l.startswith("data:")]
-            events = [json.loads(l[5:].strip()) for l in lines]
+            lines = [line for line in resp.text.split("\n") if line.startswith("data:")]
+            events = [json.loads(line[5:].strip()) for line in lines]
             types = {e["type"] for e in events}
             assert "step" in types
             assert "token" in types
             assert "final" in types
 
-    def test_chat_stream_report_generator_strips_think_tokens(
-        self, db_session, sample_dataset
-    ):
+    def test_chat_stream_report_generator_strips_think_tokens(self, db_session, sample_dataset):
         """Graph report_generator 的原生 LLM token 不应泄露 Think 标签。"""
 
         async def fake_astream_events(state, version):
@@ -3096,9 +3139,12 @@ class TestChatStreamEvents:
                 "metadata": {"langgraph_node": "report_generator"},
             }
 
-        with patch("app.api.chat.build_workflow") as mock_wf, patch(
-            "app.api.chat.DatasetSubAgent",
-            _graph_backed_fake_subagent_class(),
+        with (
+            patch("app.api.chat.build_workflow") as mock_wf,
+            patch(
+                "app.api.chat.DatasetSubAgent",
+                _graph_backed_fake_subagent_class(),
+            ),
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3109,7 +3155,9 @@ class TestChatStreamEvents:
                 db_session,
             )
 
-        visible = "".join(event.get("content", "") for event in events if event.get("type") == "token")
+        visible = "".join(
+            event.get("content", "") for event in events if event.get("type") == "token"
+        )
         assert visible == "结论：表现稳定。"
         assert "内部推理" not in visible
         assert "<Thi" not in visible
@@ -3207,9 +3255,12 @@ class TestChatStreamEvents:
             return events
 
         fake_subagent_class = _graph_backed_fake_subagent_class()
-        with patch("app.api.chat.build_workflow") as mock_wf, patch(
-            "app.api.chat.DatasetSubAgent",
-            fake_subagent_class,
+        with (
+            patch("app.api.chat.build_workflow") as mock_wf,
+            patch(
+                "app.api.chat.DatasetSubAgent",
+                fake_subagent_class,
+            ),
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3239,23 +3290,33 @@ class TestChatStreamEvents:
         assert saved_state.pending_clarification is None
         assert saved_state.active_dataset_id == str(sample_dataset.id)
         assert thread_state["last_success_task"]["question"] == original_question
-        assert fake_subagent_class.captured_runs[-1]["request"].question == initial_state["question"]
+        assert (
+            fake_subagent_class.captured_runs[-1]["request"].question == initial_state["question"]
+        )
 
     def test_message_gateway_detects_thread_last_success_task(self):
         """Thread Memory 的 last_success_task 应触发二轮 refine 判定。"""
         from app.api.chat import _has_last_success_task
 
-        assert _has_last_success_task(
-            {
-                "last_success_task": {
-                    "query_type": "detail_query",
-                    "main_table": "plan_task_daily_record",
-                    "metrics": [],
+        assert (
+            _has_last_success_task(
+                {
+                    "last_success_task": {
+                        "query_type": "detail_query",
+                        "main_table": "plan_task_daily_record",
+                        "metrics": [],
+                    }
                 }
-            }
-        ) is True
+            )
+            is True
+        )
         assert _has_last_success_task({"capsule_metas": {"10": {"dataset_id": "10"}}}) is False
-        assert _has_last_success_task({"last_success_task": {"query_type": "metric_query", "metrics": []}}) is False
+        assert (
+            _has_last_success_task(
+                {"last_success_task": {"query_type": "metric_query", "metrics": []}}
+            )
+            is False
+        )
 
     def test_stream_chat_writes_last_success_task_and_reuses_it_next_turn(
         self,
@@ -3316,9 +3377,12 @@ class TestChatStreamEvents:
             return events
 
         fake_subagent_class = _graph_backed_fake_subagent_class()
-        with patch("app.api.chat.build_workflow") as mock_wf, patch(
-            "app.api.chat.DatasetSubAgent",
-            fake_subagent_class,
+        with (
+            patch("app.api.chat.build_workflow") as mock_wf,
+            patch(
+                "app.api.chat.DatasetSubAgent",
+                fake_subagent_class,
+            ),
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3329,16 +3393,39 @@ class TestChatStreamEvents:
 
         assert any(event.get("type") == "final" for event in first_events)
         assert any(event.get("type") == "final" for event in second_events)
+        first_final = [event for event in first_events if event.get("type") == "final"][-1]
+        assert first_final["result_artifact"]["result_ref"].startswith("result:")
+        assert first_final["result_artifact"]["complete"] is False
+        assert (
+            first_final["result_artifact"]["completeness_reason"]
+            == "sql_limit_makes_result_incomplete"
+        )
         thread_state = ConversationStore(db_session).get_thread_state("session-auto-last-success")
         assert thread_state["last_success_task"]["main_table"] == "plan_task_daily_record"
+        assert (
+            thread_state["last_success_task"]["result_ref"]
+            == first_final["result_artifact"]["result_ref"]
+        )
 
         second_state = captured_states[-1]
         capsule = second_state["query_task_capsule"]
         assert second_state["turn_event"]["event_type"] == "followup_refine"
         assert capsule["base_task_ref"] == "last_success_task"
         assert capsule["base_question"] == "查询10条用户日志"
+        assert capsule["multiturn_fast_path"]["status"] == "observe_only"
+        assert capsule["multiturn_fast_path"]["artifact_status"]["status"] == "not_eligible"
+        assert (
+            capsule["multiturn_fast_path"]["artifact_status"]["reason"]
+            == "sql_limit_makes_result_incomplete"
+        )
         assert second_state["merge_debug"]["used_prior"] is True
         assert second_state["question"] == "基于上一轮问题「查询10条用户日志」，只看汤杰"
+        second_gateway_step = next(
+            event
+            for event in second_events
+            if event.get("type") == "step" and event.get("node") == "message_gateway"
+        )
+        assert second_gateway_step["payload"]["multiturn_fast_path"]["status"] == "observe_only"
         second_request = fake_subagent_class.captured_runs[-1]["request"]
         assert second_request.query_task_capsule == capsule
         assert second_request.turn_event == second_state["turn_event"]
@@ -3419,9 +3506,12 @@ class TestChatStreamEvents:
             return events
 
         fake_subagent_class = _graph_backed_fake_subagent_class()
-        with patch("app.api.chat.build_workflow") as mock_wf, patch(
-            "app.api.chat.DatasetSubAgent",
-            fake_subagent_class,
+        with (
+            patch("app.api.chat.build_workflow") as mock_wf,
+            patch(
+                "app.api.chat.DatasetSubAgent",
+                fake_subagent_class,
+            ),
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3437,7 +3527,9 @@ class TestChatStreamEvents:
         assert capsule["base_task_ref"] == "last_success_task"
         assert capsule["base_question"] == "查询10条用户日志"
         assert capsule["base_main_table"] == "plan_task_daily_record"
-        assert capsule["base_query_plan"]["debug"]["selected_main_table"] == "plan_task_daily_record"
+        assert (
+            capsule["base_query_plan"]["debug"]["selected_main_table"] == "plan_task_daily_record"
+        )
         assert "sql_template" not in json.dumps(capsule["base_query_plan"], ensure_ascii=False)
         assert initial_state["merge_debug"]["used_prior"] is True
         assert initial_state["question"] == "基于上一轮问题「查询10条用户日志」，只看汤杰"
@@ -3446,7 +3538,9 @@ class TestChatStreamEvents:
             for event in events
             if event.get("type") == "step" and event.get("node") == "message_gateway"
         )
-        assert "sql_template" not in json.dumps(gateway_step["query_task_capsule"], ensure_ascii=False)
+        assert "sql_template" not in json.dumps(
+            gateway_step["query_task_capsule"], ensure_ascii=False
+        )
         final = [event for event in events if event.get("type") == "final"][-1]
         assert final["turn_event"] == initial_state["turn_event"]
         assert final["query_task_capsule"]["base_query_plan"]["debug"] == {
@@ -3502,9 +3596,12 @@ class TestChatStreamEvents:
                 "metadata": {"langgraph_node": "sql_execute"},
             }
 
-        with patch("app.api.chat.build_workflow") as mock_wf, patch(
-            "app.api.chat.DatasetSubAgent",
-            _graph_backed_fake_subagent_class(),
+        with (
+            patch("app.api.chat.build_workflow") as mock_wf,
+            patch(
+                "app.api.chat.DatasetSubAgent",
+                _graph_backed_fake_subagent_class(),
+            ),
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3530,6 +3627,9 @@ class TestChatStreamEvents:
         assert assistant_message.response_metadata["query_profile"] == final["query_profile"]
         assert final["query_profile"]["sql"]["row_count"] == 1
         assert final["query_profile"]["query_context"]["inheritance"]["inherited"] is True
+        assert final["result_artifact"]["result_ref"].startswith("result:")
+        assert final["query_profile"]["sql"]["result_artifact"] == final["result_artifact"]
+        assert metadata["result_artifact"] == final["result_artifact"]
         assert final["query_profile"]["execution_summary"]["stages"]
 
     def test_chat_stream_step_event_structure(self, client, sample_dataset):
@@ -3561,8 +3661,8 @@ class TestChatStreamEvents:
                 # sse_starlette 在测试中复用事件循环时可能抛出 ExceptionGroup，跳过
                 pytest.skip("SSE AppStatus event loop issue in repeated TestClient usage")
 
-            lines = [l for l in resp.text.split("\n") if l.startswith("data:")]
-            step_events = [json.loads(l[5:].strip()) for l in lines if '"step"' in l]
+            lines = [line for line in resp.text.split("\n") if line.startswith("data:")]
+            step_events = [json.loads(line[5:].strip()) for line in lines if '"step"' in line]
             for e in step_events:
                 assert "node" in e
                 assert "status" in e
@@ -3603,12 +3703,16 @@ class TestChatStreamEvents:
                 "token_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
             }
 
-        with patch("app.api.chat.build_workflow") as mock_wf, patch(
-            "app.api.chat.DatasetSubAgent",
-            _graph_backed_fake_subagent_class(),
-        ), patch(
-            "app.api.chat.stream_sql_result_report",
-            fake_lead_report_stream,
+        with (
+            patch("app.api.chat.build_workflow") as mock_wf,
+            patch(
+                "app.api.chat.DatasetSubAgent",
+                _graph_backed_fake_subagent_class(),
+            ),
+            patch(
+                "app.api.chat.stream_sql_result_report",
+                fake_lead_report_stream,
+            ),
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3637,10 +3741,14 @@ class TestChatStreamEvents:
         assert captured["state"]["lead_agent_context"]["audit_trace"]["dispatched"] is True
         assert captured["state"]["skip_subagent_report"] is True
         assert captured["state"]["report_owner"] == "lead_agent"
-        assert captured["lead_report_kwargs"]["observation_name"] == "llm.lead_agent_report_generator"
+        assert (
+            captured["lead_report_kwargs"]["observation_name"] == "llm.lead_agent_report_generator"
+        )
         assert captured["lead_report_kwargs"]["report_owner"] == "lead_agent"
         assert not [event for event in events if event.get("node") == "report_generator"]
-        lead_report_step = [event for event in events if event.get("node") == "lead_agent_report_generator"]
+        lead_report_step = [
+            event for event in events if event.get("node") == "lead_agent_report_generator"
+        ]
         assert {event["status"] for event in lead_report_step} == {"running", "done"}
         assert events[-1]["answer"] == "LeadAgent 汇总：GMV 为 100。"
         assert events[-1]["report_owner"] == "lead_agent"
@@ -3714,9 +3822,12 @@ class TestChatStreamEvents:
                 "metadata": {"langgraph_node": "report_generator"},
             }
 
-        with patch("app.api.chat.build_workflow") as mock_wf, patch(
-            "app.api.chat.DatasetSubAgent",
-            _graph_backed_fake_subagent_class(),
+        with (
+            patch("app.api.chat.build_workflow") as mock_wf,
+            patch(
+                "app.api.chat.DatasetSubAgent",
+                _graph_backed_fake_subagent_class(),
+            ),
         ):
             mock_graph = MagicMock()
             mock_graph.astream_events = fake_astream_events
@@ -3787,9 +3898,10 @@ class TestChatStreamEvents:
                 "knowledge_term_id": None,
             }
 
-        with patch("app.api.chat.route_query_intent", fake_route_query_intent), patch(
-            "app.api.chat.build_workflow"
-        ) as mock_wf:
+        with (
+            patch("app.api.chat.route_query_intent", fake_route_query_intent),
+            patch("app.api.chat.build_workflow") as mock_wf,
+        ):
             events = _collect_stream_events(
                 {
                     "question": "都不是",
@@ -3829,9 +3941,10 @@ class TestChatStreamEvents:
                 "knowledge_term_id": None,
             }
 
-        with patch("app.api.chat.route_query_intent", fake_route_query_intent), patch(
-            "app.api.chat.build_workflow"
-        ) as mock_wf:
+        with (
+            patch("app.api.chat.route_query_intent", fake_route_query_intent),
+            patch("app.api.chat.build_workflow") as mock_wf,
+        ):
             events = _collect_stream_events(
                 {"question": "最近30日GMV趋势如何", "dataset_id": sample_dataset.id},
                 db_session,
@@ -3847,12 +3960,11 @@ class TestChatStreamEvents:
         assert final["entry_route"] == "direct_answer"
         assert gateway_step["query_task_capsule"]["dataset_id"] == sample_dataset.id
         assert final["query_task_capsule"] == gateway_step["query_task_capsule"]
-        assert final["response_metadata"]["query_task_capsule"] == gateway_step["query_task_capsule"]
-        assert final["langfuse_trace_id"]
         assert (
-            final["response_metadata"]["langfuse"]["trace_id"]
-            == final["langfuse_trace_id"]
+            final["response_metadata"]["query_task_capsule"] == gateway_step["query_task_capsule"]
         )
+        assert final["langfuse_trace_id"]
+        assert final["response_metadata"]["langfuse"]["trace_id"] == final["langfuse_trace_id"]
         assert final["response_metadata"]["observability"]
         trace_index = db_session.query(models.ObservabilityTraceIndex).one()
         assert trace_index.status == "success"
@@ -3860,7 +3972,9 @@ class TestChatStreamEvents:
         assert trace_index.message_id == final["message_id"]
         assistant_message = db_session.get(models.Message, final["message_id"])
         assert assistant_message is not None
-        assert any(step.get("node") == "message_gateway" for step in assistant_message.step_trace or [])
+        assert any(
+            step.get("node") == "message_gateway" for step in assistant_message.step_trace or []
+        )
         mock_wf.assert_not_called()
 
 
@@ -3898,7 +4012,10 @@ class TestSchemaFormatter:
 
         fields = [
             self._make_field(
-                "order_status", "VARCHAR", "dimension_candidate", "订单状态",
+                "order_status",
+                "VARCHAR",
+                "dimension_candidate",
+                "订单状态",
                 samples=["已完成", "待处理", "已取消", "退款中"],
             )
         ]

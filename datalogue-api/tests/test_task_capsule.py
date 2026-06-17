@@ -45,33 +45,42 @@ def _make_store():
 
 
 def test_detail_query_has_target_without_metrics_when_fields_exist():
-    assert has_query_target(
-        {
-            "query_type": "detail_query",
-            "fields": [{"name": "rzrq"}],
-            "metrics": [],
-        }
-    ) is True
+    assert (
+        has_query_target(
+            {
+                "query_type": "detail_query",
+                "fields": [{"name": "rzrq"}],
+                "metrics": [],
+            }
+        )
+        is True
+    )
 
 
 def test_detail_query_has_target_without_metrics_when_main_table_exists():
-    assert has_query_target(
-        {
-            "query_type": "detail_query",
-            "main_table": "plan_task_daily_record",
-            "metrics": [],
-        }
-    ) is True
+    assert (
+        has_query_target(
+            {
+                "query_type": "detail_query",
+                "main_table": "plan_task_daily_record",
+                "metrics": [],
+            }
+        )
+        is True
+    )
 
 
 def test_detail_query_has_target_without_metrics_when_query_plan_exists():
-    assert has_query_target(
-        {
-            "query_type": "detail_query",
-            "metrics": [],
-            "query_plan": {"query_type": "detail_query"},
-        }
-    ) is True
+    assert (
+        has_query_target(
+            {
+                "query_type": "detail_query",
+                "metrics": [],
+                "query_plan": {"query_type": "detail_query"},
+            }
+        )
+        is True
+    )
 
 
 def test_detail_query_has_target_when_only_dsl_exists():
@@ -140,6 +149,13 @@ def test_build_success_task_state_keeps_only_minimal_snapshot():
         schema_version="schema-v1",
         manifest_version="v1",
         turn_index=2,
+        result_artifact={
+            "result_ref": "result:abc",
+            "report_id": "report:def",
+            "display_summary": "完整结果，1 行，1 列",
+            "complete": True,
+            "rows": [{"rzrq": "2024-01-01"}],
+        },
     )
 
     assert state["capsule_version"] == "last_success_task.v1"
@@ -154,6 +170,10 @@ def test_build_success_task_state_keeps_only_minimal_snapshot():
     assert "sql" not in state
     assert "rejected_assets" not in json.dumps(state, ensure_ascii=False)
     assert "sample_values" not in json.dumps(state, ensure_ascii=False)
+    assert "rows" not in json.dumps(state.get("result_artifact"), ensure_ascii=False)
+    assert state["result_ref"] == "result:abc"
+    assert state["report_id"] == "report:def"
+    assert state["display_summary"] == "完整结果，1 行，1 列"
     assert state["selected_field_refs"] == [
         {
             "table": "plan_task_daily_record",
@@ -492,7 +512,9 @@ def test_thread_state_json_encodes_non_sample_fields():
 def test_capsule_metas_skips_reserved_thread_state_key():
     engine, session, store = _make_store()
     try:
-        store.update_thread_state("session-thread-meta", {"last_success_task": {"question": "查询"}})
+        store.update_thread_state(
+            "session-thread-meta", {"last_success_task": {"question": "查询"}}
+        )
 
         state = store.load("session-thread-meta")
         assert state is not None
@@ -506,7 +528,9 @@ def test_capsule_metas_skips_reserved_thread_state_key():
 def test_capsule_metas_preserves_real_dataset_capsules_with_thread_state():
     engine, session, store = _make_store()
     try:
-        store.update_thread_state("session-real-capsule", {"active_task": {"turn_type": "new_query"}})
+        store.update_thread_state(
+            "session-real-capsule", {"active_task": {"turn_type": "new_query"}}
+        )
         state = store.load("session-real-capsule")
         assert state is not None
         capsules = dict(state.subagent_capsules or {})
@@ -559,7 +583,9 @@ def test_lead_multiturn_context_exposes_thread_last_success_task():
 def test_update_thread_state_uses_chat_default_user_id_when_creating_state():
     engine, session, store = _make_store()
     try:
-        store.update_thread_state("session-default-user", {"active_task": {"turn_type": "new_query"}})
+        store.update_thread_state(
+            "session-default-user", {"active_task": {"turn_type": "new_query"}}
+        )
 
         state = store.load("session-default-user")
         assert state is not None

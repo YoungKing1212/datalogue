@@ -27,7 +27,6 @@ from app.services.subagent_planning.contracts import (
 )
 from app.utils.token import estimate_text_tokens
 
-
 CAPSULE_VERSION = "last_success_task.v1"
 MAX_LAST_SUCCESS_TASK_TOKENS = 2000
 
@@ -50,9 +49,7 @@ class FieldRef(BaseModel):
 
     table: str
     column: str
-    role: Literal["dimension", "metric", "time", "filter", "id", "select_only"] = (
-        "select_only"
-    )
+    role: Literal["dimension", "metric", "time", "filter", "id", "select_only"] = "select_only"
     alias: str | None = None
 
 
@@ -76,9 +73,7 @@ class BlueprintHitRef(BaseModel):
 
     asset_id: str | int
     name: str | None = None
-    bound_parameters: dict[str, str | int | float | bool | None] = Field(
-        default_factory=dict
-    )
+    bound_parameters: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 class LastSuccessTask(BaseModel):
@@ -111,6 +106,10 @@ class LastSuccessTask(BaseModel):
 
     sql_hash: str | None = None
     result_digest: dict[str, Any] = Field(default_factory=dict)
+    result_ref: str | None = None
+    report_id: str | None = None
+    display_summary: str | None = None
+    result_artifact: dict[str, Any] = Field(default_factory=dict)
     resolved_question: str | None = None
 
     @field_validator("query_type")
@@ -167,6 +166,10 @@ class LastSuccessTask(BaseModel):
                 "time_window": self.time_window,
                 "metrics_applied": self.metrics_applied,
                 "blueprint_hit": self.blueprint_hit,
+                "result_ref": self.result_ref,
+                "report_id": self.report_id,
+                "display_summary": self.display_summary,
+                "result_artifact": self.result_artifact,
                 "debug": {
                     "selected_main_table": self.main_table,
                     "join_hints": join_hints,
@@ -198,6 +201,7 @@ def build_last_success_task(
     schema_version: str | None = None,
     manifest_version: str | None = None,
     turn_index: int | None = None,
+    result_artifact: dict[str, Any] | None = None,
     max_tokens: int = MAX_LAST_SUCCESS_TASK_TOKENS,
 ) -> dict[str, Any]:
     """从本轮最终状态抽取严格白名单的 last_success_task。"""
@@ -225,6 +229,10 @@ def build_last_success_task(
         metrics_applied=_extract_list(dsl_payload, "metrics", "metric_clauses"),
         sql_hash=_hash_sql(sql),
         result_digest=minimal_result_digest(sql_result),
+        result_ref=_artifact_value(result_artifact, "result_ref"),
+        report_id=_artifact_value(result_artifact, "report_id"),
+        display_summary=_artifact_value(result_artifact, "display_summary"),
+        result_artifact=_safe_artifact_metadata(result_artifact),
         resolved_question=question,
     )
     task.ensure_size(max_tokens=max_tokens)
@@ -289,6 +297,9 @@ def evaluate_last_success_task(
         "schema_version": task.schema_version,
         "manifest_version": task.manifest_version,
         "capsule_version": task.capsule_version,
+        "result_ref": task.result_ref,
+        "report_id": task.report_id,
+        "display_summary": task.display_summary,
     }
 
 
@@ -317,6 +328,36 @@ def _hash_sql(sql: str | None) -> str | None:
     if not sql:
         return None
     return hashlib.sha256(sql.encode("utf-8")).hexdigest()
+
+
+def _artifact_value(artifact: dict[str, Any] | None, key: str) -> str | None:
+    if not isinstance(artifact, dict):
+        return None
+    value = artifact.get(key)
+    return str(value) if value else None
+
+
+def _safe_artifact_metadata(artifact: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(artifact, dict):
+        return {}
+    allowed_keys = {
+        "version",
+        "result_ref",
+        "report_id",
+        "cache_backend",
+        "ttl_seconds",
+        "expires_at",
+        "complete",
+        "completeness_reason",
+        "display_summary",
+        "row_count",
+        "columns",
+    }
+    return {
+        key: jsonable_encoder(value)
+        for key, value in artifact.items()
+        if key in allowed_keys and value is not None
+    }
 
 
 def _extract_list(payload: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
@@ -430,7 +471,9 @@ def _extract_join_topology(query_plan: dict[str, Any]) -> list[JoinRef]:
         left_column = hint.get("left_column") or hint.get("left_col")
         right_table = hint.get("right_table")
         right_column = hint.get("right_column") or hint.get("right_col")
-        key = tuple(str(item or "") for item in (left_table, left_column, right_table, right_column))
+        key = tuple(
+            str(item or "") for item in (left_table, left_column, right_table, right_column)
+        )
         if not all(key) or key in seen:
             continue
         seen.add(key)
