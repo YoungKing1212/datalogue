@@ -296,7 +296,7 @@ class AssetDetailService:
                 payload={},
                 error_code="asset_not_found",
             )
-        payload = {
+        payload: dict[str, Any] = {
             "asset_type": asset.get("asset_type"),
             "asset_id": asset.get("asset_id"),
             "name": asset.get("name"),
