@@ -14,13 +14,19 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import asdict, dataclass, is_dataclass
-from typing import Any, Iterable, Mapping, TypedDict
+from datetime import datetime, timezone
+from typing import Any, Iterable, Literal, Mapping, TypedDict
 
 PROJECTION_SCHEMA_VERSION = "lead_agent_planner_projection.v2"
 DEFAULT_MAX_PRIOR_TURNS = 3
 DEFAULT_MAX_TEXT_CHARS = 240
 DEFAULT_MAX_PRIOR_BRIEF_CHARS = 360
+
+MAX_PROJECTED_SIGNALS = 3
+PROJECTED_ASSET_METADATA_KEYS = {"table_name", "column_name", "parameters", "expr"}
+LeadPlannerStage = Literal["skill_selection", "tool_planning"]
 
 
 class ProjectionMetrics(TypedDict):
@@ -151,6 +157,145 @@ def build_projection_metrics(*, raw_payload: Any, projected_payload: Any) -> Pro
         "raw_chars": raw_chars,
         "projected_chars": projected_chars,
         "projection_saved_chars": max(raw_chars - projected_chars, 0),
+    }
+
+
+def project_assets_for_lead_planner(
+    assets: list[dict[str, Any]],
+    *,
+    stage: LeadPlannerStage,
+    token_budget: int = 1200,
+    question: str | None = None,
+) -> dict[str, Any]:
+    """把过滤后的候选资产投影成 LeadAgent Planner 可消费的轻量上下文。
+
+    Args:
+        assets: 已经过 ``filter_lead_planner_assets`` 过滤后的候选资产。
+        stage: skill_selection 阶段需要类型摘要；tool_planning 阶段需要
+            top 资产详情。
+        token_budget: 投影结果建议占用的最大 token 数（按 JSON 字符 / 4 估算）。
+        question: 用于计算问题相关片段，可选。
+
+    Returns:
+        包含轻量资产列表、类型摘要、stage、预算和时间戳的字典。
+    """
+    projected_assets = [_project_single_asset(asset) for asset in assets]
+    projected_assets.sort(
+        key=lambda asset: float(asset.get("confidence") or 0),
+        reverse=True,
+    )
+
+    # 按 token 预算做最终保险截断；至少保留第一条资产，避免预算过小时输出为空。
+    kept: list[dict[str, Any]] = []
+    estimated_tokens = 0
+    for asset in projected_assets:
+        size = _estimate_asset_tokens(asset)
+        if kept and estimated_tokens + size > token_budget:
+            continue
+        kept.append(asset)
+        estimated_tokens += size
+
+    summary = _build_asset_projection_summary(kept, projected_assets)
+    return {
+        "assets": kept,
+        "summary": summary,
+        "stage": stage,
+        "token_budget": token_budget,
+        "question": question,
+        "projected_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _project_single_asset(asset: dict[str, Any]) -> dict[str, Any]:
+    """把单条候选资产裁剪为 LeadAgent Planner 可消费的轻量字段。"""
+    metadata = dict(asset.get("metadata") or {})
+    signals = list(asset.get("match_signals") or [])
+    signals.sort(
+        key=lambda signal: float(signal.get("score") or 0) if isinstance(signal, dict) else 0.0,
+        reverse=True,
+    )
+    projected_signals = [
+        {key: signal[key] for key in ("type", "value", "score") if key in signal}
+        for signal in signals[:MAX_PROJECTED_SIGNALS]
+        if isinstance(signal, dict)
+    ]
+    return {
+        "asset_type": str(asset.get("asset_type") or ""),
+        "asset_id": str(asset.get("asset_id") or ""),
+        "name": str(asset.get("name") or ""),
+        "display_name": str(asset.get("display_name") or asset.get("name") or ""),
+        "source": str(asset.get("source") or ""),
+        "confidence": round(float(asset.get("confidence") or 0), 4),
+        "usage": str(asset.get("usage") or "candidate"),
+        "match_reason": str(asset.get("match_reason") or ""),
+        "match_signals": projected_signals,
+        "metadata": {
+            key: metadata[key] for key in PROJECTED_ASSET_METADATA_KEYS if key in metadata
+        },
+    }
+
+
+def _estimate_asset_tokens(asset: dict[str, Any]) -> int:
+    """按 JSON 字符数 / 4 做极简 token 估算，仅用于最终预算截断。"""
+    try:
+        return max(1, len(json.dumps(asset, ensure_ascii=False, default=str)) // 4)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _build_asset_projection_summary(
+    assets: list[dict[str, Any]],
+    all_projected: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """构造投影资产的类型统计、覆盖率与 token 估算摘要。"""
+    counts = Counter(str(asset.get("asset_type") or "") for asset in assets)
+
+    max_confidence_by_type: dict[str, float] = {}
+    for asset in all_projected:
+        asset_type = str(asset.get("asset_type") or "")
+        confidence = float(asset.get("confidence") or 0)
+        max_confidence_by_type[asset_type] = max(
+            max_confidence_by_type.get(asset_type, 0.0),
+            confidence,
+        )
+
+    top_asset_types = sorted(
+        [
+            {
+                "asset_type": asset_type,
+                "count": counts.get(asset_type, 0),
+                "max_confidence": round(max_confidence_by_type[asset_type], 4),
+            }
+            for asset_type in max_confidence_by_type
+        ],
+        key=lambda item: (item["max_confidence"], item["count"]),
+        reverse=True,
+    )[:3]
+
+    signal_types = sorted(
+        {
+            str(signal.get("type"))
+            for asset in assets
+            for signal in asset.get("match_signals") or []
+            if signal.get("type")
+        }
+    )
+
+    total = len(assets)
+    scored = sum(1 for asset in assets if float(asset.get("confidence") or 0) > 0)
+    token_estimate = sum(_estimate_asset_tokens(asset) for asset in assets)
+
+    return {
+        "total": total,
+        "counts_by_type": dict(counts),
+        "top_asset_types": top_asset_types,
+        "coverage": {
+            "scored_assets": scored,
+            "scored_ratio": round(scored / total, 4) if total else 0.0,
+            "signal_types": signal_types,
+        },
+        "token_estimate": token_estimate,
+        "dropped_by_budget": max(0, len(all_projected) - len(assets)),
     }
 
 

@@ -60,6 +60,43 @@ class Settings(BaseSettings):
     # LeadAgent Planner 输入投影灰度开关；默认关闭，生产按环境变量切流。
     LEAD_AGENT_PLANNER_USE_PROJECTION: bool = False
 
+    # ============================================================
+    # LeadAgent 渐进式资产注入（Progressive Asset Integration）
+    # ============================================================
+
+    # 总开关：是否启用候选资产召回并注入 LeadAgent Planner
+    LEAD_AGENT_USE_PROGRESSIVE_ASSETS: bool = False
+
+    # --- 按资产类型的 Top-K 限制 ---
+    LEAD_AGENT_PROGRESSIVE_ASSET_TOPK_BLUEPRINT: int = 3
+    LEAD_AGENT_PROGRESSIVE_ASSET_TOPK_METRIC: int = 5
+    LEAD_AGENT_PROGRESSIVE_ASSET_TOPK_DIMENSION: int = 5
+    LEAD_AGENT_PROGRESSIVE_ASSET_TOPK_TERM: int = 5
+    LEAD_AGENT_PROGRESSIVE_ASSET_TOPK_FIELD: int = 10
+    LEAD_AGENT_PROGRESSIVE_ASSET_TOPK_TABLE: int = 8
+
+    # --- 按资产类型的置信度阈值 ---
+    LEAD_AGENT_PROGRESSIVE_ASSET_MIN_CONFIDENCE_BLUEPRINT: float = 0.60
+    LEAD_AGENT_PROGRESSIVE_ASSET_MIN_CONFIDENCE_METRIC: float = 0.35
+    LEAD_AGENT_PROGRESSIVE_ASSET_MIN_CONFIDENCE_DIMENSION: float = 0.35
+    LEAD_AGENT_PROGRESSIVE_ASSET_MIN_CONFIDENCE_TERM: float = 0.30
+    LEAD_AGENT_PROGRESSIVE_ASSET_MIN_CONFIDENCE_FIELD: float = 0.25
+    LEAD_AGENT_PROGRESSIVE_ASSET_MIN_CONFIDENCE_TABLE: float = 0.25
+
+    # --- 全局 Token 预算（按阶段） ---
+    LEAD_AGENT_PROGRESSIVE_ASSET_TOKEN_BUDGET_SKILL_SELECTION: int = 600
+    LEAD_AGENT_PROGRESSIVE_ASSET_TOKEN_BUDGET_TOOL_PLANNING: int = 800
+
+    # --- 全局最小置信度（兜底，任何类型资产都必须超过此值） ---
+    LEAD_AGENT_PROGRESSIVE_ASSET_GLOBAL_MIN_CONFIDENCE: float = 0.20
+
+    # --- 元信息脱敏白名单（逗号分隔的字段名） ---
+    # 空字符串表示全部脱敏（只保留 name/display_name）
+    LEAD_AGENT_PROGRESSIVE_ASSET_METADATA_WHITELIST: str = "table_name,column_name,parameters,expr"
+
+    # --- match_signals 保留数量 ---
+    LEAD_AGENT_PROGRESSIVE_ASSET_MAX_SIGNALS_PER_ASSET: int = 3
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

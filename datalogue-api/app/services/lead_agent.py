@@ -32,16 +32,20 @@ from app.graph.llm import get_llm
 from app.prompts.lead_agent import LEAD_AGENT_SKILL_SELECTOR_SYSTEM, LEAD_AGENT_TOOL_PLANNER_SYSTEM
 from app.services.dataset_manifest import build_dataset_schema_version
 from app.services.dataset_router import route_dataset_for_question
+from app.services.lead_agent_planning.asset_filter import filter_lead_planner_assets
+from app.services.lead_agent_planning.asset_filter_config import build_filter_config
 from app.services.lead_agent_planner_projection import (
     DEFAULT_MAX_PRIOR_TURNS,
     PROJECTION_SCHEMA_VERSION,
     build_projection_metrics,
     build_skill_selector_input,
     build_tool_planner_input,
+    project_assets_for_lead_planner,
 )
 from app.services.llm_config import resolve_llm_config
 from app.services.multiturn_context import MergeDecision, MultiturnContextBuilder
 from app.services.observability.prompts import get_prompt_manager
+from app.services.subagent_planning.asset_recall import recall_candidate_assets
 from app.utils.json_utils import safe_json_parse
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -307,18 +311,64 @@ def plan_tool_calls_with_llm(
     if not availability["available"]:
         return build_fallback_plan(reason=availability["reason"])
 
-    use_projection = bool(get_settings().LEAD_AGENT_PLANNER_USE_PROJECTION)
+    settings = get_settings()
+    use_projection = bool(settings.LEAD_AGENT_PLANNER_USE_PROJECTION)
+    progressive_enabled = bool(getattr(settings, "LEAD_AGENT_USE_PROGRESSIVE_ASSETS", False))
+    locked_dataset_id = tool_policy.get("locked_dataset_id")
     projection_recent_context = _build_projection_recent_context(
         conversation_summary=conversation_summary,
         tool_policy=tool_policy,
     )
     skill_generation = None
     tool_generation = None
+
+    # Phase 3: 渐进式语义资产注入。
+    # 仅当开关开启且已锁定数据集时，才召回并投影候选资产；失败时降级为空资产。
+    skill_asset_projection: dict[str, Any] = {"assets": [], "summary": {}}
+    filtered_assets: list[dict[str, Any]] = []
+    recall_called = False
+    if progressive_enabled and locked_dataset_id is not None:
+        try:
+            recall_called = True
+            raw_candidate_assets = recall_candidate_assets(
+                db,
+                dataset_id=int(locked_dataset_id),
+                question=question,
+                manifest_version=None,
+                bound_schema_version=None,
+            )
+            filter_config = build_filter_config(
+                settings=settings,
+                dataset_id=int(locked_dataset_id),
+                db=db,
+            )
+            filtered_assets = filter_lead_planner_assets(raw_candidate_assets, config=filter_config)
+            skill_asset_projection = project_assets_for_lead_planner(
+                filtered_assets,
+                stage="skill_selection",
+                token_budget=int(
+                    getattr(
+                        settings,
+                        "LEAD_AGENT_PROGRESSIVE_ASSET_TOKEN_BUDGET_SKILL_SELECTION",
+                        600,
+                    )
+                ),
+                question=question,
+            )
+        except Exception:
+            logger.exception(
+                "LeadAgent 候选资产召回/过滤失败，降级为空资产: locked_dataset_id=%s",
+                locked_dataset_id,
+            )
+            filtered_assets = []
+            skill_asset_projection = {"assets": [], "summary": {}}
+
     raw_skill_input = {
         "question": question,
         "conversation": conversation_summary,
         "tool_policy": tool_policy,
         "skills": skills,
+        "candidate_assets": skill_asset_projection,
     }
     skill_input = (
         build_skill_selector_input(
@@ -329,6 +379,8 @@ def plan_tool_calls_with_llm(
         if use_projection
         else raw_skill_input
     )
+    if use_projection:
+        skill_input["candidate_assets"] = skill_asset_projection
     skill_projection_metrics = (
         build_projection_metrics(
             raw_payload=raw_skill_input,
@@ -364,6 +416,7 @@ def plan_tool_calls_with_llm(
                     "skills": [item.get("name") for item in skills],
                     "tool_schemas_disclosed": [],
                     "projection_enabled": use_projection,
+                    **_candidate_asset_observability(skill_asset_projection, recall_called),
                     **(
                         {
                             "projection_metrics": skill_projection_metrics,
@@ -432,6 +485,30 @@ def plan_tool_calls_with_llm(
         selected_skill_names = skill_selection["selected_skills"]
         selected_skill_payloads = _skill_payloads_by_name(skills, selected_skill_names)
         disclosed_tool_schemas = _tool_schemas_for_skills(selected_skill_names, skills, tool_policy)
+
+        # Phase 3: 使用同一批过滤后的资产，按 tool_planning 阶段重新投影。
+        tool_asset_projection: dict[str, Any] = {"assets": [], "summary": {}}
+        if progressive_enabled and locked_dataset_id is not None:
+            try:
+                tool_asset_projection = project_assets_for_lead_planner(
+                    filtered_assets,
+                    stage="tool_planning",
+                    token_budget=int(
+                        getattr(
+                            settings,
+                            "LEAD_AGENT_PROGRESSIVE_ASSET_TOKEN_BUDGET_TOOL_PLANNING",
+                            800,
+                        )
+                    ),
+                    question=question,
+                )
+            except Exception:
+                logger.exception(
+                    "LeadAgent tool_planning 阶段资产投影失败，降级为空资产: locked_dataset_id=%s",
+                    locked_dataset_id,
+                )
+                tool_asset_projection = {"assets": [], "summary": {}}
+
         tool_prompt = prompt_manager.get_text_prompt(
             LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME,
             fallback=LEAD_AGENT_TOOL_PLANNER_SYSTEM,
@@ -442,6 +519,7 @@ def plan_tool_calls_with_llm(
             "tool_policy": tool_policy,
             "selected_skills": selected_skill_payloads,
             "tool_schemas": disclosed_tool_schemas,
+            "candidate_assets": tool_asset_projection,
         }
         planner_input = (
             build_tool_planner_input(
@@ -453,6 +531,8 @@ def plan_tool_calls_with_llm(
             if use_projection
             else raw_planner_input
         )
+        if use_projection:
+            planner_input["candidate_assets"] = tool_asset_projection
         planner_projection_metrics = (
             build_projection_metrics(
                 raw_payload=raw_planner_input,
@@ -481,6 +561,7 @@ def plan_tool_calls_with_llm(
                     "disclosed_tools": [item.get("name") for item in disclosed_tool_schemas],
                     "tool_policy": tool_policy,
                     "projection_enabled": use_projection,
+                    **_candidate_asset_observability(tool_asset_projection, recall_called),
                     **(
                         {
                             "projection_metrics": planner_projection_metrics,
@@ -765,6 +846,19 @@ def _tool_schemas_for_skills(
 def _merge_reasoning_summary(skill_reason: str | None, tool_reason: str | None) -> str:
     parts = [item for item in [skill_reason, tool_reason] if item]
     return "；".join(parts)
+
+
+def _candidate_asset_observability(
+    projection: dict[str, Any],
+    recall_called: bool,
+) -> dict[str, Any]:
+    """构造候选资产注入的观测字段，用于 tracer metadata。"""
+
+    return {
+        "candidate_asset_recall_called": recall_called,
+        "candidate_asset_count": len(projection.get("assets", [])),
+        "candidate_asset_summary": projection.get("summary", {}),
+    }
 
 
 def _tool_schemas() -> list[dict[str, Any]]:
