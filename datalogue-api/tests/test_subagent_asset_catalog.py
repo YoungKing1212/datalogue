@@ -25,12 +25,27 @@ def test_project_lightweight_asset_catalog_keeps_only_planner_catalog_types():
     raw = {
         "dataset_id": 10,
         "assets": [
-            _asset("table", "plan_task_daily_record", metadata={"comment": "任务日报表", "fields": [{"name": "id"}]}),
-            _asset("metric", "task_count", metadata={"description": "任务数", "expr": "count(*)"}),
-            _asset("dimension", "department", metadata={"description": "部门"}),
-            _asset("blueprint", "daily_report", metadata={"description": "日报分析", "sql": "select 1"}),
-            _asset("field", "table:t.column:id", metadata={"column_comment": "主键"}),
-            _asset("term", "用户", metadata={"description": "业务术语"}),
+            _asset(
+                "table",
+                "plan_task_daily_record",
+                metadata={"comment": "任务日报表", "fields": [{"name": "id"}]},
+                confidence=0.95,
+            ),
+            _asset(
+                "metric",
+                "task_count",
+                metadata={"description": "任务数", "expr": "count(*)"},
+                confidence=0.8,
+            ),
+            _asset("dimension", "department", metadata={"description": "部门"}, confidence=0.7),
+            _asset(
+                "blueprint",
+                "daily_report",
+                metadata={"description": "日报分析", "sql": "select 1"},
+                confidence=0.6,
+            ),
+            _asset("field", "table:t.column:id", metadata={"column_comment": "主键"}, confidence=0.99),
+            _asset("term", "用户", metadata={"description": "业务术语"}, confidence=0.98),
         ],
         "recall_debug": {"manifest_version": "manifest-v1", "bound_schema_version": "schema-v1"},
     }
@@ -43,6 +58,7 @@ def test_project_lightweight_asset_catalog_keeps_only_planner_catalog_types():
         "dimension",
         "blueprint",
     ]
+    assert [asset["confidence"] for asset in projected["assets"]] == [0.95, 0.8, 0.7, 0.6]
     table_asset = projected["assets"][0]
     assert table_asset["description"] == "任务日报表"
     assert table_asset["schema_version"] == "schema-v1"
@@ -73,6 +89,27 @@ def test_project_lightweight_asset_catalog_limits_match_signals():
     projected = project_lightweight_asset_catalog(raw, max_signals_per_asset=3)
 
     assert len(projected["assets"][0]["match_signals"]) == 3
+
+
+def test_project_lightweight_asset_catalog_does_not_leak_expr_or_sql_text():
+    raw = {
+        "assets": [
+            _asset("metric", "task_count", metadata={"expr": "count(*)"}, confidence=0.8),
+            _asset(
+                "blueprint",
+                "daily_report",
+                metadata={"sql": "select * from payroll"},
+                confidence=0.7,
+            ),
+        ]
+    }
+
+    projected = project_lightweight_asset_catalog(raw)
+
+    assert [asset["description"] for asset in projected["assets"]] == [None, None]
+    catalog_text = str(projected)
+    assert "count(*)" not in catalog_text
+    assert "select * from payroll" not in catalog_text
 
 
 def test_build_allowed_asset_scope_uses_type_and_asset_id():

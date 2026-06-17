@@ -18,7 +18,7 @@ from typing import Any
 
 
 ALLOWED_CATALOG_ASSET_TYPES = {"metric", "dimension", "table", "blueprint"}
-DESCRIPTION_KEYS = ("description", "comment", "semantic", "business_desc", "expr", "when_to_use")
+DESCRIPTION_KEYS = ("description", "comment", "semantic", "business_desc", "when_to_use")
 
 
 def project_lightweight_asset_catalog(
