@@ -44,6 +44,7 @@ from app.services.subagent_planning.execution import (
     build_reject_result,
 )
 from app.services.subagent_planning.planner import build_fallback_query_plan, plan_query
+from app.services.subagent_planning.sql_context import build_sql_generation_context
 
 __all__ = [
     "ALLOWED_CATALOG_ASSET_TYPES",
@@ -66,6 +67,7 @@ __all__ = [
     "build_clarify_result",
     "build_fallback_query_plan",
     "build_reject_result",
+    "build_sql_generation_context",
     "normalize_query_plan",
     "plan_query",
     "project_lightweight_asset_catalog",

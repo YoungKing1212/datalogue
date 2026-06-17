@@ -1,4 +1,4 @@
-from app.services.subagent_planning.contracts import QueryPlan
+from app.services.subagent_planning.contracts import CandidateAsset, QueryPlan
 from app.services.subagent_planning.detail_loop import PlannerDetailLoop, PlannerLoopResult
 
 
@@ -73,6 +73,56 @@ def test_detail_loop_hydrates_requested_asset_then_returns_final_plan():
     assert result.detail_rounds == 1
     assert result.asset_details[0].coverage == "full"
     assert len(planner.calls) == 2
+
+
+def test_detail_loop_returns_sql_generation_context_without_embedding_details_in_query_plan():
+    planner = ScriptedPlanner(
+        [
+            {
+                "asset_detail_requests": [
+                    {
+                        "asset_type": "table",
+                        "asset_id": "plan_task_daily_record",
+                        "detail_level": "full_schema",
+                        "purpose": "sql_generation",
+                        "reason": "需要字段生成 SQL",
+                    }
+                ]
+            },
+            QueryPlan(
+                query_type="detail_query",
+                execution_strategy="query_graph",
+                confidence=0.8,
+                selected_assets=[
+                    CandidateAsset(
+                        asset_type="table",
+                        asset_id="plan_task_daily_record",
+                        name="plan_task_daily_record",
+                        display_name="任务日报",
+                        source="recall",
+                        confidence=0.9,
+                        usage="selected",
+                    )
+                ],
+                planner_source="llm",
+            ),
+        ]
+    )
+    loop = PlannerDetailLoop(max_rounds=3, max_requests_per_round=5, planner_call=planner)
+
+    result = loop.run(
+        db=None,
+        question="查询用户任务日志",
+        routing={"dataset_id": 10},
+        candidate_assets=_candidate_assets(),
+    )
+
+    sql_context = result.sql_generation_context
+    assert sql_context["table_schemas"][0]["asset_id"] == "plan_task_daily_record"
+    assert sql_context["table_schemas"][0]["fields"][0]["name"] == "field_0"
+    assert sql_context["coverage"] == {"plan_task_daily_record": "full"}
+    assert sql_context["selected_assets"][0]["asset_id"] == "plan_task_daily_record"
+    assert "table_schemas" not in result.query_plan.to_dict()
 
 
 def test_detail_loop_rejects_out_of_scope_request_and_retries_planner():

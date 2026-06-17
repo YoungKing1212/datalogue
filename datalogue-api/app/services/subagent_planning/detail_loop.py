@@ -28,6 +28,7 @@ from app.services.subagent_planning.asset_detail import (
 )
 from app.services.subagent_planning.contracts import QueryPlan
 from app.services.subagent_planning.planner import parse_asset_detail_requests
+from app.services.subagent_planning.sql_context import build_sql_generation_context
 
 PlannerCall = Callable[..., QueryPlan | dict[str, Any]]
 
@@ -95,7 +96,7 @@ class PlannerDetailLoop:
                     asset_details=asset_details,
                     warnings=warnings,
                 )
-                return PlannerLoopResult(
+                return self._build_result(
                     query_plan=response,
                     lightweight_catalog=lightweight_catalog,
                     asset_details=asset_details,
@@ -114,7 +115,7 @@ class PlannerDetailLoop:
                     asset_details=asset_details,
                     warnings=warnings,
                 )
-                return PlannerLoopResult(
+                return self._build_result(
                     query_plan=plan,
                     lightweight_catalog=lightweight_catalog,
                     asset_details=asset_details,
@@ -166,13 +167,37 @@ class PlannerDetailLoop:
             asset_details=asset_details,
             warnings=warnings,
         )
-        return PlannerLoopResult(
+        return self._build_result(
             query_plan=plan,
             lightweight_catalog=lightweight_catalog,
             asset_details=asset_details,
             attempted_detail_requests=attempted_detail_requests,
             warnings=warnings,
             detail_rounds=detail_rounds,
+        )
+
+    def _build_result(
+        self,
+        *,
+        query_plan: QueryPlan,
+        lightweight_catalog: dict[str, Any],
+        asset_details: list[AssetDetailResult],
+        attempted_detail_requests: list[dict[str, Any]],
+        warnings: list[dict[str, Any]],
+        detail_rounds: int,
+    ) -> PlannerLoopResult:
+        return PlannerLoopResult(
+            query_plan=query_plan,
+            lightweight_catalog=lightweight_catalog,
+            asset_details=asset_details,
+            attempted_detail_requests=attempted_detail_requests,
+            warnings=warnings,
+            detail_rounds=detail_rounds,
+            sql_generation_context=build_sql_generation_context(
+                query_plan=query_plan,
+                asset_details=asset_details,
+                lightweight_catalog=lightweight_catalog,
+            ),
         )
 
     def _invalid_response_plan(self) -> QueryPlan:
