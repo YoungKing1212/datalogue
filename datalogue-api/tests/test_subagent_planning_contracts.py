@@ -288,6 +288,8 @@ def test_normalize_query_plan_rejects_malformed_audit_fields():
     ("field_name", "bad_value"),
     [
         ("detail_rounds", "three"),
+        ("detail_rounds", "3"),
+        ("detail_rounds", True),
         (
             "attempted_detail_requests",
             {"asset_type": "table", "asset_id": "wide_table"},
@@ -296,7 +298,9 @@ def test_normalize_query_plan_rejects_malformed_audit_fields():
         ("attempted_detail_requests", ["wide_table"]),
         ("asset_detail_coverage", "wide_table"),
         ("missing_context", "缺少时间字段"),
+        ("missing_context", [123]),
         ("risk_flags", "wide_table"),
+        ("risk_flags", [{"code": "x"}]),
         ("why_not_generate_sql", 123),
     ],
 )

@@ -273,11 +273,6 @@ def _int_from_payload(value: Any, field_name: str) -> int:
         raise QueryPlanValidationError(f"{field_name} must be int")
     if isinstance(value, int):
         return value
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError as exc:
-            raise QueryPlanValidationError(f"{field_name} must be int") from exc
     raise QueryPlanValidationError(f"{field_name} must be int")
 
 
@@ -307,7 +302,12 @@ def _string_list_from_payload(items: Any, field_name: str) -> list[str]:
         return []
     if isinstance(items, str) or not isinstance(items, list):
         raise QueryPlanValidationError(f"{field_name} must be list[string]")
-    return [str(item) for item in items]
+    normalized: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            raise QueryPlanValidationError(f"{field_name} item must be string")
+        normalized.append(item)
+    return normalized
 
 
 def _optional_string_from_payload(value: Any, field_name: str) -> str | None:
