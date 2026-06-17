@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any, Literal
 
 from fastapi.encoders import jsonable_encoder
@@ -30,6 +31,7 @@ from app.utils.token import estimate_text_tokens
 
 CAPSULE_VERSION = "last_success_task.v1"
 MAX_LAST_SUCCESS_TASK_TOKENS = 2000
+_SQL_FROM_RE = re.compile(r"(?is)\bfrom\s+([`\"\[]?)(?P<table>[\w.]+)\1")
 
 
 class CapsuleSizeExceededError(ValueError):
@@ -209,17 +211,18 @@ def build_last_success_task(
     selected_assets = [
         asset for asset in plan.get("selected_assets") or [] if isinstance(asset, dict)
     ]
+    query_type = _resolve_query_type(plan, dsl_payload, selected_assets, sql_result)
     task = LastSuccessTask(
         dataset_id=dataset_id,
         schema_version=str(schema_version or ""),
         manifest_version=str(manifest_version or ""),
         turn_index=int(turn_index or 0),
         question=question,
-        query_type=str(plan.get("query_type") or dsl_payload.get("query_type") or ""),
+        query_type=query_type,
         execution_strategy=plan.get("execution_strategy"),
         planner_source=plan.get("planner_source"),
         blueprint_hit=_extract_blueprint_hit(plan, selected_assets),
-        main_table=_selected_main_table(plan, dsl_payload, selected_assets),
+        main_table=_selected_main_table(plan, dsl_payload, selected_assets, sql),
         selected_field_refs=_extract_field_refs(selected_assets, dsl_payload),
         join_topology=_extract_join_topology(plan),
         filters_applied=_extract_list(dsl_payload, "filters", "where", "filter_clauses"),
@@ -342,6 +345,7 @@ def _selected_main_table(
     query_plan: dict[str, Any],
     dsl: dict[str, Any],
     selected_assets: list[dict[str, Any]],
+    sql: str | None = None,
 ) -> str | None:
     debug = query_plan.get("debug") if isinstance(query_plan.get("debug"), dict) else {}
     value = (
@@ -349,8 +353,47 @@ def _selected_main_table(
         or query_plan.get("main_table")
         or dsl.get("main_table")
         or _infer_main_table(selected_assets)
+        or _infer_main_table_from_sql(sql)
     )
     return str(value) if value else None
+
+
+def _resolve_query_type(
+    query_plan: dict[str, Any],
+    dsl: dict[str, Any],
+    selected_assets: list[dict[str, Any]],
+    sql_result: dict[str, Any] | None,
+) -> str:
+    """从可观测产物保守推断 query_type，避免空值导致首轮任务写入失败。"""
+
+    explicit = query_plan.get("query_type") or dsl.get("query_type")
+    if explicit:
+        return str(explicit)
+    if query_plan.get("execution_strategy") == "blueprint_execute":
+        return "blueprint_query"
+    if _extract_list(dsl, "metrics", "metric_clauses"):
+        return "metric_query"
+    if any(asset.get("asset_type") == "metric" for asset in selected_assets):
+        return "metric_query"
+    if _extract_list(dsl, "fields", "field_clauses") or _result_has_columns(sql_result):
+        return "detail_query"
+    return "detail_query"
+
+
+def _result_has_columns(sql_result: dict[str, Any] | None) -> bool:
+    if not isinstance(sql_result, dict):
+        return False
+    columns = sql_result.get("columns") or []
+    return isinstance(columns, list) and bool(columns)
+
+
+def _infer_main_table_from_sql(sql: str | None) -> str | None:
+    if not sql:
+        return None
+    match = _SQL_FROM_RE.search(sql)
+    if not match:
+        return None
+    return match.group("table")
 
 
 def _infer_main_table(selected_assets: list[dict[str, Any]]) -> str | None:
