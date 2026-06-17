@@ -345,8 +345,18 @@ def test_normalize_query_plan_accepts_asset_detail_audit_fields():
     assert plan.execution_strategy == "reject"
 
 
-def test_planner_system_prompt_includes_asset_detail_loop_rules():
+def test_planner_system_prompt_excludes_asset_detail_loop_rules_by_default():
     prompt = _planner_system_prompt()
+
+    assert "普通规划模式" in prompt
+    assert "QueryPlan 契约 JSON" in prompt
+    assert "asset_detail_requests" not in prompt
+    assert "最多 3 轮" not in prompt
+    assert "不允许硬生成 SQL" not in prompt
+
+
+def test_planner_system_prompt_includes_asset_detail_loop_rules_when_enabled():
+    prompt = _planner_system_prompt(detail_loop_enabled=True)
 
     assert "asset_detail_requests" in prompt
     assert "最多 3 轮" in prompt
@@ -409,6 +419,8 @@ def test_plan_query_with_llm_validates_and_returns_llm_plan(monkeypatch, db_sess
     assert plan.execution_strategy == "blueprint_as_reference"
     assert plan.decision_factors[0]["code"] == "detail_query_signal"
     assert plan.planner_warnings[0]["code"] == "blueprint_reference_only"
+    assert "asset_detail_requests" not in fake_llm.messages[0].content
+    assert "普通规划模式" in fake_llm.messages[0].content
 
 
 def test_plan_query_with_detail_context_returns_detail_request_payload(monkeypatch, db_session):
@@ -485,6 +497,8 @@ def test_plan_query_with_detail_context_prompts_with_asset_details(monkeypatch, 
 
     prompt_payload = json.loads(fake_llm.messages[1].content)
     assert isinstance(plan, QueryPlan)
+    assert "asset_detail_requests" in fake_llm.messages[0].content
+    assert "最多 3 轮" in fake_llm.messages[0].content
     assert prompt_payload["asset_detail_context"][0]["payload"]["table_name"] == "user_logs"
     assert prompt_payload["previous_detail_requests"] == [asset_details[0]["request"]]
     assert prompt_payload["detail_loop_warnings"] == [{"code": "wide_table"}]

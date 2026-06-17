@@ -741,24 +741,30 @@ def build_fallback_query_plan(
     )
 
 
-def _planner_system_prompt() -> str:
-    return "\n".join(
-        [
-            "你是数语 DatasetSubAgent 的查询规划器，只能输出严格 JSON。",
-            "不要输出 Markdown、解释文字或代码块之外的任何内容。",
-            "JSON 必须符合 QueryPlan 契约：query_type、execution_strategy、confidence、planner_source、explanation。",
-            "planner_source 必须为 llm。",
-            "可选资产字段包括 selected_assets、reference_assets、rejected_assets、required_inputs、clarification、debug。",
-            "可选审计字段包括 decision_factors、planner_warnings、governance_suggestions，均为对象数组。",
-            "execution_strategy 可选：blueprint_execute、blueprint_as_reference、query_graph、clarify、reject。",
-            "明细查询命中 field/table 时，应优先 query_graph 或 blueprint_as_reference，不要因为缺少指标而 clarify。",
-            "当候选资产目录不足以生成可靠 SQL 时，可以输出 asset_detail_requests，请求目录中的资产详情。",
-            "asset_detail_requests 只能请求本轮候选资产目录中的 metric、dimension、table、blueprint。",
-            "表详情优先请求 full_schema；如果返回 too_large，再使用 field_search 自然语言搜索字段。",
-            "资产详情最多 3 轮；3 轮后仍缺上下文时，不允许硬生成 SQL，必须输出 clarify 或 reject。",
-            "如果无法确定时间字段、join 字段、指标口径或业务过滤条件，应在 missing_context 和 why_not_generate_sql 中说明原因。",
-        ]
-    )
+def _planner_system_prompt(*, detail_loop_enabled: bool = False) -> str:
+    rules = [
+        "你是数语 DatasetSubAgent 的查询规划器，只能输出严格 JSON。",
+        "不要输出 Markdown、解释文字或代码块之外的任何内容。",
+        "JSON 必须符合 QueryPlan 契约：query_type、execution_strategy、confidence、planner_source、explanation。",
+        "planner_source 必须为 llm。",
+        "可选资产字段包括 selected_assets、reference_assets、rejected_assets、required_inputs、clarification、debug。",
+        "可选审计字段包括 decision_factors、planner_warnings、governance_suggestions，均为对象数组。",
+        "execution_strategy 可选：blueprint_execute、blueprint_as_reference、query_graph、clarify、reject。",
+        "明细查询命中 field/table 时，应优先 query_graph 或 blueprint_as_reference，不要因为缺少指标而 clarify。",
+    ]
+    if detail_loop_enabled:
+        rules.extend(
+            [
+                "当候选资产目录不足以生成可靠 SQL 时，可以输出 asset_detail_requests，请求目录中的资产详情。",
+                "asset_detail_requests 只能请求本轮候选资产目录中的 metric、dimension、table、blueprint。",
+                "表详情优先请求 full_schema；如果返回 too_large，再使用 field_search 自然语言搜索字段。",
+                "资产详情最多 3 轮；3 轮后仍缺上下文时，不允许硬生成 SQL，必须输出 clarify 或 reject。",
+                "如果无法确定时间字段、join 字段、指标口径或业务过滤条件，应在 missing_context 和 why_not_generate_sql 中说明原因。",
+            ]
+        )
+    else:
+        rules.append("普通规划模式下必须输出 QueryPlan 契约 JSON，不要输出详情请求或其他包装结构。")
+    return "\n".join(rules)
 
 
 def _compact_error_text(exc: Exception, max_length: int = 200) -> str:
@@ -1224,7 +1230,7 @@ def plan_query_with_detail_context(
     lead_agent_context: Any = None,
 ) -> QueryPlan | dict[str, Any]:
     messages = [
-        SystemMessage(content=_planner_system_prompt()),
+        SystemMessage(content=_planner_system_prompt(detail_loop_enabled=True)),
         HumanMessage(
             content=_planner_human_prompt(
                 question=question,
