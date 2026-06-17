@@ -62,6 +62,7 @@ def test_remote_runner_posts_request_and_streams_events():
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["headers"] = dict(request.headers)
+        captured["url"] = str(request.url)
         captured["payload"] = json.loads(request.content.decode("utf-8"))
         body = "\n".join(
             [
@@ -78,7 +79,7 @@ def test_remote_runner_posts_request_and_streams_events():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     runner = RemoteDatasetSubAgentRunner(
-        base_url="https://sub.example",
+        base_url="https://sub.example/api",
         api_key="secret",
         client=client,
     )
@@ -93,6 +94,7 @@ def test_remote_runner_posts_request_and_streams_events():
         }
     ]
     assert captured["headers"]["x-datalogue-internal-token"] == "secret"
+    assert captured["url"] == "https://sub.example/api/internal/subagent/run"
     assert captured["payload"]["request"]["dataset_id"] == 10
     assert captured["payload"]["request"]["trace_id"] == "trace-test"
     assert captured["payload"]["request"]["parent_observation_id"] == "obs-parent"
@@ -106,7 +108,7 @@ def test_remote_runner_maps_http_error_to_safe_event():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     runner = RemoteDatasetSubAgentRunner(
-        base_url="https://sub.example",
+        base_url="https://sub.example/api",
         client=client,
     )
 
@@ -118,3 +120,12 @@ def test_remote_runner_maps_http_error_to_safe_event():
     assert final_state["error"] == "remote_subagent_error"
     assert final_state["raw_error"] == "remote subagent request failed with status 500"
     assert "internal_table" not in json.dumps(events, ensure_ascii=False)
+
+
+def test_remote_runner_requires_api_base_url():
+    try:
+        RemoteDatasetSubAgentRunner(base_url="https://sub.example")
+    except ValueError as exc:
+        assert "must include /api" in str(exc)
+    else:
+        raise AssertionError("expected base_url validation error")

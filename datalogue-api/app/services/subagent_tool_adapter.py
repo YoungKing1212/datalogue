@@ -53,6 +53,7 @@ class LLMVisiblePart(BaseModel):
     display_summary: str = ""
     clarification_question: str | None = None
     error_summary: str | None = None
+    result_ref: str | None = None
     report_ref: str | None = None
 
 
@@ -134,7 +135,12 @@ class SubAgentToolAdapter:
 
         part = result.llm_visible
         if part.status == LLMVisibleStatus.OK:
-            tail = f" [report:{part.report_ref}]" if part.report_ref else ""
+            refs = []
+            if part.result_ref:
+                refs.append(f"result:{part.result_ref}")
+            if part.report_ref:
+                refs.append(f"report:{part.report_ref}")
+            tail = f" [{' '.join(refs)}]" if refs else ""
             return f"[dataset={part.dataset_id} ok] {part.display_summary}{tail}"
         if part.status == LLMVisibleStatus.EMPTY:
             return f"[dataset={part.dataset_id} empty] {part.display_summary}"
@@ -171,6 +177,8 @@ class SubAgentToolAdapter:
                 status=LLMVisibleStatus.CLARIFICATION_NEEDED,
                 dataset_id=invocation.dataset_id,
                 clarification_question=str(question),
+                result_ref=self._optional_str(final_state.get("result_ref")),
+                report_ref=self._optional_str(final_state.get("report_ref")),
             )
 
         sql_result = final_state.get("sql_result") if isinstance(final_state.get("sql_result"), dict) else None
@@ -179,12 +187,15 @@ class SubAgentToolAdapter:
                 status=LLMVisibleStatus.EMPTY,
                 dataset_id=invocation.dataset_id,
                 display_summary=self._display_summary(final_state, default="查询无匹配结果"),
+                result_ref=self._optional_str(final_state.get("result_ref")),
+                report_ref=self._optional_str(final_state.get("report_ref")),
             )
 
         return LLMVisiblePart(
             status=LLMVisibleStatus.OK,
             dataset_id=invocation.dataset_id,
             display_summary=self._display_summary(final_state, default="查询完成"),
+            result_ref=self._optional_str(final_state.get("result_ref")),
             report_ref=self._optional_str(final_state.get("report_ref")),
         )
 

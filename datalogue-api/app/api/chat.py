@@ -56,6 +56,12 @@ from app.services.subagent_tool_adapter import (
     SubAgentInvocation,
     SubAgentToolAdapter,
 )
+from app.services.subagent_fanout import (
+    SubAgentFanOutAnswerSynthesizer,
+    SubAgentFanOutInvocation,
+    SubAgentFanOutOrchestrator,
+    parse_dataset_fanout_invocations,
+)
 from app.services.conversation_store import (
     ConversationStore,
     pending_clarification_from_final_payload,
@@ -292,6 +298,65 @@ def _extract_node_output(event: dict, lg_node: str) -> dict:
     前端 step 事件需要的是节点真实输出，而不是外层节点名包装。
     """
     return _find_state_output(event.get("data", {}).get("output", {}) or {}, lg_node)
+
+
+async def _collect_subagent_final_state(
+    *,
+    db: Session,
+    dataset_id: int,
+    request: DatasetSubAgentRequest,
+    trace_context: Any,
+    initial_state: dict,
+    route_decision: dict,
+    app_graph: Any,
+) -> dict:
+    """fan-out 子调用专用：运行 SubAgent 并只收集完成态，不暴露子流式事件。"""
+
+    final_state = dict(initial_state)
+    graph_kwargs = {
+        "dataset_name": route_decision.get("dataset_name") or "",
+        "version": "v2",
+    }
+    if getattr(get_settings(), "SUBAGENT_RUNNER_MODE", "in_process") == "remote":
+        subagent_events = RemoteDatasetSubAgentRunner().run(
+            request,
+            trace_context,
+            initial_state,
+            dataset_name=route_decision.get("dataset_name") or "",
+            **graph_kwargs,
+        )
+    else:
+        subagent_events = DatasetSubAgent(db=db, dataset_id=dataset_id).run(
+            request,
+            trace_context,
+            graph=app_graph,
+            initial_state=initial_state,
+            graph_kwargs=graph_kwargs,
+        )
+
+    async for sub_event in subagent_events:
+        sub_event_type = _subagent_event_type(sub_event)
+        sub_event_payload = _subagent_event_payload(sub_event)
+        if sub_event_type == "result":
+            final_state.update(sub_event_payload.get("final_state") or {})
+            continue
+        if sub_event_type == "candidate_assets":
+            sse_payload = _subagent_event_to_sse_payload(sub_event)
+            final_state["candidate_assets"] = sse_payload.get("candidate_assets")
+            continue
+        if sub_event_type == "query_plan":
+            sse_payload = _subagent_event_to_sse_payload(sub_event)
+            final_state["query_plan"] = sse_payload.get("query_plan") or {}
+            continue
+        if sub_event_type == "graph_event":
+            event = sub_event_payload.get("event") or {}
+            output = _extract_node_output(
+                event,
+                str((event.get("metadata") or {}).get("langgraph_node") or ""),
+            )
+            if output:
+                final_state.update(output)
+    return final_state
 
 
 def _term_candidate_display(candidate: dict, term: models.BusinessTerm | None = None) -> dict:
@@ -1620,6 +1685,201 @@ async def _stream_chat_singleturn(
         "query_task_capsule": query_task_capsule,
     }
 
+    fanout_invocations = []
+    if getattr(get_settings(), "LEAD_AGENT_ENABLE_DATASET_FANOUT", False):
+        fanout_invocations = parse_dataset_fanout_invocations(
+            lead_agent_context.get("planned_tool_calls") or [],
+            fallback_question=payload.question,
+            resolved_question=lead_agent_context.get("resolved_question") or resolved_question,
+            turn_index=getattr(conversation_state, "turn_index", None),
+            prior_capsule_status=prior_capsule_status,
+        )
+    if fanout_invocations:
+        fanout_step_started_at = time.monotonic()
+        fanout_step = {
+            "type": "step",
+            "node": "subagent_fanout",
+            "display_name": "subagent.fanout",
+            "status": "running",
+            "dataset_ids": [item.dataset_id for item in fanout_invocations],
+        }
+        yield _sse_data(fanout_step)
+        app_graph = build_workflow(db)
+
+        async def _invoke_fanout(invocation: SubAgentFanOutInvocation) -> dict[str, Any]:
+            dataset_route_decision = dict(route_decision)
+            dataset_route_decision["dataset_id"] = invocation.dataset_id
+            dataset_initial_state = dict(initial_state)
+            dataset_initial_state.update(
+                {
+                    "question": invocation.resolved_question or invocation.question,
+                    "resolved_question": invocation.resolved_question or invocation.question,
+                    "dataset_id": invocation.dataset_id,
+                    "route_decision": dataset_route_decision,
+                    "prior_capsule": None,
+                    "prior_capsule_status": invocation.prior_capsule_status or {},
+                    "out_capsule": None,
+                    "sql": None,
+                    "sql_result": None,
+                    "answer": None,
+                    "error": None,
+                }
+            )
+            dataset_request = DatasetSubAgentRequest(
+                question=invocation.resolved_question or invocation.question,
+                dataset_id=invocation.dataset_id,
+                manifest_version=dataset_route_decision.get("manifest_version"),
+                bound_schema_version=dataset_route_decision.get("bound_schema_version"),
+                thread_id=conv.thread_id or f"conversation-{conv_id}",
+                time_context=lead_agent_context.get("time_context") or {},
+                thread_context=lead_agent_context.get("thread_context") or {},
+                route_decision=dataset_route_decision,
+                schema_status=lead_agent_context.get("schema_status") or {},
+                lead_agent_context=lead_agent_context,
+                prior_capsule=None,
+                prior_capsule_status=invocation.prior_capsule_status or {},
+                query_task_capsule=query_task_capsule,
+                turn_event=turn_event,
+                trace_id=trace_context.trace_id,
+                parent_observation_id=None,
+            )
+            return await _collect_subagent_final_state(
+                db=db,
+                dataset_id=invocation.dataset_id,
+                request=dataset_request,
+                trace_context=trace_context,
+                initial_state=dataset_initial_state,
+                route_decision=dataset_route_decision,
+                app_graph=app_graph,
+            )
+
+        fanout_result = await SubAgentFanOutOrchestrator(
+            invoke_final_state=_invoke_fanout,
+            adapter=SubAgentToolAdapter(artifact_store=ArtifactStore(db)),
+        ).run(fanout_invocations)
+        fanout_answer = SubAgentFanOutAnswerSynthesizer().synthesize(fanout_result)
+        subagent_tool_results = jsonable_encoder(
+            [item.llm_visible.model_dump(mode="json") for item in fanout_result.results]
+        )
+        if subagent_control_plane_sink is not None:
+            subagent_control_plane_sink.clear()
+            subagent_control_plane_sink.extend(jsonable_encoder(fanout_result.control_planes))
+
+        elapsed_ms = int((time.monotonic() - fanout_step_started_at) * 1000)
+        fanout_done_step = {
+            "type": "step",
+            "node": "subagent_fanout",
+            "display_name": "subagent.fanout",
+            "status": "done",
+            "elapsed_ms": elapsed_ms,
+            "dataset_ids": [item.dataset_id for item in fanout_invocations],
+            "statuses": [item.llm_visible.status.value for item in fanout_result.results],
+        }
+        step_traces.append(fanout_done_step)
+        yield _sse_data(fanout_done_step)
+
+        trace_metadata = {
+            "status": "success",
+            "execution_path": "dataset_fanout",
+            "original_question": payload.question,
+            "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+            "lead_agent_context": lead_agent_context,
+            "route_decision": route_decision,
+            "subagent_tool_results": subagent_tool_results,
+            "fanout_trace": jsonable_encoder(fanout_result.trace_metadata),
+            "prompt_versions": trace_context.prompt_versions,
+        }
+        tracer.update_trace_output(trace_context, output=fanout_answer, metadata=trace_metadata)
+        response_metadata = jsonable_encoder(
+            {
+                "lead_agent_context": lead_agent_context,
+                "original_question": payload.question,
+                "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+                "route_decision": route_decision,
+                "schema_status": lead_agent_context.get("schema_status"),
+                "subagent_tool_results": subagent_tool_results,
+                "fanout_trace": fanout_result.trace_metadata,
+                "langfuse": {
+                    "trace_id": trace_context.trace_id,
+                    "session_id": trace_context.session_id,
+                    "release": trace_context.release,
+                    "environment": trace_context.environment,
+                    "prompt_label": trace_context.prompt_label,
+                    "base_url": trace_context.base_url,
+                    "project_id": trace_context.project_id,
+                    "trace_url": trace_context.trace_url,
+                    "enabled": trace_context.enabled,
+                    "active": trace_context.active,
+                    "prompt_versions": trace_context.prompt_versions,
+                },
+                "observability": trace_context.observability_payload(),
+            }
+        )
+        assistant_message = models.Message(
+            conversation_id=conv_id,
+            role="assistant",
+            content=fanout_answer,
+            sql_list=[],
+            step_trace=jsonable_encoder(step_traces),
+            response_metadata=response_metadata,
+        )
+        db.add(assistant_message)
+        db.commit()
+        db.refresh(assistant_message)
+        ArtifactStore(db).attach_message_id(
+            [
+                ref
+                for item in subagent_tool_results
+                for ref in (item.get("result_ref"), item.get("report_ref"))
+            ],
+            message_id=int(assistant_message.id),
+        )
+        if trace_context.trace_id:
+            db.add(
+                models.ObservabilityTraceIndex(
+                    langfuse_trace_id=trace_context.trace_id,
+                    langfuse_session_id=trace_context.session_id,
+                    conversation_id=conv_id,
+                    message_id=assistant_message.id,
+                    dataset_id=effective_dataset_id,
+                    entry_route="dataset_fanout",
+                    status="success",
+                    total_tokens=0,
+                    total_cost=0,
+                    metadata_json=jsonable_encoder(trace_metadata),
+                )
+            )
+            db.commit()
+        final_payload = {
+            "type": "final",
+            "sql": None,
+            "sql_list": [],
+            "answer": fanout_answer,
+            "entry_intent": "dataset_fanout",
+            "entry_route": "dataset_fanout",
+            "entry_reason": "lead_agent_multi_dataset_tool_calls",
+            "lead_agent_context": lead_agent_context,
+            "original_question": payload.question,
+            "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+            "time_context": lead_agent_context.get("time_context"),
+            "route_decision": route_decision,
+            "schema_status": lead_agent_context.get("schema_status"),
+            "sql_result": None,
+            "subagent_tool_results": subagent_tool_results,
+            "response_metadata": response_metadata,
+            "conversation_id": conv_id,
+            "message_id": assistant_message.id,
+            "title": conv.title,
+            "langfuse_trace_id": trace_context.trace_id,
+            "langfuse_session_id": trace_context.session_id,
+            "observability": trace_context.observability_payload(),
+        }
+        yield _sse_data(final_payload)
+        if not defer_trace_close:
+            tracer.close_trace(trace_context)
+        obs_context_manager.__exit__(None, None, None)
+        return
+
     # 构建并运行工作流
     app_graph = build_workflow(db)
     subagent_request = DatasetSubAgentRequest(
@@ -2123,6 +2383,10 @@ async def _stream_chat_singleturn(
     db.add(assistant_message)
     db.commit()
     db.refresh(assistant_message)
+    ArtifactStore(db).attach_message_id(
+        [final_state.get("result_ref"), final_state.get("report_ref")],
+        message_id=int(assistant_message.id),
+    )
 
     total_tokens = 0
     if isinstance(token_usage, dict):
@@ -2262,15 +2526,35 @@ def _persist_completed_turn(
         or final_payload.get("dataset_id")
         or effective_payload.dataset_id
     )
-    control_plane = subagent_control_plane if isinstance(subagent_control_plane, dict) else {}
-    control_plane_capsule = (
-        control_plane.get("capsule") if isinstance(control_plane.get("capsule"), dict) else None
-    )
-    updated_capsules = store.with_updated_capsule(
-        final_state,
-        dataset_id=active_dataset_id,
-        capsule=control_plane_capsule or final_payload.get("out_capsule"),
-    )
+    if isinstance(subagent_control_plane, list):
+        control_planes = [item for item in subagent_control_plane if isinstance(item, dict)]
+    elif isinstance(subagent_control_plane, dict):
+        control_planes = [subagent_control_plane]
+    else:
+        control_planes = []
+    control_plane = control_planes[0] if control_planes else {}
+    updated_capsules = None
+    for item in control_planes:
+        capsule = item.get("capsule") if isinstance(item.get("capsule"), dict) else None
+        capsule_dataset_id = (
+            capsule.get("dataset_id")
+            if isinstance(capsule, dict)
+            else item.get("dataset_id")
+        )
+        candidate_capsules = store.with_updated_capsule(
+            final_state,
+            dataset_id=capsule_dataset_id,
+            capsule=capsule,
+        )
+        if candidate_capsules is not None:
+            final_state.subagent_capsules = candidate_capsules
+            updated_capsules = candidate_capsules
+    if updated_capsules is None:
+        updated_capsules = store.with_updated_capsule(
+            final_state,
+            dataset_id=active_dataset_id,
+            capsule=final_payload.get("out_capsule"),
+        )
     pending_for_store = pending_clarification_from_final_payload(
         final_payload,
         original_question=payload_question,
@@ -2301,7 +2585,14 @@ def _persist_completed_turn(
     last_success_task = None
     last_success_task_write_status: dict[str, Any] = {"status": "not_built"}
     route_decision = final_payload.get("route_decision") or {}
-    control_plane_task = control_plane.get("last_success_task")
+    control_plane_task = next(
+        (
+            item.get("last_success_task")
+            for item in control_planes
+            if isinstance(item.get("last_success_task"), dict)
+        ),
+        None,
+    )
     if isinstance(control_plane_task, dict):
         last_success_task = control_plane_task
         last_success_task_write_status = {"status": "ready", "source": "subagent_control_plane"}

@@ -198,6 +198,11 @@ export function getConversation(id) {
   return get(`/api/conversation/${id}`);
 }
 
+/** 按需读取查询产物 */
+export function getArtifact(artifactRef) {
+  return get(`/api/artifacts/${encodeURIComponent(artifactRef)}`);
+}
+
 /** 查询审计 trace 列表 */
 export function listObservabilityTraces({ status = 'all', datasetId = null, limit = 50 } = {}) {
   const params = new URLSearchParams();

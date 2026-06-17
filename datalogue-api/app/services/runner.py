@@ -133,6 +133,10 @@ class RemoteDatasetSubAgentRunner:
         if not resolved_base_url:
             raise ValueError("SUBAGENT_REMOTE_BASE_URL is required for remote subagent runner")
         self.base_url = resolved_base_url.rstrip("/")
+        if not self.base_url.endswith("/api"):
+            raise ValueError(
+                "SUBAGENT_REMOTE_BASE_URL must include /api, e.g. http://localhost:8001/api"
+            )
         self.api_key = api_key if api_key is not None else settings.SUBAGENT_REMOTE_API_KEY
         self.timeout_seconds = float(
             timeout_seconds

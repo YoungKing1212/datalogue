@@ -24,10 +24,17 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.graph.workflow import build_workflow
+from app.services.artifact_store import ArtifactStore
 from app.services.dataset_subagent import DatasetSubAgent
 from app.services.runner import DatasetSubAgentRequest
 
 router = APIRouter()
+
+
+def _verify_internal_token(token: str | None) -> None:
+    expected_token = get_settings().SUBAGENT_REMOTE_API_KEY
+    if expected_token and token != expected_token:
+        raise HTTPException(status_code=401, detail="invalid internal token")
 
 
 @router.post("/subagent/run")
@@ -36,10 +43,7 @@ async def run_internal_subagent(
     db: Session = Depends(get_db),
     x_datalogue_internal_token: str | None = Header(default=None),
 ):
-    settings = get_settings()
-    expected_token = settings.SUBAGENT_REMOTE_API_KEY
-    if expected_token and x_datalogue_internal_token != expected_token:
-        raise HTTPException(status_code=401, detail="invalid internal token")
+    _verify_internal_token(x_datalogue_internal_token)
 
     request_payload = payload.get("request") if isinstance(payload, dict) else None
     if not isinstance(request_payload, dict):
@@ -72,3 +76,15 @@ async def run_internal_subagent(
             ) + "\n"
 
     return StreamingResponse(_events(), media_type="application/x-ndjson")
+
+
+@router.post("/artifacts/purge-expired")
+def purge_expired_artifacts(
+    db: Session = Depends(get_db),
+    x_datalogue_internal_token: str | None = Header(default=None),
+):
+    """内部维护接口：按 TTL 清理已过期 artifact。"""
+
+    _verify_internal_token(x_datalogue_internal_token)
+    deleted = ArtifactStore(db).purge_expired()
+    return {"deleted": deleted}

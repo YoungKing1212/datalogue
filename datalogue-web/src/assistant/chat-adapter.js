@@ -435,6 +435,15 @@ export function makeChatAdapter({ datasetIdRef }) {
               query_plan_debug: finalPayload.query_plan_debug || null,
               queryProfile: finalPayload.query_profile || finalPayload.explainability?.query_profile || null,
               explainability: finalPayload.explainability || null,
+              resultRef: finalPayload.result_ref
+                || finalPayload.response_metadata?.subagent_tool_result?.result_ref
+                || null,
+              reportRef: finalPayload.report_ref
+                || finalPayload.response_metadata?.subagent_tool_result?.report_ref
+                || null,
+              subagentToolResults: finalPayload.subagent_tool_results
+                || finalPayload.response_metadata?.subagent_tool_results
+                || null,
               routeDecision: finalPayload.route_decision || null,
               dsl: finalPayload.dsl || null,
               routePayload: finalPayload.route_payload || null,

@@ -224,6 +224,78 @@ def test_persist_completed_turn_prefers_subagent_control_plane(db_session):
     assert thread_state["last_success_task_write_status"]["source"] == "subagent_control_plane"
 
 
+def test_persist_completed_turn_accepts_fanout_control_planes(db_session):
+    """fan-out 多个 control plane 应分别写入数据集胶囊，并使用可用成功任务。"""
+
+    from app.api.chat import _persist_completed_turn
+
+    store = ConversationStore(db_session)
+    state = store.load_or_create(session_id="session-fanout-control", user_id="u1")
+    final_payload = {
+        "type": "final",
+        "answer": "fanout 完成",
+        "conversation_id": 1,
+        "route_decision": {"dataset_id": 10},
+        "time_context": {},
+        "error": None,
+    }
+    control_planes = [
+        {
+            "capsule": {
+                "capsule_version": "subagent.v1",
+                "dataset_id": 10,
+                "query_context": {"main_table": "orders"},
+            },
+            "last_success_task": {
+                "capsule_version": "last_success_task.v1",
+                "dataset_id": 10,
+                "schema_version": "schema-a",
+                "manifest_version": "manifest-a",
+                "turn_index": 0,
+                "question": "查销售",
+                "query_type": "detail_query",
+                "execution_strategy": "query_graph",
+                "planner_source": "deterministic",
+                "main_table": "orders",
+                "result_digest": {"row_count": 1, "columns": ["id"]},
+            },
+        },
+        {
+            "capsule": {
+                "capsule_version": "subagent.v1",
+                "dataset_id": 20,
+                "query_context": {"main_table": "inventory"},
+            },
+            "last_success_task": None,
+        },
+    ]
+
+    completed = _persist_completed_turn(
+        store=store,
+        state=state,
+        user_id="u1",
+        business_session_id="session-fanout-control",
+        effective_payload=schemas.ChatRequest(
+            question="同时查销售和库存",
+            dataset_id=10,
+            session_id="session-fanout-control",
+        ),
+        final_payload=final_payload,
+        pending_resolution={"status": "none"},
+        payload_question="同时查销售和库存",
+        trace_context_sink=[],
+        subagent_control_plane=control_planes,
+    )
+
+    saved = store.load("session-fanout-control")
+    assert completed is True
+    assert saved.subagent_capsules["10"]["query_context"]["main_table"] == "orders"
+    assert saved.subagent_capsules["20"]["query_context"]["main_table"] == "inventory"
+    thread_state = saved.subagent_capsules["_thread"]
+    assert thread_state["last_success_task"]["main_table"] == "orders"
+    assert thread_state["last_success_task_write_status"]["source"] == "subagent_control_plane"
+
+
 def test_stream_chat_consumes_store_active_dataset_and_prior_capsule(db_session, monkeypatch):
     """真实 _stream_chat 包装层应消费 ConversationStore 的 active_dataset_id 与 prior_capsule。"""
 

@@ -13,7 +13,7 @@
 
 from fastapi import APIRouter
 
-from app.api import datasource, dataset, conversation, chat, llm, messages, observability, internal_subagent
+from app.api import artifacts, datasource, dataset, conversation, chat, llm, messages, observability, internal_subagent
 
 router = APIRouter()
 
@@ -25,3 +25,4 @@ router.include_router(llm.router, prefix="/llm", tags=["LLM 配置"])
 router.include_router(messages.router, prefix="/messages", tags=["消息反馈"])
 router.include_router(observability.router, prefix="/observability", tags=["可观测"])
 router.include_router(internal_subagent.router, prefix="/internal", tags=["内部 SubAgent"])
+router.include_router(artifacts.router, prefix="/artifacts", tags=["查询产物"])

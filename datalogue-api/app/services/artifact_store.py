@@ -132,6 +132,24 @@ class ArtifactStore:
             artifact.expires_at = artifact.expires_at.replace(tzinfo=UTC)
         return artifact
 
+    def attach_message_id(self, artifact_refs: list[str | None], *, message_id: int) -> int:
+        """把已落库消息 id 回填到 artifact，便于按消息追踪产物。"""
+
+        refs = [ref for ref in artifact_refs if isinstance(ref, str) and ref.startswith("artifact:")]
+        if not refs:
+            return 0
+        rows = (
+            self.db.query(QueryArtifact)
+            .filter(QueryArtifact.artifact_id.in_(refs))
+            .all()
+        )
+        for row in rows:
+            row.message_id = message_id
+            self.db.add(row)
+        if rows:
+            self.db.commit()
+        return len(rows)
+
     def purge_expired(
         self,
         *,
