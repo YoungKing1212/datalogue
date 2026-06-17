@@ -79,7 +79,7 @@ def build_allowed_asset_scope(lightweight_catalog: dict[str, Any] | None) -> set
     if not isinstance(lightweight_catalog, dict):
         return set()
 
-    scope = set()
+    scope: set[tuple[str, str]] = set()
     assets = lightweight_catalog.get("assets")
     if not isinstance(assets, list):
         return scope
