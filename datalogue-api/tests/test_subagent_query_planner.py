@@ -13,6 +13,7 @@ from app.services.subagent_planning.planner import (
     _planner_human_prompt,
     build_fallback_query_plan,
     plan_query,
+    plan_query_with_detail_context,
 )
 
 
@@ -33,6 +34,17 @@ class FakeLLM:
         if self.exc:
             raise self.exc
         return FakeLLMResponse(self.content)
+
+
+class SequentialFakeLLM:
+    def __init__(self, contents):
+        self.contents = list(contents)
+        self.messages = []
+        self.model_name = "fake-planner-model"
+
+    def invoke(self, messages):
+        self.messages.append(messages)
+        return FakeLLMResponse(self.contents.pop(0))
 
 
 class FakeOpenAIAPIConnectionError(Exception):
@@ -387,6 +399,87 @@ def test_plan_query_with_llm_validates_and_returns_llm_plan(monkeypatch, db_sess
     assert plan.execution_strategy == "blueprint_as_reference"
     assert plan.decision_factors[0]["code"] == "detail_query_signal"
     assert plan.planner_warnings[0]["code"] == "blueprint_reference_only"
+
+
+def test_plan_query_with_detail_context_returns_detail_request_payload(monkeypatch, db_session):
+    detail_payload = {
+        "asset_detail_requests": [
+            {
+                "asset_type": "table",
+                "asset_id": "user_logs",
+                "detail_level": "full_schema",
+                "purpose": "sql_generation",
+                "reason": "需要字段",
+            }
+        ]
+    }
+    fake_llm = FakeLLM(json.dumps(detail_payload, ensure_ascii=False))
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: fake_llm,
+    )
+
+    response = plan_query_with_detail_context(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        lightweight_catalog={"assets": [_table("user_logs")]},
+        asset_details=[],
+        previous_detail_requests=[],
+        warnings=[],
+    )
+
+    assert response == detail_payload
+    assert not isinstance(response, QueryPlan)
+
+
+def test_plan_query_with_detail_context_prompts_with_asset_details(monkeypatch, db_session):
+    final_payload = {
+        "query_type": "detail_query",
+        "execution_strategy": "query_graph",
+        "confidence": 0.82,
+        "selected_assets": [_table("user_logs")],
+        "planner_source": "llm",
+        "explanation": {"summary": "字段详情已足够生成 SQL。"},
+    }
+    fake_llm = FakeLLM(json.dumps(final_payload, ensure_ascii=False))
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: fake_llm,
+    )
+    asset_details = [
+        {
+            "request": {
+                "asset_type": "table",
+                "asset_id": "user_logs",
+                "detail_level": "full_schema",
+                "purpose": "sql_generation",
+            },
+            "coverage": "full",
+            "payload": {
+                "table_name": "user_logs",
+                "fields": [{"name": "created_at", "data_type": "datetime"}],
+            },
+        }
+    ]
+
+    plan = plan_query_with_detail_context(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        lightweight_catalog={"assets": [_table("user_logs")]},
+        asset_details=asset_details,
+        previous_detail_requests=[asset_details[0]["request"]],
+        warnings=[{"code": "wide_table"}],
+    )
+
+    prompt_payload = json.loads(fake_llm.messages[1].content)
+    assert isinstance(plan, QueryPlan)
+    assert prompt_payload["asset_detail_context"][0]["payload"]["table_name"] == "user_logs"
+    assert prompt_payload["previous_detail_requests"] == [asset_details[0]["request"]]
+    assert prompt_payload["detail_loop_warnings"] == [{"code": "wide_table"}]
+    assert any("asset_detail_requests" in rule for rule in prompt_payload["rules"])
+    assert "asset_details" not in prompt_payload["multiturn_context"]
 
 
 def test_plan_query_falls_back_when_llm_raises(monkeypatch, db_session):

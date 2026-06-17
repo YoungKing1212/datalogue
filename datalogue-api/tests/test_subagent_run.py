@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -54,6 +55,22 @@ class FakeTracer:
                 "error": error,
             }
         )
+
+
+class FakeLLMResponse:
+    def __init__(self, content):
+        self.content = content
+
+
+class SequentialFakeLLM:
+    def __init__(self, contents):
+        self.contents = list(contents)
+        self.messages = []
+        self.model_name = "fake-planner-model"
+
+    def invoke(self, messages):
+        self.messages.append(messages)
+        return FakeLLMResponse(self.contents.pop(0))
 
 
 def _request() -> DatasetSubAgentRequest:
@@ -143,6 +160,60 @@ def _blueprint_recall_result() -> dict[str, Any]:
     }
 
 
+def _table_schema_recall_result() -> dict[str, Any]:
+    table_asset = {
+        "asset_type": "table",
+        "asset_id": "plan_task_daily_record",
+        "name": "plan_task_daily_record",
+        "display_name": "计划任务日报记录表",
+        "source": "schema",
+        "confidence": 0.91,
+        "metadata": {"table_name": "plan_task_daily_record", "comment": "个人日报记录"},
+    }
+    fields = [
+        {
+            "table_name": "plan_task_daily_record",
+            "column_name": "id",
+            "data_type": "bigint",
+            "column_comment": "主键",
+        },
+        {
+            "table_name": "plan_task_daily_record",
+            "column_name": "rzrq",
+            "data_type": "date",
+            "column_comment": "日志日期",
+        },
+        {
+            "table_name": "plan_task_daily_record",
+            "column_name": "account",
+            "data_type": "varchar",
+            "column_comment": "账号",
+        },
+    ]
+    return {
+        "dataset_id": 10,
+        "question": "查询个人日报",
+        "assets": [table_asset],
+        "summary": {
+            "blueprint_count": 0,
+            "metric_count": 0,
+            "dimension_count": 0,
+            "term_count": 0,
+            "field_count": 0,
+            "table_count": 1,
+        },
+        "recall_debug": {
+            "manifest_version": "manifest-v1",
+            "bound_schema_version": "schema-v1",
+        },
+        "context": {
+            "schema_context": "schema text",
+            "schema_structured": {"fields": fields},
+            "datasource_context": {"db_type": "sqlite"},
+        },
+    }
+
+
 def test_subagent_run_emits_candidate_assets_and_query_plan(monkeypatch, db_session):
     monkeypatch.setattr(
         "app.services.dataset_subagent.recall_candidate_assets",
@@ -179,6 +250,10 @@ async def test_dataset_subagent_uses_detail_loop_when_enabled(monkeypatch, db_se
             SUBAGENT_PLANNER_DETAIL_LOOP_ENABLED=True,
             SUBAGENT_PLANNER_DETAIL_MAX_ROUNDS=3,
             SUBAGENT_PLANNER_DETAIL_MAX_REQUESTS_PER_ROUND=5,
+            SUBAGENT_PLANNER_FIELD_SEARCH_DEFAULT_TOP_K=30,
+            SUBAGENT_PLANNER_FIELD_SEARCH_MAX_TOP_K=50,
+            SUBAGENT_PLANNER_TABLE_FULL_FIELD_LIMIT=120,
+            SUBAGENT_PLANNER_TABLE_COMPACT_FIELD_LIMIT=300,
         ),
     )
     monkeypatch.setattr(
@@ -187,11 +262,12 @@ async def test_dataset_subagent_uses_detail_loop_when_enabled(monkeypatch, db_se
     )
 
     class FakeLoop:
-        def __init__(self, *, max_rounds, max_requests_per_round, planner_call):
+        def __init__(self, *, max_rounds, max_requests_per_round, planner_call, detail_service):
             captured["loop_init"] = {
                 "max_rounds": max_rounds,
                 "max_requests_per_round": max_requests_per_round,
                 "planner_call": planner_call,
+                "detail_service": detail_service,
             }
 
         def run(self, **kwargs):
@@ -226,6 +302,7 @@ async def test_dataset_subagent_uses_detail_loop_when_enabled(monkeypatch, db_se
     assert captured["loop_init"]["max_rounds"] == 3
     assert captured["loop_init"]["max_requests_per_round"] == 5
     assert captured["loop_init"]["planner_call"].__name__ == "plan_query_with_detail_context"
+    assert captured["loop_init"]["detail_service"].field_search_default_top_k == 30
     assert captured["loop_run"]["candidate_assets"]["context"]["schema_context"] == "schema text"
 
     asset_detail_payload = events[1].payload
@@ -239,6 +316,98 @@ async def test_dataset_subagent_uses_detail_loop_when_enabled(monkeypatch, db_se
     final_state = events[-1].payload["final_state"]
     assert final_state["candidate_assets"]["summary"]["blueprint_count"] == 1
     assert final_state["sql_generation_context"] == {"coverage": {}}
+
+
+@pytest.mark.asyncio
+async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
+    monkeypatch, db_session
+):
+    captured: dict[str, Any] = {}
+    detail_request_payload = {
+        "asset_detail_requests": [
+            {
+                "asset_type": "table",
+                "asset_id": "plan_task_daily_record",
+                "detail_level": "full_schema",
+                "purpose": "sql_generation",
+                "reason": "需要字段",
+            }
+        ]
+    }
+    final_plan_payload = {
+        "query_type": "detail_query",
+        "execution_strategy": "query_graph",
+        "confidence": 0.86,
+        "selected_assets": [
+            {
+                "asset_type": "table",
+                "asset_id": "plan_task_daily_record",
+                "name": "plan_task_daily_record",
+                "display_name": "计划任务日报记录表",
+                "source": "schema",
+                "confidence": 0.91,
+                "metadata": {"table_name": "plan_task_daily_record"},
+            }
+        ],
+        "planner_source": "llm",
+        "explanation": {"summary": "已获取日报表字段，可进入 QueryGraph。"},
+    }
+    fake_llm = SequentialFakeLLM(
+        [
+            json.dumps(detail_request_payload, ensure_ascii=False),
+            json.dumps(final_plan_payload, ensure_ascii=False),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.get_settings",
+        lambda: SimpleNamespace(
+            SUBAGENT_PLANNER_DETAIL_LOOP_ENABLED=True,
+            SUBAGENT_PLANNER_DETAIL_MAX_ROUNDS=3,
+            SUBAGENT_PLANNER_DETAIL_MAX_REQUESTS_PER_ROUND=5,
+            SUBAGENT_PLANNER_FIELD_SEARCH_DEFAULT_TOP_K=30,
+            SUBAGENT_PLANNER_FIELD_SEARCH_MAX_TOP_K=50,
+            SUBAGENT_PLANNER_TABLE_FULL_FIELD_LIMIT=120,
+            SUBAGENT_PLANNER_TABLE_COMPACT_FIELD_LIMIT=300,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        lambda *args, **kwargs: _table_schema_recall_result(),
+    )
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: fake_llm,
+    )
+
+    class FakeRunner:
+        def __init__(self, graph, db):
+            pass
+
+        async def run(self, request, trace_context, initial_state, **kwargs):
+            captured["initial_state"] = initial_state
+            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
+        FakeRunner,
+    )
+
+    events = await _collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=object())
+
+    asset_detail_event = next(event for event in events if event.event_type == "asset_detail")
+    final_state = events[-1].payload["final_state"]
+    table_schemas = final_state["sql_generation_context"]["table_schemas"]
+
+    assert asset_detail_event.payload["requested_count"] > 0
+    assert table_schemas[0]["table_name"] == "plan_task_daily_record"
+    assert [field["name"] for field in table_schemas[0]["fields"]] == ["id", "rzrq", "account"]
+    assert captured["initial_state"]["sql_generation_context"]["table_schemas"] == table_schemas
+    assert len(fake_llm.messages) == 2
+    second_prompt = json.loads(fake_llm.messages[1][1].content)
+    assert second_prompt["asset_detail_context"][0]["payload"]["table_name"] == (
+        "plan_task_daily_record"
+    )
 
 
 @pytest.mark.asyncio

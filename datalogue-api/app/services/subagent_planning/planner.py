@@ -896,12 +896,36 @@ def _planner_human_prompt(
     candidate_assets: CandidateAssetInput,
     multiturn_context: Any = None,
     lead_agent_context: Any = None,
+    asset_details: list[dict[str, Any]] | None = None,
+    previous_detail_requests: list[dict[str, Any]] | None = None,
+    detail_warnings: list[dict[str, Any]] | None = None,
 ) -> str:
     assets = [_lightweight_asset(asset) for asset in _assets(candidate_assets)]
     asset_counts: dict[str, int] = {}
     for asset in assets:
         asset_type = str(asset.get("asset_type") or "unknown")
         asset_counts[asset_type] = asset_counts.get(asset_type, 0) + 1
+
+    detail_loop_enabled = (
+        asset_details is not None
+        or previous_detail_requests is not None
+        or detail_warnings is not None
+    )
+    rules = [
+        "blueprint_execute 只能用于固定蓝图查询，且不能携带 required_inputs。",
+        "blueprint_as_reference 必须提供 reference_assets。",
+        "reject 必须提供 explanation.summary。",
+        "detail_query 如果候选中已有 field/table，不应返回 clarify。",
+    ]
+    if detail_loop_enabled:
+        rules.extend(
+            [
+                "详情循环模式下，如果轻量目录不足以规划 SQL，可输出 asset_detail_requests 数组请求资产详情。",
+                "asset_detail_requests 只能请求 candidate_assets 目录中的资产，purpose 必须为 sql_generation。",
+                "资产详情循环最多 3 轮；达到 3 轮仍缺少时间、join、口径或过滤条件时，不允许硬生成 SQL。",
+                "无法安全生成 SQL 时，返回 QueryPlan，并在 missing_context 和 why_not_generate_sql 中说明缺口。",
+            ]
+        )
 
     payload = {
         "question": question,
@@ -913,13 +937,12 @@ def _planner_human_prompt(
         "candidate_assets": assets[:PROMPT_ASSET_LIMIT],
         "multiturn_context": _multiturn_summary(multiturn_context),
         "lead_agent_context_summary": _lead_agent_context_summary(lead_agent_context),
-        "rules": [
-            "blueprint_execute 只能用于固定蓝图查询，且不能携带 required_inputs。",
-            "blueprint_as_reference 必须提供 reference_assets。",
-            "reject 必须提供 explanation.summary。",
-            "detail_query 如果候选中已有 field/table，不应返回 clarify。",
-        ],
+        "rules": rules,
     }
+    if detail_loop_enabled:
+        payload["asset_detail_context"] = _compact_prompt_value(asset_details or [])
+        payload["previous_detail_requests"] = _compact_prompt_value(previous_detail_requests or [])
+        payload["detail_loop_warnings"] = _compact_prompt_value(detail_warnings or [])
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -1195,16 +1218,167 @@ def plan_query_with_detail_context(
     multiturn_context: Any = None,
     lead_agent_context: Any = None,
 ) -> QueryPlan | dict[str, Any]:
-    return plan_query(
-        db=db,
-        question=question,
-        routing=routing,
-        candidate_assets=lightweight_catalog,
-        multiturn_context={
-            "summary": multiturn_context,
-            "asset_details": asset_details,
-            "previous_detail_requests": previous_detail_requests,
-            "warnings": warnings,
-        },
-        lead_agent_context=lead_agent_context,
-    )
+    messages = [
+        SystemMessage(content=_planner_system_prompt()),
+        HumanMessage(
+            content=_planner_human_prompt(
+                question=question,
+                routing=routing,
+                candidate_assets=lightweight_catalog,
+                multiturn_context=multiturn_context,
+                lead_agent_context=lead_agent_context,
+                asset_details=asset_details,
+                previous_detail_requests=previous_detail_requests,
+                detail_warnings=warnings,
+            )
+        ),
+    ]
+    tracer = get_observability_tracer()
+    generation = None
+    generation_base_metadata = {
+        **_planner_generation_base_metadata(
+            question=question,
+            routing=routing,
+            candidate_assets=lightweight_catalog,
+        ),
+        "detail_loop": True,
+        "asset_detail_count": len(asset_details),
+        "previous_detail_request_count": len(previous_detail_requests),
+        "detail_warning_count": len(warnings),
+    }
+    try:
+        llm = get_llm(temperature=0.0, role="lead_agent", db=db)
+    except Exception as exc:
+        if not _is_llm_call_error(exc):
+            raise
+        validation_error = _compact_error_text(exc)
+        return _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=lightweight_catalog,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
+        )
+
+    active_obs_context = current_observability_context.get()
+    if active_obs_context and active_obs_context.active:
+        try:
+            generation = tracer.start_generation(
+                name="llm.subagent_query_planner",
+                model=_planner_model_name(llm),
+                messages=messages,
+                metadata={**generation_base_metadata, "status": "running"},
+            )
+        except Exception:
+            generation = None
+
+    try:
+        response = llm.invoke(messages)
+    except Exception as exc:
+        if not _is_llm_call_error(exc):
+            try:
+                tracer.end_generation(
+                    generation,
+                    output=repr(exc),
+                    metadata={
+                        **generation_base_metadata,
+                        "status": "error",
+                        "validation_error": _compact_error_text(exc),
+                        "error_stage": "llm_call",
+                    },
+                )
+            except Exception:
+                pass
+            raise
+        validation_error = _compact_error_text(exc)
+        plan = _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=lightweight_catalog,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
+        )
+        try:
+            tracer.end_generation(
+                generation,
+                output=validation_error,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "fallback",
+                    "fallback_reason": plan.fallback_reason,
+                    "validation_error": validation_error,
+                    "error_stage": "llm_call",
+                    "fallback_execution_strategy": plan.execution_strategy,
+                },
+            )
+        except Exception:
+            pass
+        return plan
+
+    response_content = _planner_response_content(response)
+    try:
+        payload = _safe_json_parse(response_content)
+        if parse_asset_detail_requests(payload):
+            try:
+                tracer.end_generation(
+                    generation,
+                    output=response_content,
+                    metadata={
+                        **generation_base_metadata,
+                        "status": "detail_request",
+                        "asset_detail_request_count": len(parse_asset_detail_requests(payload)),
+                    },
+                )
+            except Exception:
+                pass
+            return payload
+
+        plan = normalize_query_plan(payload)
+        _validate_hard_rules(plan, question=question, candidate_assets=lightweight_catalog)
+        try:
+            tracer.end_generation(
+                generation,
+                output=response_content,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "success",
+                    "execution_strategy": plan.execution_strategy,
+                    "query_type": plan.query_type,
+                    "confidence": plan.confidence,
+                    "planner_source": plan.planner_source,
+                },
+            )
+        except Exception:
+            pass
+        return plan
+    except (JSONDecodeError, QueryPlanValidationError, ValueError, TypeError) as exc:
+        validation_error = _compact_error_text(exc)
+        plan = _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=lightweight_catalog,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
+        )
+        try:
+            tracer.end_generation(
+                generation,
+                output=response_content,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "fallback",
+                    "fallback_reason": plan.fallback_reason,
+                    "validation_error": validation_error,
+                    "error_stage": "validation",
+                    "fallback_execution_strategy": plan.execution_strategy,
+                },
+            )
+        except Exception:
+            pass
+        return plan

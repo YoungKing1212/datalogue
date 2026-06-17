@@ -38,6 +38,7 @@ from app.services.analysis_blueprint import (
 from app.services.observability.tracer import get_observability_tracer
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
 from app.services.subagent_planning import (
+    AssetDetailService,
     PlannerDetailLoop,
     QueryPlan,
     SubAgentEvent,
@@ -1183,10 +1184,18 @@ class DatasetSubAgent:
             logger.warning("tracer.start_span 失败 node=subagent.query_plan", exc_info=True)
         try:
             if detail_loop_enabled:
+                detail_service = AssetDetailService(
+                    candidate_assets=candidate_assets,
+                    full_field_limit=settings.SUBAGENT_PLANNER_TABLE_FULL_FIELD_LIMIT,
+                    compact_field_limit=settings.SUBAGENT_PLANNER_TABLE_COMPACT_FIELD_LIMIT,
+                    field_search_default_top_k=settings.SUBAGENT_PLANNER_FIELD_SEARCH_DEFAULT_TOP_K,
+                    field_search_max_top_k=settings.SUBAGENT_PLANNER_FIELD_SEARCH_MAX_TOP_K,
+                )
                 detail_loop = PlannerDetailLoop(
                     max_rounds=settings.SUBAGENT_PLANNER_DETAIL_MAX_ROUNDS,
                     max_requests_per_round=settings.SUBAGENT_PLANNER_DETAIL_MAX_REQUESTS_PER_ROUND,
                     planner_call=plan_query_with_detail_context,
+                    detail_service=detail_service,
                 )
                 detail_loop_result = detail_loop.run(
                     db=self.db,
