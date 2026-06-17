@@ -22,6 +22,11 @@ from app.services.subagent_planning.contracts import (
     SubAgentResult,
     normalize_query_plan,
 )
+from app.services.subagent_planning.asset_catalog import (
+    ALLOWED_CATALOG_ASSET_TYPES,
+    build_allowed_asset_scope,
+    project_lightweight_asset_catalog,
+)
 from app.services.subagent_planning.asset_recall import (
     build_candidate_assets_from_context,
     recall_candidate_assets,
@@ -34,6 +39,7 @@ from app.services.subagent_planning.execution import (
 from app.services.subagent_planning.planner import build_fallback_query_plan, plan_query
 
 __all__ = [
+    "ALLOWED_CATALOG_ASSET_TYPES",
     "CANDIDATE_ASSET_TYPES",
     "EXECUTION_STRATEGIES",
     "QUERY_TYPES",
@@ -42,6 +48,7 @@ __all__ = [
     "QueryPlanValidationError",
     "SubAgentEvent",
     "SubAgentResult",
+    "build_allowed_asset_scope",
     "build_blueprint_reference_context",
     "build_candidate_assets_from_context",
     "build_clarify_result",
@@ -49,5 +56,6 @@ __all__ = [
     "build_reject_result",
     "normalize_query_plan",
     "plan_query",
+    "project_lightweight_asset_catalog",
     "recall_candidate_assets",
 ]
