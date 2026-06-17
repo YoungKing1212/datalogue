@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     MULTITURN_COMPACTION_ENABLED: bool = False
     MULTITURN_COMPACTION_TOKEN_THRESHOLD: int = 8000
     MULTITURN_BLUEPRINT_SHORTCUT_ENABLED: bool = False
+    # LeadAgent Planner 输入投影灰度开关；默认关闭，生产按环境变量切流。
+    LEAD_AGENT_PLANNER_USE_PROJECTION: bool = False
 
     class Config:
         env_file = ".env"

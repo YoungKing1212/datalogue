@@ -24,6 +24,7 @@ from app.services.lead_agent import (
     plan_tool_calls_with_llm,
     resolve_time_context,
 )
+from app.services.lead_agent_planner_projection import PROJECTION_SCHEMA_VERSION
 
 
 def _manual_fields():
@@ -391,7 +392,9 @@ def test_incomplete_planner_plan_uses_fallback(monkeypatch, db_session, sample_d
     assert context["route_decision"]["decision"] == "selected"
 
 
-def test_tool_planner_fast_path_skips_llm_for_locked_detail_query(monkeypatch, db_session, sample_dataset):
+def test_tool_planner_fast_path_skips_llm_for_locked_detail_query(
+    monkeypatch, db_session, sample_dataset
+):
     """锁定数据集的新明细查询应直接走确定性工具计划，不再调用两次 LLM。"""
 
     def fail_get_llm(*_args, **_kwargs):
@@ -453,7 +456,12 @@ def test_tool_planner_fast_path_avoids_multiturn_continue(monkeypatch, db_sessio
             }
         },
         tool_policy={
-            "allowed_tools": ["thread_context", "manifest_router", "schema_status", "subagent_dispatch"],
+            "allowed_tools": [
+                "thread_context",
+                "manifest_router",
+                "schema_status",
+                "subagent_dispatch",
+            ],
             "locked_dataset_id": sample_dataset.id,
             "dataset_lock_source": "multiturn_active",
         },
@@ -534,6 +542,10 @@ def test_planner_records_langfuse_generation(monkeypatch, db_session):
         "app.services.lead_agent._lead_agent_llm_available",
         lambda _db: {"available": True, "reason": None},
     )
+    monkeypatch.setattr(
+        "app.services.lead_agent.get_settings",
+        lambda: type("FakeSettings", (), {"LEAD_AGENT_PLANNER_USE_PROJECTION": False})(),
+    )
     monkeypatch.setattr("app.services.lead_agent.get_prompt_manager", lambda: FakePromptManager())
     fake_llm = FakeLLM()
     monkeypatch.setattr("app.services.lead_agent.get_llm", lambda **_kwargs: fake_llm)
@@ -568,11 +580,19 @@ def test_planner_records_langfuse_generation(monkeypatch, db_session):
     assert plan["disclosed_tools"] == ["thread_context", "manifest_router"]
     assert tracer.started[0]["name"] == "llm.lead_agent_skill_selector"
     assert tracer.started[0]["metadata"]["prompt_name"] == "lead_agent_skill_selector"
+    assert tracer.started[0]["metadata"]["projection_enabled"] is False
     skill_input = json.loads(tracer.started[0]["messages"][1].content)
+    assert "conversation" in skill_input
+    assert "tool_policy" in skill_input
+    assert "skills" in skill_input
     assert "tool_schemas" not in skill_input
     assert tracer.started[1]["name"] == "llm.lead_agent_tool_planner"
     assert tracer.started[1]["metadata"]["prompt_name"] == "lead_agent_tool_planner"
+    assert tracer.started[1]["metadata"]["projection_enabled"] is False
     tool_input = json.loads(tracer.started[1]["messages"][1].content)
+    assert "conversation" in tool_input
+    assert "tool_policy" in tool_input
+    assert "selected_skills" in tool_input
     assert [item["name"] for item in tool_input["tool_schemas"]] == [
         "thread_context",
         "manifest_router",
@@ -581,6 +601,126 @@ def test_planner_records_langfuse_generation(monkeypatch, db_session):
     assert tracer.ended[0]["usage"]["total_tokens"] == 12
     assert tracer.ended[1]["usage"]["total_tokens"] == 15
     assert tracer.ended[1]["metadata"]["normalized_plan"]["tool_calls"]
+
+
+def test_planner_projection_removes_raw_payload_fields(monkeypatch, db_session):
+    """投影开关开启时，Planner 两阶段只向 LLM 披露精简契约。"""
+
+    class FakePrompt:
+        content = "planner prompt"
+        version = "v-test"
+        source = "local"
+
+    class FakePromptManager:
+        def get_text_prompt(self, *_args, **_kwargs):
+            return FakePrompt()
+
+    class FakeLLM:
+        model = "lead-model"
+
+        def __init__(self):
+            self.calls = 0
+            self.messages = []
+
+        def invoke(self, messages):
+            self.calls += 1
+            self.messages.append(messages)
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": (
+                            '{"reasoning_summary":"选择路由技能",'
+                            '"selected_skills":["DatasetRoutingSkill"]}'
+                        ),
+                        "usage_metadata": {"total_tokens": 12},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {
+                    "content": (
+                        '{"reasoning_summary":"规划路由工具","selected_skills":["DatasetRoutingSkill"],'
+                        '"tool_calls":[{"tool":"manifest_router","reason":"route"}]}'
+                    ),
+                    "usage_metadata": {"total_tokens": 15},
+                },
+            )()
+
+    class FakeTracer:
+        def __init__(self):
+            self.started = []
+            self.ended = []
+
+        def start_generation(self, **kwargs):
+            self.started.append(kwargs)
+            return object()
+
+        def end_generation(self, handle, **kwargs):
+            self.ended.append({"handle": handle, **kwargs})
+
+    monkeypatch.setattr(
+        "app.services.lead_agent._lead_agent_llm_available",
+        lambda _db: {"available": True, "reason": None},
+    )
+    monkeypatch.setattr(
+        "app.services.lead_agent.get_settings",
+        lambda: type("FakeSettings", (), {"LEAD_AGENT_PLANNER_USE_PROJECTION": True})(),
+    )
+    monkeypatch.setattr("app.services.lead_agent.get_prompt_manager", lambda: FakePromptManager())
+    fake_llm = FakeLLM()
+    monkeypatch.setattr("app.services.lead_agent.get_llm", lambda **_kwargs: fake_llm)
+
+    tracer = FakeTracer()
+    plan = plan_tool_calls_with_llm(
+        db_session,
+        question="最近30日GMV趋势如何",
+        conversation_summary={
+            "dataset_id": 10,
+            "routing_path": "dataset_subagent",
+            "raw_schema": "不应进入投影" * 80,
+            "prior_turns": [{"question": "先看整体", "row_count": 8}],
+        },
+        tool_policy={
+            "allowed_tools": ["thread_context", "manifest_router"],
+            "blocked_tools": ["metric_resolution"],
+            "constraints": ["很长的策略约束" * 80],
+            "dataset_lock_source": "payload",
+            "explicit_dataset_locked": True,
+            "inherited_dataset_locked": False,
+        },
+        skills=[
+            {
+                "name": "DatasetRoutingSkill",
+                "purpose": "路由数据集",
+                "allowed_tools": ["manifest_router", "clarification"],
+                "raw_context": "不应进入投影" * 80,
+            },
+        ],
+        tracer=tracer,
+        trace_context=object(),
+    )
+
+    assert plan["planner_fallback"] is False
+    assert fake_llm.calls == 2
+    skill_payload = json.loads(fake_llm.messages[0][1].content)
+    tool_payload = json.loads(fake_llm.messages[1][1].content)
+    assert skill_payload["projection_schema_version"] == "lead_agent_planner_projection.v2"
+    assert tool_payload["projection_schema_version"] == "lead_agent_planner_projection.v2"
+    assert skill_payload["recent_context"]["turn_policy"]["dataset_lock_source"] == "payload"
+    assert tool_payload["recent_context"]["turn_policy"]["dataset_lock_source"] == "payload"
+    assert not {"conversation", "tool_policy", "skills"} & set(skill_payload)
+    assert not {"conversation", "tool_policy", "tool_schemas"} & set(tool_payload)
+    assert tool_payload["selected_skills"] == ["DatasetRoutingSkill"]
+
+    for started in tracer.started:
+        metadata = started["metadata"]
+        assert metadata["projection_enabled"] is True
+        assert metadata["projection_schema_version"] == "lead_agent_planner_projection.v2"
+        assert metadata["raw_chars"] > 0
+        assert metadata["projected_chars"] > 0
 
 
 def test_lead_agent_records_complete_control_plane_span(db_session, sample_dataset):
@@ -698,3 +838,263 @@ def test_merge_multiturn_decision_uses_query_task_capsule_prior_context():
     merged = decision.multiturn_context["merged_query_context"]
     assert merged["main_table"] == "plan_task_daily_record"
     assert merged["query_plan"]["query_type"] == "detail_query"
+
+
+# ============================================================
+# Planner 输入投影灰度（M1）回归测试
+# ============================================================
+
+
+class _ProjectionStubSettings:
+    """测试用的 settings stub，仅暴露投影开关。"""
+
+    LEAD_AGENT_PLANNER_USE_PROJECTION = False
+
+
+def _run_plan_with_projection(monkeypatch, db_session, *, use_projection: bool):
+    """统一构造 plan_tool_calls_with_llm 测试夹具，注入两阶段 LLM 返回。"""
+
+    class _FakePrompt:
+        content = "planner prompt"
+        version = "v-test"
+        source = "local"
+
+    class _FakePromptManager:
+        def get_text_prompt(self, *_args, **_kwargs):
+            return _FakePrompt()
+
+    class _FakeLLM:
+        model = "lead-model"
+
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": (
+                            '{"reasoning_summary":"先选路由",'
+                            '"selected_skills":["DatasetRoutingSkill","AuditSkill"]}'
+                        ),
+                        "usage_metadata": {"total_tokens": 9},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {
+                    "content": (
+                        '{"reasoning_summary":"规划控制面",'
+                        '"selected_skills":["DatasetRoutingSkill"],'
+                        '"tool_calls":[{"tool":"manifest_router","reason":"route"}]}'
+                    ),
+                    "usage_metadata": {"total_tokens": 11},
+                },
+            )()
+
+    class _FakeTracer:
+        def __init__(self):
+            self.started = []
+            self.ended = []
+
+        def start_generation(self, **kwargs):
+            self.started.append(kwargs)
+            return object()
+
+        def end_generation(self, handle, **kwargs):
+            self.ended.append({"handle": handle, **kwargs})
+
+    monkeypatch.setattr(
+        "app.services.lead_agent._lead_agent_llm_available",
+        lambda _db: {"available": True, "reason": None},
+    )
+    monkeypatch.setattr("app.services.lead_agent.get_prompt_manager", lambda: _FakePromptManager())
+    monkeypatch.setattr("app.services.lead_agent.get_llm", lambda **_kwargs: _FakeLLM())
+
+    stub = _ProjectionStubSettings()
+    stub.LEAD_AGENT_PLANNER_USE_PROJECTION = use_projection
+    monkeypatch.setattr("app.services.lead_agent.get_settings", lambda: stub)
+
+    tracer = _FakeTracer()
+    plan = plan_tool_calls_with_llm(
+        db_session,
+        question="最近30日GMV趋势如何",
+        conversation_summary={
+            "payload_dataset_id": 7,
+            "conversation_dataset_id": 7,
+            "multiturn_classification": {
+                "intent": "new_query",
+                "should_inherit_dataset": False,
+            },
+            "multiturn_context": {
+                "last_resolved_question": "上一轮问了华东上月 GMV",
+                "inheritance_summary": "上一轮查询了华东上月 GMV。",
+            },
+        },
+        tool_policy={
+            "allowed_tools": ["thread_context", "manifest_router"],
+            "blocked_tools": ["metric_resolution"],
+            "locked_dataset_id": 7,
+            "dataset_lock_source": "payload",
+            "explicit_dataset_locked": True,
+            "inherited_dataset_locked": False,
+        },
+        skills=[
+            {
+                "name": "DatasetRoutingSkill",
+                "description": "路由数据集",
+                "allowed_tools": ["manifest_router"],
+            },
+            {
+                "name": "AuditSkill",
+                "description": "记录执行轨迹",
+                "allowed_tools": ["audit_trace"],
+            },
+        ],
+        tracer=tracer,
+        trace_context=object(),
+    )
+    return plan, tracer
+
+
+def test_planner_projection_disabled_keeps_raw_payload(monkeypatch, db_session):
+    """默认关闭时 LLM payload 保持原始结构（兼容路径）。"""
+
+    plan, tracer = _run_plan_with_projection(monkeypatch, db_session, use_projection=False)
+
+    assert plan["planner_fallback"] is False
+    skill_payload = json.loads(tracer.started[0]["messages"][1].content)
+    assert skill_payload["question"] == "最近30日GMV趋势如何"
+    assert "skills" in skill_payload
+    assert "tool_policy" in skill_payload
+    assert "conversation" in skill_payload
+    assert "projection_schema_version" not in skill_payload
+
+    tool_payload = json.loads(tracer.started[1]["messages"][1].content)
+    assert "tool_schemas" in tool_payload
+    assert "conversation" in tool_payload
+    assert "projection_schema_version" not in tool_payload
+
+    assert tracer.started[0]["metadata"]["projection_enabled"] is False
+    assert tracer.started[1]["metadata"]["projection_enabled"] is False
+    assert tracer.ended[0]["metadata"]["projection_enabled"] is False
+    assert tracer.ended[1]["metadata"]["projection_enabled"] is False
+
+
+def test_planner_projection_disabled_does_not_record_projection_metadata(monkeypatch, db_session):
+    """关闭时 Langfuse metadata 不应携带 projection_metrics/schema_version。"""
+
+    _, tracer = _run_plan_with_projection(monkeypatch, db_session, use_projection=False)
+
+    for stage in ("started", "ended"):
+        for meta in getattr(tracer, stage):
+            assert "projection_metrics" not in meta["metadata"]
+            assert "projection_schema_version" not in meta["metadata"]
+            assert "raw_chars" not in meta["metadata"]
+            assert "projected_chars" not in meta["metadata"]
+            assert "projection_saved_chars" not in meta["metadata"]
+
+
+def test_build_projection_recent_context_handles_string_multiturn_context():
+    """multiturn_context 为非 dict 时不应触发 AttributeError。"""
+
+    from app.services.lead_agent import _build_projection_recent_context
+
+    recent = _build_projection_recent_context(
+        conversation_summary={"multiturn_context": "解析失败"},
+        tool_policy={},
+    )
+
+    assert recent == {"routing_path": "pending"}
+
+
+def test_planner_projection_enabled_redacts_raw_context(monkeypatch, db_session):
+    """开启时 LLM payload 不应携带原始 conversation/tool_policy 等大上下文字段。"""
+
+    plan, tracer = _run_plan_with_projection(monkeypatch, db_session, use_projection=True)
+
+    assert plan["planner_fallback"] is False
+    skill_payload = json.loads(tracer.started[0]["messages"][1].content)
+    skill_payload_text = json.dumps(skill_payload, ensure_ascii=False)
+    assert skill_payload["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
+    assert skill_payload["question"] == "最近30日GMV趋势如何"
+    assert [item["name"] for item in skill_payload["candidate_skills"]] == [
+        "DatasetRoutingSkill",
+        "AuditSkill",
+    ]
+    assert skill_payload["recent_context"]["dataset_id"] == 7
+    assert skill_payload["recent_context"]["routing_path"] == "payload"
+    assert skill_payload["recent_context"]["turn_policy"] == {
+        "intent": "new_query",
+        "dataset_lock_source": "payload",
+        "should_inherit_dataset": False,
+        "explicit_dataset_locked": True,
+        "inherited_dataset_locked": False,
+    }
+    assert skill_payload["recent_context"]["prior_turns"][0]["question"].startswith("上一轮")
+    assert (
+        skill_payload["recent_context"]["prior_turns"][0]["inheritance_summary"]
+        == "上一轮查询了华东上月 GMV。"
+    )
+    assert "routing_path" not in skill_payload["recent_context"]["prior_turns"][0]
+    for forbidden in (
+        "conversation",
+        "tool_policy",
+        "allowed_tools",
+        "blocked_tools",
+        "multiturn_context",
+        "raw_context",
+    ):
+        assert (
+            forbidden not in skill_payload
+        ), f"skill payload leaked {forbidden}: {skill_payload_text}"
+
+    tool_payload = json.loads(tracer.started[1]["messages"][1].content)
+    tool_payload_text = json.dumps(tool_payload, ensure_ascii=False)
+    assert tool_payload["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
+    assert tool_payload["question"] == "最近30日GMV趋势如何"
+    assert tool_payload["selected_skills"] == ["DatasetRoutingSkill", "AuditSkill"]
+    assert [item["name"] for item in tool_payload["candidate_tools"]] == ["manifest_router"]
+    for forbidden in (
+        "tool_schemas",
+        "conversation",
+        "tool_policy",
+        "raw_schema",
+        "allowed_tools",
+    ):
+        assert (
+            forbidden not in tool_payload
+        ), f"tool payload leaked {forbidden}: {tool_payload_text}"
+
+
+def test_planner_projection_records_langfuse_metadata(monkeypatch, db_session):
+    """开启时 Langfuse metadata 应记录 projection_enabled 和 schema version。"""
+
+    plan, tracer = _run_plan_with_projection(monkeypatch, db_session, use_projection=True)
+
+    assert plan["planner_fallback"] is False
+    skill_meta = tracer.started[0]["metadata"]
+    assert skill_meta["projection_enabled"] is True
+    assert skill_meta["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
+    skill_metrics = skill_meta["projection_metrics"]
+    assert skill_metrics["raw_chars"] > skill_metrics["projected_chars"]
+    assert skill_metrics["projection_saved_chars"] == (
+        skill_metrics["raw_chars"] - skill_metrics["projected_chars"]
+    )
+    assert skill_meta["raw_chars"] == skill_metrics["raw_chars"]
+    assert skill_meta["projected_chars"] == skill_metrics["projected_chars"]
+    assert skill_meta["projection_saved_chars"] == skill_metrics["projection_saved_chars"]
+
+    tool_meta = tracer.started[1]["metadata"]
+    assert tool_meta["projection_enabled"] is True
+    assert tool_meta["projection_schema_version"] == skill_meta["projection_schema_version"]
+    tool_metrics = tool_meta["projection_metrics"]
+    assert tool_metrics["raw_chars"] > tool_metrics["projected_chars"]
+
+    assert tracer.ended[0]["metadata"]["projection_enabled"] is True
+    assert tracer.ended[1]["metadata"]["projection_enabled"] is True
+    assert tracer.ended[1]["metadata"]["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
