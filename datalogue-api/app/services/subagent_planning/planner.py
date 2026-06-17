@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.graph.llm import get_llm
 from app.services.observability.context import current_observability_context
 from app.services.observability.tracer import get_observability_tracer
+from app.services.subagent_planning.asset_detail import AssetDetailRequest
 from app.services.subagent_planning.contracts import (
     CANDIDATE_ASSET_TYPES,
     CandidateAsset,
@@ -936,6 +937,19 @@ def _safe_json_parse(content: Any) -> dict[str, Any]:
     parsed = json.loads(text)
     if not isinstance(parsed, dict):
         raise QueryPlanValidationError("planner output must be a JSON object")
+    return parsed
+
+
+def parse_asset_detail_requests(payload: Any) -> list[AssetDetailRequest]:
+    if not isinstance(payload, dict):
+        return []
+    requests = payload.get("asset_detail_requests") or []
+    if not isinstance(requests, list):
+        return []
+    parsed: list[AssetDetailRequest] = []
+    for item in requests:
+        if isinstance(item, dict):
+            parsed.append(AssetDetailRequest.from_dict(item))
     return parsed
 
 

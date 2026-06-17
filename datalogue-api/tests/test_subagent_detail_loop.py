@@ -1,0 +1,160 @@
+from app.services.subagent_planning.contracts import QueryPlan
+from app.services.subagent_planning.detail_loop import PlannerDetailLoop, PlannerLoopResult
+
+
+class ScriptedPlanner:
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.outputs.pop(0)
+
+
+def _candidate_assets(field_count=4):
+    fields = [
+        {
+            "table_name": "plan_task_daily_record",
+            "column_name": f"field_{index}",
+            "column_comment": f"字段 {index}",
+            "data_type": "varchar",
+        }
+        for index in range(field_count)
+    ]
+    return {
+        "dataset_id": 10,
+        "question": "查询用户任务日志",
+        "assets": [
+            {
+                "asset_type": "table",
+                "asset_id": "plan_task_daily_record",
+                "name": "plan_task_daily_record",
+                "display_name": "任务日报",
+                "confidence": 0.9,
+                "metadata": {"table_name": "plan_task_daily_record", "comment": "任务日报"},
+            }
+        ],
+        "context": {"schema_structured": {"fields": fields}},
+    }
+
+
+def test_detail_loop_hydrates_requested_asset_then_returns_final_plan():
+    planner = ScriptedPlanner(
+        [
+            {
+                "asset_detail_requests": [
+                    {
+                        "asset_type": "table",
+                        "asset_id": "plan_task_daily_record",
+                        "detail_level": "full_schema",
+                        "purpose": "sql_generation",
+                        "reason": "需要字段",
+                    }
+                ]
+            },
+            QueryPlan(
+                query_type="detail_query",
+                execution_strategy="query_graph",
+                confidence=0.8,
+                planner_source="llm",
+            ),
+        ]
+    )
+    loop = PlannerDetailLoop(max_rounds=3, max_requests_per_round=5, planner_call=planner)
+    result = loop.run(
+        db=None,
+        question="查询用户任务日志",
+        routing={"dataset_id": 10},
+        candidate_assets=_candidate_assets(),
+    )
+    assert isinstance(result, PlannerLoopResult)
+    assert result.query_plan.execution_strategy == "query_graph"
+    assert result.detail_rounds == 1
+    assert result.asset_details[0].coverage == "full"
+    assert len(planner.calls) == 2
+
+
+def test_detail_loop_rejects_out_of_scope_request_and_retries_planner():
+    planner = ScriptedPlanner(
+        [
+            {
+                "asset_detail_requests": [
+                    {
+                        "asset_type": "table",
+                        "asset_id": "not_recalled",
+                        "detail_level": "full_schema",
+                        "purpose": "sql_generation",
+                        "reason": "越界请求",
+                    }
+                ]
+            },
+            QueryPlan(
+                query_type="unsupported",
+                execution_strategy="reject",
+                confidence=0.2,
+                planner_source="fallback",
+                missing_context=["资产不在召回范围"],
+                why_not_generate_sql="资产详情请求越界。",
+            ),
+        ]
+    )
+    loop = PlannerDetailLoop(max_rounds=3, max_requests_per_round=5, planner_call=planner)
+    result = loop.run(
+        db=None,
+        question="查询用户任务日志",
+        routing={"dataset_id": 10},
+        candidate_assets=_candidate_assets(),
+    )
+    assert result.query_plan.execution_strategy == "reject"
+    assert result.warnings[0]["error_code"] == "asset_not_in_recall_scope"
+
+
+def test_detail_loop_forces_reject_after_max_rounds_when_planner_keeps_requesting():
+    planner = ScriptedPlanner(
+        [
+            {
+                "asset_detail_requests": [
+                    {
+                        "asset_type": "table",
+                        "asset_id": "plan_task_daily_record",
+                        "detail_level": "full_schema",
+                        "purpose": "sql_generation",
+                        "reason": "第 1 轮",
+                    }
+                ]
+            },
+            {
+                "asset_detail_requests": [
+                    {
+                        "asset_type": "table",
+                        "asset_id": "plan_task_daily_record",
+                        "detail_level": "full_schema",
+                        "purpose": "sql_generation",
+                        "reason": "第 2 轮",
+                    }
+                ]
+            },
+            {
+                "asset_detail_requests": [
+                    {
+                        "asset_type": "table",
+                        "asset_id": "plan_task_daily_record",
+                        "detail_level": "full_schema",
+                        "purpose": "sql_generation",
+                        "reason": "第 3 轮",
+                    }
+                ]
+            },
+        ]
+    )
+    loop = PlannerDetailLoop(max_rounds=3, max_requests_per_round=5, planner_call=planner)
+    result = loop.run(
+        db=None,
+        question="查询用户任务日志",
+        routing={"dataset_id": 10},
+        candidate_assets=_candidate_assets(),
+    )
+    assert result.query_plan.execution_strategy == "reject"
+    assert result.query_plan.fallback_reason == "max_detail_rounds_exceeded"
+    assert result.query_plan.why_not_generate_sql == "达到 3 轮资产详情请求后仍未形成可执行计划。"

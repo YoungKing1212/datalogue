@@ -33,6 +33,7 @@ from app.services.subagent_planning.asset_detail import (
     AssetDetailService,
     validate_asset_detail_requests,
 )
+from app.services.subagent_planning.detail_loop import PlannerDetailLoop, PlannerLoopResult
 from app.services.subagent_planning.asset_recall import (
     build_candidate_assets_from_context,
     recall_candidate_assets,
@@ -51,6 +52,8 @@ __all__ = [
     "AssetDetailService",
     "CANDIDATE_ASSET_TYPES",
     "EXECUTION_STRATEGIES",
+    "PlannerDetailLoop",
+    "PlannerLoopResult",
     "QUERY_TYPES",
     "CandidateAsset",
     "QueryPlan",
