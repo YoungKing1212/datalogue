@@ -10,7 +10,9 @@ def test_build_candidate_assets_from_structured_context_keeps_six_types():
             "dataset_name": "生产日志",
             "metrics": [{"id": 1, "name": "日志数量", "description": "日志总数"}],
             "dimensions": [{"id": 2, "name": "用户", "expr": "user_name"}],
-            "terms": [{"id": 3, "name": "失败日志", "display_name": "失败日志", "aliases": ["异常日志"]}],
+            "terms": [
+                {"id": 3, "name": "失败日志", "display_name": "失败日志", "aliases": ["异常日志"]}
+            ],
             "blueprints": [
                 {
                     "id": 4,
@@ -59,7 +61,9 @@ def test_build_candidate_assets_from_structured_context_keeps_six_types():
 def test_recall_candidate_assets_uses_lightweight_token_budget(db_session, monkeypatch):
     captured = {}
 
-    def fake_build_context(db, dataset_id, *, question, token_budget, blueprint_context="", matched_assets=None):
+    def fake_build_context(
+        db, dataset_id, *, question, token_budget, blueprint_context="", matched_assets=None
+    ):
         captured["dataset_id"] = dataset_id
         captured["question"] = question
         captured["token_budget"] = token_budget
@@ -173,7 +177,11 @@ def test_realistic_display_names_synonyms_and_trigger_examples_score():
         bound_schema_version="schema-1",
     )
 
-    scored = [asset for asset in result["assets"] if asset["asset_type"] in {"field", "blueprint", "metric"}]
+    scored = [
+        asset
+        for asset in result["assets"]
+        if asset["asset_type"] in {"field", "blueprint", "metric"}
+    ]
     blueprint = next(asset for asset in result["assets"] if asset["asset_type"] == "blueprint")
 
     assert any(asset["confidence"] > 0 for asset in scored)
@@ -250,7 +258,11 @@ def test_scoring_stacks_distinct_signals_and_caps_confidence():
     )
 
     term = next(asset for asset in result["assets"] if asset["asset_type"] == "term")
-    level = next(asset for asset in result["assets"] if asset["asset_type"] == "field" and asset["name"] == "level")
+    level = next(
+        asset
+        for asset in result["assets"]
+        if asset["asset_type"] == "field" and asset["name"] == "level"
+    )
     table = next(asset for asset in result["assets"] if asset["asset_type"] == "table")
 
     assert term["confidence"] == 0.99
@@ -262,7 +274,10 @@ def test_scoring_stacks_distinct_signals_and_caps_confidence():
         "alias",
         "synonym",
     }
-    assert {signal["type"] for signal in level["match_signals"]} >= {"field_display", "table_context"}
+    assert {signal["type"] for signal in level["match_signals"]} >= {
+        "field_display",
+        "table_context",
+    }
     assert any(signal["type"] == "table_context" for signal in table["match_signals"])
     assert term["match_reason"].startswith("exact+")
 
@@ -306,14 +321,19 @@ def test_user_log_question_scores_log_table_and_fields():
     assert table["confidence"] > 0
     assert all(field["confidence"] > 0 for field in fields)
     assert any(signal["type"] == "table_context" for signal in table["match_signals"])
-    assert all(any(signal["type"] == "field_display" for signal in field["match_signals"]) for field in fields)
+    assert all(
+        any(signal["type"] == "field_display" for signal in field["match_signals"])
+        for field in fields
+    )
 
 
 def test_summary_and_recall_debug_include_score_audit_fields():
     context = {
         "schema_structured": {
             "terms": [{"id": 1, "name": "失败日志"}],
-            "fields": [{"table_name": "user_logs", "column_name": "status", "display_name": "日志状态"}],
+            "fields": [
+                {"table_name": "user_logs", "column_name": "status", "display_name": "日志状态"}
+            ],
             "tables_json": {"selected_tables": [{"name": "user_logs", "description": "日志表"}]},
         }
     }
