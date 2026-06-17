@@ -536,9 +536,16 @@ class DatalogueTracer:
 
     @staticmethod
     def _exit_manager(manager: AbstractContextManager) -> None:
+        """关闭 Langfuse observation context manager，兼容 async generator 被强制关闭场景。
+
+        在 SSE 流式接口中，客户端断开连接会触发 ``aclose()``，此时 Langfuse 内部
+        基于 OpenTelemetry 的 span context manager 在 ``__exit__`` 时可能抛出
+        ``GeneratorExit`` 或 ``ValueError: Token was created in a different Context``。
+        这些异常属于观测层清理问题，不应影响问数主链路，因此统一降级为 debug 日志。
+        """
         try:
             manager.__exit__(None, None, None)
-        except Exception as exc:
+        except (Exception, GeneratorExit) as exc:
             logger.debug("Langfuse context manager 关闭失败: %s", exc)
 
 
@@ -587,16 +594,10 @@ def _langfuse_usage_details(
 
     usage = usage or {}
     input_tokens = (
-        usage.get("input")
-        or usage.get("input_tokens")
-        or usage.get("prompt_tokens")
-        or 0
+        usage.get("input") or usage.get("input_tokens") or usage.get("prompt_tokens") or 0
     )
     output_tokens = (
-        usage.get("output")
-        or usage.get("output_tokens")
-        or usage.get("completion_tokens")
-        or 0
+        usage.get("output") or usage.get("output_tokens") or usage.get("completion_tokens") or 0
     )
     total_tokens = usage.get("total") or usage.get("total_tokens") or 0
     source = str(usage.get("usage_source") or "")
