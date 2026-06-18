@@ -194,6 +194,40 @@ def test_dataset10_log_detail_uses_template_plan():
     assert "LIMIT 10" in plan.debug["sql_template"]
 
 
+def test_dataset10_log_detail_template_filters_person_name():
+    plan = build_fallback_query_plan(
+        "我想看姓名为杨凯的日志",
+        [_daily_field("rzrq"), _daily_table(), _person_table()],
+        routing={"dataset_id": 10},
+    )
+
+    sql_template = plan.debug["sql_template"]
+    assert plan.planner_source == "template"
+    assert "ep.person_name = '杨凯'" in sql_template
+    assert "ORDER BY p.rzrq DESC, p.cjsj DESC LIMIT 100" in sql_template
+
+
+def test_dataset10_log_detail_template_supports_filter_refinement_without_log_keyword():
+    plan = build_fallback_query_plan(
+        "我想看姓名为杨凯的",
+        [_blueprint(), _daily_field("rzrq"), _daily_table(), _person_table()],
+        routing={
+            "dataset_id": 10,
+            "entry_intent": "detail_query",
+            "route_payload": {
+                "kind": "detail_query",
+                "source": "multiturn_filter_refinement",
+            },
+        },
+    )
+
+    sql_template = plan.debug["sql_template"]
+    assert plan.planner_source == "template"
+    assert plan.execution_strategy == "query_graph"
+    assert "ep.person_name = '杨凯'" in sql_template
+    assert "p.rzrq >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)" in sql_template
+
+
 def test_fallback_blueprint_hit_detail_query_becomes_reference():
     plan = build_fallback_query_plan(
         "查询10条用户日志",
@@ -268,6 +302,28 @@ def test_fallback_blueprint_query_missing_required_input_clarifies():
     assert plan.execution_strategy == "clarify"
     assert {item["name"] for item in plan.required_inputs} == {"user_name", "start_date"}
     assert plan.clarification
+
+
+def test_fallback_detail_query_uses_blueprint_as_reference_when_required_inputs_missing():
+    plan = build_fallback_query_plan(
+        "查询张三个人日报明细",
+        [
+            _blueprint(
+                parameters=[
+                    {"name": "user_name", "required": True},
+                    {"key": "start_date", "required": True},
+                ]
+            ),
+            _field("rzrq"),
+            _table("plan_task_daily_record"),
+        ],
+    )
+
+    assert plan.query_type == "detail_query"
+    assert plan.execution_strategy == "blueprint_as_reference"
+    assert plan.required_inputs == []
+    assert plan.clarification is None
+    assert plan.reference_assets[0].asset_type == "blueprint"
 
 
 def test_fallback_accepts_asset_recall_result_dict_for_detail_query():

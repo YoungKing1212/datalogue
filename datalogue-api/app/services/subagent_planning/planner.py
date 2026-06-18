@@ -413,6 +413,31 @@ def _is_log_detail_query(question: str) -> bool:
     return _contains_any(question, LOG_DETAIL_PATTERNS)
 
 
+def _routing_entry_intent(routing: Any) -> str:
+    if not isinstance(routing, dict):
+        return ""
+    return str(routing.get("entry_intent") or "").strip()
+
+
+def _routing_payload(routing: Any) -> dict[str, Any]:
+    if not isinstance(routing, dict):
+        return {}
+    payload = routing.get("route_payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _routing_is_detail_query(routing: Any) -> bool:
+    payload = _routing_payload(routing)
+    return (
+        _routing_entry_intent(routing) == "detail_query"
+        or payload.get("kind") == "detail_query"
+    )
+
+
+def _routing_is_filter_refinement(routing: Any) -> bool:
+    return _routing_payload(routing).get("source") == "multiturn_filter_refinement"
+
+
 def _is_daily_blueprint(asset: CandidateAsset | None) -> bool:
     if asset is None:
         return False
@@ -496,8 +521,52 @@ def _extract_limit(question: str, default: int = 100) -> int:
         return default
 
 
-def _dataset10_log_detail_sql(question: str) -> str:
+def _sql_string_literal(value: str) -> str:
+    """生成 SQL 字符串字面量，避免用户输入里的单引号破坏模板 SQL。"""
+    return "'" + str(value).strip().replace("'", "''") + "'"
+
+
+def _extract_dataset10_log_filter_value(question: str, names: tuple[str, ...]) -> str | None:
+    """从“字段为XX/字段是XX”这类短语中提取过滤值。"""
+    name_pattern = "|".join(re.escape(name) for name in names)
+    match = re.search(
+        rf"(?:{name_pattern})\s*(?:为|是|=|等于|叫)\s*"
+        rf"[\"“']?([^，,。；;、\s\"”'的]+)",
+        str(question or ""),
+    )
+    if not match:
+        return None
+    value = match.group(1).strip()
+    return value or None
+
+
+def _dataset10_log_filters(question: str, *, enable_person_filters: bool) -> list[str]:
+    """数据集 10 日志模板支持的确定性过滤条件。"""
+    filters: list[str] = []
+    account = _extract_dataset10_log_filter_value(
+        question, ("账号", "账户", "工号", "account")
+    )
+    if account:
+        filters.append(f"p.account = {_sql_string_literal(account)}")
+    if enable_person_filters:
+        person_name = _extract_dataset10_log_filter_value(
+            question, ("姓名", "名字", "人员姓名", "用户姓名", "员工姓名")
+        )
+        if person_name:
+            filters.append(f"ep.person_name = {_sql_string_literal(person_name)}")
+    dept_name = _extract_dataset10_log_filter_value(question, ("部门", "部门名称"))
+    if dept_name:
+        filters.append(f"d.dept_name = {_sql_string_literal(dept_name)}")
+    return filters
+
+
+def _dataset10_log_detail_sql(question: str, *, enable_person_filters: bool = False) -> str:
     limit = _extract_limit(question)
+    filters = [
+        "p.rzrq >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)",
+        *_dataset10_log_filters(question, enable_person_filters=enable_person_filters),
+    ]
+    where_clause = " AND ".join(filters)
     return (
         "SELECT "
         "p.id, p.rzrq, p.cjsj, p.account, ep.person_name, "
@@ -507,7 +576,7 @@ def _dataset10_log_detail_sql(question: str) -> str:
         "LEFT JOIN eas_personofile ep ON p.account = ep.person_card "
         "LEFT JOIN sys_dept d ON p.deptcode = d.dept_id "
         "LEFT JOIN project_manager pm ON p.xmid = pm.XMID "
-        "WHERE p.rzrq >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) "
+        f"WHERE {where_clause} "
         f"ORDER BY p.rzrq DESC, p.cjsj DESC LIMIT {limit}"
     )
 
@@ -524,18 +593,31 @@ def _routing_dataset_id(routing: Any) -> int | None:
     return None
 
 
-def _dataset10_log_template_debug(question: str, routing: Any, field_table_assets: list[CandidateAsset]) -> dict[str, Any]:
+def _is_dataset10_log_template_query(question: str, routing: Any) -> bool:
+    return _is_log_detail_query(question) or (
+        _routing_is_detail_query(routing) and _routing_is_filter_refinement(routing)
+    )
+
+
+def _dataset10_log_template_debug(
+    question: str,
+    routing: Any,
+    field_table_assets: list[CandidateAsset],
+) -> dict[str, Any]:
     if _routing_dataset_id(routing) != 10:
         return {}
-    if not _is_log_detail_query(question):
+    if not _is_dataset10_log_template_query(question, routing):
         return {}
     table_names = {_asset_table_name(asset) for asset in field_table_assets}
     if "plan_task_daily_record" not in table_names:
         return {}
+    enable_person_filters = "eas_personofile" in table_names
     return {
         "template_name": "dataset10_log_detail",
         "schema_token_budget": "template_bypass",
-        "sql_template": _dataset10_log_detail_sql(question),
+        "sql_template": _dataset10_log_detail_sql(
+            question, enable_person_filters=enable_person_filters
+        ),
     }
 
 
@@ -570,9 +652,10 @@ def build_fallback_query_plan(
     blueprint_comparison_factors = _blueprint_comparison_factor(blueprints)
     field_table_assets = [asset for asset in assets if asset.asset_type in {"field", "table"}]
     metric_dimension_assets = [asset for asset in assets if asset.asset_type in {"metric", "dimension"}]
-    is_detail_query = _contains_any(question, DETAIL_PATTERNS)
+    is_detail_query = _contains_any(question, DETAIL_PATTERNS) or _routing_is_detail_query(routing)
     is_metric_query = _contains_any(question, METRIC_PATTERNS)
     is_blueprint_query = _contains_any(question, BLUEPRINT_PATTERNS)
+    detail_with_field_context = is_detail_query and bool(field_table_assets)
     planner_source = "fallback" if fallback_reason else "deterministic"
 
     required_inputs = _required_inputs(blueprint, routing)
@@ -584,7 +667,7 @@ def build_fallback_query_plan(
         blueprint=blueprint,
     )
     template_debug = _dataset10_log_template_debug(question, routing, field_table_assets)
-    if is_blueprint_query and blueprint and required_inputs:
+    if is_blueprint_query and blueprint and required_inputs and not detail_with_field_context:
         return QueryPlan(
             query_type="blueprint_query",
             execution_strategy="clarify",
@@ -611,7 +694,7 @@ def build_fallback_query_plan(
             governance_suggestions=common_suggestions,
         )
 
-    if is_blueprint_query and blueprint:
+    if is_blueprint_query and blueprint and not detail_with_field_context:
         return QueryPlan(
             query_type="blueprint_query",
             execution_strategy="blueprint_execute",
@@ -634,7 +717,12 @@ def build_fallback_query_plan(
             governance_suggestions=common_suggestions,
         )
 
-    if is_detail_query and field_table_assets and _is_log_detail_query(question) and _is_daily_blueprint(blueprint):
+    if (
+        is_detail_query
+        and field_table_assets
+        and _is_dataset10_log_template_query(question, routing)
+        and _is_daily_blueprint(blueprint)
+    ):
         template_source = "template" if template_debug and not fallback_reason else planner_source
         rejected_daily_blueprints = [
             _reject_blueprint_for_detail(asset)

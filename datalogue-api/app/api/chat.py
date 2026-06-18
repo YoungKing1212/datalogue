@@ -65,6 +65,7 @@ from app.services.subagent_fanout import (
 )
 from app.services.conversation_store import (
     ConversationStore,
+    THREAD_STATE_KEY,
     pending_clarification_from_final_payload,
     session_key,
 )
@@ -923,6 +924,73 @@ def _has_last_success_task(
     if isinstance(last_success_task_status, dict):
         return last_success_task_status.get("status") == "loaded"
     return has_query_target(_thread_last_success_task(multiturn_context))
+
+
+def _summarize_last_success_task(task: dict | None) -> dict:
+    """生成 last_success_task 日志摘要，避免输出完整 SQL、结果集或大字段。"""
+
+    if not isinstance(task, dict):
+        return {"present": False}
+    selected_fields = task.get("selected_field_refs") or task.get("fields") or []
+    filters = task.get("filters_applied") or task.get("filters") or []
+    metrics = task.get("metrics_applied") or task.get("metrics") or []
+    result_digest = task.get("result_digest") if isinstance(task.get("result_digest"), dict) else {}
+    return {
+        "present": True,
+        "query_type": task.get("query_type"),
+        "dataset_id": task.get("dataset_id"),
+        "schema_version": task.get("schema_version"),
+        "manifest_version": task.get("manifest_version"),
+        "turn_index": task.get("turn_index"),
+        "main_table": task.get("main_table"),
+        "has_query_target": has_query_target(task),
+        "selected_field_count": len(selected_fields) if isinstance(selected_fields, list) else 0,
+        "filter_count": len(filters) if isinstance(filters, list) else 0,
+        "metric_count": len(metrics) if isinstance(metrics, list) else 0,
+        "has_blueprint_hit": bool(task.get("blueprint_hit")),
+        "has_result_ref": bool(task.get("result_ref")),
+        "result_row_count": result_digest.get("row_count"),
+    }
+
+
+def _summarize_conversation_state(
+    state: models.ConversationState | None,
+    *,
+    lead_context: dict | None = None,
+) -> dict:
+    """生成 ConversationState 日志摘要，便于排查跨轮状态是否写入/读取成功。"""
+
+    if state is None:
+        return {"present": False}
+    capsules = dict(state.subagent_capsules or {})
+    thread_state = capsules.get(THREAD_STATE_KEY)
+    thread_state = thread_state if isinstance(thread_state, dict) else {}
+    context = lead_context if isinstance(lead_context, dict) else {}
+    task = context.get("last_success_task") or thread_state.get("last_success_task")
+    messages = state.messages if isinstance(state.messages, list) else []
+    capsule_metas = context.get("capsule_metas") if isinstance(context, dict) else None
+    return {
+        "present": True,
+        "session_id": state.session_id,
+        "user_id": state.user_id,
+        "turn_index": state.turn_index,
+        "active_dataset_id": state.active_dataset_id,
+        "message_count": len(messages),
+        "has_summary": bool(state.compacted_summary),
+        "pending_clarification_kind": (
+            state.pending_clarification.get("kind")
+            if isinstance(state.pending_clarification, dict)
+            else None
+        ),
+        "thread_keys": sorted(thread_state.keys()),
+        "last_success_task_write_status": thread_state.get("last_success_task_write_status"),
+        "last_success_task": _summarize_last_success_task(task),
+        "capsule_meta_keys": (
+            sorted(capsule_metas.keys())
+            if isinstance(capsule_metas, dict)
+            else sorted(k for k in capsules.keys() if k != THREAD_STATE_KEY)
+        ),
+    }
 
 
 def _gateway_lead_context(
@@ -2668,6 +2736,20 @@ def _persist_completed_turn(
         or final_payload.get("resolved_question")
         or payload_question
     )
+    logger.info(
+        "[ConversationState] 准备写入完成轮: session_id=%s, active_dataset_id=%s, "
+        "final_error=%s, entry_route=%s, query_plan_type=%s, has_sql=%s, "
+        "subagent_control_planes=%s",
+        final_session_id,
+        active_dataset_id,
+        final_payload.get("error"),
+        final_payload.get("entry_route"),
+        (final_payload.get("query_plan") or {}).get("query_type")
+        if isinstance(final_payload.get("query_plan"), dict)
+        else None,
+        bool(final_payload.get("sql")),
+        len(control_planes),
+    )
     store.append_completed_turn(
         session_id=final_session_id,
         question=payload_question,
@@ -2745,8 +2827,19 @@ def _persist_completed_turn(
                 final_session_id,
                 exc,
             )
+    logger.info(
+        "[ConversationState] last_success_task 构造结果: session_id=%s, "
+        "write_status=%s, task=%s",
+        final_session_id,
+        json.dumps(last_success_task_write_status, ensure_ascii=False, default=str),
+        json.dumps(
+            _summarize_last_success_task(last_success_task),
+            ensure_ascii=False,
+            default=str,
+        ),
+    )
     if final_payload.get("error") is None and has_query_target(last_success_task):
-        store.update_thread_state(
+        thread_state = store.update_thread_state(
             final_session_id,
             {
                 "last_success_task": last_success_task,
@@ -2755,14 +2848,43 @@ def _persist_completed_turn(
             },
             user_id=user_id,
         )
+        logger.info(
+            "[ConversationState] thread_state 已写入 last_success_task: "
+            "session_id=%s, thread_keys=%s, last_success_task=%s, write_status=%s",
+            final_session_id,
+            sorted(thread_state.keys()),
+            json.dumps(
+                _summarize_last_success_task(thread_state.get("last_success_task")),
+                ensure_ascii=False,
+                default=str,
+            ),
+            json.dumps(
+                thread_state.get("last_success_task_write_status"),
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
     elif final_payload.get("error") is None:
-        store.update_thread_state(
+        thread_state = store.update_thread_state(
             final_session_id,
             {
                 "active_task": None,
                 "last_success_task_write_status": last_success_task_write_status,
             },
             user_id=user_id,
+        )
+        logger.info(
+            "[ConversationState] thread_state 未写入 last_success_task: "
+            "session_id=%s, reason=%s, thread_keys=%s, write_status=%s",
+            final_session_id,
+            last_success_task_write_status.get("reason")
+            or last_success_task_write_status.get("status"),
+            sorted(thread_state.keys()),
+            json.dumps(
+                thread_state.get("last_success_task_write_status"),
+                ensure_ascii=False,
+                default=str,
+            ),
         )
     logger.info(
         "[_stream_chat] 多轮状态已写入: session_id=%s, turn_index=%s, active_dataset_id=%s",
@@ -2792,6 +2914,16 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     user_id = "1"
     lock_owner = f"chat-{uuid.uuid4().hex[:12]}"
     state = store.load_or_create(session_id=business_session_id, user_id=user_id)
+    lead_multiturn_context = store.lead_multiturn_context(state)
+    logger.info(
+        "[ConversationState] 读取会话状态: session_id=%s, summary=%s",
+        business_session_id,
+        json.dumps(
+            _summarize_conversation_state(state, lead_context=lead_multiturn_context),
+            ensure_ascii=False,
+            default=str,
+        ),
+    )
     if not store.acquire_turn_lock(
         session_id=business_session_id,
         lock_owner=lock_owner,
@@ -2820,6 +2952,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         question=payload.question,
         clarification_response=payload.clarification_response,
     )
+    logger.info(
+        "[ConversationState] 澄清解析结果: session_id=%s, pending_resolution=%s",
+        business_session_id,
+        json.dumps(pending_resolution, ensure_ascii=False, default=str),
+    )
     if (
         pending_resolution.get("status") == "resolved"
         and pending_resolution.get("type") == "dataset"
@@ -2843,7 +2980,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         async for event in _stream_chat_singleturn(
             effective_payload,
             db,
-            multiturn_context=store.lead_multiturn_context(state),
+            multiturn_context=lead_multiturn_context,
             conversation_state=state,
             conversation_store=store,
             pending_resolution=pending_resolution,

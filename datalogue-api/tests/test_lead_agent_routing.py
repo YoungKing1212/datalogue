@@ -273,6 +273,39 @@ def test_route_query_intent_work_log_query_routes_to_detail(monkeypatch):
     assert result["answer"] is None
 
 
+def test_route_query_intent_filter_refinement_uses_last_success_task(monkeypatch):
+    """有上一轮成功查询时，姓名过滤追问应继续进入 QueryGraph。"""
+    from app.services import lead_agent_routing
+
+    monkeypatch.setattr(
+        lead_agent_routing,
+        "_invoke_intent_llm",
+        lambda **_: ("query", {}, None, {}),
+    )
+
+    result = route_query_intent(
+        db=None,
+        question="我想看姓名为杨凯的",
+        dataset_id=10,
+        lead_agent_context={},
+        history=[],
+        multiturn_context={
+            "raw": {
+                "last_success_task": {
+                    "dataset_id": 10,
+                    "main_table": "plan_task_daily_record",
+                    "query_type": "detail_query",
+                }
+            }
+        },
+        clarification_response=None,
+    )
+
+    assert result["entry_intent"] == "detail_query"
+    assert result["entry_route"] == "query_graph"
+    assert result["route_payload"]["source"] == "multiturn_filter_refinement"
+
+
 # ===== 7. LLM 失败降级 =====
 
 

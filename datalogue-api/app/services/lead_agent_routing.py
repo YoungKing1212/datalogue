@@ -124,6 +124,8 @@ _AMBIGUOUS_PATTERNS = (
     "看一下",
     "查一下",
 )
+_FILTER_REFINEMENT_FIELDS = ("姓名", "名字", "账号", "账户", "工号", "部门", "项目", "状态")
+_FILTER_REFINEMENT_OPERATORS = ("为", "是", "=", "等于", "叫")
 
 
 # ============================================================
@@ -139,6 +141,48 @@ def _normalized_text(text: str) -> str:
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
     """text 是否包含任一 pattern（已用于 Phase 1/2 builder）。"""
     return any(pattern in text for pattern in patterns)
+
+
+def _has_multiturn_query_context(
+    *,
+    dataset_id: int | None,
+    multiturn_context: dict,
+    lead_agent_context: dict,
+) -> bool:
+    """判断本轮是否有可承接的上一轮查询上下文。"""
+    if dataset_id is None:
+        return False
+
+    contexts = [multiturn_context, lead_agent_context.get("thread_context")]
+    for context in contexts:
+        if not isinstance(context, dict):
+            continue
+        raw = context.get("raw") if isinstance(context.get("raw"), dict) else {}
+        last_success_task = context.get("last_success_task") or raw.get("last_success_task")
+        if isinstance(last_success_task, dict) and last_success_task.get("query_type"):
+            return True
+        classification = context.get("multiturn_classification") or raw.get(
+            "multiturn_classification"
+        )
+        if isinstance(classification, dict) and classification.get("intent") == "continue":
+            return True
+    return False
+
+
+def _looks_like_filter_refinement(question: str) -> bool:
+    """识别“姓名为XX”这类承接上一轮结果的字段过滤短追问。"""
+    q_norm = _normalized_text(question)
+    if not q_norm:
+        return False
+    for field in _FILTER_REFINEMENT_FIELDS:
+        if field not in q_norm:
+            continue
+        field_index = q_norm.find(field)
+        suffix = q_norm[field_index + len(field) :]
+        for operator in _FILTER_REFINEMENT_OPERATORS:
+            if suffix.startswith(operator):
+                return bool(suffix[len(operator) :])
+    return False
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -676,6 +720,27 @@ def _classify_entry_intent(
             "entry_route": "query_graph",
             "entry_reason": "问题命中指标/统计类查询语义，继续 NL2SQL。",
             "route_payload": {"kind": "metric_query"},
+            "blueprint_id": None,
+            "blueprint_match": None,
+            "knowledge_term_id": None,
+            "answer": None,
+        }
+
+    if _has_multiturn_query_context(
+        dataset_id=dataset_id,
+        multiturn_context=multiturn_context,
+        lead_agent_context=lead_agent_context,
+    ) and _looks_like_filter_refinement(question):
+        return {
+            "intent": intent,
+            "entities": entities,
+            "entry_intent": "detail_query",
+            "entry_route": "query_graph",
+            "entry_reason": "已继承上一轮查询上下文，本轮命中字段过滤追问，继续 NL2SQL。",
+            "route_payload": {
+                "kind": "detail_query",
+                "source": "multiturn_filter_refinement",
+            },
             "blueprint_id": None,
             "blueprint_match": None,
             "knowledge_term_id": None,
