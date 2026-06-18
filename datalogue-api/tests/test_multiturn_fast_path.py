@@ -7,6 +7,7 @@ from app.services.multiturn.query_artifacts import (
     evaluate_query_artifact,
 )
 from app.services.multiturn.refinement_fast_path import plan_refinement_fast_path
+from app.services.artifact_store import ArtifactStore
 
 
 def setup_function():
@@ -37,6 +38,51 @@ def test_query_artifact_keeps_metadata_outside_last_success_task_payload():
     assert artifact["display_summary"] == "完整结果，1 行，2 列"
 
 
+def test_query_artifact_restores_from_db_artifact_when_hot_cache_misses(db_session):
+    store = ArtifactStore(db_session, ttl_seconds=3600, cleanup_interval_seconds=3600)
+    artifact = build_query_result_artifact(
+        question="查询日志",
+        dataset_id=10,
+        sql="SELECT name, amount FROM orders",
+        sql_result={
+            "columns": ["name", "amount"],
+            "rows": [{"name": "汤杰", "amount": 20}],
+            "row_count": 1,
+        },
+        schema_version="schema-v1",
+        manifest_version="manifest-v1",
+        artifact_store=store,
+        conversation_id=20,
+        trace_id="trace-1",
+    )
+    assert artifact is not None
+    assert artifact["artifact_ref"].startswith("artifact:")
+    clear_query_artifact_cache()
+
+    hot_artifact, status = evaluate_query_artifact(artifact, artifact_store=store)
+
+    assert status["status"] == "eligible"
+    assert status["cache_source"] == "db_artifact"
+    assert hot_artifact["rows"][0]["name"] == "汤杰"
+    assert hot_artifact["artifact_ref"] == artifact["artifact_ref"]
+
+
+def test_query_artifact_without_db_ref_fails_closed_after_hot_cache_miss():
+    artifact = build_query_result_artifact(
+        question="查询日志",
+        dataset_id=10,
+        sql="SELECT name FROM orders",
+        sql_result={"columns": ["name"], "rows": [{"name": "汤杰"}], "row_count": 1},
+    )
+    clear_query_artifact_cache()
+
+    hot_artifact, status = evaluate_query_artifact(artifact)
+
+    assert hot_artifact is None
+    assert status["status"] == "miss"
+    assert status["cache_source"] == "cache_miss"
+
+
 def test_query_artifact_limit_sql_is_not_eligible_for_local_filter():
     artifact = build_query_result_artifact(
         question="查询10条日志",
@@ -65,6 +111,31 @@ def test_query_artifact_ttl_expired_fails_closed():
 
     _, status = evaluate_query_artifact(artifact, now=now + timedelta(seconds=61))
 
+    assert status["status"] == "expired"
+    assert status["reason"] == "ttl_expired"
+
+
+def test_query_artifact_db_fallback_respects_metadata_ttl(db_session):
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+    store = ArtifactStore(db_session, ttl_seconds=3600, cleanup_interval_seconds=3600)
+    artifact = build_query_result_artifact(
+        question="查询日志",
+        dataset_id=10,
+        sql="SELECT name FROM orders",
+        sql_result={"columns": ["name"], "rows": [{"name": "汤杰"}], "row_count": 1},
+        ttl_seconds=60,
+        now=now,
+        artifact_store=store,
+    )
+    clear_query_artifact_cache()
+
+    hot_artifact, status = evaluate_query_artifact(
+        artifact,
+        now=now + timedelta(seconds=61),
+        artifact_store=store,
+    )
+
+    assert hot_artifact is None
     assert status["status"] == "expired"
     assert status["reason"] == "ttl_expired"
 

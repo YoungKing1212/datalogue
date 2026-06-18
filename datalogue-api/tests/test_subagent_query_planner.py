@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from app.services.observability.context import (
     ObservabilityRequestContext,
@@ -777,3 +778,30 @@ def test_planner_human_prompt_truncates_nested_asset_text():
     assert len(prompt_asset["metadata"]["parameters"][0]["default"]) <= 123
     assert long_description not in prompt
     assert long_signal not in prompt
+
+
+def test_planner_human_prompt_uses_configured_prompt_limits(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_settings",
+        lambda: SimpleNamespace(
+            SUBAGENT_PLANNER_PROMPT_ASSET_LIMIT=1,
+            SUBAGENT_PLANNER_PROMPT_TEXT_LIMIT=8,
+            SUBAGENT_PLANNER_PROMPT_LIST_LIMIT=1,
+        ),
+    )
+
+    first_asset = _blueprint(parameters=[{"name": "first", "description": "说明" * 20}]).to_dict()
+    first_asset["match_reason"] = "匹配原因" * 20
+    second_asset = _blueprint(asset_id="bp-2", name="second").to_dict()
+
+    prompt = _planner_human_prompt(
+        question="查一下日报",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": [first_asset, second_asset]},
+    )
+    payload = json.loads(prompt)
+
+    assert len(payload["candidate_assets"]) == 1
+    assert len(payload["candidate_assets"][0]["match_reason"]) <= 8
+    assert len(payload["candidate_assets"][0]["metadata"]["parameters"]) == 1
+    assert "second" not in prompt

@@ -59,6 +59,20 @@ def _ok_final_state() -> dict:
             "rows": [{"rzrq": "2026-06-17"}, {"rzrq": "2026-06-18"}],
             "row_count": 2,
         },
+        "result_artifact": {
+            "version": "query_result_artifact.v1",
+            "result_ref": "result:hot-cache",
+            "artifact_ref": "artifact:sql_result:json",
+            "report_id": "report:answer",
+            "cache_backend": "memory_redis_compatible",
+            "ttl_seconds": 1800,
+            "expires_at": "2026-06-18T12:00:00+00:00",
+            "complete": True,
+            "completeness_reason": "complete_result",
+            "display_summary": "完整结果，2 行，1 列",
+            "row_count": 2,
+            "columns": ["rzrq"],
+        },
         "bound_schema_version": "schema-v1",
         "manifest_version": "manifest-v1",
     }
@@ -78,6 +92,29 @@ def test_assemble_ok_builds_llm_visible_and_control_plane():
     assert result.control_plane.last_success_task["dataset_id"] == 10
     assert result.control_plane.last_success_task["query_type"] == "detail_query"
     assert result.control_plane.last_success_task["result_digest"]["row_count"] == 2
+    assert result.control_plane.last_success_task["result_ref"] == "result:hot-cache"
+    assert (
+        result.control_plane.last_success_task["result_artifact"]["artifact_ref"]
+        == "artifact:sql_result:json"
+    )
+    assert "rows" not in result.control_plane.last_success_task["result_artifact"]
+
+
+def test_control_plane_last_success_task_uses_configured_budget(monkeypatch):
+    class LowBudgetSettings:
+        MULTITURN_LAST_SUCCESS_TASK_MAX_TOKENS = 1
+
+    monkeypatch.setattr(
+        "app.services.subagent_tool_adapter.get_settings",
+        lambda: LowBudgetSettings(),
+    )
+
+    result = SubAgentToolAdapter().assemble_from_final_state(
+        _invocation(),
+        _ok_final_state(),
+    )
+
+    assert result.control_plane.last_success_task is None
 
 
 def test_assemble_empty_result_is_not_error():
@@ -175,8 +212,13 @@ def test_assemble_writes_large_outputs_to_artifact_refs():
     assert result.llm_visible.report_ref == "artifact:report:text"
     assert result.control_plane.result_ref == "artifact:sql_result:json"
     assert result.control_plane.report_ref == "artifact:report:text"
-    assert result.control_plane.last_success_task["result_ref"] == "artifact:sql_result:json"
+    assert result.control_plane.last_success_task["result_ref"] == "result:hot-cache"
+    assert (
+        result.control_plane.last_success_task["result_artifact"]["artifact_ref"]
+        == "artifact:sql_result:json"
+    )
     assert "rows" not in result.control_plane.last_success_task["result_digest"]
+    assert "rows" not in result.control_plane.last_success_task["result_artifact"]
     assert store.calls[0]["kind"] == "sql_result"
     assert store.calls[0]["dataset_id"] == 10
     assert store.calls[0]["conversation_id"] == 20

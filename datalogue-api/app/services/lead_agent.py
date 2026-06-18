@@ -35,12 +35,12 @@ from app.services.dataset_router import route_dataset_for_question
 from app.services.lead_agent_planning.asset_filter import filter_lead_planner_assets
 from app.services.lead_agent_planning.asset_filter_config import build_filter_config
 from app.services.lead_agent_planner_projection import (
-    DEFAULT_MAX_PRIOR_TURNS,
     PROJECTION_SCHEMA_VERSION,
     build_projection_metrics,
     build_skill_selector_input,
     build_tool_planner_input,
     project_assets_for_lead_planner,
+    projection_max_prior_turns,
 )
 from app.services.llm_config import resolve_llm_config
 from app.services.multiturn_context import MergeDecision, MultiturnContextBuilder
@@ -720,7 +720,7 @@ def _build_projection_recent_context(
 
     prior_turns = conversation_summary.get("prior_turns") or conversation_summary.get("history")
     if isinstance(prior_turns, list | tuple):
-        recent["prior_turns"] = list(prior_turns)[-DEFAULT_MAX_PRIOR_TURNS:]
+        recent["prior_turns"] = list(prior_turns)[-projection_max_prior_turns():]
 
     raw_multiturn_context = conversation_summary.get("multiturn_context")
     multiturn_context = raw_multiturn_context if isinstance(raw_multiturn_context, dict) else {}

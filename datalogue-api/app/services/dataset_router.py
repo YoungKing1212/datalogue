@@ -19,12 +19,27 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app import models
+from app.core.config import get_settings
 from app.services.dataset_manifest import score_manifest_question
 
 
 AUTO_SELECT_THRESHOLD = 0.65
 AUTO_SELECT_MARGIN = 0.12
 MAX_CANDIDATES = 3
+
+
+def _settings_float(name: str, default: float) -> float:
+    try:
+        return float(getattr(get_settings(), name, default) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _settings_int(name: str, default: int) -> int:
+    try:
+        return int(getattr(get_settings(), name, default) or default)
+    except (TypeError, ValueError):
+        return default
 
 
 def route_dataset_for_question(
@@ -64,9 +79,16 @@ def route_dataset_for_question(
     top = candidates[0]
     second = candidates[1] if len(candidates) > 1 else None
     margin = top["score"] - (second["score"] if second else 0)
-    visible_candidates = candidates[:MAX_CANDIDATES]
+    auto_select_threshold = _settings_float(
+        "DATASET_ROUTER_AUTO_SELECT_THRESHOLD", AUTO_SELECT_THRESHOLD
+    )
+    auto_select_margin = _settings_float(
+        "DATASET_ROUTER_AUTO_SELECT_MARGIN", AUTO_SELECT_MARGIN
+    )
+    max_candidates = _settings_int("DATASET_ROUTER_MAX_CANDIDATES", MAX_CANDIDATES)
+    visible_candidates = candidates[:max_candidates]
 
-    if top["score"] >= AUTO_SELECT_THRESHOLD and margin >= AUTO_SELECT_MARGIN:
+    if top["score"] >= auto_select_threshold and margin >= auto_select_margin:
         return {
             "decision": "selected",
             "dataset_id": top["dataset_id"],
@@ -77,7 +99,7 @@ def route_dataset_for_question(
             "reason": "Manifest 路由证据明确，自动选择得分最高的数据集。",
         }
 
-    if top["score"] >= AUTO_SELECT_THRESHOLD:
+    if top["score"] >= auto_select_threshold:
         return {
             "decision": "ambiguous",
             "dataset_id": None,

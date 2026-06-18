@@ -29,7 +29,7 @@ from app.services.subagent_planning.contracts import (
 from app.utils.token import estimate_text_tokens
 
 CAPSULE_VERSION = "last_success_task.v1"
-MAX_LAST_SUCCESS_TASK_TOKENS = 2000
+DEFAULT_LAST_SUCCESS_TASK_MAX_TOKENS = 2000
 _SQL_FROM_RE = re.compile(r"(?is)\bfrom\s+([`\"\[]?)(?P<table>[\w.]+)\1")
 
 
@@ -109,7 +109,6 @@ class LastSuccessTask(BaseModel):
     sql_hash: str | None = None
     result_ref: str | None = None
     result_digest: dict[str, Any] = Field(default_factory=dict)
-    result_ref: str | None = None
     report_id: str | None = None
     display_summary: str | None = None
     result_artifact: dict[str, Any] = Field(default_factory=dict)
@@ -139,7 +138,7 @@ class LastSuccessTask(BaseModel):
     def estimated_tokens(self) -> int:
         return estimate_text_tokens(self.model_dump_json(exclude_none=True))
 
-    def ensure_size(self, *, max_tokens: int = MAX_LAST_SUCCESS_TASK_TOKENS) -> None:
+    def ensure_size(self, *, max_tokens: int = DEFAULT_LAST_SUCCESS_TASK_MAX_TOKENS) -> None:
         estimated = self.estimated_tokens()
         if estimated > max_tokens:
             raise CapsuleSizeExceededError(estimated, max_tokens)
@@ -205,7 +204,7 @@ def build_last_success_task(
     manifest_version: str | None = None,
     turn_index: int | None = None,
     result_artifact: dict[str, Any] | None = None,
-    max_tokens: int = MAX_LAST_SUCCESS_TASK_TOKENS,
+    max_tokens: int = DEFAULT_LAST_SUCCESS_TASK_MAX_TOKENS,
 ) -> dict[str, Any]:
     """从本轮最终状态抽取严格白名单的 last_success_task。"""
 
@@ -232,7 +231,6 @@ def build_last_success_task(
         time_window=_extract_time_window(dsl_payload),
         metrics_applied=_extract_list(dsl_payload, "metrics", "metric_clauses"),
         sql_hash=_hash_sql(sql),
-        result_ref=result_ref,
         result_digest=minimal_result_digest(sql_result),
         result_ref=_artifact_value(result_artifact, "result_ref"),
         report_id=_artifact_value(result_artifact, "report_id"),
@@ -348,6 +346,7 @@ def _safe_artifact_metadata(artifact: dict[str, Any] | None) -> dict[str, Any]:
     allowed_keys = {
         "version",
         "result_ref",
+        "artifact_ref",
         "report_id",
         "cache_backend",
         "ttl_seconds",

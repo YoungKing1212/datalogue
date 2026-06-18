@@ -34,11 +34,22 @@ from app.models.dataset import (
 )
 from app.utils.query_constraints import normalize_query_constraints, render_query_constraints_instruction
 from app.utils.schema_formatter import ROLE_CODE, UNUSED_ROLES, estimate_tokens, _is_enum_dim
+from app.core.config import get_settings
 from app.services.datasource import build_datasource_context
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_TOKEN_BUDGET = 4000
+
+
+def _context_token_budget() -> int:
+    try:
+        return int(
+            getattr(get_settings(), "DATASET_CONTEXT_TOKEN_BUDGET", DEFAULT_CONTEXT_TOKEN_BUDGET)
+            or DEFAULT_CONTEXT_TOKEN_BUDGET
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_CONTEXT_TOKEN_BUDGET
 
 
 @dataclass
@@ -436,7 +447,7 @@ def _trim_entries(
     token_budget: int,
 ) -> tuple[list[ContextEntry], dict[str, Any]]:
     """按预算裁剪上下文条目，命中资产优先。"""
-    budget = max(200, int(token_budget or DEFAULT_CONTEXT_TOKEN_BUDGET))
+    budget = max(200, int(token_budget or _context_token_budget()))
     fixed_tokens = _estimate_tokens(fixed_text)
     sorted_entries = sorted(
         entries,
@@ -571,7 +582,7 @@ def build_dataset_query_context(
     question: str = "",
     blueprint_context: str = "",
     matched_assets: dict[str, Any] | None = None,
-    token_budget: int = DEFAULT_CONTEXT_TOKEN_BUDGET,
+    token_budget: int | None = None,
 ) -> dict[str, Any]:
     """组装数据集问数上下文。
 

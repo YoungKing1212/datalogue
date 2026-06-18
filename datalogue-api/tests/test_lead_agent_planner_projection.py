@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from app.core.config import Settings
@@ -22,6 +23,26 @@ class DataclassSkill:
 
 def test_projection_feature_flag_defaults_off():
     assert Settings.model_fields["LEAD_AGENT_PLANNER_USE_PROJECTION"].default is False
+
+
+def test_projection_recent_context_uses_configured_prior_turn_limit(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.lead_agent_planner_projection.get_settings",
+        lambda: SimpleNamespace(LEAD_AGENT_PLANNER_PROJECTION_MAX_PRIOR_TURNS=1),
+    )
+
+    projected = build_skill_selector_input(
+        question="查询日志",
+        candidate_skills=[],
+        recent_context={
+            "prior_turns": [
+                {"question": "第一轮", "row_count": 1},
+                {"question": "第二轮", "row_count": 2},
+            ]
+        },
+    )
+
+    assert projected["recent_context"]["prior_turns"] == [{"question": "第二轮", "row_count": 2}]
 
 
 def test_project_skills_for_selector_keeps_only_stable_fields():

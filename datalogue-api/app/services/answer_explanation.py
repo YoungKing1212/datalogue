@@ -20,11 +20,26 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
+from app.core.config import get_settings
 from app.graph.state import AgentState
 from app.schemas.dsl import get_dsl_item_name, normalize_dsl
 
 
 LOW_CONFIDENCE_THRESHOLD = 0.75
+
+
+def _low_confidence_threshold() -> float:
+    try:
+        value = float(
+            getattr(
+                get_settings(),
+                "ANSWER_EXPLANATION_LOW_CONFIDENCE_THRESHOLD",
+                LOW_CONFIDENCE_THRESHOLD,
+            )
+        )
+    except (TypeError, ValueError):
+        return LOW_CONFIDENCE_THRESHOLD
+    return value if 0 < value < 1 else LOW_CONFIDENCE_THRESHOLD
 
 
 def _clean_text(value: Any) -> str:
@@ -257,6 +272,7 @@ def _risk_items(state: AgentState, sql_summary: dict[str, Any]) -> list[dict[str
 def _confidence(state: AgentState, risks: list[dict[str, str]], dsl: dict[str, Any]) -> dict[str, Any]:
     """计算回答置信度。"""
     score = 0.92
+    threshold = _low_confidence_threshold()
     reasons: list[str] = []
     risk_codes = {item["code"] for item in risks}
 
@@ -281,7 +297,7 @@ def _confidence(state: AgentState, risks: list[dict[str, str]], dsl: dict[str, A
     dsl_confidence = dsl.get("confidence")
     if isinstance(dsl_confidence, int | float):
         score = min(score, float(dsl_confidence))
-        if dsl_confidence < LOW_CONFIDENCE_THRESHOLD:
+        if dsl_confidence < threshold:
             reasons.append("DSL 生成置信度偏低")
 
     if (state.get("semantic_asset_resolution") or {}).get("ambiguities"):
@@ -292,7 +308,7 @@ def _confidence(state: AgentState, risks: list[dict[str, str]], dsl: dict[str, A
         score = min(score, 0.45)
 
     score = round(max(0.05, min(score, 0.99)), 2)
-    if score < LOW_CONFIDENCE_THRESHOLD:
+    if score < threshold:
         level = "low"
     elif score < 0.88:
         level = "medium"
@@ -302,7 +318,7 @@ def _confidence(state: AgentState, risks: list[dict[str, str]], dsl: dict[str, A
     return {
         "score": score,
         "level": level,
-        "threshold": LOW_CONFIDENCE_THRESHOLD,
+        "threshold": threshold,
         "reasons": _dedupe(reasons) or ["语义资产和 SQL 执行链路未发现明显风险"],
     }
 

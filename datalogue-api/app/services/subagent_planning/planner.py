@@ -21,6 +21,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.core.config import get_settings
 from app.graph.llm import get_llm
 from app.services.observability.context import current_observability_context
 from app.services.observability.tracer import get_observability_tracer
@@ -120,6 +121,34 @@ def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
 
 
 CandidateAssetInput = list[dict[str, Any] | CandidateAsset] | dict[str, Any] | None
+
+
+def _settings_int(name: str, default: int) -> int:
+    try:
+        value = int(getattr(get_settings(), name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _prompt_asset_limit() -> int:
+    return _settings_int("SUBAGENT_PLANNER_PROMPT_ASSET_LIMIT", PROMPT_ASSET_LIMIT)
+
+
+def _prompt_text_limit() -> int:
+    return _settings_int("SUBAGENT_PLANNER_PROMPT_TEXT_LIMIT", PROMPT_TEXT_LIMIT)
+
+
+def _prompt_list_limit() -> int:
+    return _settings_int("SUBAGENT_PLANNER_PROMPT_LIST_LIMIT", PROMPT_LIST_LIMIT)
+
+
+def _public_text_limit() -> int:
+    return _settings_int("SUBAGENT_PLANNER_PUBLIC_TEXT_LIMIT", PUBLIC_TEXT_LIMIT)
+
+
+def _public_list_limit() -> int:
+    return _settings_int("SUBAGENT_PLANNER_PUBLIC_LIST_LIMIT", PUBLIC_LIST_LIMIT)
 
 
 def _asset_items(candidate_assets: CandidateAssetInput) -> list[dict[str, Any] | CandidateAsset]:
@@ -811,9 +840,12 @@ def _compact_error_text(exc: Exception, max_length: int = 200) -> str:
     return f"{text[: max_length - 3]}..."
 
 
-def _truncate_text(value: str, max_length: int = PROMPT_TEXT_LIMIT) -> str:
+def _truncate_text(value: str, max_length: int | None = None) -> str:
+    max_length = max_length or _prompt_text_limit()
     if len(value) <= max_length:
         return value
+    if max_length <= 3:
+        return value[:max_length]
     return f"{value[: max_length - 3]}..."
 
 
@@ -825,11 +857,11 @@ def _compact_prompt_value(value: Any, *, depth: int = 0) -> Any:
     if depth >= PROMPT_DEPTH_LIMIT:
         return _truncate_text(str(value))
     if isinstance(value, list):
-        return [_compact_prompt_value(item, depth=depth + 1) for item in value[:PROMPT_LIST_LIMIT]]
+        return [_compact_prompt_value(item, depth=depth + 1) for item in value[:_prompt_list_limit()]]
     if isinstance(value, dict):
         return {
             str(key): _compact_prompt_value(item, depth=depth + 1)
-            for key, item in list(value.items())[:PROMPT_LIST_LIMIT]
+            for key, item in list(value.items())[:_prompt_list_limit()]
         }
     return _truncate_text(str(value))
 
@@ -843,7 +875,7 @@ def _detail_loop_public_text(value: str) -> str:
     normalized = value.lower()
     if any(marker in normalized for marker in DETAIL_LOOP_DANGEROUS_TEXT_MARKERS):
         return "[removed_detail_context]"
-    return _truncate_text(value, PUBLIC_TEXT_LIMIT)
+    return _truncate_text(value, _public_text_limit())
 
 
 def _sanitize_public_value(value: Any, *, depth: int = 0) -> Any:
@@ -855,7 +887,7 @@ def _sanitize_public_value(value: Any, *, depth: int = 0) -> Any:
         return _detail_loop_public_text(str(value))
     if isinstance(value, list):
         sanitized_items = []
-        for item in value[:PUBLIC_LIST_LIMIT]:
+        for item in value[:_public_list_limit()]:
             sanitized = _sanitize_public_value(item, depth=depth + 1)
             if sanitized not in (None, "", [], {}):
                 sanitized_items.append(sanitized)
@@ -881,7 +913,7 @@ def _sanitize_public_dict_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     sanitized_items = []
-    for item in value[:PUBLIC_LIST_LIMIT]:
+    for item in value[:_public_list_limit()]:
         sanitized = _sanitize_public_value(item)
         if isinstance(sanitized, dict) and sanitized:
             sanitized_items.append(sanitized)
@@ -892,7 +924,7 @@ def _sanitize_public_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     sanitized_items = []
-    for item in value[:PUBLIC_LIST_LIMIT]:
+    for item in value[:_public_list_limit()]:
         sanitized = _sanitize_public_value(item)
         if sanitized not in (None, "", [], {}):
             sanitized_items.append(str(sanitized))
@@ -954,7 +986,7 @@ def _rebuild_detail_loop_assets(
     lightweight_assets: dict[tuple[str, str], dict[str, Any]],
 ) -> list[CandidateAsset]:
     rebuilt = []
-    for asset in assets[:PUBLIC_LIST_LIMIT]:
+    for asset in assets[:_public_list_limit()]:
         rebuilt.append(
             _rebuild_detail_loop_asset(
                 asset,
@@ -1154,7 +1186,7 @@ def _planner_human_prompt(
             "total": len(assets),
             "counts_by_type": asset_counts,
         },
-        "candidate_assets": assets[:PROMPT_ASSET_LIMIT],
+        "candidate_assets": assets[:_prompt_asset_limit()],
         "multiturn_context": _multiturn_summary(multiturn_context),
         "lead_agent_context_summary": _lead_agent_context_summary(lead_agent_context),
         "rules": rules,

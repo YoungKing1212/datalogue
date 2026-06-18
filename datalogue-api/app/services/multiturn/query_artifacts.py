@@ -41,8 +41,11 @@ def build_query_result_artifact(
     manifest_version: str | None = None,
     ttl_seconds: int = DEFAULT_ARTIFACT_TTL_SECONDS,
     now: datetime | None = None,
+    artifact_store: Any | None = None,
+    conversation_id: int | None = None,
+    trace_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """生成上一轮结果 artifact，并写入短 TTL 热缓存。"""
+    """生成上一轮结果 artifact，并写入短 TTL 热缓存和可选 DB 兜底。"""
 
     if not isinstance(sql_result, dict) or not sql_result:
         return None
@@ -75,9 +78,17 @@ def build_query_result_artifact(
     payload["result_ref"] = result_ref
     payload["report_id"] = report_id
     _HOT_CACHE[result_ref] = payload
+    artifact_ref = _persist_artifact(
+        artifact_store,
+        payload=payload,
+        dataset_id=dataset_id,
+        conversation_id=conversation_id,
+        trace_id=trace_id,
+    )
     return {
         "version": ARTIFACT_VERSION,
         "result_ref": result_ref,
+        "artifact_ref": artifact_ref,
         "report_id": report_id,
         "cache_backend": "memory_redis_compatible",
         "ttl_seconds": ttl,
@@ -94,6 +105,7 @@ def evaluate_query_artifact(
     metadata: dict[str, Any] | None,
     *,
     now: datetime | None = None,
+    artifact_store: Any | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """校验 result_ref 是否仍可用于多轮快速路径。"""
 
@@ -102,12 +114,44 @@ def evaluate_query_artifact(
     result_ref = str(metadata["result_ref"])
     artifact = _HOT_CACHE.get(result_ref)
     if not artifact:
+        if _metadata_expired(metadata, now=now):
+            return None, {
+                "status": "expired",
+                "reason": "ttl_expired",
+                "result_ref": result_ref,
+                "expired_at": str(metadata.get("expires_at")),
+                "cache_source": "cache_miss",
+            }
+        artifact = _load_artifact_from_store(
+            artifact_store,
+            metadata=metadata,
+            result_ref=result_ref,
+        )
+        if artifact:
+            _HOT_CACHE[result_ref] = artifact
+            return _evaluate_hot_artifact(
+                artifact,
+                result_ref=result_ref,
+                now=now,
+                source="db_artifact",
+            )
         return None, {
             "status": "miss",
             "reason": "cache_miss",
             "result_ref": result_ref,
             "cache_backend": metadata.get("cache_backend") or "memory_redis_compatible",
+            "cache_source": "cache_miss",
         }
+    return _evaluate_hot_artifact(artifact, result_ref=result_ref, now=now, source="hot_cache")
+
+
+def _evaluate_hot_artifact(
+    artifact: dict[str, Any],
+    *,
+    result_ref: str,
+    now: datetime | None,
+    source: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     expires_at = _parse_dt(artifact.get("expires_at"))
     now_utc = _utc(now)
     if expires_at and expires_at <= now_utc:
@@ -117,6 +161,7 @@ def evaluate_query_artifact(
             "reason": "ttl_expired",
             "result_ref": result_ref,
             "expired_at": expires_at.isoformat(),
+            "cache_source": source,
         }
     if not artifact.get("complete"):
         return artifact, {
@@ -124,6 +169,7 @@ def evaluate_query_artifact(
             "reason": artifact.get("completeness_reason") or "result_not_complete",
             "result_ref": result_ref,
             "complete": False,
+            "cache_source": source,
         }
     return artifact, {
         "status": "eligible",
@@ -133,6 +179,7 @@ def evaluate_query_artifact(
         "expires_at": artifact.get("expires_at"),
         "row_count": artifact.get("row_count"),
         "columns": artifact.get("columns") or [],
+        "cache_source": source,
     }
 
 
@@ -173,6 +220,62 @@ def clear_query_artifact_cache() -> None:
     """清理测试和本地开发中的进程内热缓存。"""
 
     _HOT_CACHE.clear()
+
+
+def _persist_artifact(
+    artifact_store: Any | None,
+    *,
+    payload: dict[str, Any],
+    dataset_id: int | None,
+    conversation_id: int | None,
+    trace_id: str | None,
+) -> str | None:
+    if artifact_store is None:
+        return None
+    try:
+        return artifact_store.put_json(
+            kind="sql_result",
+            payload=payload,
+            dataset_id=dataset_id,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+        )
+    except Exception:
+        return None
+
+
+def _load_artifact_from_store(
+    artifact_store: Any | None,
+    *,
+    metadata: dict[str, Any],
+    result_ref: str,
+) -> dict[str, Any] | None:
+    if artifact_store is None:
+        return None
+    artifact_ref = metadata.get("artifact_ref")
+    if not isinstance(artifact_ref, str) or not artifact_ref.startswith("artifact:"):
+        return None
+    try:
+        row = artifact_store.get(artifact_ref)
+    except Exception:
+        return None
+    if row is None:
+        return None
+    payload = getattr(row, "content_json", None)
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("result_ref") and str(payload.get("result_ref")) != result_ref:
+        return None
+    payload = jsonable_encoder(payload)
+    payload["result_ref"] = result_ref
+    if metadata.get("artifact_ref"):
+        payload["artifact_ref"] = metadata.get("artifact_ref")
+    return payload
+
+
+def _metadata_expired(metadata: dict[str, Any], *, now: datetime | None) -> bool:
+    expires_at = _parse_dt(metadata.get("expires_at"))
+    return bool(expires_at and expires_at <= _utc(now))
 
 
 def _result_complete(*, sql: str | None, sql_result: dict[str, Any]) -> tuple[bool, str]:

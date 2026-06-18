@@ -19,11 +19,7 @@ from typing import Any
 
 import logging
 
-from app.graph.state import AgentState
-
-logger = logging.getLogger(__name__)
-
-DEFAULT_MAX_SQL_RETRY_COUNT = 3
+from app.core.config import get_settings
 from app.graph.nodes import (
     lead_agent_node,
     schema_recall_node,
@@ -34,6 +30,19 @@ from app.graph.nodes import (
     sql_audit_node,
     report_generator_node,
 )
+from app.graph.state import AgentState
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_SQL_RETRY_COUNT = 3
+
+
+def _sql_max_retry_count() -> int:
+    try:
+        value = int(getattr(get_settings(), "SQL_MAX_RETRY_COUNT", DEFAULT_MAX_SQL_RETRY_COUNT))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_SQL_RETRY_COUNT
+    return value if value > 0 else DEFAULT_MAX_SQL_RETRY_COUNT
 
 
 def _lead_agent_router(state: AgentState) -> str:
@@ -72,7 +81,7 @@ def _dsl_validation_router(state: AgentState) -> str:
     if state.get("should_retry") is False:
         return "end"
     retry = state.get("retry_count", 0)
-    max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
+    max_retry = state.get("max_retry_count", _sql_max_retry_count())
     if retry < max_retry:
         return "retry"
     return "end"
@@ -106,7 +115,7 @@ def _sql_audit_router(state: AgentState) -> str:
     if audit.get("retryable") is False or audit.get("severity") == "architectural":
         return "end"
     retry = state.get("retry_count", 0)
-    max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
+    max_retry = state.get("max_retry_count", _sql_max_retry_count())
     if retry >= max_retry:
         return "end"
     return "retry"

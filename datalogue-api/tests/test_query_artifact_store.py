@@ -23,6 +23,7 @@ from app.services.artifact_store import (
     ArtifactPayloadTooLargeError,
     ArtifactStore,
 )
+from app.services.multiturn.query_artifacts import build_query_result_artifact
 
 
 def test_put_json_and_get_roundtrip(db_session):
@@ -50,6 +51,36 @@ def test_put_json_and_get_roundtrip(db_session):
     assert artifact.conversation_id == 20
     assert artifact.content_json["row_count"] == 1
     assert artifact.expires_at > datetime.now(UTC)
+
+
+def test_query_result_artifact_persists_full_payload_for_db_fallback(db_session):
+    store = ArtifactStore(
+        db_session,
+        ttl_seconds=60,
+        max_bytes=4096,
+        cleanup_interval_seconds=3600,
+    )
+
+    metadata = build_query_result_artifact(
+        question="查询日志",
+        dataset_id=10,
+        sql="SELECT name FROM orders",
+        sql_result={"columns": ["name"], "rows": [{"name": "张三"}], "row_count": 1},
+        artifact_store=store,
+        conversation_id=20,
+        trace_id="trace-1",
+    )
+    artifact = store.get(metadata["artifact_ref"])
+
+    assert metadata["artifact_ref"].startswith("artifact:")
+    assert artifact is not None
+    assert artifact.kind == "sql_result"
+    assert artifact.dataset_id == 10
+    assert artifact.conversation_id == 20
+    assert artifact.trace_id == "trace-1"
+    assert artifact.content_json["result_ref"] == metadata["result_ref"]
+    assert artifact.content_json["rows"] == [{"name": "张三"}]
+    assert artifact.content_json["complete"] is True
 
 
 def test_purge_expired_deletes_only_expired_artifacts(db_session):

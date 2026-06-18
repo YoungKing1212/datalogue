@@ -66,6 +66,30 @@ REPORT_CELL_MAX_CHARS = 120
 DSL_FIELD_CATALOG_LIMIT = 20
 
 
+def _settings_int(name: str, default: int) -> int:
+    try:
+        value = int(getattr(get_settings(), name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _sql_max_retry_count() -> int:
+    return _settings_int("SQL_MAX_RETRY_COUNT", DEFAULT_MAX_SQL_RETRY_COUNT)
+
+
+def _report_result_max_rows() -> int:
+    return _settings_int("REPORT_RESULT_MAX_ROWS", REPORT_RESULT_MAX_ROWS)
+
+
+def _report_cell_max_chars() -> int:
+    return _settings_int("REPORT_CELL_MAX_CHARS", REPORT_CELL_MAX_CHARS)
+
+
+def _dsl_field_catalog_limit() -> int:
+    return _settings_int("DSL_FIELD_CATALOG_LIMIT", DSL_FIELD_CATALOG_LIMIT)
+
+
 def _strip_think_blocks(text: str) -> str:
     """移除模型泄露的思考标签，避免最终回答和 trace 被推理草稿污染。"""
 
@@ -107,12 +131,13 @@ def _compact_report_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
     """压缩报告生成输入，控制 LLM 上下文体量。"""
 
     compact_rows = []
-    for row in rows[:REPORT_RESULT_MAX_ROWS]:
+    cell_max_chars = _report_cell_max_chars()
+    for row in rows[:_report_result_max_rows()]:
         compact_row: dict[str, Any] = {}
         for key, value in row.items():
             text = str(value)
-            if len(text) > REPORT_CELL_MAX_CHARS:
-                text = text[:REPORT_CELL_MAX_CHARS] + "..."
+            if len(text) > cell_max_chars:
+                text = text[:cell_max_chars] + "..."
             compact_row[key] = text
         compact_rows.append(compact_row)
     return compact_rows, max(0, len(rows) - len(compact_rows))
@@ -262,7 +287,7 @@ def _start_sql_retry_trace(
     """诊断可修复时登记一次待执行的 SQL 自动修复重试。"""
     trace = _sql_retry_trace(state)
     retry_count = state.get("retry_count", 0)
-    max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
+    max_retry = state.get("max_retry_count", _sql_max_retry_count())
     attempt = retry_count + 1
     trace.append(
         {
@@ -1073,14 +1098,14 @@ def _query_plan_selected_asset_names(query_plan: dict | None) -> tuple[set[str],
 def _filter_catalog_fields(items: list[dict[str, Any]], query_plan: dict | None) -> list[dict[str, Any]]:
     field_names, table_names = _query_plan_selected_asset_names(query_plan)
     if not field_names and not table_names:
-        return items[:DSL_FIELD_CATALOG_LIMIT]
+        return items[:_dsl_field_catalog_limit()]
     filtered: list[dict[str, Any]] = []
     for item in items:
         table_name = str(item.get("table_name") or "").strip()
         column_name = str(item.get("column_name") or item.get("name") or "").split(".")[-1].strip()
         if (table_name and table_name in table_names) or (column_name and column_name in field_names):
             filtered.append(item)
-    return filtered[:DSL_FIELD_CATALOG_LIMIT]
+    return filtered[:_dsl_field_catalog_limit()]
 
 
 def _format_dsl_asset_catalog(structured: dict | None, query_plan: dict | None = None) -> str:
@@ -2699,7 +2724,7 @@ def sql_audit_node(db: Session):
         semantic_asset_resolution = state.get("semantic_asset_resolution") or {}
         dataset_id = state.get("dataset_id")
         retry_count = state.get("retry_count", 0)
-        max_retry = state.get("max_retry_count", DEFAULT_MAX_SQL_RETRY_COUNT)
+        max_retry = state.get("max_retry_count", _sql_max_retry_count())
         datasource_context = state.get("datasource_context") or {}
         datasource_dialect = state.get("datasource_dialect") or datasource_context.get("dialect")
 

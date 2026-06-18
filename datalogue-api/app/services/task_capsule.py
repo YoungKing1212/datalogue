@@ -40,6 +40,7 @@ def build_success_task_state(
     manifest_version: str | None = None,
     turn_index: int | None = None,
     result_artifact: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """构造上一轮成功查询的可复用任务状态。"""
 
@@ -54,6 +55,7 @@ def build_success_task_state(
         manifest_version=manifest_version,
         turn_index=turn_index,
         result_artifact=result_artifact,
+        **({"max_tokens": max_tokens} if max_tokens is not None else {}),
     )
 
 

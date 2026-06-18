@@ -2088,6 +2088,27 @@ tables_json: {"tables": [{"name": "orders", "alias": "o"}], "joins": []}
             assert "其余 5 行未展开" in captured["human"]
             assert "x" * 150 not in captured["human"]
 
+    def test_report_generation_uses_configured_compaction_limits(self, monkeypatch):
+        """报告生成输入压缩应读取行数和单元格长度配置。"""
+        from app.services.report_generation import _compact_report_rows
+
+        monkeypatch.setattr(
+            "app.services.report_generation.get_settings",
+            lambda: SimpleNamespace(REPORT_RESULT_MAX_ROWS=2, REPORT_CELL_MAX_CHARS=4),
+        )
+
+        compact_rows, dropped = _compact_report_rows(
+            [
+                {"name": "一号供应商"},
+                {"name": "二号供应商"},
+                {"name": "三号供应商"},
+            ]
+        )
+
+        assert len(compact_rows) == 2
+        assert compact_rows[0]["name"] == "一号供应..."
+        assert dropped == 1
+
     def test_report_generator_stream_strips_think_tokens_when_disabled(self):
         """报告生成流式 token 在 Think 关闭时不应泄露思考内容。"""
         from app.services.report_generation import stream_sql_result_report
@@ -2222,6 +2243,25 @@ class TestAnswerExplanation:
         assert explanation["confidence"]["level"] in {"high", "medium"}
         assert explanation["confirmation"]["required"] is False
 
+    def test_answer_explanation_uses_configured_low_confidence_threshold(self, monkeypatch):
+        from app.services.answer_explanation import build_answer_explanation
+
+        monkeypatch.setattr(
+            "app.services.answer_explanation.get_settings",
+            lambda: SimpleNamespace(ANSWER_EXPLANATION_LOW_CONFIDENCE_THRESHOLD=0.9),
+        )
+
+        explanation = build_answer_explanation(
+            {
+                "dsl": {"confidence": 0.86},
+                "sql": "select * from orders",
+                "datasource_dialect": "mysql",
+            }
+        )
+
+        assert explanation["confidence"]["threshold"] == 0.9
+        assert explanation["confidence"]["level"] == "low"
+
     def test_ambiguity_explanation_requires_confirmation(self):
         from app.services.answer_explanation import build_answer_explanation
 
@@ -2348,6 +2388,18 @@ class TestWorkflowRouting:
         from app.graph.workflow import _dsl_validation_router
 
         assert _dsl_validation_router({"dsl_valid": False, "retry_count": 3}) == "end"
+
+    def test_dsl_validation_router_uses_configured_retry_default(self, monkeypatch):
+        """未显式传 max_retry_count 时，使用配置中的 SQL 重试上限。"""
+        from app.graph.workflow import _dsl_validation_router
+
+        monkeypatch.setattr(
+            "app.graph.workflow.get_settings",
+            lambda: SimpleNamespace(SQL_MAX_RETRY_COUNT=5),
+        )
+
+        assert _dsl_validation_router({"dsl_valid": False, "retry_count": 4}) == "retry"
+        assert _dsl_validation_router({"dsl_valid": False, "retry_count": 5}) == "end"
 
     def test_sql_execution_router_pass(self):
         """SQL 执行成功 → 生成报告"""
@@ -3464,6 +3516,82 @@ class TestChatStreamEvents:
                 {"last_success_task": {"query_type": "metric_query", "metrics": []}}
             )
             is False
+        )
+
+    def test_persist_completed_turn_uses_configured_last_success_task_budget(
+        self,
+        monkeypatch,
+    ):
+        """持久化 last_success_task 时应使用配置化 token 预算。"""
+        from app.api.chat import _persist_completed_turn
+
+        captured = {}
+
+        class FakeSettings:
+            MULTITURN_LAST_SUCCESS_TASK_MAX_TOKENS = 4096
+
+        class FakeStore:
+            def with_updated_capsule(self, state, *, dataset_id, capsule):
+                return None
+
+            def append_completed_turn(self, **kwargs):
+                captured["append_completed_turn"] = kwargs
+
+            def update_thread_state(self, session_id, updates, *, user_id=None):
+                captured["thread_state"] = {
+                    "session_id": session_id,
+                    "updates": updates,
+                    "user_id": user_id,
+                }
+
+        def fake_build_success_task_state(**kwargs):
+            captured["max_tokens"] = kwargs["max_tokens"]
+            return {
+                "capsule_version": "last_success_task.v1",
+                "dataset_id": 10,
+                "question": kwargs["question"],
+                "query_type": "detail_query",
+                "main_table": "plan_task_daily_record",
+            }
+
+        monkeypatch.setattr("app.api.chat.get_settings", lambda: FakeSettings())
+        monkeypatch.setattr(
+            "app.api.chat.build_success_task_state",
+            fake_build_success_task_state,
+        )
+
+        completed = _persist_completed_turn(
+            store=FakeStore(),
+            state=SimpleNamespace(turn_index=2, subagent_capsules=None),
+            user_id="1",
+            business_session_id="session-budget",
+            effective_payload=ChatRequest(
+                question="查询10条用户日志",
+                dataset_id=10,
+                session_id="session-budget",
+            ),
+            final_payload={
+                "answer": "查询完成",
+                "route_decision": {
+                    "dataset_id": 10,
+                    "bound_schema_version": "schema-v1",
+                    "manifest_version": "manifest-v1",
+                },
+                "query_plan": {"query_type": "detail_query"},
+                "dsl": {},
+                "sql": "SELECT * FROM plan_task_daily_record LIMIT 10",
+                "sql_result": {"columns": [], "rows": [], "row_count": 0},
+                "conversation_id": 307,
+            },
+            pending_resolution={},
+            payload_question="查询10条用户日志",
+            trace_context_sink=[],
+        )
+
+        assert completed is True
+        assert captured["max_tokens"] == 4096
+        assert captured["thread_state"]["updates"]["last_success_task"]["main_table"] == (
+            "plan_task_daily_record"
         )
 
     def test_stream_chat_writes_last_success_task_and_reuses_it_next_turn(

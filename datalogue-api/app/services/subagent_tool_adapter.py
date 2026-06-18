@@ -21,6 +21,7 @@ from typing import Any
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.config import get_settings
 from app.services.task_capsule import build_success_task_state, has_query_target
 from app.utils.token import estimate_text_tokens
 
@@ -102,6 +103,19 @@ class SubAgentToolAdapter:
 
     def __init__(self, artifact_store: Any | None = None) -> None:
         self.artifact_store = artifact_store
+
+    def _llm_visible_token_budget(self) -> int:
+        try:
+            return int(
+                getattr(
+                    get_settings(),
+                    "SUBAGENT_LLM_VISIBLE_TOKEN_BUDGET",
+                    self.LLM_VISIBLE_TOKEN_BUDGET,
+                )
+                or self.LLM_VISIBLE_TOKEN_BUDGET
+            )
+        except (TypeError, ValueError):
+            return self.LLM_VISIBLE_TOKEN_BUDGET
 
     def assemble_from_final_state(
         self,
@@ -225,7 +239,15 @@ class SubAgentToolAdapter:
                     or final_state.get("schema_version"),
                     manifest_version=final_state.get("manifest_version"),
                     turn_index=invocation.turn_index,
-                    result_ref=self._optional_str(final_state.get("result_ref")),
+                    result_artifact=final_state.get("result_artifact"),
+                    max_tokens=int(
+                        getattr(
+                            get_settings(),
+                            "MULTITURN_LAST_SUCCESS_TASK_MAX_TOKENS",
+                            2000,
+                        )
+                        or 2000
+                    ),
                 )
                 if has_query_target(candidate_task):
                     last_success_task = candidate_task
@@ -312,26 +334,27 @@ class SubAgentToolAdapter:
                 )
             )
 
-        if _estimated() <= self.LLM_VISIBLE_TOKEN_BUDGET:
+        token_budget = self._llm_visible_token_budget()
+        if _estimated() <= token_budget:
             return part
 
         # 优先截断 display_summary，保留状态和其他短字段
         truncated_summary = self._truncate_text_to_budget(
             part.display_summary,
-            self.LLM_VISIBLE_TOKEN_BUDGET,
+            token_budget,
         )
         part = part.model_copy(update={"display_summary": truncated_summary})
-        if _estimated() <= self.LLM_VISIBLE_TOKEN_BUDGET:
+        if _estimated() <= token_budget:
             return part
 
         # 若 clarification_question 或 error_summary 过长，也截断
         truncated_clarification = self._truncate_text_to_budget(
             part.clarification_question or "",
-            self.LLM_VISIBLE_TOKEN_BUDGET,
+            token_budget,
         )
         truncated_error = self._truncate_text_to_budget(
             part.error_summary or "",
-            self.LLM_VISIBLE_TOKEN_BUDGET,
+            token_budget,
         )
         part = part.model_copy(
             update={
@@ -339,7 +362,7 @@ class SubAgentToolAdapter:
                 "error_summary": truncated_error or None,
             }
         )
-        if _estimated() <= self.LLM_VISIBLE_TOKEN_BUDGET:
+        if _estimated() <= token_budget:
             return part
 
         # 兜底降级：截断后仍超限说明存在极长字段，清空非状态字段并保留最小摘要，
@@ -348,7 +371,7 @@ class SubAgentToolAdapter:
         logger.warning(
             "subagent llm visible budget exceeded after truncation: %s>%s; degrading",
             estimated,
-            self.LLM_VISIBLE_TOKEN_BUDGET,
+            token_budget,
         )
         return part.model_copy(
             update={

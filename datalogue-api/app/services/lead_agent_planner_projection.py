@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Literal, Mapping, TypedDict
 
+from app.core.config import get_settings
+
 PROJECTION_SCHEMA_VERSION = "lead_agent_planner_projection.v2"
 DEFAULT_MAX_PRIOR_TURNS = 3
 DEFAULT_MAX_TEXT_CHARS = 240
@@ -43,6 +45,29 @@ class SkillBrief:
     name: str
     description: str = ""
     parameters: Mapping[str, Any] | None = None
+
+
+def _settings_int(name: str, default: int) -> int:
+    try:
+        value = int(getattr(get_settings(), name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def projection_max_prior_turns() -> int:
+    return _settings_int("LEAD_AGENT_PLANNER_PROJECTION_MAX_PRIOR_TURNS", DEFAULT_MAX_PRIOR_TURNS)
+
+
+def _projection_max_text_chars() -> int:
+    return _settings_int("LEAD_AGENT_PLANNER_PROJECTION_MAX_TEXT_CHARS", DEFAULT_MAX_TEXT_CHARS)
+
+
+def _projection_max_prior_brief_chars() -> int:
+    return _settings_int(
+        "LEAD_AGENT_PLANNER_PROJECTION_MAX_PRIOR_BRIEF_CHARS",
+        DEFAULT_MAX_PRIOR_BRIEF_CHARS,
+    )
 
 
 def project_skills_for_selector(skills: Any) -> list[dict[str, Any]]:
@@ -71,7 +96,7 @@ def project_skills_for_selector(skills: Any) -> list[dict[str, Any]]:
                 "name": name,
                 "description": _truncate_text(
                     _first_text(raw, "description", "purpose", "summary"),
-                    DEFAULT_MAX_TEXT_CHARS,
+                    _projection_max_text_chars(),
                 ),
                 "parameters": _project_parameters(
                     raw.get("parameters")
@@ -94,7 +119,7 @@ def build_skill_selector_input(
 
     return {
         "projection_schema_version": PROJECTION_SCHEMA_VERSION,
-        "question": _truncate_text(question, DEFAULT_MAX_TEXT_CHARS * 2),
+        "question": _truncate_text(question, _projection_max_text_chars() * 2),
         "candidate_skills": project_skills_for_selector(candidate_skills),
         "recent_context": _project_recent_context(recent_context),
     }
@@ -111,7 +136,7 @@ def build_tool_planner_input(
 
     return {
         "projection_schema_version": PROJECTION_SCHEMA_VERSION,
-        "question": _truncate_text(question, DEFAULT_MAX_TEXT_CHARS * 2),
+        "question": _truncate_text(question, _projection_max_text_chars() * 2),
         "selected_skills": list(selected_skills) if selected_skills else [],
         "candidate_tools": project_tools_for_planner(candidate_tools),
         "recent_context": _project_recent_context(recent_context),
@@ -138,7 +163,7 @@ def project_tools_for_planner(tools: Any) -> list[dict[str, Any]]:
                 "name": name,
                 "description": _truncate_text(
                     _first_text(item, "purpose", "description", "summary"),
-                    DEFAULT_MAX_TEXT_CHARS,
+                    _projection_max_text_chars(),
                 ),
                 "inputs": _project_tool_inputs(item.get("inputs")),
             }
@@ -322,7 +347,7 @@ def _project_recent_context(recent_context: Mapping[str, Any] | None) -> dict[st
     if prior_turns is None:
         prior_turns = []
     if isinstance(prior_turns, (list, tuple)):
-        briefs = [_build_prior_turn_brief(turn) for turn in prior_turns[-DEFAULT_MAX_PRIOR_TURNS:]]
+        briefs = [_build_prior_turn_brief(turn) for turn in prior_turns[-projection_max_prior_turns():]]
         projected["prior_turns"] = [brief for brief in briefs if brief]
 
     return projected
@@ -360,7 +385,7 @@ def _build_prior_turn_brief(turn: Any) -> dict[str, Any]:
     brief: dict[str, Any] = {}
     question = _first_text(turn, "question", "resolved_question", "user_query")
     if question:
-        brief["question"] = _truncate_text(question, DEFAULT_MAX_PRIOR_BRIEF_CHARS)
+        brief["question"] = _truncate_text(question, _projection_max_prior_brief_chars())
 
     routing_path = _first_text(turn, "routing_path", "entry_route")
     if routing_path:
@@ -369,7 +394,7 @@ def _build_prior_turn_brief(turn: Any) -> dict[str, Any]:
     inheritance_summary = _first_text(turn, "inheritance_summary", "summary", "last_answer_summary")
     if inheritance_summary:
         brief["inheritance_summary"] = _truncate_text(
-            inheritance_summary, DEFAULT_MAX_PRIOR_BRIEF_CHARS
+            inheritance_summary, _projection_max_prior_brief_chars()
         )
 
     row_count = turn.get("row_count")
@@ -389,12 +414,12 @@ def _project_parameters(parameters: Any) -> Any:
     for key, value in parameters.items():
         if isinstance(value, Mapping):
             projected[str(key)] = {
-                name: _truncate_text(text, DEFAULT_MAX_TEXT_CHARS)
+                name: _truncate_text(text, _projection_max_text_chars())
                 for name, text in value.items()
                 if name in {"type", "description", "title"} and isinstance(text, str)
             }
         elif isinstance(value, str):
-            projected[str(key)] = _truncate_text(value, DEFAULT_MAX_TEXT_CHARS)
+            projected[str(key)] = _truncate_text(value, _projection_max_text_chars())
     return projected
 
 
@@ -405,7 +430,7 @@ def _project_tool_inputs(inputs: Any) -> list[str]:
     projected: list[str] = []
     for item in inputs:
         if isinstance(item, str) and item.strip():
-            projected.append(_truncate_text(item, DEFAULT_MAX_TEXT_CHARS))
+            projected.append(_truncate_text(item, _projection_max_text_chars()))
     return projected
 
 

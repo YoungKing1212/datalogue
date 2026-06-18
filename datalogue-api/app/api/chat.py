@@ -1487,7 +1487,11 @@ async def _stream_chat_singleturn(
         if isinstance(thread_last_success_task, dict)
         else None
     )
-    _, artifact_status = evaluate_query_artifact(artifact_payload)
+    query_artifact_store = ArtifactStore(db)
+    _, artifact_status = evaluate_query_artifact(
+        artifact_payload,
+        artifact_store=query_artifact_store,
+    )
     settings = get_settings()
     multiturn_fast_path = plan_refinement_fast_path(
         question=payload.question,
@@ -2306,13 +2310,16 @@ async def _stream_chat_singleturn(
         manifest_version=route_decision.get("manifest_version")
         or final_state.get("manifest_version"),
         ttl_seconds=int(getattr(settings, "MULTITURN_ARTIFACT_CACHE_TTL_SECONDS", 1800) or 1800),
+        artifact_store=query_artifact_store,
+        conversation_id=conv_id,
+        trace_id=trace_context.trace_id,
     )
     if result_artifact:
         final_state["result_artifact"] = result_artifact
     answer_explanation = jsonable_encoder(build_answer_explanation(final_state))
     final_state["answer_explanation"] = answer_explanation
     subagent_tool_result = SubAgentToolAdapter(
-        artifact_store=ArtifactStore(db),
+        artifact_store=query_artifact_store,
     ).assemble_from_final_state(
         SubAgentInvocation(
             dataset_id=int(effective_dataset_id) if effective_dataset_id is not None else 0,
@@ -2475,7 +2482,7 @@ async def _stream_chat_singleturn(
     db.add(assistant_message)
     db.commit()
     db.refresh(assistant_message)
-    ArtifactStore(db).attach_message_id(
+    query_artifact_store.attach_message_id(
         [final_state.get("result_ref"), final_state.get("report_ref")],
         message_id=int(assistant_message.id),
     )
@@ -2622,6 +2629,7 @@ def _persist_completed_turn(
         or final_payload.get("dataset_id")
         or effective_payload.dataset_id
     )
+    settings = get_settings()
     if isinstance(subagent_control_plane, list):
         control_planes = [item for item in subagent_control_plane if isinstance(item, dict)]
     elif isinstance(subagent_control_plane, dict):
@@ -2707,6 +2715,10 @@ def _persist_completed_turn(
                 or final_payload.get("manifest_version"),
                 turn_index=getattr(final_state, "turn_index", None),
                 result_artifact=final_payload.get("result_artifact"),
+                max_tokens=int(
+                    getattr(settings, "MULTITURN_LAST_SUCCESS_TASK_MAX_TOKENS", 2000)
+                    or 2000
+                ),
             )
             last_success_task_write_status = {"status": "ready", "source": "final_payload"}
         except CapsuleSizeExceededError as exc:

@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.services.dataset_context import build_dataset_query_context
 from app.services.subagent_planning.contracts import CandidateAsset
 
@@ -44,6 +45,20 @@ SIGNAL_REASON_ORDER = {
     "field_display": 5,
     "table_context": 6,
 }
+
+
+def _candidate_context_token_budget() -> int:
+    try:
+        return int(
+            getattr(
+                get_settings(),
+                "SUBAGENT_CANDIDATE_ASSET_CONTEXT_TOKEN_BUDGET",
+                LIGHTWEIGHT_CONTEXT_TOKEN_BUDGET,
+            )
+            or LIGHTWEIGHT_CONTEXT_TOKEN_BUDGET
+        )
+    except (TypeError, ValueError):
+        return LIGHTWEIGHT_CONTEXT_TOKEN_BUDGET
 
 
 def _as_mapping(value: Any) -> dict[str, Any] | None:
@@ -507,7 +522,7 @@ def recall_candidate_assets(
         db,
         dataset_id,
         question=question,
-        token_budget=LIGHTWEIGHT_CONTEXT_TOKEN_BUDGET,
+        token_budget=_candidate_context_token_budget(),
     )
     return build_candidate_assets_from_context(
         question=question,

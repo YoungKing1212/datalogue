@@ -21,6 +21,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.graph.llm import get_llm
 from app.prompts.report_generate import build_report_system
 from app.services.observability.prompts import get_prompt_manager
@@ -35,6 +36,22 @@ from app.utils.think import (
 
 REPORT_RESULT_MAX_ROWS = 30
 REPORT_CELL_MAX_CHARS = 120
+
+
+def _settings_int(name: str, default: int) -> int:
+    try:
+        value = int(getattr(get_settings(), name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _report_result_max_rows() -> int:
+    return _settings_int("REPORT_RESULT_MAX_ROWS", REPORT_RESULT_MAX_ROWS)
+
+
+def _report_cell_max_chars() -> int:
+    return _settings_int("REPORT_CELL_MAX_CHARS", REPORT_CELL_MAX_CHARS)
 
 
 def _strip_think_blocks(text: str) -> str:
@@ -61,12 +78,13 @@ def _compact_report_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
     """压缩报告生成输入，控制 LLM 上下文体量。"""
 
     compact_rows = []
-    for row in rows[:REPORT_RESULT_MAX_ROWS]:
+    cell_max_chars = _report_cell_max_chars()
+    for row in rows[:_report_result_max_rows()]:
         compact_row: dict[str, Any] = {}
         for key, value in row.items():
             text = str(value)
-            if len(text) > REPORT_CELL_MAX_CHARS:
-                text = text[:REPORT_CELL_MAX_CHARS] + "..."
+            if len(text) > cell_max_chars:
+                text = text[:cell_max_chars] + "..."
             compact_row[key] = text
         compact_rows.append(compact_row)
     return compact_rows, max(0, len(rows) - len(compact_rows))
