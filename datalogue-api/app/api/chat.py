@@ -18,6 +18,7 @@ import logging
 import re
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -50,7 +51,18 @@ from app.services.lead_agent_routing import (
 from app.services.dataset_subagent import DatasetSubAgent
 from app.services.multiturn_context import MergeDecision
 from app.services.report_generation import stream_sql_result_report
-from app.services.runner import DatasetSubAgentRequest
+from app.services.runner import DatasetSubAgentRequest, RemoteDatasetSubAgentRunner
+from app.services.artifact_store import ArtifactStore
+from app.services.subagent_tool_adapter import (
+    SubAgentInvocation,
+    SubAgentToolAdapter,
+)
+from app.services.subagent_fanout import (
+    SubAgentFanOutAnswerSynthesizer,
+    SubAgentFanOutInvocation,
+    SubAgentFanOutOrchestrator,
+    parse_dataset_fanout_invocations,
+)
 from app.services.conversation_store import (
     ConversationStore,
     pending_clarification_from_final_payload,
@@ -230,6 +242,27 @@ def _sse_data(payload: dict) -> dict:
     return {"data": json.dumps(jsonable_encoder(payload), ensure_ascii=False)}
 
 
+def _subagent_event_type(sub_event: Any) -> str:
+    if isinstance(sub_event, dict):
+        return str(sub_event.get("event_type") or "")
+    return str(getattr(sub_event, "event_type", ""))
+
+
+def _subagent_event_payload(sub_event: Any) -> dict:
+    if isinstance(sub_event, dict):
+        payload = sub_event.get("payload")
+        return payload if isinstance(payload, dict) else {}
+    payload = getattr(sub_event, "payload", None)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _subagent_event_to_sse_payload(sub_event: Any) -> dict:
+    if hasattr(sub_event, "to_sse_payload"):
+        return sub_event.to_sse_payload()
+    payload = _subagent_event_payload(sub_event)
+    return jsonable_encoder({**payload, "type": _subagent_event_type(sub_event)})
+
+
 def _is_state_output(value: dict) -> bool:
     """判断字典是否像 AgentState 节点输出。"""
     return bool(_STATE_OUTPUT_KEYS.intersection(value.keys()))
@@ -269,6 +302,93 @@ def _extract_node_output(event: dict, lg_node: str) -> dict:
     前端 step 事件需要的是节点真实输出，而不是外层节点名包装。
     """
     return _find_state_output(event.get("data", {}).get("output", {}) or {}, lg_node)
+
+
+@asynccontextmanager
+async def _managed_subagent_events(
+    *,
+    db: Session,
+    dataset_id: int,
+    request: DatasetSubAgentRequest,
+    trace_context: Any,
+    initial_state: dict,
+    route_decision: dict,
+    app_graph: Any,
+):
+    """管理 SubAgent 事件流生命周期，remote 模式下自动关闭 httpx client。"""
+
+    dataset_name = route_decision.get("dataset_name") or ""
+    if getattr(get_settings(), "SUBAGENT_RUNNER_MODE", "in_process") == "remote":
+        runner = RemoteDatasetSubAgentRunner()
+        try:
+            yield runner.run(
+                request,
+                trace_context,
+                initial_state,
+                dataset_name=dataset_name,
+                version="v2",
+            )
+        finally:
+            await runner.aclose()
+    else:
+        sub_agent = DatasetSubAgent(db=db, dataset_id=dataset_id)
+        yield sub_agent.run(
+            request,
+            trace_context,
+            graph=app_graph,
+            initial_state=initial_state,
+            graph_kwargs={
+                "dataset_name": dataset_name,
+                "version": "v2",
+            },
+        )
+
+
+async def _collect_subagent_final_state(
+    *,
+    db: Session,
+    dataset_id: int,
+    request: DatasetSubAgentRequest,
+    trace_context: Any,
+    initial_state: dict,
+    route_decision: dict,
+    app_graph: Any,
+) -> dict:
+    """fan-out 子调用专用：运行 SubAgent 并只收集完成态，不暴露子流式事件。"""
+
+    final_state = dict(initial_state)
+    async with _managed_subagent_events(
+        db=db,
+        dataset_id=dataset_id,
+        request=request,
+        trace_context=trace_context,
+        initial_state=initial_state,
+        route_decision=route_decision,
+        app_graph=app_graph,
+    ) as subagent_events:
+        async for sub_event in subagent_events:
+            sub_event_type = _subagent_event_type(sub_event)
+            sub_event_payload = _subagent_event_payload(sub_event)
+            if sub_event_type == "result":
+                final_state.update(sub_event_payload.get("final_state") or {})
+                continue
+            if sub_event_type == "candidate_assets":
+                sse_payload = _subagent_event_to_sse_payload(sub_event)
+                final_state["candidate_assets"] = sse_payload.get("candidate_assets")
+                continue
+            if sub_event_type == "query_plan":
+                sse_payload = _subagent_event_to_sse_payload(sub_event)
+                final_state["query_plan"] = sse_payload.get("query_plan") or {}
+                continue
+            if sub_event_type == "graph_event":
+                event = sub_event_payload.get("event") or {}
+                output = _extract_node_output(
+                    event,
+                    str((event.get("metadata") or {}).get("langgraph_node") or ""),
+                )
+                if output:
+                    final_state.update(output)
+    return final_state
 
 
 def _term_candidate_display(candidate: dict, term: models.BusinessTerm | None = None) -> dict:
@@ -965,6 +1085,7 @@ async def _stream_chat_singleturn(
     pending_resolution: dict | None = None,
     observability_session_id: str | None = None,
     trace_context_sink: list | None = None,
+    subagent_control_plane_sink: list | None = None,
     defer_trace_close: bool = False,
 ):
     """SSE 流式问数：驱动 LangGraph 工作流，逐步发送节点进度事件。"""
@@ -1641,6 +1762,201 @@ async def _stream_chat_singleturn(
         "query_task_capsule": query_task_capsule,
     }
 
+    fanout_invocations = []
+    if getattr(get_settings(), "LEAD_AGENT_ENABLE_DATASET_FANOUT", False):
+        fanout_invocations = parse_dataset_fanout_invocations(
+            lead_agent_context.get("planned_tool_calls") or [],
+            fallback_question=payload.question,
+            resolved_question=lead_agent_context.get("resolved_question") or resolved_question,
+            turn_index=getattr(conversation_state, "turn_index", None),
+            prior_capsule_status=prior_capsule_status,
+        )
+    if fanout_invocations:
+        fanout_step_started_at = time.monotonic()
+        fanout_step = {
+            "type": "step",
+            "node": "subagent_fanout",
+            "display_name": "subagent.fanout",
+            "status": "running",
+            "dataset_ids": [item.dataset_id for item in fanout_invocations],
+        }
+        yield _sse_data(fanout_step)
+        app_graph = build_workflow(db)
+
+        async def _invoke_fanout(invocation: SubAgentFanOutInvocation) -> dict[str, Any]:
+            dataset_route_decision = dict(route_decision)
+            dataset_route_decision["dataset_id"] = invocation.dataset_id
+            dataset_initial_state = dict(initial_state)
+            dataset_initial_state.update(
+                {
+                    "question": invocation.resolved_question or invocation.question,
+                    "resolved_question": invocation.resolved_question or invocation.question,
+                    "dataset_id": invocation.dataset_id,
+                    "route_decision": dataset_route_decision,
+                    "prior_capsule": None,
+                    "prior_capsule_status": invocation.prior_capsule_status or {},
+                    "out_capsule": None,
+                    "sql": None,
+                    "sql_result": None,
+                    "answer": None,
+                    "error": None,
+                }
+            )
+            dataset_request = DatasetSubAgentRequest(
+                question=invocation.resolved_question or invocation.question,
+                dataset_id=invocation.dataset_id,
+                manifest_version=dataset_route_decision.get("manifest_version"),
+                bound_schema_version=dataset_route_decision.get("bound_schema_version"),
+                thread_id=conv.thread_id or f"conversation-{conv_id}",
+                time_context=lead_agent_context.get("time_context") or {},
+                thread_context=lead_agent_context.get("thread_context") or {},
+                route_decision=dataset_route_decision,
+                schema_status=lead_agent_context.get("schema_status") or {},
+                lead_agent_context=lead_agent_context,
+                prior_capsule=None,
+                prior_capsule_status=invocation.prior_capsule_status or {},
+                query_task_capsule=query_task_capsule,
+                turn_event=turn_event,
+                trace_id=trace_context.trace_id,
+                parent_observation_id=None,
+            )
+            return await _collect_subagent_final_state(
+                db=db,
+                dataset_id=invocation.dataset_id,
+                request=dataset_request,
+                trace_context=trace_context,
+                initial_state=dataset_initial_state,
+                route_decision=dataset_route_decision,
+                app_graph=app_graph,
+            )
+
+        fanout_result = await SubAgentFanOutOrchestrator(
+            invoke_final_state=_invoke_fanout,
+            adapter=SubAgentToolAdapter(artifact_store=ArtifactStore(db)),
+        ).run(fanout_invocations)
+        fanout_answer = SubAgentFanOutAnswerSynthesizer().synthesize(fanout_result)
+        subagent_tool_results = jsonable_encoder(
+            [item.llm_visible.model_dump(mode="json") for item in fanout_result.results]
+        )
+        if subagent_control_plane_sink is not None:
+            subagent_control_plane_sink.clear()
+            subagent_control_plane_sink.extend(jsonable_encoder(fanout_result.control_planes))
+
+        elapsed_ms = int((time.monotonic() - fanout_step_started_at) * 1000)
+        fanout_done_step = {
+            "type": "step",
+            "node": "subagent_fanout",
+            "display_name": "subagent.fanout",
+            "status": "done",
+            "elapsed_ms": elapsed_ms,
+            "dataset_ids": [item.dataset_id for item in fanout_invocations],
+            "statuses": [item.llm_visible.status.value for item in fanout_result.results],
+        }
+        step_traces.append(fanout_done_step)
+        yield _sse_data(fanout_done_step)
+
+        trace_metadata = {
+            "status": "success",
+            "execution_path": "dataset_fanout",
+            "original_question": payload.question,
+            "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+            "lead_agent_context": lead_agent_context,
+            "route_decision": route_decision,
+            "subagent_tool_results": subagent_tool_results,
+            "fanout_trace": jsonable_encoder(fanout_result.trace_metadata),
+            "prompt_versions": trace_context.prompt_versions,
+        }
+        tracer.update_trace_output(trace_context, output=fanout_answer, metadata=trace_metadata)
+        response_metadata = jsonable_encoder(
+            {
+                "lead_agent_context": lead_agent_context,
+                "original_question": payload.question,
+                "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+                "route_decision": route_decision,
+                "schema_status": lead_agent_context.get("schema_status"),
+                "subagent_tool_results": subagent_tool_results,
+                "fanout_trace": fanout_result.trace_metadata,
+                "langfuse": {
+                    "trace_id": trace_context.trace_id,
+                    "session_id": trace_context.session_id,
+                    "release": trace_context.release,
+                    "environment": trace_context.environment,
+                    "prompt_label": trace_context.prompt_label,
+                    "base_url": trace_context.base_url,
+                    "project_id": trace_context.project_id,
+                    "trace_url": trace_context.trace_url,
+                    "enabled": trace_context.enabled,
+                    "active": trace_context.active,
+                    "prompt_versions": trace_context.prompt_versions,
+                },
+                "observability": trace_context.observability_payload(),
+            }
+        )
+        assistant_message = models.Message(
+            conversation_id=conv_id,
+            role="assistant",
+            content=fanout_answer,
+            sql_list=[],
+            step_trace=jsonable_encoder(step_traces),
+            response_metadata=response_metadata,
+        )
+        db.add(assistant_message)
+        db.commit()
+        db.refresh(assistant_message)
+        ArtifactStore(db).attach_message_id(
+            [
+                ref
+                for item in subagent_tool_results
+                for ref in (item.get("result_ref"), item.get("report_ref"))
+            ],
+            message_id=int(assistant_message.id),
+        )
+        if trace_context.trace_id:
+            db.add(
+                models.ObservabilityTraceIndex(
+                    langfuse_trace_id=trace_context.trace_id,
+                    langfuse_session_id=trace_context.session_id,
+                    conversation_id=conv_id,
+                    message_id=assistant_message.id,
+                    dataset_id=effective_dataset_id,
+                    entry_route="dataset_fanout",
+                    status="success",
+                    total_tokens=0,
+                    total_cost=0,
+                    metadata_json=jsonable_encoder(trace_metadata),
+                )
+            )
+            db.commit()
+        final_payload = {
+            "type": "final",
+            "sql": None,
+            "sql_list": [],
+            "answer": fanout_answer,
+            "entry_intent": "dataset_fanout",
+            "entry_route": "dataset_fanout",
+            "entry_reason": "lead_agent_multi_dataset_tool_calls",
+            "lead_agent_context": lead_agent_context,
+            "original_question": payload.question,
+            "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+            "time_context": lead_agent_context.get("time_context"),
+            "route_decision": route_decision,
+            "schema_status": lead_agent_context.get("schema_status"),
+            "sql_result": None,
+            "subagent_tool_results": subagent_tool_results,
+            "response_metadata": response_metadata,
+            "conversation_id": conv_id,
+            "message_id": assistant_message.id,
+            "title": conv.title,
+            "langfuse_trace_id": trace_context.trace_id,
+            "langfuse_session_id": trace_context.session_id,
+            "observability": trace_context.observability_payload(),
+        }
+        yield _sse_data(final_payload)
+        if not defer_trace_close:
+            tracer.close_trace(trace_context)
+        obs_context_manager.__exit__(None, None, None)
+        return
+
     # 构建并运行工作流
     app_graph = build_workflow(db)
     subagent_request = DatasetSubAgentRequest(
@@ -1672,25 +1988,42 @@ async def _stream_chat_singleturn(
         reported_done: set[str] = set()
         graph_report_think_state = new_think_stream_state()
 
-        async for sub_event in sub_agent.run(
-            subagent_request,
-            trace_context,
-            graph=app_graph,
+        async with _managed_subagent_events(
+            db=db,
+            dataset_id=effective_dataset_id,
+            request=subagent_request,
+            trace_context=trace_context,
             initial_state=initial_state,
-            graph_kwargs={
-                "dataset_name": route_decision.get("dataset_name") or "",
-                "version": "v2",
-            },
-        ):
-            if sub_event.event_type in {"candidate_assets", "query_plan"}:
-                sse_payload = sub_event.to_sse_payload()
-                sse_payload["type"] = "step"
-                if sub_event.event_type == "candidate_assets":
-                    final_state["candidate_assets"] = sse_payload.get("candidate_assets")
-                elif sub_event.event_type == "query_plan":
-                    query_plan = sse_payload.get("query_plan") or {}
-                    final_state["query_plan"] = query_plan
+            route_decision=route_decision,
+            app_graph=app_graph,
+        ) as subagent_events:
+            async for sub_event in subagent_events:
+                sub_event_type = _subagent_event_type(sub_event)
+                sub_event_payload = _subagent_event_payload(sub_event)
+                if sub_event_type in {"candidate_assets", "query_plan"}:
+                    sse_payload = _subagent_event_to_sse_payload(sub_event)
+                    sse_payload["type"] = "step"
+                    if sub_event_type == "candidate_assets":
+                        final_state["candidate_assets"] = sse_payload.get("candidate_assets")
+                    elif sub_event_type == "query_plan":
+                        query_plan = sse_payload.get("query_plan") or {}
+                        final_state["query_plan"] = query_plan
+                        if final_state.get("query_plan_debug") is None:
+                            final_state["query_plan_debug"] = {
+                                "planner_source": query_plan.get("planner_source"),
+                                "fallback_reason": query_plan.get("fallback_reason"),
+                                "decision_factors": query_plan.get("decision_factors") or [],
+                                "planner_warnings": query_plan.get("planner_warnings") or [],
+                                "governance_suggestions": query_plan.get("governance_suggestions") or [],
+                            }
+                    step_traces.append(sse_payload)
+                    yield _sse_data(sse_payload)
+                    continue
+
+                if sub_event_type == "result":
+                    final_state.update(sub_event_payload.get("final_state") or {})
                     if final_state.get("query_plan_debug") is None:
+                        query_plan = final_state.get("query_plan") or {}
                         final_state["query_plan_debug"] = {
                             "planner_source": query_plan.get("planner_source"),
                             "fallback_reason": query_plan.get("fallback_reason"),
@@ -1699,161 +2032,142 @@ async def _stream_chat_singleturn(
                             "governance_suggestions": query_plan.get("governance_suggestions")
                             or [],
                         }
-                step_traces.append(sse_payload)
-                yield _sse_data(sse_payload)
-                continue
-
-            if sub_event.event_type == "result":
-                final_state.update(sub_event.payload.get("final_state") or {})
-                if final_state.get("query_plan_debug") is None:
-                    query_plan = final_state.get("query_plan") or {}
-                    final_state["query_plan_debug"] = {
-                        "planner_source": query_plan.get("planner_source"),
-                        "fallback_reason": query_plan.get("fallback_reason"),
-                        "decision_factors": query_plan.get("decision_factors") or [],
-                        "planner_warnings": query_plan.get("planner_warnings") or [],
-                        "governance_suggestions": query_plan.get("governance_suggestions") or [],
-                    }
-                continue
-
-            if sub_event.event_type == "graph_event":
-                event = sub_event.payload["event"]
-            else:
-                sse_payload = sub_event.to_sse_payload()
-                sse_payload.setdefault("node", sub_event.event_type)
-                node_name = str(sse_payload.get("node"))
-                sse_payload.setdefault(
-                    "display_name",
-                    _NODE_DISPLAY_NAMES.get(node_name, node_name),
-                )
-                sse_payload["type"] = "step"
-                sse_payload.setdefault("status", "done")
-                step_traces.append(sse_payload)
-                yield _sse_data(sse_payload)
-                continue
-
-            kind: str = event["event"]
-            meta: dict = event.get("metadata", {})
-            # langgraph_node 元数据标识当前所属顶层图节点
-            lg_node: str = meta.get("langgraph_node", "")
-
-            # ── 节点开始（每节点只报一次）────────────────────
-            if (
-                kind == "on_chain_start"
-                and lg_node in _NODE_DISPLAY_NAMES
-                and lg_node not in reported_running
-            ):
-                reported_running.add(lg_node)
-                node_start_times[lg_node] = time.monotonic()
-                sse_payload = {
-                    "type": "step",
-                    "node": lg_node,
-                    "display_name": _NODE_DISPLAY_NAMES[lg_node],
-                    "status": "running",
-                }
-                logger.info(f"[_stream_chat] step running: {lg_node}")
-                tracer.start_span(
-                    trace_context,
-                    node=lg_node,
-                    display_name=_NODE_DISPLAY_NAMES[lg_node],
-                    input_payload={
-                        "question": payload.question,
-                        "dataset_id": effective_dataset_id,
-                        "conversation_id": conv_id,
-                        "time_context": lead_agent_context.get("time_context"),
-                        "route_decision": route_decision,
-                        "schema_status": lead_agent_context.get("schema_status"),
-                        "lead_agent_audit": lead_agent_context.get("audit_trace"),
-                        "prior_capsule_status": prior_capsule_status,
-                    },
-                )
-                yield _sse_data(sse_payload)
-
-            # ── 节点完成（每节点只报一次）────────────────────
-            elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES:
-                output = _extract_node_output(event, lg_node)
-                if lg_node in reported_done or not output:
                     continue
-                reported_done.add(lg_node)
-                elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
-                # 合并节点输出到 final_state（允许 None 值传播）
-                final_state.update(output)
-                if lg_node == "report_generator":
-                    visible_tail = flush_think_stream_state(graph_report_think_state)
-                    if visible_tail:
-                        yield _sse_data({"type": "token", "content": visible_tail})
 
-                sse_payload = {
-                    "type": "step",
-                    "node": lg_node,
-                    "display_name": _NODE_DISPLAY_NAMES[lg_node],
-                    "status": "done",
-                    "elapsed_ms": elapsed_ms,
-                }
-                # 节点特定数据
-                # 旧语义解析节点不再作为 LangGraph 顶层节点处理，SubAgent.run 统一输出规划事件。
-                if lg_node == "dsl_generate":
-                    sse_payload["dsl"] = final_state.get("dsl") or {}
-                    sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
-                elif lg_node == "schema_recall":
-                    schema = final_state.get("schema_context", "") or ""
-                    lines_ = [
-                        line
-                        for line in schema.split("\n")
-                        if line.strip() and not line.startswith("-")
-                    ]
-                    sse_payload["schema_summary"] = lines_[:3]
-                elif lg_node == "dsl_compiler":
-                    sse_payload["sql"] = final_state.get("sql") or ""
-                elif lg_node == "sql_execute":
-                    result = final_state.get("sql_result") or {}
-                    sse_payload["rows"] = result.get("row_count", 0)
-                    sse_payload["columns"] = result.get("columns", [])
-                    sse_payload["column_labels"] = result.get("column_labels") or {}
-                    sse_payload["elapsed_ms"] = elapsed_ms
-                elif lg_node == "sql_audit":
-                    diagnosis = (
-                        final_state.get("sql_diagnosis")
-                        or final_state.get("sql_audit_result")
-                        or {}
+                if sub_event_type == "graph_event":
+                    event = sub_event_payload["event"]
+                else:
+                    sse_payload = _subagent_event_to_sse_payload(sub_event)
+                    sse_payload.setdefault("node", sub_event_type)
+                    node_name = str(sse_payload.get("node"))
+                    sse_payload.setdefault(
+                        "display_name",
+                        _NODE_DISPLAY_NAMES.get(node_name, node_name),
                     )
-                    sse_payload["sql_diagnosis"] = diagnosis
-                    sse_payload["sql_audit_result"] = final_state.get("sql_audit_result") or {}
-                    sse_payload["code"] = diagnosis.get("code")
-                    sse_payload["severity"] = diagnosis.get("severity")
-                    sse_payload["retryable"] = diagnosis.get("retryable")
-                    sse_payload["sql_retry_trace"] = final_state.get("sql_retry_trace") or []
-                step_traces.append(sse_payload)
-                logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
-                tracer.end_span(
-                    trace_context,
-                    node=lg_node,
-                    output_payload=sse_payload,
-                    elapsed_ms=elapsed_ms,
-                    error=final_state.get("error") if lg_node == "sql_audit" else None,
-                )
-                yield _sse_data(sse_payload)
-
-            # ── 图级结束事件：兜底合并完整最终状态 ───────────────
-            elif kind == "on_chain_end" and not lg_node:
-                output = _extract_node_output(event, "")
-                if output:
-                    final_state.update(output)
-
-            # ── LLM token ───────────────────────────────────
-            elif kind == "on_chat_model_stream":
-                # report_generator 节点推送 token（打字效果）
-                # 其他节点输出为结构化 JSON，不推送给前端
-                # 注：同步节点在线程池中运行，token 可能无法全部回传；
-                # 前端 onDone 会用 finalData.answer 作为完整答案兜底
-                if lg_node and lg_node != "report_generator":
+                    sse_payload["type"] = "step"
+                    sse_payload.setdefault("status", "done")
+                    step_traces.append(sse_payload)
+                    yield _sse_data(sse_payload)
                     continue
-                chunk = event.get("data", {}).get("chunk")
-                token: str = getattr(chunk, "content", "") or ""
-                if token:
-                    visible_token = filter_think_stream_chunk(token, graph_report_think_state)
-                    if visible_token:
-                        yield _sse_data({"type": "token", "content": visible_token})
+
+                kind: str = event["event"]
+                meta: dict = event.get("metadata", {})
+                # langgraph_node 元数据标识当前所属顶层图节点
+                lg_node: str = meta.get("langgraph_node", "")
+
+                # ── 节点开始（每节点只报一次）────────────────────
+                if (
+                    kind == "on_chain_start"
+                    and lg_node in _NODE_DISPLAY_NAMES
+                    and lg_node not in reported_running
+                ):
+                    reported_running.add(lg_node)
+                    node_start_times[lg_node] = time.monotonic()
+                    sse_payload = {
+                        "type": "step",
+                        "node": lg_node,
+                        "display_name": _NODE_DISPLAY_NAMES[lg_node],
+                        "status": "running",
+                    }
+                    logger.info(f"[_stream_chat] step running: {lg_node}")
+                    tracer.start_span(
+                        trace_context,
+                        node=lg_node,
+                        display_name=_NODE_DISPLAY_NAMES[lg_node],
+                        input_payload={
+                            "question": payload.question,
+                            "dataset_id": effective_dataset_id,
+                            "conversation_id": conv_id,
+                            "time_context": lead_agent_context.get("time_context"),
+                            "route_decision": route_decision,
+                            "schema_status": lead_agent_context.get("schema_status"),
+                            "lead_agent_audit": lead_agent_context.get("audit_trace"),
+                            "prior_capsule_status": prior_capsule_status,
+                        },
+                    )
+                    yield _sse_data(sse_payload)
+
+                # ── 节点完成（每节点只报一次）────────────────────
+                elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES:
+                    output = _extract_node_output(event, lg_node)
+                    if lg_node in reported_done or not output:
+                        continue
+                    reported_done.add(lg_node)
+                    elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
+                    # 合并节点输出到 final_state（允许 None 值传播）
+                    final_state.update(output)
+                    if lg_node == "report_generator":
+                        visible_tail = flush_think_stream_state(graph_report_think_state)
+                        if visible_tail:
+                            yield _sse_data({"type": "token", "content": visible_tail})
+
+                    sse_payload = {
+                        "type": "step",
+                        "node": lg_node,
+                        "display_name": _NODE_DISPLAY_NAMES[lg_node],
+                        "status": "done",
+                        "elapsed_ms": elapsed_ms,
+                    }
+                    # 节点特定数据
+                    # 旧语义解析节点不再作为 LangGraph 顶层节点处理，SubAgent.run 统一输出规划事件。
+                    if lg_node == "dsl_generate":
+                        sse_payload["dsl"] = final_state.get("dsl") or {}
+                        sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
+                    elif lg_node == "schema_recall":
+                        schema = final_state.get("schema_context", "") or ""
+                        lines_ = [l for l in schema.split("\n") if l.strip() and not l.startswith("-")]
+                        sse_payload["schema_summary"] = lines_[:3]
+                    elif lg_node == "dsl_compiler":
+                        sse_payload["sql"] = final_state.get("sql") or ""
+                    elif lg_node == "sql_execute":
+                        result = final_state.get("sql_result") or {}
+                        sse_payload["rows"] = result.get("row_count", 0)
+                        sse_payload["columns"] = result.get("columns", [])
+                        sse_payload["column_labels"] = result.get("column_labels") or {}
+                        sse_payload["elapsed_ms"] = elapsed_ms
+                    elif lg_node == "sql_audit":
+                        diagnosis = (
+                            final_state.get("sql_diagnosis")
+                            or final_state.get("sql_audit_result")
+                            or {}
+                        )
+                        sse_payload["sql_diagnosis"] = diagnosis
+                        sse_payload["sql_audit_result"] = final_state.get("sql_audit_result") or {}
+                        sse_payload["code"] = diagnosis.get("code")
+                        sse_payload["severity"] = diagnosis.get("severity")
+                        sse_payload["retryable"] = diagnosis.get("retryable")
+                        sse_payload["sql_retry_trace"] = final_state.get("sql_retry_trace") or []
+                    step_traces.append(sse_payload)
+                    logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
+                    tracer.end_span(
+                        trace_context,
+                        node=lg_node,
+                        output_payload=sse_payload,
+                        elapsed_ms=elapsed_ms,
+                        error=final_state.get("error") if lg_node == "sql_audit" else None,
+                    )
+                    yield _sse_data(sse_payload)
+
+                # ── 图级结束事件：兜底合并完整最终状态 ───────────────
+                elif kind == "on_chain_end" and not lg_node:
+                    output = _extract_node_output(event, "")
+                    if output:
+                        final_state.update(output)
+
+                # ── LLM token ───────────────────────────────────
+                elif kind == "on_chat_model_stream":
+                    # report_generator 节点推送 token（打字效果）
+                    # 其他节点输出为结构化 JSON，不推送给前端
+                    # 注：同步节点在线程池中运行，token 可能无法全部回传；
+                    # 前端 onDone 会用 finalData.answer 作为完整答案兜底
+                    if lg_node and lg_node != "report_generator":
+                        continue
+                    chunk = event.get("data", {}).get("chunk")
+                    token: str = getattr(chunk, "content", "") or ""
+                    if token:
+                        visible_token = filter_think_stream_chunk(token, graph_report_think_state)
+                        if visible_token:
+                            yield _sse_data({"type": "token", "content": visible_token})
 
         logger.info("[_stream_chat] astream_events 完成")
 
@@ -1997,6 +2311,37 @@ async def _stream_chat_singleturn(
         final_state["result_artifact"] = result_artifact
     answer_explanation = jsonable_encoder(build_answer_explanation(final_state))
     final_state["answer_explanation"] = answer_explanation
+    subagent_tool_result = SubAgentToolAdapter(
+        artifact_store=ArtifactStore(db),
+    ).assemble_from_final_state(
+        SubAgentInvocation(
+            dataset_id=int(effective_dataset_id) if effective_dataset_id is not None else 0,
+            question=payload.question,
+            resolved_question=lead_agent_context.get("resolved_question") or payload.question,
+            turn_index=getattr(conversation_state, "turn_index", None),
+            prior_capsule_status=final_state.get("prior_capsule_status") or prior_capsule_status,
+        ),
+        final_state,
+        conversation_id=conv_id,
+        trace_id=trace_context.trace_id,
+    )
+    subagent_tool_visible = jsonable_encoder(
+        subagent_tool_result.llm_visible.model_dump(mode="json")
+    )
+    subagent_tool_trace = jsonable_encoder(subagent_tool_result.trace_metadata)
+    subagent_control_plane = jsonable_encoder(
+        subagent_tool_result.control_plane.model_dump(
+            mode="json",
+            exclude={"raw_error"},
+        )
+    )
+    if subagent_control_plane_sink is not None:
+        subagent_control_plane_sink.clear()
+        subagent_control_plane_sink.append(subagent_control_plane)
+    if subagent_control_plane.get("result_ref"):
+        final_state["result_ref"] = subagent_control_plane.get("result_ref")
+    if subagent_control_plane.get("report_ref"):
+        final_state["report_ref"] = subagent_control_plane.get("report_ref")
 
     sql = final_state.get("sql")
     sql_list = final_state.get("sql_list") or []
@@ -2063,6 +2408,8 @@ async def _stream_chat_singleturn(
         "candidate_assets": final_state.get("candidate_assets"),
         "query_plan": final_state.get("query_plan"),
         "query_plan_debug": final_state.get("query_plan_debug"),
+        "subagent_tool_result": subagent_tool_visible,
+        "subagent_tool_trace": subagent_tool_trace,
         "multiturn_metrics": multiturn_observability_metrics,
         "query_profile": query_profile,
         "explainability": explainability,
@@ -2095,6 +2442,7 @@ async def _stream_chat_singleturn(
             "candidate_assets": final_state.get("candidate_assets"),
             "query_plan": final_state.get("query_plan"),
             "query_plan_debug": final_state.get("query_plan_debug"),
+            "subagent_tool_result": subagent_tool_visible,
             "route_payload": final_state.get("route_payload"),
             "clarification_resolution": final_state.get("clarification_resolution_result"),
             "query_profile": query_profile,
@@ -2127,6 +2475,10 @@ async def _stream_chat_singleturn(
     db.add(assistant_message)
     db.commit()
     db.refresh(assistant_message)
+    ArtifactStore(db).attach_message_id(
+        [final_state.get("result_ref"), final_state.get("report_ref")],
+        message_id=int(assistant_message.id),
+    )
 
     total_tokens = 0
     if isinstance(token_usage, dict):
@@ -2209,7 +2561,9 @@ async def _stream_chat_singleturn(
         "datasource_context": final_state.get("datasource_context"),
         "dsl": final_state.get("dsl"),
         "generation_mode": final_state.get("generation_mode"),
-        "sql_result": final_state.get("sql_result"),
+        "sql_result": None,
+        "result_ref": final_state.get("result_ref"),
+        "report_ref": final_state.get("report_ref"),
         "sql_diagnosis": sql_diagnosis,
         "sql_audit_result": final_state.get("sql_audit_result"),
         "sql_retry_trace": sql_retry_trace,
@@ -2246,6 +2600,7 @@ def _persist_completed_turn(
     pending_resolution: dict,
     payload_question: str,
     trace_context_sink: list,
+    subagent_control_plane: dict | None = None,
 ) -> bool:
     """把完成轮的胶囊、状态、澄清和追踪写入 ConversationStore。
 
@@ -2267,11 +2622,35 @@ def _persist_completed_turn(
         or final_payload.get("dataset_id")
         or effective_payload.dataset_id
     )
-    updated_capsules = store.with_updated_capsule(
-        final_state,
-        dataset_id=active_dataset_id,
-        capsule=final_payload.get("out_capsule"),
-    )
+    if isinstance(subagent_control_plane, list):
+        control_planes = [item for item in subagent_control_plane if isinstance(item, dict)]
+    elif isinstance(subagent_control_plane, dict):
+        control_planes = [subagent_control_plane]
+    else:
+        control_planes = []
+    control_plane = control_planes[0] if control_planes else {}
+    updated_capsules = None
+    for item in control_planes:
+        capsule = item.get("capsule") if isinstance(item.get("capsule"), dict) else None
+        capsule_dataset_id = (
+            capsule.get("dataset_id")
+            if isinstance(capsule, dict)
+            else item.get("dataset_id")
+        )
+        candidate_capsules = store.with_updated_capsule(
+            final_state,
+            dataset_id=capsule_dataset_id,
+            capsule=capsule,
+        )
+        if candidate_capsules is not None:
+            final_state.subagent_capsules = candidate_capsules
+            updated_capsules = candidate_capsules
+    if updated_capsules is None:
+        updated_capsules = store.with_updated_capsule(
+            final_state,
+            dataset_id=active_dataset_id,
+            capsule=final_payload.get("out_capsule"),
+        )
     pending_for_store = pending_clarification_from_final_payload(
         final_payload,
         original_question=payload_question,
@@ -2302,46 +2681,58 @@ def _persist_completed_turn(
     last_success_task = None
     last_success_task_write_status: dict[str, Any] = {"status": "not_built"}
     route_decision = final_payload.get("route_decision") or {}
-    try:
-        last_success_task = build_success_task_state(
-            question=executed_question,
-            dataset_id=_coerce_int(active_dataset_id),
-            query_plan=final_payload.get("query_plan"),
-            dsl=final_payload.get("dsl"),
-            sql=final_payload.get("sql"),
-            sql_result=final_payload.get("sql_result"),
-            schema_version=route_decision.get("bound_schema_version")
-            or final_payload.get("bound_schema_version"),
-            manifest_version=route_decision.get("manifest_version")
-            or final_payload.get("manifest_version"),
-            turn_index=getattr(final_state, "turn_index", None),
-            result_artifact=final_payload.get("result_artifact"),
-        )
-        last_success_task_write_status = {"status": "ready"}
-    except CapsuleSizeExceededError as exc:
-        last_success_task_write_status = {
-            "status": "skipped",
-            "reason": "size_exceeded",
-            "estimated_tokens": exc.estimated_tokens,
-            "max_tokens": exc.max_tokens,
-        }
-        logger.warning(
-            "[_stream_chat] last_success_task 超出预算，跳过写入: session_id=%s, estimated_tokens=%s, max_tokens=%s",
-            final_session_id,
-            exc.estimated_tokens,
-            exc.max_tokens,
-        )
-    except Exception as exc:  # noqa: BLE001
-        last_success_task_write_status = {
-            "status": "skipped",
-            "reason": "build_failed",
-            "error": str(exc),
-        }
-        logger.warning(
-            "[_stream_chat] last_success_task 构造失败，跳过写入: session_id=%s, error=%s",
-            final_session_id,
-            exc,
-        )
+    control_plane_task = next(
+        (
+            item.get("last_success_task")
+            for item in control_planes
+            if isinstance(item.get("last_success_task"), dict)
+        ),
+        None,
+    )
+    if isinstance(control_plane_task, dict):
+        last_success_task = control_plane_task
+        last_success_task_write_status = {"status": "ready", "source": "subagent_control_plane"}
+    else:
+        try:
+            last_success_task = build_success_task_state(
+                question=executed_question,
+                dataset_id=_coerce_int(active_dataset_id),
+                query_plan=final_payload.get("query_plan"),
+                dsl=final_payload.get("dsl"),
+                sql=final_payload.get("sql"),
+                sql_result=final_payload.get("sql_result"),
+                schema_version=route_decision.get("bound_schema_version")
+                or final_payload.get("bound_schema_version"),
+                manifest_version=route_decision.get("manifest_version")
+                or final_payload.get("manifest_version"),
+                turn_index=getattr(final_state, "turn_index", None),
+                result_artifact=final_payload.get("result_artifact"),
+            )
+            last_success_task_write_status = {"status": "ready", "source": "final_payload"}
+        except CapsuleSizeExceededError as exc:
+            last_success_task_write_status = {
+                "status": "skipped",
+                "reason": "size_exceeded",
+                "estimated_tokens": exc.estimated_tokens,
+                "max_tokens": exc.max_tokens,
+            }
+            logger.warning(
+                "[_stream_chat] last_success_task 超出预算，跳过写入: session_id=%s, estimated_tokens=%s, max_tokens=%s",
+                final_session_id,
+                exc.estimated_tokens,
+                exc.max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_success_task_write_status = {
+                "status": "skipped",
+                "reason": "build_failed",
+                "error": str(exc),
+            }
+            logger.warning(
+                "[_stream_chat] last_success_task 构造失败，跳过写入: session_id=%s, error=%s",
+                final_session_id,
+                exc,
+            )
     if final_payload.get("error") is None and has_query_target(last_success_task):
         store.update_thread_state(
             final_session_id,
@@ -2410,6 +2801,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     final_payload: dict | None = None
     completed = False
     trace_context_sink: list = []
+    subagent_control_plane_sink: list = []
     effective_payload = payload
     pending_resolution = store.resolve_pending_clarification(
         state,
@@ -2445,6 +2837,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             pending_resolution=pending_resolution,
             observability_session_id=business_session_id,
             trace_context_sink=trace_context_sink,
+            subagent_control_plane_sink=subagent_control_plane_sink,
             defer_trace_close=True,
         ):
             data = event.get("data") if isinstance(event, dict) else None
@@ -2467,6 +2860,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                                 pending_resolution=pending_resolution,
                                 payload_question=payload.question,
                                 trace_context_sink=trace_context_sink,
+                                subagent_control_plane=(
+                                    subagent_control_plane_sink[0]
+                                    if subagent_control_plane_sink
+                                    else None
+                                ),
                             )
                         except Exception as persist_exc:  # noqa: BLE001
                             logger.exception("[_stream_chat] 写入多轮状态失败: %s", persist_exc)

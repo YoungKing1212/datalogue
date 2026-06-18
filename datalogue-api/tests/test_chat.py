@@ -18,6 +18,7 @@
 import asyncio
 import json
 import pytest
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -2731,6 +2732,153 @@ class TestChatStreamEvents:
         assert final["query_plan_debug"] == query_plan_debug
 
     @pytest.mark.asyncio
+    async def test_stream_chat_dataset_fanout_returns_safe_results_and_control_sink(
+        self,
+        monkeypatch,
+        db_session,
+        sample_dataset,
+        sample_datasource,
+    ):
+        """fan-out 主链路只把 LLMVisible 数组放入 final，控制面只进入内部 sink。"""
+        from app.api.chat import _stream_chat_singleturn
+        from app.services.subagent_planning import SubAgentEvent
+
+        other_dataset = models.SemanticDataset(
+            name="库存数据集",
+            datasource_id=sample_datasource.id,
+            tables_json={"tables": [{"name": "inventory"}], "joins": []},
+            description="库存测试数据集",
+            status="active",
+        )
+        db_session.add(other_dataset)
+        db_session.commit()
+        db_session.refresh(other_dataset)
+
+        class FakeSubAgent:
+            def __init__(self, db, dataset_id):
+                self.db = db
+                self.dataset_id = int(dataset_id)
+
+            async def run(self, request, trace_context, *, graph, initial_state=None, graph_kwargs=None):
+                assert request.dataset_id == self.dataset_id
+                yield SubAgentEvent(
+                    event_type="result",
+                    payload={
+                        "final_state": {
+                            **(initial_state or {}),
+                            "answer": f"完整报告 raw_report_secret_{self.dataset_id}",
+                            "display_summary": f"数据集 {self.dataset_id} 安全摘要",
+                            "sql": f"select raw_secret from table_{self.dataset_id}",
+                            "sql_list": [f"select raw_secret from table_{self.dataset_id}"],
+                            "sql_result": {
+                                "columns": ["raw_secret"],
+                                "rows": [{"raw_secret": f"secret-{self.dataset_id}"}],
+                                "row_count": 1,
+                            },
+                            "query_plan": {
+                                "query_type": "detail_query",
+                                "execution_strategy": "query_graph",
+                            },
+                            "dsl": {"fields": []},
+                            "out_capsule": {
+                                "dataset_id": self.dataset_id,
+                                "raw_capsule_marker": "should_not_leak",
+                                "query_context": {"main_table": f"table_{self.dataset_id}"},
+                            },
+                            "error": None,
+                        }
+                    },
+                )
+
+        route_decision = {
+            "decision": "selected",
+            "dataset_id": sample_dataset.id,
+            "dataset_name": sample_dataset.name,
+            "manifest_version": "v-test",
+            "bound_schema_version": "schema-test",
+            "score": 1.0,
+            "reason": "测试固定路由",
+        }
+        lead_agent_context = {
+            "route_decision": route_decision,
+            "effective_dataset_id": sample_dataset.id,
+            "should_continue": True,
+            "resolved_question": "同时查销售和库存",
+            "time_context": {},
+            "thread_context": {},
+            "schema_status": {"status": "ok", "structured": {"terms": []}},
+            "selected_skills": [],
+            "planned_tool_calls": [
+                {
+                    "tool": "dataset_query",
+                    "arguments": {"dataset_id": sample_dataset.id, "question": "查销售"},
+                },
+                {
+                    "tool": "dataset_query",
+                    "arguments": {"dataset_id": other_dataset.id, "question": "查库存"},
+                },
+            ],
+            "executed_tool_calls": [],
+            "policy_violations": [],
+            "audit_trace": {},
+            "multiturn_classification": {},
+        }
+        settings = SimpleNamespace(
+            LEAD_AGENT_ENABLE_DATASET_FANOUT=True,
+            SUBAGENT_RUNNER_MODE="in_process",
+            SUBAGENT_FANOUT_MAX_PARALLEL=2,
+        )
+
+        monkeypatch.setattr("app.api.chat.get_settings", lambda: settings)
+        monkeypatch.setattr("app.services.subagent_fanout.get_settings", lambda: settings)
+        monkeypatch.setattr("app.api.chat.DatasetSubAgent", FakeSubAgent)
+        monkeypatch.setattr("app.api.chat.build_workflow", lambda db: object())
+        monkeypatch.setattr("app.api.chat.build_lead_agent_context", lambda *args, **kwargs: lead_agent_context)
+        monkeypatch.setattr("app.api.chat.resolve_term_clarification", lambda *args, **kwargs: {"status": "none"})
+        monkeypatch.setattr(
+            "app.api.chat.route_query_intent",
+            lambda *args, **kwargs: {
+                "intent": "query",
+                "entities": {},
+                "entry_intent": "detail_query",
+                "entry_route": "query_graph",
+                "entry_reason": "测试进入 fan-out",
+                "route_payload": {"kind": "query_graph"},
+            },
+        )
+
+        events = []
+        control_sink = []
+        payload = ChatRequest(question="同时查销售和库存", dataset_id=sample_dataset.id)
+        async for item in _stream_chat_singleturn(
+            payload,
+            db_session,
+            subagent_control_plane_sink=control_sink,
+        ):
+            events.append(json.loads(item["data"]))
+
+        final = [event for event in events if event.get("type") == "final"][-1]
+        dumped_final = json.dumps(final, ensure_ascii=False)
+
+        assert [item["dataset_id"] for item in final["subagent_tool_results"]] == [
+            sample_dataset.id,
+            other_dataset.id,
+        ]
+        assert final["sql_result"] is None
+        assert "control_plane" not in final
+        assert "last_success_task" not in final
+        assert "raw_secret" not in dumped_final
+        assert "raw_capsule_marker" not in dumped_final
+        assert len(control_sink) == 2
+        assert {item["capsule"]["dataset_id"] for item in control_sink} == {
+            sample_dataset.id,
+            other_dataset.id,
+        }
+        metadata = final["response_metadata"]
+        assert metadata["subagent_tool_results"] == final["subagent_tool_results"]
+        assert "control_plane" not in metadata
+
+    @pytest.mark.asyncio
     async def test_blueprint_route_enters_subagent_run(
         self, monkeypatch, db_session, sample_dataset
     ):
@@ -3631,6 +3779,34 @@ class TestChatStreamEvents:
         assert final["query_profile"]["sql"]["result_artifact"] == final["result_artifact"]
         assert metadata["result_artifact"] == final["result_artifact"]
         assert final["query_profile"]["execution_summary"]["stages"]
+        assert "control_plane" not in final
+        assert "last_success_task" not in final
+        assert final["sql_result"] is None
+        assert final["result_ref"].startswith("artifact:")
+        assert final["report_ref"].startswith("artifact:")
+        subagent_tool_result = metadata["subagent_tool_result"]
+        assert set(subagent_tool_result) == {
+            "status",
+            "dataset_id",
+            "display_summary",
+            "clarification_question",
+            "error_summary",
+            "result_ref",
+            "report_ref",
+        }
+        assert subagent_tool_result["status"] == "ok"
+        assert subagent_tool_result["dataset_id"] == sample_dataset.id
+        assert subagent_tool_result["result_ref"] == final["result_ref"]
+        assert subagent_tool_result["report_ref"] == final["report_ref"]
+        assert "control_plane" not in assistant_message.response_metadata
+        assert assistant_message.response_metadata["subagent_tool_result"] == subagent_tool_result
+        artifacts = (
+            db_session.query(models.QueryArtifact)
+            .filter(models.QueryArtifact.artifact_id.in_([final["result_ref"], final["report_ref"]]))
+            .all()
+        )
+        assert len(artifacts) == 2
+        assert {item.message_id for item in artifacts} == {assistant_message.id}
 
     def test_chat_stream_step_event_structure(self, client, sample_dataset):
         """step 事件必须含 node 和 status 字段"""

@@ -4,11 +4,17 @@ from app.services.observability.context import (
     ObservabilityRequestContext,
     set_observability_context,
 )
-from app.services.subagent_planning.contracts import CandidateAsset
+from app.services.subagent_planning.contracts import (
+    CandidateAsset,
+    QueryPlan,
+    normalize_query_plan,
+)
 from app.services.subagent_planning.planner import (
     _planner_human_prompt,
+    _planner_system_prompt,
     build_fallback_query_plan,
     plan_query,
+    plan_query_with_detail_context,
 )
 
 
@@ -29,6 +35,17 @@ class FakeLLM:
         if self.exc:
             raise self.exc
         return FakeLLMResponse(self.content)
+
+
+class SequentialFakeLLM:
+    def __init__(self, contents):
+        self.contents = list(contents)
+        self.messages = []
+        self.model_name = "fake-planner-model"
+
+    def invoke(self, messages):
+        self.messages.append(messages)
+        return FakeLLMResponse(self.contents.pop(0))
 
 
 class FakeOpenAIAPIConnectionError(Exception):
@@ -276,6 +293,77 @@ def test_fallback_accepts_keyword_routing_and_fallback_reason():
     assert plan.fallback_reason == "llm_plan_invalid"
 
 
+def test_query_plan_serializes_asset_detail_audit_fields():
+    plan = QueryPlan(
+        query_type="detail_query",
+        execution_strategy="clarify",
+        confidence=0.4,
+        planner_source="fallback",
+        detail_rounds=3,
+        attempted_detail_requests=[{"asset_type": "table", "asset_id": "wide_table"}],
+        asset_detail_coverage={"wide_table": "too_large"},
+        missing_context=["字段无法定位"],
+        why_not_generate_sql="3 轮详情请求后仍缺少可用字段。",
+        risk_flags=["wide_table"],
+    )
+
+    payload = plan.to_dict()
+
+    assert payload["detail_rounds"] == 3
+    assert payload["attempted_detail_requests"][0]["asset_id"] == "wide_table"
+    assert payload["asset_detail_coverage"] == {"wide_table": "too_large"}
+    assert payload["missing_context"] == ["字段无法定位"]
+    assert payload["why_not_generate_sql"] == "3 轮详情请求后仍缺少可用字段。"
+    assert payload["risk_flags"] == ["wide_table"]
+
+
+def test_normalize_query_plan_accepts_asset_detail_audit_fields():
+    plan = normalize_query_plan(
+        {
+            "query_type": "detail_query",
+            "execution_strategy": "reject",
+            "confidence": 0.2,
+            "planner_source": "llm",
+            "explanation": {"summary": "上下文不足"},
+            "detail_rounds": 3,
+            "attempted_detail_requests": [{"asset_type": "table", "asset_id": "wide_table"}],
+            "asset_detail_coverage": {"wide_table": "too_large"},
+            "missing_context": ["缺少时间字段"],
+            "why_not_generate_sql": "无法确定时间字段。",
+            "risk_flags": ["wide_table"],
+        }
+    )
+
+    assert plan.detail_rounds == 3
+    assert plan.attempted_detail_requests == [
+        {"asset_type": "table", "asset_id": "wide_table"}
+    ]
+    assert plan.asset_detail_coverage == {"wide_table": "too_large"}
+    assert plan.missing_context == ["缺少时间字段"]
+    assert plan.why_not_generate_sql == "无法确定时间字段。"
+    assert plan.risk_flags == ["wide_table"]
+    assert plan.execution_strategy == "reject"
+
+
+def test_planner_system_prompt_excludes_asset_detail_loop_rules_by_default():
+    prompt = _planner_system_prompt()
+
+    assert "普通规划模式" in prompt
+    assert "QueryPlan 契约 JSON" in prompt
+    assert "asset_detail_requests" not in prompt
+    assert "最多 3 轮" not in prompt
+    assert "不允许硬生成 SQL" not in prompt
+
+
+def test_planner_system_prompt_includes_asset_detail_loop_rules_when_enabled():
+    prompt = _planner_system_prompt(detail_loop_enabled=True)
+
+    assert "asset_detail_requests" in prompt
+    assert "最多 3 轮" in prompt
+    assert "不允许硬生成 SQL" in prompt
+    assert "目录中的资产" in prompt
+
+
 def test_fallback_blueprint_query_with_inputs_executes_blueprint():
     plan = build_fallback_query_plan(
         question="查一下日报",
@@ -331,6 +419,91 @@ def test_plan_query_with_llm_validates_and_returns_llm_plan(monkeypatch, db_sess
     assert plan.execution_strategy == "blueprint_as_reference"
     assert plan.decision_factors[0]["code"] == "detail_query_signal"
     assert plan.planner_warnings[0]["code"] == "blueprint_reference_only"
+    assert "asset_detail_requests" not in fake_llm.messages[0].content
+    assert "普通规划模式" in fake_llm.messages[0].content
+
+
+def test_plan_query_with_detail_context_returns_detail_request_payload(monkeypatch, db_session):
+    detail_payload = {
+        "asset_detail_requests": [
+            {
+                "asset_type": "table",
+                "asset_id": "user_logs",
+                "detail_level": "full_schema",
+                "purpose": "sql_generation",
+                "reason": "需要字段",
+            }
+        ]
+    }
+    fake_llm = FakeLLM(json.dumps(detail_payload, ensure_ascii=False))
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: fake_llm,
+    )
+
+    response = plan_query_with_detail_context(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        lightweight_catalog={"assets": [_table("user_logs")]},
+        asset_details=[],
+        previous_detail_requests=[],
+        warnings=[],
+    )
+
+    assert response == detail_payload
+    assert not isinstance(response, QueryPlan)
+
+
+def test_plan_query_with_detail_context_prompts_with_asset_details(monkeypatch, db_session):
+    final_payload = {
+        "query_type": "detail_query",
+        "execution_strategy": "query_graph",
+        "confidence": 0.82,
+        "selected_assets": [_table("user_logs")],
+        "planner_source": "llm",
+        "explanation": {"summary": "字段详情已足够生成 SQL。"},
+    }
+    fake_llm = FakeLLM(json.dumps(final_payload, ensure_ascii=False))
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: fake_llm,
+    )
+    asset_details = [
+        {
+            "request": {
+                "asset_type": "table",
+                "asset_id": "user_logs",
+                "detail_level": "full_schema",
+                "purpose": "sql_generation",
+            },
+            "coverage": "full",
+            "payload": {
+                "table_name": "user_logs",
+                "fields": [{"name": "created_at", "data_type": "datetime"}],
+            },
+        }
+    ]
+
+    plan = plan_query_with_detail_context(
+        db=db_session,
+        question="查询10条用户日志",
+        routing={"route": "dataset_subagent"},
+        lightweight_catalog={"assets": [_table("user_logs")]},
+        asset_details=asset_details,
+        previous_detail_requests=[asset_details[0]["request"]],
+        warnings=[{"code": "wide_table"}],
+    )
+
+    prompt_payload = json.loads(fake_llm.messages[1].content)
+    assert isinstance(plan, QueryPlan)
+    assert "asset_detail_requests" in fake_llm.messages[0].content
+    assert "最多 3 轮" in fake_llm.messages[0].content
+    assert prompt_payload["asset_detail_context"][0]["payload"]["table_name"] == "user_logs"
+    assert prompt_payload["previous_detail_requests"] == [asset_details[0]["request"]]
+    assert prompt_payload["detail_loop_warnings"] == [{"code": "wide_table"}]
+    assert any("asset_detail_requests" in rule for rule in prompt_payload["rules"])
+    assert "asset_details" not in prompt_payload["multiturn_context"]
 
 
 def test_plan_query_falls_back_when_llm_raises(monkeypatch, db_session):

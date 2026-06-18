@@ -149,6 +149,153 @@ def test_conversation_store_valid_prior_capsule_checks_schema(db_session):
     assert stale_status["status"] == "stale"
 
 
+def test_persist_completed_turn_prefers_subagent_control_plane(db_session):
+    """完成轮写回应优先使用后端 side-channel 的 control plane。"""
+
+    from app.api.chat import _persist_completed_turn
+
+    store = ConversationStore(db_session)
+    state = store.load_or_create(session_id="session-control-plane", user_id="u1")
+    control_capsule = {
+        "capsule_version": "subagent.v1",
+        "dataset_id": 10,
+        "query_context": {"main_table": "control_plane_table"},
+    }
+    control_task = {
+        "capsule_version": "last_success_task.v1",
+        "dataset_id": 10,
+        "schema_version": "schema-control",
+        "manifest_version": "manifest-control",
+        "turn_index": 0,
+        "question": "查询控制面",
+        "query_type": "detail_query",
+        "execution_strategy": "query_graph",
+        "planner_source": "deterministic",
+        "main_table": "control_plane_table",
+        "result_digest": {"row_count": 1, "columns": ["id"]},
+    }
+    final_payload = {
+        "type": "final",
+        "answer": "完成",
+        "conversation_id": 1,
+        "route_decision": {
+            "dataset_id": 10,
+            "bound_schema_version": "schema-final",
+            "manifest_version": "manifest-final",
+        },
+        "time_context": {},
+        "out_capsule": {
+            "capsule_version": "subagent.v1",
+            "dataset_id": 10,
+            "query_context": {"main_table": "final_payload_table"},
+        },
+        "query_plan": {"query_type": "unsupported"},
+        "dsl": {},
+        "sql": None,
+        "sql_result": None,
+        "error": None,
+    }
+
+    completed = _persist_completed_turn(
+        store=store,
+        state=state,
+        user_id="u1",
+        business_session_id="session-control-plane",
+        effective_payload=schemas.ChatRequest(
+            question="查询控制面",
+            dataset_id=10,
+            session_id="session-control-plane",
+        ),
+        final_payload=final_payload,
+        pending_resolution={"status": "none"},
+        payload_question="查询控制面",
+        trace_context_sink=[],
+        subagent_control_plane={
+            "capsule": control_capsule,
+            "last_success_task": control_task,
+        },
+    )
+
+    saved = store.load("session-control-plane")
+    assert completed is True
+    assert saved.subagent_capsules["10"]["query_context"]["main_table"] == "control_plane_table"
+    thread_state = saved.subagent_capsules["_thread"]
+    assert thread_state["last_success_task"]["main_table"] == "control_plane_table"
+    assert thread_state["last_success_task_write_status"]["source"] == "subagent_control_plane"
+
+
+def test_persist_completed_turn_accepts_fanout_control_planes(db_session):
+    """fan-out 多个 control plane 应分别写入数据集胶囊，并使用可用成功任务。"""
+
+    from app.api.chat import _persist_completed_turn
+
+    store = ConversationStore(db_session)
+    state = store.load_or_create(session_id="session-fanout-control", user_id="u1")
+    final_payload = {
+        "type": "final",
+        "answer": "fanout 完成",
+        "conversation_id": 1,
+        "route_decision": {"dataset_id": 10},
+        "time_context": {},
+        "error": None,
+    }
+    control_planes = [
+        {
+            "capsule": {
+                "capsule_version": "subagent.v1",
+                "dataset_id": 10,
+                "query_context": {"main_table": "orders"},
+            },
+            "last_success_task": {
+                "capsule_version": "last_success_task.v1",
+                "dataset_id": 10,
+                "schema_version": "schema-a",
+                "manifest_version": "manifest-a",
+                "turn_index": 0,
+                "question": "查销售",
+                "query_type": "detail_query",
+                "execution_strategy": "query_graph",
+                "planner_source": "deterministic",
+                "main_table": "orders",
+                "result_digest": {"row_count": 1, "columns": ["id"]},
+            },
+        },
+        {
+            "capsule": {
+                "capsule_version": "subagent.v1",
+                "dataset_id": 20,
+                "query_context": {"main_table": "inventory"},
+            },
+            "last_success_task": None,
+        },
+    ]
+
+    completed = _persist_completed_turn(
+        store=store,
+        state=state,
+        user_id="u1",
+        business_session_id="session-fanout-control",
+        effective_payload=schemas.ChatRequest(
+            question="同时查销售和库存",
+            dataset_id=10,
+            session_id="session-fanout-control",
+        ),
+        final_payload=final_payload,
+        pending_resolution={"status": "none"},
+        payload_question="同时查销售和库存",
+        trace_context_sink=[],
+        subagent_control_plane=control_planes,
+    )
+
+    saved = store.load("session-fanout-control")
+    assert completed is True
+    assert saved.subagent_capsules["10"]["query_context"]["main_table"] == "orders"
+    assert saved.subagent_capsules["20"]["query_context"]["main_table"] == "inventory"
+    thread_state = saved.subagent_capsules["_thread"]
+    assert thread_state["last_success_task"]["main_table"] == "orders"
+    assert thread_state["last_success_task_write_status"]["source"] == "subagent_control_plane"
+
+
 def test_stream_chat_consumes_store_active_dataset_and_prior_capsule(db_session, monkeypatch):
     """真实 _stream_chat 包装层应消费 ConversationStore 的 active_dataset_id 与 prior_capsule。"""
 
@@ -224,37 +371,47 @@ def test_stream_chat_consumes_store_active_dataset_and_prior_capsule(db_session,
             "effective_dataset_id": 10,
         }
 
-    class FakeRunner:
-        def __init__(self, _graph, _db):
-            pass
+    class FakeSubAgent:
+        def __init__(self, db, dataset_id):
+            self.db = db
+            self.dataset_id = dataset_id
 
-        async def run(self, request, _trace_context, initial_state, **_kwargs):
+        async def run(self, request, _trace_context, *, graph, initial_state=None, graph_kwargs=None):
+            from app.services.subagent_planning import SubAgentEvent
+
             seen["subagent_request"] = request
             seen["initial_state"] = initial_state
             assert request.prior_capsule["query_context"]["metrics"] == ["gmv"]
             assert request.prior_capsule_status["status"] == "loaded"
             assert initial_state["prior_capsule"]["query_context"]["metrics"] == ["gmv"]
-            yield {
-                "event": "on_chain_end",
-                "metadata": {"langgraph_node": "merge_prior_context"},
-                "data": {
-                    "output": {
-                        "turn_type": "continue",
-                        "question": "基于上一轮问题「最近30天GMV是多少」，按地区拆分",
-                        "multiturn_context": {
-                            "turn_type": "continue",
-                            "prior_query_context": {"metrics": ["gmv"]},
-                            "merged_query_context": {"metrics": ["gmv"], "dimensions": ["地区"]},
+            yield SubAgentEvent(
+                event_type="graph_event",
+                payload={
+                    "event": {
+                        "event": "on_chain_end",
+                        "metadata": {"langgraph_node": "merge_prior_context"},
+                        "data": {
+                            "output": {
+                                "turn_type": "continue",
+                                "question": "基于上一轮问题「最近30天GMV是多少」，按地区拆分",
+                                "multiturn_context": {
+                                    "turn_type": "continue",
+                                    "prior_query_context": {"metrics": ["gmv"]},
+                                    "merged_query_context": {
+                                        "metrics": ["gmv"],
+                                        "dimensions": ["地区"],
+                                    },
+                                },
+                                "merge_debug": {"used_prior": True},
+                            }
                         },
-                        "merge_debug": {"used_prior": True},
                     }
                 },
-            }
-            yield {
-                "event": "on_chain_end",
-                "metadata": {},
-                "data": {
-                    "output": {
+            )
+            yield SubAgentEvent(
+                event_type="result",
+                payload={
+                    "final_state": {
                         "answer": "已按地区拆分。",
                         "sql": "SELECT region, SUM(amount) AS gmv FROM orders GROUP BY region",
                         "sql_list": ["SELECT region, SUM(amount) AS gmv FROM orders GROUP BY region"],
@@ -273,12 +430,12 @@ def test_stream_chat_consumes_store_active_dataset_and_prior_capsule(db_session,
                         },
                     }
                 },
-            }
+            )
 
     monkeypatch.setattr("app.api.chat.get_settings", lambda: Settings())
     monkeypatch.setattr("app.api.chat.build_lead_agent_context", fake_build_lead_agent_context)
     monkeypatch.setattr("app.api.chat.build_workflow", lambda _db: object())
-    monkeypatch.setattr("app.api.chat.InProcessDatasetSubAgentRunner", FakeRunner)
+    monkeypatch.setattr("app.api.chat.DatasetSubAgent", FakeSubAgent)
 
     from app.api.chat import _stream_chat
 

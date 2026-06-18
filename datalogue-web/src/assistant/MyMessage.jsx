@@ -13,7 +13,7 @@ import {
 import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
 import MessageContent from '../components/message-content';
-import { submitMessageFeedback } from '../api/client';
+import { getArtifact, submitMessageFeedback } from '../api/client';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
@@ -784,6 +784,94 @@ function TraceLinkCard({ traceId, sessionId, observability, stepTrace = [] }) {
   );
 }
 
+function artifactEntries({ resultRef, reportRef, subagentToolResults }) {
+  const entries = [];
+  const seen = new Set();
+  const push = (kind, ref, datasetId = null) => {
+    if (!ref || seen.has(ref)) return;
+    seen.add(ref);
+    entries.push({ kind, ref, datasetId });
+  };
+  push('result', resultRef);
+  push('report', reportRef);
+  for (const item of Array.isArray(subagentToolResults) ? subagentToolResults : []) {
+    push('result', item?.result_ref, item?.dataset_id);
+    push('report', item?.report_ref, item?.dataset_id);
+  }
+  return entries;
+}
+
+function artifactTitle(entry) {
+  const label = entry.kind === 'report' ? '报告' : '结果';
+  return entry.datasetId ? `数据集 ${entry.datasetId} ${label}` : `查看${label}`;
+}
+
+function ArtifactAccessCard({ resultRef, reportRef, subagentToolResults }) {
+  const entries = useMemo(
+    () => artifactEntries({ resultRef, reportRef, subagentToolResults }),
+    [resultRef, reportRef, subagentToolResults],
+  );
+  const [activeRef, setActiveRef] = useState(null);
+  const [artifact, setArtifact] = useState(null);
+  const [loadingRef, setLoadingRef] = useState(null);
+  const [error, setError] = useState('');
+
+  if (!entries.length) return null;
+
+  const loadArtifact = async (entry) => {
+    if (activeRef === entry.ref && artifact) {
+      setActiveRef(null);
+      setArtifact(null);
+      setError('');
+      return;
+    }
+    setActiveRef(entry.ref);
+    setLoadingRef(entry.ref);
+    setError('');
+    try {
+      setArtifact(await getArtifact(entry.ref));
+    } catch (_e) {
+      setArtifact(null);
+      setError('产物已过期或不可用');
+    } finally {
+      setLoadingRef(null);
+    }
+  };
+
+  const content = artifact?.content_text
+    ?? (artifact?.content_json ? JSON.stringify(artifact.content_json, null, 2) : '');
+
+  return (
+    <div className="artifact-card">
+      <div className="artifact-actions">
+        {entries.map((entry) => (
+          <button
+            key={entry.ref}
+            type="button"
+            className={`artifact-btn ${activeRef === entry.ref ? 'active' : ''}`}
+            onClick={() => loadArtifact(entry)}
+            title={entry.ref}
+          >
+            <Icon name={entry.kind === 'report' ? 'book' : 'table'} style={{ width: 13, height: 13 }} />
+            <span>{artifactTitle(entry)}</span>
+            {loadingRef === entry.ref && <em>加载中</em>}
+          </button>
+        ))}
+      </div>
+      {error && <div className="artifact-error">{error}</div>}
+      {artifact && activeRef && (
+        <div className="artifact-preview">
+          <div className="artifact-preview-head">
+            <span>{artifact.kind}</span>
+            <span>{artifact.content_mime}</span>
+          </div>
+          <pre>{content}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * AIMessage — 助理消息气泡
  * - 用 MessagePrimitive.Parts 把 reasoning / text 分开渲染
@@ -818,6 +906,9 @@ export function AIMessage({ showSql = true }) {
   const observability = custom.observability || null;
   const stepTrace = custom.stepTrace || [];
   const savedFeedback = custom.feedback || null;
+  const resultRef = custom.resultRef || null;
+  const reportRef = custom.reportRef || null;
+  const subagentToolResults = custom.subagentToolResults || null;
 
   const handleSelectClarification = (candidate, optionIndex, label, kind = 'term') => {
     const clarificationId =
@@ -923,6 +1014,12 @@ export function AIMessage({ showSql = true }) {
         sessionId={langfuseSessionId}
         observability={observability}
         stepTrace={stepTrace}
+      />
+
+      <ArtifactAccessCard
+        resultRef={resultRef}
+        reportRef={reportRef}
+        subagentToolResults={subagentToolResults}
       />
 
       {/* SQL 执行结果表格 */}

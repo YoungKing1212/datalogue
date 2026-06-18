@@ -909,6 +909,70 @@ input:focus, textarea:focus, button:focus { outline: none; }
   height: 12px;
 }
 
+.artifact-card {
+  margin: 8px 0 2px;
+}
+.artifact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.artifact-btn {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.artifact-btn:hover,
+.artifact-btn.active {
+  color: var(--text);
+  background: var(--bg-1);
+}
+.artifact-btn em {
+  color: var(--text-3);
+  font-style: normal;
+}
+.artifact-error {
+  margin-top: 6px;
+  color: var(--neg);
+  font-size: 12px;
+}
+.artifact-preview {
+  margin-top: 7px;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.artifact-preview-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-3);
+  font-size: 11px;
+}
+.artifact-preview pre {
+  max-height: 320px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
 /* ── 查询审计 ──────────────────────────────── */
 .audit-page {
   padding: 24px;

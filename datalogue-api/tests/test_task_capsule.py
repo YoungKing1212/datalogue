@@ -237,7 +237,21 @@ def test_build_success_task_state_falls_back_to_dsl_main_table():
     assert state["main_table"] == "plan_task_daily_record"
 
 
-def test_build_success_task_state_json_encodes_sample_rows():
+def test_build_success_task_state_infers_type_and_main_table_when_plan_is_sparse():
+    state = build_success_task_state(
+        question="查询日志",
+        dataset_id=10,
+        query_plan={"execution_strategy": "query_graph"},
+        dsl={},
+        sql='SELECT id FROM "plan_task_daily_record" LIMIT 10',
+        sql_result={"columns": ["id"], "rows": [{"id": 1}], "row_count": 1},
+    )
+
+    assert state["query_type"] == "detail_query"
+    assert state["main_table"] == "plan_task_daily_record"
+
+
+def test_build_success_task_state_omits_sample_rows():
     state = build_success_task_state(
         question="查询金额",
         dataset_id=10,

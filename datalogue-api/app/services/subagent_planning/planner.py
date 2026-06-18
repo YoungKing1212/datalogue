@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.graph.llm import get_llm
 from app.services.observability.context import current_observability_context
 from app.services.observability.tracer import get_observability_tracer
+from app.services.subagent_planning.asset_detail import AssetDetailRequest
 from app.services.subagent_planning.contracts import (
     CANDIDATE_ASSET_TYPES,
     CandidateAsset,
@@ -43,6 +44,10 @@ LIGHTWEIGHT_METADATA_KEYS = {"table_name", "column_name", "parameters", "impleme
 PROMPT_TEXT_LIMIT = 120
 PROMPT_LIST_LIMIT = 20
 PROMPT_DEPTH_LIMIT = 4
+PUBLIC_TEXT_LIMIT = 240
+PUBLIC_LIST_LIMIT = 12
+PUBLIC_DICT_LIMIT = 20
+PUBLIC_DEPTH_LIMIT = 4
 LIGHTWEIGHT_ASSET_KEYS = {
     "asset_type",
     "asset_id",
@@ -55,6 +60,39 @@ LIGHTWEIGHT_ASSET_KEYS = {
     "reject_reason",
 }
 LIGHTWEIGHT_SIGNAL_KEYS = {"type", "value", "score", "field", "table", "name"}
+DETAIL_LOOP_DANGEROUS_PUBLIC_KEYS = {
+    "asset_detail_context",
+    "columns",
+    "column_defs",
+    "ddl",
+    "expr",
+    "field_list",
+    "fields",
+    "payload",
+    "raw_schema",
+    "schema",
+    "schema_context",
+    "schema_structured",
+    "sql",
+    "sql_template",
+    "table_schemas",
+}
+DETAIL_LOOP_DANGEROUS_TEXT_MARKERS = (
+    "asset_detail_context",
+    "sql_template",
+    "table_schemas",
+    "create table",
+    "select * from",
+    "\"fields\"",
+    "'fields'",
+    "fields:",
+    "field_list",
+    "schema:",
+    "payload:",
+    "expr:",
+    "字段列表",
+    "字段明细",
+)
 LLM_ERROR_MODULE_PREFIXES = ("openai", "httpx", "langchain_openai", "litellm")
 LLM_ERROR_TYPE_KEYWORDS = (
     "APIConnectionError",
@@ -740,19 +778,30 @@ def build_fallback_query_plan(
     )
 
 
-def _planner_system_prompt() -> str:
-    return "\n".join(
-        [
-            "你是数语 DatasetSubAgent 的查询规划器，只能输出严格 JSON。",
-            "不要输出 Markdown、解释文字或代码块之外的任何内容。",
-            "JSON 必须符合 QueryPlan 契约：query_type、execution_strategy、confidence、planner_source、explanation。",
-            "planner_source 必须为 llm。",
-            "可选资产字段包括 selected_assets、reference_assets、rejected_assets、required_inputs、clarification、debug。",
-            "可选审计字段包括 decision_factors、planner_warnings、governance_suggestions，均为对象数组。",
-            "execution_strategy 可选：blueprint_execute、blueprint_as_reference、query_graph、clarify、reject。",
-            "明细查询命中 field/table 时，应优先 query_graph 或 blueprint_as_reference，不要因为缺少指标而 clarify。",
-        ]
-    )
+def _planner_system_prompt(*, detail_loop_enabled: bool = False) -> str:
+    rules = [
+        "你是数语 DatasetSubAgent 的查询规划器，只能输出严格 JSON。",
+        "不要输出 Markdown、解释文字或代码块之外的任何内容。",
+        "JSON 必须符合 QueryPlan 契约：query_type、execution_strategy、confidence、planner_source、explanation。",
+        "planner_source 必须为 llm。",
+        "可选资产字段包括 selected_assets、reference_assets、rejected_assets、required_inputs、clarification、debug。",
+        "可选审计字段包括 decision_factors、planner_warnings、governance_suggestions，均为对象数组。",
+        "execution_strategy 可选：blueprint_execute、blueprint_as_reference、query_graph、clarify、reject。",
+        "明细查询命中 field/table 时，应优先 query_graph 或 blueprint_as_reference，不要因为缺少指标而 clarify。",
+    ]
+    if detail_loop_enabled:
+        rules.extend(
+            [
+                "当候选资产目录不足以生成可靠 SQL 时，可以输出 asset_detail_requests，请求目录中的资产详情。",
+                "asset_detail_requests 只能请求本轮候选资产目录中的 metric、dimension、table、blueprint。",
+                "表详情优先请求 full_schema；如果返回 too_large，再使用 field_search 自然语言搜索字段。",
+                "资产详情最多 3 轮；3 轮后仍缺上下文时，不允许硬生成 SQL，必须输出 clarify 或 reject。",
+                "如果无法确定时间字段、join 字段、指标口径或业务过滤条件，应在 missing_context 和 why_not_generate_sql 中说明原因。",
+            ]
+        )
+    else:
+        rules.append("普通规划模式下必须输出 QueryPlan 契约 JSON，不要输出详情请求或其他包装结构。")
+    return "\n".join(rules)
 
 
 def _compact_error_text(exc: Exception, max_length: int = 200) -> str:
@@ -783,6 +832,178 @@ def _compact_prompt_value(value: Any, *, depth: int = 0) -> Any:
             for key, item in list(value.items())[:PROMPT_LIST_LIMIT]
         }
     return _truncate_text(str(value))
+
+
+def _detail_loop_public_key_is_dangerous(key: Any) -> bool:
+    normalized = str(key or "").strip().lower()
+    return normalized in DETAIL_LOOP_DANGEROUS_PUBLIC_KEYS
+
+
+def _detail_loop_public_text(value: str) -> str:
+    normalized = value.lower()
+    if any(marker in normalized for marker in DETAIL_LOOP_DANGEROUS_TEXT_MARKERS):
+        return "[removed_detail_context]"
+    return _truncate_text(value, PUBLIC_TEXT_LIMIT)
+
+
+def _sanitize_public_value(value: Any, *, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return _detail_loop_public_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if depth >= PUBLIC_DEPTH_LIMIT:
+        return _detail_loop_public_text(str(value))
+    if isinstance(value, list):
+        sanitized_items = []
+        for item in value[:PUBLIC_LIST_LIMIT]:
+            sanitized = _sanitize_public_value(item, depth=depth + 1)
+            if sanitized not in (None, "", [], {}):
+                sanitized_items.append(sanitized)
+        return sanitized_items
+    if isinstance(value, dict):
+        sanitized_dict: dict[str, Any] = {}
+        for key, item in list(value.items())[:PUBLIC_DICT_LIMIT]:
+            if _detail_loop_public_key_is_dangerous(key):
+                continue
+            sanitized = _sanitize_public_value(item, depth=depth + 1)
+            if sanitized not in (None, "", [], {}):
+                sanitized_dict[str(key)] = sanitized
+        return sanitized_dict
+    return _detail_loop_public_text(str(value))
+
+
+def _sanitize_public_dict(value: Any) -> dict[str, Any]:
+    sanitized = _sanitize_public_value(value)
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _sanitize_public_dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    sanitized_items = []
+    for item in value[:PUBLIC_LIST_LIMIT]:
+        sanitized = _sanitize_public_value(item)
+        if isinstance(sanitized, dict) and sanitized:
+            sanitized_items.append(sanitized)
+    return sanitized_items
+
+
+def _sanitize_public_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    sanitized_items = []
+    for item in value[:PUBLIC_LIST_LIMIT]:
+        sanitized = _sanitize_public_value(item)
+        if sanitized not in (None, "", [], {}):
+            sanitized_items.append(str(sanitized))
+    return sanitized_items
+
+
+def _lightweight_asset_index(lightweight_catalog: CandidateAssetInput) -> dict[tuple[str, str], dict[str, Any]]:
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in _asset_items(lightweight_catalog):
+        if not isinstance(item, dict):
+            continue
+        asset_type = str(item.get("asset_type") or "")
+        asset_id = item.get("asset_id")
+        if not asset_type or asset_id in (None, ""):
+            continue
+        index[(asset_type, str(asset_id))] = item
+    return index
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _rebuild_detail_loop_asset(
+    asset: CandidateAsset,
+    *,
+    usage: str,
+    lightweight_assets: dict[tuple[str, str], dict[str, Any]],
+) -> CandidateAsset:
+    lightweight = lightweight_assets.get((asset.asset_type, str(asset.asset_id))) or {}
+    metadata = {
+        key: _sanitize_public_value(lightweight[key])
+        for key in ("schema_version", "manifest_version")
+        if lightweight.get(key) not in (None, "", [], {})
+    }
+    match_signals = _sanitize_public_value(lightweight.get("match_signals") or [])
+    return CandidateAsset(
+        asset_type=str(lightweight.get("asset_type") or asset.asset_type),
+        asset_id=lightweight.get("asset_id", asset.asset_id),
+        name=str(lightweight.get("name") or asset.name or lightweight.get("asset_id") or asset.asset_id),
+        display_name=_sanitize_public_value(lightweight.get("display_name") or asset.display_name),
+        source=str(lightweight.get("source") or "recall"),
+        confidence=_safe_float(lightweight.get("confidence"), asset.confidence),
+        match_signals=match_signals if isinstance(match_signals, list) else [],
+        metadata=metadata,
+        usage=usage,
+        match_reason=_sanitize_public_value(asset.match_reason),
+        reject_reason=_sanitize_public_value(asset.reject_reason),
+    )
+
+
+def _rebuild_detail_loop_assets(
+    assets: list[CandidateAsset],
+    *,
+    usage: str,
+    lightweight_assets: dict[tuple[str, str], dict[str, Any]],
+) -> list[CandidateAsset]:
+    rebuilt = []
+    for asset in assets[:PUBLIC_LIST_LIMIT]:
+        rebuilt.append(
+            _rebuild_detail_loop_asset(
+                asset,
+                usage=usage,
+                lightweight_assets=lightweight_assets,
+            )
+        )
+    return rebuilt
+
+
+def _sanitize_detail_loop_query_plan(
+    plan: QueryPlan,
+    *,
+    lightweight_catalog: CandidateAssetInput,
+) -> QueryPlan:
+    lightweight_assets = _lightweight_asset_index(lightweight_catalog)
+    plan.selected_assets = _rebuild_detail_loop_assets(
+        plan.selected_assets,
+        usage="selected",
+        lightweight_assets=lightweight_assets,
+    )
+    plan.reference_assets = _rebuild_detail_loop_assets(
+        plan.reference_assets,
+        usage="reference",
+        lightweight_assets=lightweight_assets,
+    )
+    plan.rejected_assets = _rebuild_detail_loop_assets(
+        plan.rejected_assets,
+        usage="rejected",
+        lightweight_assets=lightweight_assets,
+    )
+    plan.explanation = _sanitize_public_dict(plan.explanation)
+    plan.decision_factors = _sanitize_public_dict_list(plan.decision_factors)
+    plan.planner_warnings = _sanitize_public_dict_list(plan.planner_warnings)
+    plan.governance_suggestions = _sanitize_public_dict_list(plan.governance_suggestions)
+    plan.required_inputs = _sanitize_public_dict_list(plan.required_inputs)
+    plan.debug = _sanitize_public_dict(plan.debug)
+    plan.asset_detail_coverage = _sanitize_public_dict(plan.asset_detail_coverage)
+    plan.attempted_detail_requests = _sanitize_public_dict_list(plan.attempted_detail_requests)
+    plan.clarification = (
+        _sanitize_public_dict(plan.clarification) if isinstance(plan.clarification, dict) else None
+    )
+    plan.missing_context = _sanitize_public_string_list(plan.missing_context)
+    plan.risk_flags = _sanitize_public_string_list(plan.risk_flags)
+    if plan.why_not_generate_sql is not None:
+        plan.why_not_generate_sql = str(_sanitize_public_value(plan.why_not_generate_sql))
+    if plan.fallback_reason is not None:
+        plan.fallback_reason = str(_sanitize_public_value(plan.fallback_reason))
+    return plan
 
 
 def _pick_keys(payload: Any, keys: tuple[str, ...]) -> dict[str, Any]:
@@ -895,12 +1116,36 @@ def _planner_human_prompt(
     candidate_assets: CandidateAssetInput,
     multiturn_context: Any = None,
     lead_agent_context: Any = None,
+    asset_details: list[dict[str, Any]] | None = None,
+    previous_detail_requests: list[dict[str, Any]] | None = None,
+    detail_warnings: list[dict[str, Any]] | None = None,
 ) -> str:
     assets = [_lightweight_asset(asset) for asset in _assets(candidate_assets)]
     asset_counts: dict[str, int] = {}
     for asset in assets:
         asset_type = str(asset.get("asset_type") or "unknown")
         asset_counts[asset_type] = asset_counts.get(asset_type, 0) + 1
+
+    detail_loop_enabled = (
+        asset_details is not None
+        or previous_detail_requests is not None
+        or detail_warnings is not None
+    )
+    rules = [
+        "blueprint_execute 只能用于固定蓝图查询，且不能携带 required_inputs。",
+        "blueprint_as_reference 必须提供 reference_assets。",
+        "reject 必须提供 explanation.summary。",
+        "detail_query 如果候选中已有 field/table，不应返回 clarify。",
+    ]
+    if detail_loop_enabled:
+        rules.extend(
+            [
+                "详情循环模式下，如果轻量目录不足以规划 SQL，可输出 asset_detail_requests 数组请求资产详情。",
+                "asset_detail_requests 只能请求 candidate_assets 目录中的资产，purpose 必须为 sql_generation。",
+                "资产详情循环最多 3 轮；达到 3 轮仍缺少时间、join、口径或过滤条件时，不允许硬生成 SQL。",
+                "无法安全生成 SQL 时，返回 QueryPlan，并在 missing_context 和 why_not_generate_sql 中说明缺口。",
+            ]
+        )
 
     payload = {
         "question": question,
@@ -912,13 +1157,12 @@ def _planner_human_prompt(
         "candidate_assets": assets[:PROMPT_ASSET_LIMIT],
         "multiturn_context": _multiturn_summary(multiturn_context),
         "lead_agent_context_summary": _lead_agent_context_summary(lead_agent_context),
-        "rules": [
-            "blueprint_execute 只能用于固定蓝图查询，且不能携带 required_inputs。",
-            "blueprint_as_reference 必须提供 reference_assets。",
-            "reject 必须提供 explanation.summary。",
-            "detail_query 如果候选中已有 field/table，不应返回 clarify。",
-        ],
+        "rules": rules,
     }
+    if detail_loop_enabled:
+        payload["asset_detail_context"] = _compact_prompt_value(asset_details or [])
+        payload["previous_detail_requests"] = _compact_prompt_value(previous_detail_requests or [])
+        payload["detail_loop_warnings"] = _compact_prompt_value(detail_warnings or [])
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -936,6 +1180,19 @@ def _safe_json_parse(content: Any) -> dict[str, Any]:
     parsed = json.loads(text)
     if not isinstance(parsed, dict):
         raise QueryPlanValidationError("planner output must be a JSON object")
+    return parsed
+
+
+def parse_asset_detail_requests(payload: Any) -> list[AssetDetailRequest]:
+    if not isinstance(payload, dict):
+        return []
+    requests = payload.get("asset_detail_requests") or []
+    if not isinstance(requests, list):
+        return []
+    parsed: list[AssetDetailRequest] = []
+    for item in requests:
+        if isinstance(item, dict):
+            parsed.append(AssetDetailRequest.from_dict(item))
     return parsed
 
 
@@ -1147,6 +1404,188 @@ def plan_query(
                 question=question,
                 routing=routing,
                 candidate_assets=candidate_assets,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
+        )
+        try:
+            tracer.end_generation(
+                generation,
+                output=response_content,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "fallback",
+                    "fallback_reason": plan.fallback_reason,
+                    "validation_error": validation_error,
+                    "error_stage": "validation",
+                    "fallback_execution_strategy": plan.execution_strategy,
+                },
+            )
+        except Exception:
+            pass
+        return plan
+
+
+def plan_query_with_detail_context(
+    *,
+    db: Any,
+    question: str,
+    routing: Any,
+    lightweight_catalog: dict[str, Any],
+    asset_details: list[dict[str, Any]],
+    previous_detail_requests: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+    multiturn_context: Any = None,
+    lead_agent_context: Any = None,
+) -> QueryPlan | dict[str, Any]:
+    messages = [
+        SystemMessage(content=_planner_system_prompt(detail_loop_enabled=True)),
+        HumanMessage(
+            content=_planner_human_prompt(
+                question=question,
+                routing=routing,
+                candidate_assets=lightweight_catalog,
+                multiturn_context=multiturn_context,
+                lead_agent_context=lead_agent_context,
+                asset_details=asset_details,
+                previous_detail_requests=previous_detail_requests,
+                detail_warnings=warnings,
+            )
+        ),
+    ]
+    tracer = get_observability_tracer()
+    generation = None
+    generation_base_metadata = {
+        **_planner_generation_base_metadata(
+            question=question,
+            routing=routing,
+            candidate_assets=lightweight_catalog,
+        ),
+        "detail_loop": True,
+        "asset_detail_count": len(asset_details),
+        "previous_detail_request_count": len(previous_detail_requests),
+        "detail_warning_count": len(warnings),
+    }
+    try:
+        llm = get_llm(temperature=0.0, role="lead_agent", db=db)
+    except Exception as exc:
+        if not _is_llm_call_error(exc):
+            raise
+        validation_error = _compact_error_text(exc)
+        return _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=lightweight_catalog,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
+        )
+
+    active_obs_context = current_observability_context.get()
+    if active_obs_context and active_obs_context.active:
+        try:
+            generation = tracer.start_generation(
+                name="llm.subagent_query_planner",
+                model=_planner_model_name(llm),
+                messages=messages,
+                metadata={**generation_base_metadata, "status": "running"},
+            )
+        except Exception:
+            generation = None
+
+    try:
+        response = llm.invoke(messages)
+    except Exception as exc:
+        if not _is_llm_call_error(exc):
+            try:
+                tracer.end_generation(
+                    generation,
+                    output=repr(exc),
+                    metadata={
+                        **generation_base_metadata,
+                        "status": "error",
+                        "validation_error": _compact_error_text(exc),
+                        "error_stage": "llm_call",
+                    },
+                )
+            except Exception:
+                pass
+            raise
+        validation_error = _compact_error_text(exc)
+        plan = _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=lightweight_catalog,
+                fallback_reason=validation_error,
+            ),
+            validation_error,
+        )
+        try:
+            tracer.end_generation(
+                generation,
+                output=validation_error,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "fallback",
+                    "fallback_reason": plan.fallback_reason,
+                    "validation_error": validation_error,
+                    "error_stage": "llm_call",
+                    "fallback_execution_strategy": plan.execution_strategy,
+                },
+            )
+        except Exception:
+            pass
+        return plan
+
+    response_content = _planner_response_content(response)
+    try:
+        payload = _safe_json_parse(response_content)
+        if parse_asset_detail_requests(payload):
+            try:
+                tracer.end_generation(
+                    generation,
+                    output=response_content,
+                    metadata={
+                        **generation_base_metadata,
+                        "status": "detail_request",
+                        "asset_detail_request_count": len(parse_asset_detail_requests(payload)),
+                    },
+                )
+            except Exception:
+                pass
+            return payload
+
+        plan = normalize_query_plan(payload)
+        _validate_hard_rules(plan, question=question, candidate_assets=lightweight_catalog)
+        plan = _sanitize_detail_loop_query_plan(
+            plan,
+            lightweight_catalog=lightweight_catalog,
+        )
+        try:
+            tracer.end_generation(
+                generation,
+                output=response_content,
+                metadata={
+                    **generation_base_metadata,
+                    "status": "success",
+                    "execution_strategy": plan.execution_strategy,
+                    "query_type": plan.query_type,
+                    "confidence": plan.confidence,
+                    "planner_source": plan.planner_source,
+                },
+            )
+        except Exception:
+            pass
+        return plan
+    except (JSONDecodeError, QueryPlanValidationError, ValueError, TypeError) as exc:
+        validation_error = _compact_error_text(exc)
+        plan = _with_validation_error(
+            build_fallback_query_plan(
+                question=question,
+                routing=routing,
+                candidate_assets=lightweight_catalog,
                 fallback_reason=validation_error,
             ),
             validation_error,

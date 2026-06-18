@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.subagent_planning.contracts import (
     CandidateAsset,
     QueryPlan,
@@ -280,6 +282,47 @@ def test_normalize_query_plan_rejects_malformed_audit_fields():
         assert "decision_factors" in str(exc)
     else:
         raise AssertionError("audit fields must be list[object]")
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [
+        ("detail_rounds", "three"),
+        ("detail_rounds", "3"),
+        ("detail_rounds", True),
+        (
+            "attempted_detail_requests",
+            {"asset_type": "table", "asset_id": "wide_table"},
+        ),
+        ("attempted_detail_requests", "wide_table"),
+        ("attempted_detail_requests", ["wide_table"]),
+        ("asset_detail_coverage", "wide_table"),
+        ("missing_context", "缺少时间字段"),
+        ("missing_context", [123]),
+        ("risk_flags", "wide_table"),
+        ("risk_flags", [{"code": "x"}]),
+        ("why_not_generate_sql", 123),
+    ],
+)
+def test_normalize_query_plan_rejects_malformed_detail_audit_fields(
+    field_name,
+    bad_value,
+):
+    raw = {
+        "query_type": "detail_query",
+        "execution_strategy": "reject",
+        "confidence": 0.2,
+        "planner_source": "llm",
+        "explanation": {"summary": "上下文不足"},
+        field_name: bad_value,
+    }
+
+    try:
+        normalize_query_plan(raw)
+    except QueryPlanValidationError as exc:
+        assert field_name in str(exc)
+    else:
+        raise AssertionError(f"{field_name} should fail validation")
 
 
 def test_subagent_event_type_cannot_be_overridden_by_payload():
