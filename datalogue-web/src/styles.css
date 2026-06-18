@@ -972,6 +972,24 @@ input:focus, textarea:focus, button:focus { outline: none; }
   white-space: pre-wrap;
   color: var(--text);
 }
+.artifact-result-summary {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-3);
+  font-size: 11px;
+  background: var(--surface);
+}
+.artifact-report {
+  padding: 10px 12px;
+}
+.artifact-report .ai-message {
+  margin: 0;
+}
+.artifact-empty {
+  padding: 12px;
+  color: var(--text-3);
+  font-size: 12px;
+}
 
 /* ── 查询审计 ──────────────────────────────── */
 .audit-page {

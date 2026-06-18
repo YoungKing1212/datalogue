@@ -806,6 +806,85 @@ function artifactTitle(entry) {
   return entry.datasetId ? `数据集 ${entry.datasetId} ${label}` : `查看${label}`;
 }
 
+function normalizeArtifactRows(payload) {
+  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+  const firstRow = rows.find((row) => row && typeof row === 'object' && !Array.isArray(row));
+  const columns = Array.isArray(payload?.columns) && payload.columns.length
+    ? payload.columns
+    : Object.keys(firstRow || {});
+  return {
+    rows,
+    columns,
+    columnLabels: payload?.column_labels || payload?.columnLabels || {},
+    rowCount: payload?.row_count ?? payload?.rowCount ?? rows.length,
+  };
+}
+
+function formatArtifactCell(value) {
+  if (value == null) return '';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function ArtifactResultTable({ payload }) {
+  const { rows, columns, columnLabels, rowCount } = normalizeArtifactRows(payload);
+
+  if (!columns.length) {
+    return <div className="artifact-empty">查询结果为空或缺少列信息</div>;
+  }
+
+  return (
+    <div className="artifact-result">
+      <div className="artifact-result-summary">{rowCount} 行 · {columns.length} 列</div>
+      <div className="sql-result-table-wrap">
+        <table className="sql-result-table">
+          <thead>
+            <tr>
+              {columns.map((col, i) => {
+                const label = columnLabels[col] || col;
+                return (
+                  <th key={`${col}-${i}`} title={label !== col ? col : undefined}>
+                    {label}
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i}>
+                {columns.map((col, j) => (
+                  <td key={`${col}-${j}`}>{formatArtifactCell(row?.[col])}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ArtifactPreviewBody({ artifact }) {
+  const json = artifact?.content_json;
+  const text = artifact?.content_text;
+  const isSqlResult = artifact?.kind === 'sql_result' || Array.isArray(json?.rows);
+  if (isSqlResult) return <ArtifactResultTable payload={json || {}} />;
+
+  const reportText = text || json?.markdown || json?.report || json?.text || json?.content;
+  if (artifact?.kind === 'report' && reportText) {
+    return (
+      <div className="artifact-report">
+        <MessageContent text={String(reportText)} />
+      </div>
+    );
+  }
+
+  const fallback = text ?? (json ? JSON.stringify(json, null, 2) : '');
+  if (!fallback) return <div className="artifact-empty">暂无可展示内容</div>;
+  return <pre>{fallback}</pre>;
+}
+
 function ArtifactAccessCard({ resultRef, reportRef, subagentToolResults }) {
   const entries = useMemo(
     () => artifactEntries({ resultRef, reportRef, subagentToolResults }),
@@ -838,9 +917,6 @@ function ArtifactAccessCard({ resultRef, reportRef, subagentToolResults }) {
     }
   };
 
-  const content = artifact?.content_text
-    ?? (artifact?.content_json ? JSON.stringify(artifact.content_json, null, 2) : '');
-
   return (
     <div className="artifact-card">
       <div className="artifact-actions">
@@ -865,7 +941,7 @@ function ArtifactAccessCard({ resultRef, reportRef, subagentToolResults }) {
             <span>{artifact.kind}</span>
             <span>{artifact.content_mime}</span>
           </div>
-          <pre>{content}</pre>
+          <ArtifactPreviewBody artifact={artifact} />
         </div>
       )}
     </div>

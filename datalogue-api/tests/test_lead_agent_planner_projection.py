@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -288,6 +289,40 @@ def test_project_recent_context_empty_prior_turns_not_fallback_to_history():
     )
 
     assert projected["recent_context"]["prior_turns"] == []
+
+
+def test_recent_context_preserves_last_success_task_summary():
+    projected = build_tool_planner_input(
+        question="再查询24年的",
+        selected_skills=["ConversationContinuitySkill"],
+        candidate_tools=[],
+        recent_context={
+            "dataset_id": 10,
+            "last_success_task": {
+                "dataset_id": 10,
+                "query_type": "detail_query",
+                "main_table": "plan_task_daily_record",
+                "turn_index": 4,
+                "selected_field_refs": ["plan_task_daily_record.rzrq"],
+                "filters_count": 2,
+                "time_window": {"start_date": "2025-01-01", "end_date": "2025-12-31"},
+                "result_digest": {"row_count": 100},
+                "sql": "SELECT * FROM plan_task_daily_record",
+            },
+        },
+    )
+
+    assert projected["recent_context"]["last_success_task"] == {
+        "dataset_id": 10,
+        "query_type": "detail_query",
+        "main_table": "plan_task_daily_record",
+        "turn_index": 4,
+        "selected_field_refs": ["plan_task_daily_record.rzrq"],
+        "filters_count": 2,
+        "time_window": {"start_date": "2025-01-01", "end_date": "2025-12-31"},
+        "result_digest": {"row_count": 100},
+    }
+    assert "sql" not in json.dumps(projected["recent_context"], ensure_ascii=False)
 
 
 def test_json_chars_handles_circular_reference_without_crashing():

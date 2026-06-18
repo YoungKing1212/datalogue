@@ -817,6 +817,7 @@ def _lead_agent_event(lead_agent_context: dict) -> dict:
         "tool_policy": lead_agent_context.get("tool_policy"),
         "original_question": lead_agent_context.get("original_question"),
         "resolved_question": lead_agent_context.get("resolved_question"),
+        "multiturn_refinement": lead_agent_context.get("multiturn_refinement"),
         "selected_skills": lead_agent_context.get("selected_skills") or [],
         "planned_tool_calls": lead_agent_context.get("planned_tool_calls") or [],
         "executed_tool_calls": lead_agent_context.get("executed_tool_calls") or [],
@@ -2473,6 +2474,7 @@ async def _stream_chat_singleturn(
         "lead_agent_report": final_state.get("lead_agent_report"),
         "prior_capsule_status": final_state.get("prior_capsule_status"),
         "multiturn_context": final_state.get("multiturn_context"),
+        "multiturn_refinement": lead_agent_context.get("multiturn_refinement"),
         "turn_type": final_state.get("turn_type"),
         "turn_event": final_state.get("turn_event"),
         "query_task_capsule": trace_query_task_capsule,
@@ -2507,6 +2509,7 @@ async def _stream_chat_singleturn(
             "lead_agent_report": final_state.get("lead_agent_report"),
             "prior_capsule_status": final_state.get("prior_capsule_status"),
             "multiturn_context": final_state.get("multiturn_context"),
+            "multiturn_refinement": lead_agent_context.get("multiturn_refinement"),
             "turn_type": final_state.get("turn_type"),
             "turn_event": final_state.get("turn_event"),
             "query_task_capsule": trace_query_task_capsule,
@@ -2617,6 +2620,7 @@ async def _stream_chat_singleturn(
         "lead_agent_report": final_state.get("lead_agent_report"),
         "prior_capsule_status": final_state.get("prior_capsule_status"),
         "multiturn_context": final_state.get("multiturn_context"),
+        "multiturn_refinement": lead_agent_context.get("multiturn_refinement"),
         "turn_type": final_state.get("turn_type"),
         "turn_event": final_state.get("turn_event"),
         "query_task_capsule": trace_query_task_capsule,
@@ -2838,7 +2842,8 @@ def _persist_completed_turn(
             default=str,
         ),
     )
-    if final_payload.get("error") is None and has_query_target(last_success_task):
+    has_last_success_query_target = has_query_target(last_success_task)
+    if final_payload.get("error") is None and has_last_success_query_target:
         thread_state = store.update_thread_state(
             final_session_id,
             {
@@ -2865,6 +2870,12 @@ def _persist_completed_turn(
             ),
         )
     elif final_payload.get("error") is None:
+        if last_success_task_write_status.get("status") == "ready":
+            last_success_task_write_status = {
+                "status": "skipped",
+                "reason": "no_query_target",
+                "source": last_success_task_write_status.get("source"),
+            }
         thread_state = store.update_thread_state(
             final_session_id,
             {

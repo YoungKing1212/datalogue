@@ -53,6 +53,17 @@ LEAD_AGENT_SKILL_SELECTOR_PROMPT_NAME = "lead_agent_skill_selector"
 LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME = "lead_agent_tool_planner"
 LEAD_AGENT_PROMPT_NAME = LEAD_AGENT_TOOL_PLANNER_PROMPT_NAME
 logger = logging.getLogger(__name__)
+REFINEMENT_SLOT_KEYS = (
+    "person",
+    "account",
+    "department",
+    "project",
+    "status",
+    "time_range",
+    "limit",
+    "sort",
+)
+REFINEMENT_INTENTS = {"continue", "new", "interpret", "switch", "unknown"}
 
 ALLOWED_LEAD_TOOLS = (
     "time",
@@ -168,10 +179,11 @@ def available_lead_skills(tool_policy: dict[str, Any]) -> list[dict[str, Any]]:
 def build_fallback_plan(
     *,
     reason: str,
+    multiturn_refinement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Planner 失败或输出不完整时使用的最小安全计划。"""
 
-    return {
+    plan = {
         "reasoning_summary": f"使用安全降级计划：{reason}",
         "selected_skills": [
             "TimeUnderstandingSkill",
@@ -193,6 +205,9 @@ def build_fallback_plan(
         "planner_fallback": True,
         "fallback_reason": reason,
     }
+    if multiturn_refinement is not None:
+        plan["multiturn_refinement"] = _normalize_multiturn_refinement(multiturn_refinement)
+    return plan
 
 
 FAST_PATH_QUERY_INTENTS = {"new", "new_query", "query", "self_contained"}
@@ -626,9 +641,23 @@ def plan_tool_calls_with_llm(
                         else {}
                     ),
                 },
-            )
+        )
         if not normalized:
-            return build_fallback_plan(reason="planner_invalid_json")
+            fallback_refinement = _fallback_multiturn_refinement(
+                question=question,
+                multiturn_context=normalize_multiturn_context(
+                    conversation_summary.get("multiturn_context")
+                ),
+                multiturn_classification=conversation_summary.get("multiturn_classification")
+                if isinstance(conversation_summary.get("multiturn_classification"), dict)
+                else {},
+                time_context=None,
+                raw_planner_text=tool_raw_content,
+            )
+            return build_fallback_plan(
+                reason="planner_invalid_json",
+                multiturn_refinement=fallback_refinement,
+            )
         normalized["planner_fallback"] = False
         normalized["fallback_reason"] = None
         normalized["selected_skills"] = selected_skill_names
@@ -724,6 +753,16 @@ def _build_projection_recent_context(
 
     raw_multiturn_context = conversation_summary.get("multiturn_context")
     multiturn_context = raw_multiturn_context if isinstance(raw_multiturn_context, dict) else {}
+    last_success_task = _summarize_last_success_task_for_lead(
+        multiturn_context.get("last_success_task")
+        or (
+            multiturn_context.get("raw", {}).get("last_success_task")
+            if isinstance(multiturn_context.get("raw"), dict)
+            else None
+        )
+    )
+    if last_success_task:
+        recent["last_success_task"] = last_success_task
     prior_turn: dict[str, Any] = {}
     last_question = multiturn_context.get("last_question") or multiturn_context.get(
         "last_resolved_question"
@@ -801,6 +840,9 @@ def _normalize_planner_plan(value: dict[str, Any]) -> dict[str, Any] | None:
         "reasoning_summary": str(value.get("reasoning_summary") or "").strip(),
         "selected_skills": selected_skills,
         "tool_calls": tool_calls,
+        "multiturn_refinement": _normalize_multiturn_refinement(
+            value.get("multiturn_refinement")
+        ),
     }
 
 
@@ -1515,6 +1557,7 @@ def normalize_multiturn_context(multiturn_context: dict[str, Any] | None) -> dic
             "inheritance_summary": None,
             "last_question": None,
             "last_resolved_question": None,
+            "last_success_task": None,
             "raw": {},
         }
 
@@ -1543,6 +1586,9 @@ def normalize_multiturn_context(multiturn_context: dict[str, Any] | None) -> dic
         "inheritance_summary": inheritance_summary,
         "last_question": _string_or_none(multiturn_context.get("last_question")),
         "last_resolved_question": _string_or_none(multiturn_context.get("last_resolved_question")),
+        "last_success_task": multiturn_context.get("last_success_task")
+        if isinstance(multiturn_context.get("last_success_task"), dict)
+        else None,
         "topic_anchor": _string_or_none(multiturn_context.get("topic_anchor")),
         "resolved_time_context": _dict_or_none(multiturn_context.get("resolved_time_context")),
         "raw": multiturn_context,
@@ -1683,6 +1729,250 @@ def _string_or_none(value: Any) -> str | None:
 
 def _dict_or_none(value: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
+
+
+def _empty_refinement_slots() -> dict[str, Any]:
+    """多轮追问抽象槽位的固定空结构，LeadAgent 不输出数据库字段。"""
+
+    return {key: None for key in REFINEMENT_SLOT_KEYS}
+
+
+def _json_safe_refinement_value(value: Any) -> Any:
+    """保留可序列化的槽位值，避免把复杂对象透传给 SubAgent。"""
+
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, list | tuple):
+        values = [
+            _json_safe_refinement_value(item)
+            for item in value
+            if _json_safe_refinement_value(item) is not None
+        ]
+        return values or None
+    if isinstance(value, dict):
+        compact = {
+            str(key): _json_safe_refinement_value(item)
+            for key, item in value.items()
+            if _json_safe_refinement_value(item) is not None
+        }
+        return compact or None
+    return str(value).strip() or None
+
+
+def _normalize_multiturn_refinement(value: Any) -> dict[str, Any]:
+    """校验 LeadAgent Planner 的多轮追问理解结果，非法字段降级为空槽位。"""
+
+    if not isinstance(value, dict):
+        return {
+            "intent": "unknown",
+            "confidence": 0.0,
+            "base_task_ref": "last_success_task",
+            "operation": "filter",
+            "slots": _empty_refinement_slots(),
+            "raw_constraints": [],
+            "handoff_instruction": "",
+            "requires_clarification": False,
+            "clarification_question": None,
+        }
+
+    intent = str(value.get("intent") or "unknown").strip().lower()
+    if intent not in REFINEMENT_INTENTS:
+        intent = "unknown"
+    try:
+        confidence = float(value.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(confidence, 1.0))
+
+    slots = _empty_refinement_slots()
+    raw_slots = value.get("slots") if isinstance(value.get("slots"), dict) else {}
+    for key in REFINEMENT_SLOT_KEYS:
+        slots[key] = _json_safe_refinement_value(raw_slots.get(key))
+
+    raw_constraints = value.get("raw_constraints")
+    if not isinstance(raw_constraints, list):
+        raw_constraints = []
+    raw_constraints = [
+        _json_safe_refinement_value(item)
+        for item in raw_constraints[:20]
+        if _json_safe_refinement_value(item) is not None
+    ]
+
+    clarification_question = _string_or_none(value.get("clarification_question"))
+    return {
+        "intent": intent,
+        "confidence": confidence,
+        "base_task_ref": str(value.get("base_task_ref") or "last_success_task").strip()
+        or "last_success_task",
+        "operation": str(value.get("operation") or "filter").strip() or "filter",
+        "slots": slots,
+        "raw_constraints": raw_constraints,
+        "handoff_instruction": _string_or_none(value.get("handoff_instruction")) or "",
+        "requires_clarification": bool(value.get("requires_clarification")),
+        "clarification_question": clarification_question,
+    }
+
+
+def _last_success_task_from_context(multiturn_context: dict[str, Any]) -> dict[str, Any] | None:
+    """从归一化多轮上下文中取上一轮成功查询任务。"""
+
+    task = multiturn_context.get("last_success_task")
+    if isinstance(task, dict):
+        return task
+    raw = multiturn_context.get("raw") if isinstance(multiturn_context.get("raw"), dict) else {}
+    task = raw.get("last_success_task")
+    return task if isinstance(task, dict) else None
+
+
+def _summarize_last_success_task_for_lead(value: Any) -> dict[str, Any] | None:
+    """LeadAgent Planner 只需要上一轮任务的承接摘要，不注入完整 SQL/结果。"""
+
+    if not isinstance(value, dict):
+        return None
+    summary: dict[str, Any] = {}
+    for key in ("dataset_id", "query_type", "main_table", "turn_index"):
+        if value.get(key) not in (None, "", [], {}):
+            summary[key] = value.get(key)
+
+    selected_fields = value.get("selected_field_refs") or value.get("selected_fields")
+    if isinstance(selected_fields, list):
+        summary["selected_field_refs"] = selected_fields[:12]
+
+    filters = value.get("filters")
+    if isinstance(filters, list):
+        summary["filters_count"] = len(filters)
+    time_window = value.get("time_window") or value.get("time_range")
+    if time_window not in (None, "", [], {}):
+        summary["time_window"] = time_window
+
+    result_digest = value.get("result_digest") if isinstance(value.get("result_digest"), dict) else {}
+    if result_digest:
+        compact_digest = {}
+        for key in ("row_count", "columns", "artifact_ref"):
+            if result_digest.get(key) not in (None, "", [], {}):
+                compact_digest[key] = result_digest.get(key)
+        if compact_digest:
+            summary["result_digest"] = compact_digest
+    return summary or None
+
+
+def _extract_year_label_from_text(text: str | None) -> str | None:
+    """把显式年份文本归一为四位年份标签，支持“2024年”和“24年”。"""
+
+    value = text or ""
+    full_match = re.search(r"(?<!\d)(20\d{2})\s*年(?:的)?", value)
+    if full_match:
+        return f"{full_match.group(1)}年"
+
+    short_match = re.search(r"(?<!\d)(\d{2})\s*年(?:的)?", value)
+    if not short_match:
+        return None
+    return f"20{short_match.group(1)}年"
+
+
+def _extract_person_from_last_success_task(task: dict[str, Any] | None) -> str | None:
+    """从上一轮成功任务的过滤摘要中兜底读取人名槽位。"""
+
+    if not isinstance(task, dict):
+        return None
+    filters = task.get("filters")
+    if not isinstance(filters, list):
+        return None
+    for item in filters:
+        if not isinstance(item, dict):
+            continue
+        field_text = " ".join(
+            str(item.get(key) or "") for key in ("field", "field_name", "name", "column")
+        ).lower()
+        raw_value = item.get("value") or item.get("raw") or item.get("text")
+        if raw_value in (None, "", [], {}):
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        if any(token in field_text for token in ("person", "name", "姓名", "人员", "用户")):
+            return value
+    return None
+
+
+def _fallback_multiturn_refinement(
+    *,
+    question: str,
+    multiturn_context: dict[str, Any],
+    multiturn_classification: dict[str, Any],
+    time_context: dict[str, Any] | None,
+    raw_planner_text: str | None = None,
+) -> dict[str, Any]:
+    """LLM 未产出追问理解时的安全兜底，只生成抽象槽位，不绑定字段。"""
+
+    refinement = _normalize_multiturn_refinement(None)
+    if multiturn_classification.get("intent") != "continue":
+        return refinement
+    last_success_task = _last_success_task_from_context(multiturn_context)
+    if not last_success_task:
+        return refinement
+
+    slots = _empty_refinement_slots()
+    detected = (time_context or {}).get("detected_time_range")
+    if isinstance(detected, dict):
+        slots["time_range"] = (
+            detected.get("label")
+            or {
+                "start_date": detected.get("start_date"),
+                "end_date": detected.get("end_date"),
+                "granularity": detected.get("granularity"),
+            }
+        )
+    else:
+        slots["time_range"] = _extract_year_label_from_text(
+            question
+        ) or _extract_year_label_from_text(raw_planner_text)
+
+    slots["person"] = _extract_person_from_last_success_task(last_success_task)
+
+    if not any(value is not None for value in slots.values()):
+        return refinement
+    return {
+        "intent": "continue",
+        "confidence": 0.62,
+        "base_task_ref": "last_success_task",
+        "operation": "filter",
+        "slots": slots,
+        "raw_constraints": [question],
+        "handoff_instruction": "基于上一轮成功查询结果继续过滤，SubAgent 只做资产字段绑定和查询规划。",
+        "requires_clarification": False,
+        "clarification_question": None,
+    }
+
+
+def _resolve_multiturn_refinement(
+    *,
+    plan: dict[str, Any],
+    question: str,
+    multiturn_context: dict[str, Any],
+    multiturn_classification: dict[str, Any],
+    time_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """优先采用 LLM 抽象槽位；缺失时保守生成 fallback 槽位。"""
+
+    refinement = _normalize_multiturn_refinement(plan.get("multiturn_refinement"))
+    if (
+        refinement.get("intent") == "continue"
+        and refinement.get("confidence", 0) > 0
+        and _last_success_task_from_context(multiturn_context)
+    ):
+        return refinement
+    return _fallback_multiturn_refinement(
+        question=question,
+        multiturn_context=multiturn_context,
+        multiturn_classification=multiturn_classification,
+        time_context=time_context,
+    )
 
 
 def _time_context_summary(value: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1840,6 +2130,18 @@ def build_lead_agent_context(
     if clarification is None:
         clarification = build_clarification(route_decision, schema_status)
     dispatch = execution.get("dispatch")
+    multiturn_refinement = _resolve_multiturn_refinement(
+        plan=plan,
+        question=question,
+        multiturn_context=normalized_multiturn_context,
+        multiturn_classification=multiturn_classification,
+        time_context=execution.get("time_context"),
+    )
+    if isinstance(dispatch, dict):
+        dispatch["multiturn_refinement"] = multiturn_refinement
+        capsule = dispatch.get("capsule")
+        if isinstance(capsule, dict):
+            capsule["multiturn_refinement"] = multiturn_refinement
     effective_dataset_id = dispatch.get("dataset_id") if dispatch else None
     lead_agent_context = {
         "tool_policy": tool_policy,
@@ -1864,6 +2166,7 @@ def build_lead_agent_context(
         ),
         "multiturn_context": normalized_multiturn_context,
         "multiturn_classification": multiturn_classification,
+        "multiturn_refinement": multiturn_refinement,
         "active_dataset_id": normalized_multiturn_context.get("active_dataset_id"),
         "inheritance_summary": normalized_multiturn_context.get("inheritance_summary"),
         "time_context": execution.get("time_context"),
@@ -1969,6 +2272,7 @@ def _build_chitchat_lead_agent_context(
         "resolved_question": question,
         "multiturn_context": multiturn_context,
         "multiturn_classification": multiturn_classification,
+        "multiturn_refinement": _normalize_multiturn_refinement(None),
         "active_dataset_id": active_dataset_id,
         "inheritance_summary": inheritance_summary,
         "time_context": time_context,

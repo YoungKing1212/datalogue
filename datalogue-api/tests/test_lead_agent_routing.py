@@ -306,6 +306,52 @@ def test_route_query_intent_filter_refinement_uses_last_success_task(monkeypatch
     assert result["route_payload"]["source"] == "multiturn_filter_refinement"
 
 
+def test_route_query_intent_llm_multiturn_refinement_uses_query_graph(monkeypatch):
+    """LeadAgent LLM 已产出抽象追问槽位时，不再依赖字段+操作符规则。"""
+    from app.services import lead_agent_routing
+
+    monkeypatch.setattr(
+        lead_agent_routing,
+        "_invoke_intent_llm",
+        lambda **_: ("query", {}, None, {}),
+    )
+
+    refinement = {
+        "intent": "continue",
+        "confidence": 0.86,
+        "base_task_ref": "last_success_task",
+        "operation": "filter",
+        "slots": {
+            "person": "杨凯",
+            "time_range": "2025年",
+        },
+        "requires_clarification": False,
+    }
+    result = route_query_intent(
+        db=None,
+        question="我只想看杨凯 2025年的",
+        dataset_id=10,
+        lead_agent_context={
+            "multiturn_refinement": refinement,
+            "thread_context": {
+                "last_success_task": {
+                    "dataset_id": 10,
+                    "main_table": "plan_task_daily_record",
+                    "query_type": "detail_query",
+                }
+            },
+        },
+        history=[],
+        multiturn_context={},
+        clarification_response=None,
+    )
+
+    assert result["entry_intent"] == "detail_query"
+    assert result["entry_route"] == "query_graph"
+    assert result["route_payload"]["source"] == "llm_multiturn_refinement"
+    assert result["route_payload"]["multiturn_refinement"] == refinement
+
+
 # ===== 7. LLM 失败降级 =====
 
 

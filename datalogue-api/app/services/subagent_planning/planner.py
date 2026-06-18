@@ -426,6 +426,23 @@ def _routing_payload(routing: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _routing_multiturn_refinement(routing: Any) -> dict[str, Any]:
+    """从路由载荷读取 LeadAgent 生成的抽象多轮追问槽位。"""
+
+    refinement = _routing_payload(routing).get("multiturn_refinement")
+    return refinement if isinstance(refinement, dict) else {}
+
+
+def _refinement_slots(routing: Any) -> dict[str, Any]:
+    slots = _routing_multiturn_refinement(routing).get("slots")
+    return slots if isinstance(slots, dict) else {}
+
+
+def _slot_value(slots: dict[str, Any], key: str) -> Any:
+    value = slots.get(key)
+    return None if value in (None, "", [], {}) else value
+
+
 def _routing_is_detail_query(routing: Any) -> bool:
     payload = _routing_payload(routing)
     return (
@@ -435,7 +452,10 @@ def _routing_is_detail_query(routing: Any) -> bool:
 
 
 def _routing_is_filter_refinement(routing: Any) -> bool:
-    return _routing_payload(routing).get("source") == "multiturn_filter_refinement"
+    payload = _routing_payload(routing)
+    if payload.get("source") in {"multiturn_filter_refinement", "llm_multiturn_refinement"}:
+        return True
+    return _routing_multiturn_refinement(routing).get("intent") == "continue"
 
 
 def _is_daily_blueprint(asset: CandidateAsset | None) -> bool:
@@ -540,31 +560,83 @@ def _extract_dataset10_log_filter_value(question: str, names: tuple[str, ...]) -
     return value or None
 
 
-def _dataset10_log_filters(question: str, *, enable_person_filters: bool) -> list[str]:
+def _dataset10_log_time_filters(question: str, routing: Any) -> list[str]:
+    """数据集 10 日志模板的时间过滤，优先使用 LeadAgent 抽象时间槽位。"""
+
+    time_range = _slot_value(_refinement_slots(routing), "time_range")
+    if isinstance(time_range, dict):
+        start_date = str(time_range.get("start_date") or "").strip()
+        end_date = str(time_range.get("end_date") or "").strip()
+        if start_date and end_date:
+            return [
+                f"p.rzrq >= {_sql_string_literal(start_date)}",
+                f"p.rzrq < {_sql_string_literal(end_date)}",
+            ]
+    time_text = str(time_range or question or "")
+    year_match = re.search(r"(20\d{2})\s*年", time_text)
+    if year_match:
+        year = int(year_match.group(1))
+        return [
+            f"p.rzrq >= {_sql_string_literal(f'{year}-01-01')}",
+            f"p.rzrq < {_sql_string_literal(f'{year + 1}-01-01')}",
+        ]
+    return ["p.rzrq >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)"]
+
+
+def _dataset10_log_filters(
+    question: str,
+    *,
+    routing: Any = None,
+    enable_person_filters: bool,
+) -> list[str]:
     """数据集 10 日志模板支持的确定性过滤条件。"""
+
     filters: list[str] = []
+    slots = _refinement_slots(routing)
+    account_slot = _slot_value(slots, "account")
+    if account_slot:
+        filters.append(f"p.account = {_sql_string_literal(str(account_slot))}")
+    person_slot = _slot_value(slots, "person")
+    if enable_person_filters and person_slot:
+        filters.append(f"ep.person_name = {_sql_string_literal(str(person_slot))}")
+    dept_slot = _slot_value(slots, "department")
+    if dept_slot:
+        filters.append(f"d.dept_name = {_sql_string_literal(str(dept_slot))}")
+    status_slot = _slot_value(slots, "status")
+    if status_slot:
+        filters.append(f"p.zt = {_sql_string_literal(str(status_slot))}")
+
     account = _extract_dataset10_log_filter_value(
         question, ("账号", "账户", "工号", "account")
     )
-    if account:
+    if account and not account_slot:
         filters.append(f"p.account = {_sql_string_literal(account)}")
     if enable_person_filters:
         person_name = _extract_dataset10_log_filter_value(
             question, ("姓名", "名字", "人员姓名", "用户姓名", "员工姓名")
         )
-        if person_name:
+        if person_name and not person_slot:
             filters.append(f"ep.person_name = {_sql_string_literal(person_name)}")
     dept_name = _extract_dataset10_log_filter_value(question, ("部门", "部门名称"))
-    if dept_name:
+    if dept_name and not dept_slot:
         filters.append(f"d.dept_name = {_sql_string_literal(dept_name)}")
     return filters
 
 
-def _dataset10_log_detail_sql(question: str, *, enable_person_filters: bool = False) -> str:
+def _dataset10_log_detail_sql(
+    question: str,
+    *,
+    routing: Any = None,
+    enable_person_filters: bool = False,
+) -> str:
     limit = _extract_limit(question)
     filters = [
-        "p.rzrq >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)",
-        *_dataset10_log_filters(question, enable_person_filters=enable_person_filters),
+        *_dataset10_log_time_filters(question, routing),
+        *_dataset10_log_filters(
+            question,
+            routing=routing,
+            enable_person_filters=enable_person_filters,
+        ),
     ]
     where_clause = " AND ".join(filters)
     return (
@@ -615,8 +687,11 @@ def _dataset10_log_template_debug(
     return {
         "template_name": "dataset10_log_detail",
         "schema_token_budget": "template_bypass",
+        "multiturn_refinement": _routing_multiturn_refinement(routing) or None,
         "sql_template": _dataset10_log_detail_sql(
-            question, enable_person_filters=enable_person_filters
+            question,
+            routing=routing,
+            enable_person_filters=enable_person_filters,
         ),
     }
 
@@ -1175,6 +1250,12 @@ def _routing_summary(routing: Any) -> dict[str, Any]:
             summary["entry_route"] = routing["route"]
         if "intent" in routing and "entry_intent" not in summary:
             summary["entry_intent"] = routing["intent"]
+        route_payload = _routing_payload(routing)
+        if route_payload:
+            summary["route_payload"] = _pick_keys(
+                route_payload,
+                ("kind", "source", "missing", "multiturn_refinement"),
+            )
     return summary
 
 

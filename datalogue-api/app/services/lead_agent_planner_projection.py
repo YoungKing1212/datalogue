@@ -350,6 +350,49 @@ def _project_recent_context(recent_context: Mapping[str, Any] | None) -> dict[st
         briefs = [_build_prior_turn_brief(turn) for turn in prior_turns[-projection_max_prior_turns():]]
         projected["prior_turns"] = [brief for brief in briefs if brief]
 
+    last_success_task = _project_last_success_task(recent_context.get("last_success_task"))
+    if last_success_task:
+        projected["last_success_task"] = last_success_task
+
+    return projected
+
+
+def _project_last_success_task(value: Any) -> dict[str, Any]:
+    """投影上一轮成功任务的最小摘要，避免把 SQL 或结果行注入 LeadAgent Planner。"""
+
+    if not isinstance(value, Mapping):
+        return {}
+
+    projected: dict[str, Any] = {}
+    for key in ("dataset_id", "query_type", "main_table", "turn_index"):
+        item = value.get(key)
+        if item not in (None, "", [], {}):
+            projected[key] = item
+
+    selected_fields = value.get("selected_field_refs") or value.get("selected_fields")
+    if isinstance(selected_fields, list):
+        projected["selected_field_refs"] = selected_fields[:12]
+
+    filters_count = value.get("filters_count")
+    if isinstance(filters_count, int):
+        projected["filters_count"] = filters_count
+    elif isinstance(value.get("filters"), list):
+        projected["filters_count"] = len(value.get("filters") or [])
+
+    time_window = value.get("time_window") or value.get("time_range")
+    if time_window not in (None, "", [], {}):
+        projected["time_window"] = time_window
+
+    result_digest = value.get("result_digest")
+    if isinstance(result_digest, Mapping):
+        compact_digest = {
+            key: result_digest[key]
+            for key in ("row_count", "columns", "artifact_ref")
+            if result_digest.get(key) not in (None, "", [], {})
+        }
+        if compact_digest:
+            projected["result_digest"] = compact_digest
+
     return projected
 
 

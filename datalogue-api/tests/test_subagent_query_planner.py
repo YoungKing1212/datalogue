@@ -228,6 +228,39 @@ def test_dataset10_log_detail_template_supports_filter_refinement_without_log_ke
     assert "p.rzrq >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)" in sql_template
 
 
+def test_dataset10_log_detail_template_uses_lead_refinement_slots():
+    plan = build_fallback_query_plan(
+        "我只想看杨凯 2025年的",
+        [_blueprint(), _daily_field("rzrq"), _daily_table(), _person_table()],
+        routing={
+            "dataset_id": 10,
+            "entry_intent": "detail_query",
+            "route_payload": {
+                "kind": "detail_query",
+                "source": "llm_multiturn_refinement",
+                "multiturn_refinement": {
+                    "intent": "continue",
+                    "confidence": 0.86,
+                    "base_task_ref": "last_success_task",
+                    "operation": "filter",
+                    "slots": {
+                        "person": "杨凯",
+                        "time_range": "2025年",
+                    },
+                },
+            },
+        },
+    )
+
+    sql_template = plan.debug["sql_template"]
+    assert plan.planner_source == "template"
+    assert plan.execution_strategy == "query_graph"
+    assert "ep.person_name = '杨凯'" in sql_template
+    assert "p.rzrq >= '2025-01-01'" in sql_template
+    assert "p.rzrq < '2026-01-01'" in sql_template
+    assert "DATE_SUB(CURDATE(), INTERVAL 30 DAY)" not in sql_template
+
+
 def test_fallback_blueprint_hit_detail_query_becomes_reference():
     plan = build_fallback_query_plan(
         "查询10条用户日志",

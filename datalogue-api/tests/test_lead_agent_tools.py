@@ -17,6 +17,7 @@ from datetime import datetime
 from app import models
 from app.services.dataset_manifest import publish_manifest
 from app.services.lead_agent import (
+    _fallback_multiturn_refinement,
     build_lead_agent_context,
     build_resolved_question,
     build_tool_policy,
@@ -997,6 +998,136 @@ def test_planner_projection_disabled_does_not_record_projection_metadata(monkeyp
             assert "raw_chars" not in meta["metadata"]
             assert "projected_chars" not in meta["metadata"]
             assert "projection_saved_chars" not in meta["metadata"]
+
+
+def test_planner_invalid_json_preserves_safe_multiturn_refinement(monkeypatch, db_session):
+    """tool_planner JSON 截断时，只保留可安全继承的槽位和时间信号。"""
+
+    class FakePrompt:
+        content = "planner prompt"
+        version = "v-test"
+        source = "local"
+
+    class FakePromptManager:
+        def get_text_prompt(self, *_args, **_kwargs):
+            return FakePrompt()
+
+    class FakeLLM:
+        model = "lead-model"
+
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "content": (
+                            '{"reasoning_summary":"选择会话和时间技能",'
+                            '"selected_skills":["ConversationContinuitySkill",'
+                            '"TimeUnderstandingSkill","DatasetRoutingSkill","AuditSkill"]}'
+                        ),
+                        "usage_metadata": {"total_tokens": 9},
+                    },
+                )()
+            return type(
+                "Response",
+                (),
+                {
+                    "content": (
+                        '{"reasoning_summary":"承接上轮杨凯2025年日志查询，'
+                        "意图为继续同一数据集(dataset 10)、同一人(杨凯)"
+                        "仅将时间范围切换为2024年；通过时间解析+会话上下文+路由确认+Sub"
+                    ),
+                    "usage_metadata": {"total_tokens": 11},
+                },
+            )()
+
+    monkeypatch.setattr(
+        "app.services.lead_agent._lead_agent_llm_available",
+        lambda _db: {"available": True, "reason": None},
+    )
+    monkeypatch.setattr("app.services.lead_agent.get_prompt_manager", lambda: FakePromptManager())
+    monkeypatch.setattr("app.services.lead_agent.get_llm", lambda **_kwargs: FakeLLM())
+    monkeypatch.setattr(
+        "app.services.lead_agent.get_settings",
+        lambda: type("FakeSettings", (), {"LEAD_AGENT_PLANNER_USE_PROJECTION": True})(),
+    )
+
+    plan = plan_tool_calls_with_llm(
+        db_session,
+        question="再查询24年的",
+        conversation_summary={
+            "dataset_id": 10,
+            "multiturn_classification": {"intent": "continue"},
+            "multiturn_context": {
+                "last_success_task": {
+                    "dataset_id": 10,
+                    "query_type": "detail_query",
+                    "filters": [{"field": "person", "value": "杨凯"}],
+                }
+            },
+        },
+        tool_policy={
+            "allowed_tools": ["time", "thread_context", "manifest_router", "audit_trace"],
+            "blocked_tools": [],
+            "locked_dataset_id": 10,
+            "dataset_lock_source": "payload",
+            "explicit_dataset_locked": True,
+            "inherited_dataset_locked": False,
+        },
+        skills=[
+            {
+                "name": "ConversationContinuitySkill",
+                "description": "处理会话上下文",
+                "allowed_tools": ["thread_context"],
+            },
+            {
+                "name": "TimeUnderstandingSkill",
+                "description": "解析时间",
+                "allowed_tools": ["time"],
+            },
+            {
+                "name": "DatasetRoutingSkill",
+                "description": "路由数据集",
+                "allowed_tools": ["manifest_router"],
+            },
+            {
+                "name": "AuditSkill",
+                "description": "记录执行轨迹",
+                "allowed_tools": ["audit_trace"],
+            },
+        ],
+    )
+
+    assert plan["planner_fallback"] is True
+    assert plan["fallback_reason"] == "planner_invalid_json"
+    assert plan["multiturn_refinement"]["intent"] == "continue"
+    assert plan["multiturn_refinement"]["slots"]["person"] == "杨凯"
+    assert plan["multiturn_refinement"]["slots"]["time_range"] == "2024年"
+
+
+def test_fallback_multiturn_refinement_does_not_guess_person_from_question():
+    """本地兜底不能从当前自然语言里猜人名，避免公共平台写死表达规则。"""
+
+    refinement = _fallback_multiturn_refinement(
+        question="查下杨凯2024年的",
+        multiturn_context={
+            "last_success_task": {
+                "dataset_id": 10,
+                "query_type": "detail_query",
+            }
+        },
+        multiturn_classification={"intent": "continue"},
+        time_context=None,
+    )
+
+    assert refinement["intent"] == "continue"
+    assert refinement["slots"]["person"] is None
+    assert refinement["slots"]["time_range"] == "2024年"
 
 
 def test_build_projection_recent_context_handles_string_multiturn_context():

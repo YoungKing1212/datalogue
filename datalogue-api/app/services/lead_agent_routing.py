@@ -189,6 +189,30 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _lead_multiturn_refinement(lead_agent_context: dict) -> dict[str, Any]:
+    """读取 LeadAgent 输出的抽象追问槽位。"""
+
+    refinement = lead_agent_context.get("multiturn_refinement")
+    return refinement if isinstance(refinement, dict) else {}
+
+
+def _refinement_can_continue(refinement: dict[str, Any]) -> bool:
+    """判断抽象槽位是否足以承接上一轮查询。"""
+
+    if refinement.get("intent") != "continue":
+        return False
+    if refinement.get("requires_clarification"):
+        return False
+    try:
+        confidence = float(refinement.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.5:
+        return False
+    slots = refinement.get("slots")
+    return isinstance(slots, dict) and any(value not in (None, "", [], {}) for value in slots.values())
+
+
 def _collect_blueprint_terms(bp: AnalysisBlueprint) -> list[str]:
     """提取蓝图可用于路由匹配的关键词和示例。"""
     terms: list[str] = []
@@ -605,7 +629,67 @@ def _classify_entry_intent(
             "knowledge_term_id": None,
         }
 
-    # 4) 蓝图匹配
+    # 4) LeadAgent LLM 多轮追问理解：优先承接上一轮成功查询，避免被蓝图/关键词规则抢路由。
+    refinement = _lead_multiturn_refinement(lead_agent_context)
+    if refinement.get("requires_clarification"):
+        return {
+            "intent": intent,
+            "entities": entities,
+            "entry_intent": "clarification",
+            "entry_route": "clarify",
+            "entry_reason": "LeadAgent 已识别为多轮追问，但仍需要补充约束。",
+            "answer": refinement.get("clarification_question")
+            or "这个追问还缺少可承接的过滤条件，请补充要筛选的对象、时间或状态。",
+            "route_payload": {
+                "kind": "clarification",
+                "source": "llm_multiturn_refinement",
+                "multiturn_refinement": refinement,
+            },
+            "blueprint_id": None,
+            "blueprint_match": None,
+            "knowledge_term_id": None,
+        }
+    if _refinement_can_continue(refinement):
+        if _has_multiturn_query_context(
+            dataset_id=dataset_id,
+            multiturn_context=multiturn_context,
+            lead_agent_context=lead_agent_context,
+        ):
+            return {
+                "intent": intent,
+                "entities": entities,
+                "entry_intent": "detail_query",
+                "entry_route": "query_graph",
+                "entry_reason": "LeadAgent 已产出多轮追问抽象槽位，继承上一轮查询上下文继续 NL2SQL。",
+                "route_payload": {
+                    "kind": "detail_query",
+                    "source": "llm_multiturn_refinement",
+                    "multiturn_refinement": refinement,
+                },
+                "blueprint_id": None,
+                "blueprint_match": None,
+                "knowledge_term_id": None,
+                "answer": None,
+            }
+        return {
+            "intent": intent,
+            "entities": entities,
+            "entry_intent": "clarification",
+            "entry_route": "clarify",
+            "entry_reason": "LeadAgent 识别为追问，但没有可承接的上一轮成功查询。",
+            "answer": "没有可承接的上一轮查询结果，请先发起一次明确的数据查询。",
+            "route_payload": {
+                "kind": "clarification",
+                "source": "llm_multiturn_refinement",
+                "missing": ["last_success_task"],
+                "multiturn_refinement": refinement,
+            },
+            "blueprint_id": None,
+            "blueprint_match": None,
+            "knowledge_term_id": None,
+        }
+
+    # 5) 蓝图匹配
     blueprint_match = _match_analysis_blueprint(db, dataset_id, question)
     if blueprint_match:
         return {
@@ -623,7 +707,7 @@ def _classify_entry_intent(
             "route_payload": {"kind": "analysis_blueprint", **blueprint_match},
         }
 
-    # 5) 知识库问答
+    # 6) 知识库问答
     is_knowledge_question = _contains_any(q_norm, _KNOWLEDGE_PATTERNS)
     if is_knowledge_question:
         term_match = _match_business_term(db, dataset_id, question)
@@ -654,7 +738,7 @@ def _classify_entry_intent(
             "route_payload": payload,
         }
 
-    # 6) 模糊澄清
+    # 7) 模糊澄清
     is_blueprint_like = _contains_any(q_norm, _BLUEPRINT_PATTERNS)
     is_metric_query = has_metric_entity or _contains_any(q_norm, _METRIC_PATTERNS)
     is_detail_query = _contains_any(q_norm, _DETAIL_PATTERNS)
@@ -697,7 +781,7 @@ def _classify_entry_intent(
             "knowledge_term_id": None,
         }
 
-    # 7) detail / metric 主链
+    # 8) detail / metric 主链
     if is_detail_query:
         return {
             "intent": intent,
@@ -747,7 +831,7 @@ def _classify_entry_intent(
             "answer": None,
         }
 
-    # 8) 默认：澄清
+    # 9) 默认：澄清
     return {
         "intent": intent,
         "entities": entities,

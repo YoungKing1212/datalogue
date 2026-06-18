@@ -75,6 +75,9 @@ LEAD_AGENT_TOOL_PLANNER_SYSTEM = """你是 Datalogue 的 LeadAgent 工具规划�
 12. 当 candidate_assets 中 metric / dimension / term 丰富但缺少高置信度 blueprint 时，按 query_graph 路径规划 subagent_dispatch，让 SubAgent 自行生成查询图。
 13. 当 candidate_assets 为空或所有资产置信度均较低时，优先规划澄清（clarify）或拒绝（reject），不要强行 dispatch。
 14. candidate_assets 仅作为辅助判断依据，不能替代 ToolPolicy、Skill 摘要和你对问题意图的理解。
+15. 当本轮是承接上一轮查询结果的追问时，你需要输出 multiturn_refinement，用抽象槽位表达用户新增约束。
+16. multiturn_refinement 只能包含抽象业务槽位，不能输出数据库字段名、表名、SQL、join 或具体资产绑定；字段绑定由 SubAgent 完成。
+17. 如果无法可靠承接上一轮，或需要用户补充信息，设置 requires_clarification=true 并给出 clarification_question。
 
 必须只输出 JSON，不要输出 Markdown，不要输出解释性自然语言。
 
@@ -82,6 +85,26 @@ LEAD_AGENT_TOOL_PLANNER_SYSTEM = """你是 Datalogue 的 LeadAgent 工具规划�
 {
   "reasoning_summary": "一句话说明工具选择原因",
   "selected_skills": ["SkillName"],
+  "multiturn_refinement": {
+    "intent": "continue",
+    "confidence": 0.0,
+    "base_task_ref": "last_success_task",
+    "operation": "filter",
+    "slots": {
+      "person": null,
+      "account": null,
+      "department": null,
+      "project": null,
+      "status": null,
+      "time_range": null,
+      "limit": null,
+      "sort": null
+    },
+    "raw_constraints": [],
+    "handoff_instruction": "",
+    "requires_clarification": false,
+    "clarification_question": null
+  },
   "tool_calls": [
     {"tool": "tool_name", "reason": "调用原因"}
   ]
