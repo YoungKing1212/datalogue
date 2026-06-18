@@ -128,8 +128,12 @@ class ArtifactStore:
             .filter(QueryArtifact.artifact_id == artifact_ref)
             .one_or_none()
         )
-        if artifact is not None and artifact.expires_at.tzinfo is None:
+        if artifact is None:
+            return None
+        if artifact.expires_at.tzinfo is None:
             artifact.expires_at = artifact.expires_at.replace(tzinfo=UTC)
+        if artifact.expires_at <= datetime.now(UTC):
+            return None
         return artifact
 
     def attach_message_id(self, artifact_refs: list[str | None], *, message_id: int) -> int:
@@ -147,7 +151,7 @@ class ArtifactStore:
             row.message_id = message_id
             self.db.add(row)
         if rows:
-            self.db.commit()
+            self.db.flush()
         return len(rows)
 
     def purge_expired(
@@ -172,7 +176,7 @@ class ArtifactStore:
         for row in rows:
             self.db.delete(row)
         if rows:
-            self.db.commit()
+            self.db.flush()
         return len(rows)
 
     def _insert(
@@ -204,7 +208,7 @@ class ArtifactStore:
             expires_at=datetime.now(UTC) + timedelta(seconds=self.ttl_seconds),
         )
         self.db.add(artifact)
-        self.db.commit()
+        self.db.flush()
         return artifact_ref
 
     def _maybe_purge_expired(self) -> None:

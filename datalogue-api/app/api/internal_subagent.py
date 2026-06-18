@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 from typing import Any
 
@@ -33,7 +34,9 @@ router = APIRouter()
 
 def _verify_internal_token(token: str | None) -> None:
     expected_token = get_settings().SUBAGENT_REMOTE_API_KEY
-    if expected_token and token != expected_token:
+    if not expected_token:
+        raise HTTPException(status_code=401, detail="internal token not configured")
+    if not hmac.compare_digest(token or "", expected_token):
         raise HTTPException(status_code=401, detail="invalid internal token")
 
 
@@ -87,4 +90,5 @@ def purge_expired_artifacts(
 
     _verify_internal_token(x_datalogue_internal_token)
     deleted = ArtifactStore(db).purge_expired()
+    db.commit()
     return {"deleted": deleted}

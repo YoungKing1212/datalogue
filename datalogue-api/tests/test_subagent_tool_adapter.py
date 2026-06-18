@@ -118,12 +118,15 @@ def test_render_for_llm_does_not_leak_control_plane():
     assert rendered == "[dataset=10 ok] 共 2 条记录。"
 
 
-def test_llm_visible_budget_exceeded_raises():
+def test_llm_visible_budget_exceeded_truncates_display_summary():
     final_state = _ok_final_state()
     final_state["display_summary"] = "超长摘要" * 400
 
-    with pytest.raises(LLMVisibleBudgetExceededError):
-        SubAgentToolAdapter().assemble_from_final_state(_invocation(), final_state)
+    result = SubAgentToolAdapter().assemble_from_final_state(_invocation(), final_state)
+
+    assert result.llm_visible.status == LLMVisibleStatus.OK
+    assert len(result.llm_visible.display_summary) < len("超长摘要" * 400)
+    assert result.llm_visible.display_summary.endswith("...")
 
 
 class FakeArtifactStore:

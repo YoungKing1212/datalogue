@@ -79,7 +79,7 @@ def test_get_artifact_api_404_for_missing_or_expired(client, db_session, sample_
     assert expired.status_code == 404
 
 
-def test_internal_purge_expired_artifacts(client, db_session, sample_dataset):
+def test_internal_purge_expired_artifacts(client, db_session, sample_dataset, monkeypatch):
     store = ArtifactStore(db_session)
     expired_ref = store.put_json(kind="sql_result", payload={"rows": []}, dataset_id=sample_dataset.id)
     active_ref = store.put_json(kind="sql_result", payload={"rows": [1]}, dataset_id=sample_dataset.id)
@@ -88,7 +88,16 @@ def test_internal_purge_expired_artifacts(client, db_session, sample_dataset):
     db_session.add(expired)
     db_session.commit()
 
-    response = client.post("/api/internal/artifacts/purge-expired")
+    from app.core.config import Settings
+
+    monkeypatch.setattr(
+        "app.api.internal_subagent.get_settings",
+        lambda: Settings(SUBAGENT_REMOTE_API_KEY="test-internal-token"),
+    )
+    response = client.post(
+        "/api/internal/artifacts/purge-expired",
+        headers={"X-Datalogue-Internal-Token": "test-internal-token"},
+    )
 
     assert response.status_code == 200
     assert response.json()["deleted"] == 1

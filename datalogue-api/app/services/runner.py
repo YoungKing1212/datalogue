@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from dataclasses import asdict, dataclass
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -149,6 +150,13 @@ class RemoteDatasetSubAgentRunner:
             else settings.SUBAGENT_REMOTE_RETRIES
         )
         self.client = client or httpx.AsyncClient(timeout=self.timeout_seconds)
+        self._owns_client = client is None
+
+    async def aclose(self) -> None:
+        """关闭 runner 自有的 httpx client，外部传入的 client 由调用方管理。"""
+
+        if self._owns_client:
+            await self.client.aclose()
 
     async def run(
         self,
@@ -223,7 +231,10 @@ class RemoteDatasetSubAgentRunner:
                 text = text[5:].strip()
             try:
                 payload = json.loads(text)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                logging.getLogger(__name__).warning(
+                    "remote subagent dropped malformed ndjson line: %s", exc
+                )
                 continue
             if isinstance(payload, dict):
                 yield payload

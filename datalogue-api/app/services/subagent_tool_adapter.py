@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from typing import Any
 
@@ -22,6 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.task_capsule import build_success_task_state, has_query_target
 from app.utils.token import estimate_text_tokens
+
+logger = logging.getLogger(__name__)
 
 
 class LLMVisibleBudgetExceededError(ValueError):
@@ -118,7 +121,7 @@ class SubAgentToolAdapter:
             trace_id=trace_id,
         )
         llm_visible = self._build_llm_visible(invocation, state)
-        self._enforce_llm_visible_budget(llm_visible)
+        llm_visible = self._enforce_llm_visible_budget_or_truncate(llm_visible)
         control_plane = self._build_control_plane(invocation, state)
         return SubAgentToolResult(
             llm_visible=llm_visible,
@@ -291,23 +294,91 @@ class SubAgentToolAdapter:
             return "数据查询执行失败，已记录，可以稍后重试。"
         return "查询过程出错，已记录。"
 
-    def _enforce_llm_visible_budget(self, part: LLMVisiblePart) -> None:
-        estimated = estimate_text_tokens(
-            " ".join(
-                item
-                for item in (
-                    part.display_summary,
-                    part.clarification_question or "",
-                    part.error_summary or "",
+    def _enforce_llm_visible_budget_or_truncate(
+        self, part: LLMVisiblePart
+    ) -> LLMVisiblePart:
+        """校验 LLM 可见摘要 token 预算，超出时先截断可变文本，仍超出再抛异常。"""
+
+        def _estimated() -> int:
+            return estimate_text_tokens(
+                " ".join(
+                    item
+                    for item in (
+                        part.display_summary,
+                        part.clarification_question or "",
+                        part.error_summary or "",
+                    )
+                    if item
                 )
-                if item
             )
+
+        if _estimated() <= self.LLM_VISIBLE_TOKEN_BUDGET:
+            return part
+
+        # 优先截断 display_summary，保留状态和其他短字段
+        truncated_summary = self._truncate_text_to_budget(
+            part.display_summary,
+            self.LLM_VISIBLE_TOKEN_BUDGET,
         )
-        if estimated > self.LLM_VISIBLE_TOKEN_BUDGET:
-            raise LLMVisibleBudgetExceededError(
-                estimated,
-                self.LLM_VISIBLE_TOKEN_BUDGET,
-            )
+        part = part.model_copy(update={"display_summary": truncated_summary})
+        if _estimated() <= self.LLM_VISIBLE_TOKEN_BUDGET:
+            return part
+
+        # 若 clarification_question 或 error_summary 过长，也截断
+        truncated_clarification = self._truncate_text_to_budget(
+            part.clarification_question or "",
+            self.LLM_VISIBLE_TOKEN_BUDGET,
+        )
+        truncated_error = self._truncate_text_to_budget(
+            part.error_summary or "",
+            self.LLM_VISIBLE_TOKEN_BUDGET,
+        )
+        part = part.model_copy(
+            update={
+                "clarification_question": truncated_clarification or None,
+                "error_summary": truncated_error or None,
+            }
+        )
+        if _estimated() <= self.LLM_VISIBLE_TOKEN_BUDGET:
+            return part
+
+        # 兜底降级：截断后仍超限说明存在极长字段，清空非状态字段并保留最小摘要，
+        # 避免单个 adapter 预算异常导致整个 chat 流被中断。
+        estimated = _estimated()
+        logger.warning(
+            "subagent llm visible budget exceeded after truncation: %s>%s; degrading",
+            estimated,
+            self.LLM_VISIBLE_TOKEN_BUDGET,
+        )
+        return part.model_copy(
+            update={
+                "display_summary": "查询完成",
+                "clarification_question": None,
+                "error_summary": None,
+            }
+        )
+
+    def _truncate_text_to_budget(self, text: str, budget: int) -> str:
+        """按 token 预算截断文本，保留语义前缀。"""
+
+        if not text:
+            return text
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            candidate = text[:mid]
+            if estimate_text_tokens(candidate) <= budget:
+                low = mid
+            else:
+                high = mid - 1
+        truncated = text[:low]
+        if truncated != text:
+            truncated = truncated.rstrip()
+            if len(truncated) > 3:
+                truncated = truncated[:-3].rstrip() + "..."
+            else:
+                truncated = truncated[:1] + "..."
+        return truncated
 
     def _optional_str(self, value: Any) -> str | None:
         if value is None or value == "":

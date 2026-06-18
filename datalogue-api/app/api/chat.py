@@ -18,6 +18,7 @@ import logging
 import re
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -300,6 +301,46 @@ def _extract_node_output(event: dict, lg_node: str) -> dict:
     return _find_state_output(event.get("data", {}).get("output", {}) or {}, lg_node)
 
 
+@asynccontextmanager
+async def _managed_subagent_events(
+    *,
+    db: Session,
+    dataset_id: int,
+    request: DatasetSubAgentRequest,
+    trace_context: Any,
+    initial_state: dict,
+    route_decision: dict,
+    app_graph: Any,
+):
+    """管理 SubAgent 事件流生命周期，remote 模式下自动关闭 httpx client。"""
+
+    dataset_name = route_decision.get("dataset_name") or ""
+    if getattr(get_settings(), "SUBAGENT_RUNNER_MODE", "in_process") == "remote":
+        runner = RemoteDatasetSubAgentRunner()
+        try:
+            yield runner.run(
+                request,
+                trace_context,
+                initial_state,
+                dataset_name=dataset_name,
+                version="v2",
+            )
+        finally:
+            await runner.aclose()
+    else:
+        sub_agent = DatasetSubAgent(db=db, dataset_id=dataset_id)
+        yield sub_agent.run(
+            request,
+            trace_context,
+            graph=app_graph,
+            initial_state=initial_state,
+            graph_kwargs={
+                "dataset_name": dataset_name,
+                "version": "v2",
+            },
+        )
+
+
 async def _collect_subagent_final_state(
     *,
     db: Session,
@@ -313,49 +354,37 @@ async def _collect_subagent_final_state(
     """fan-out 子调用专用：运行 SubAgent 并只收集完成态，不暴露子流式事件。"""
 
     final_state = dict(initial_state)
-    graph_kwargs = {
-        "dataset_name": route_decision.get("dataset_name") or "",
-        "version": "v2",
-    }
-    if getattr(get_settings(), "SUBAGENT_RUNNER_MODE", "in_process") == "remote":
-        subagent_events = RemoteDatasetSubAgentRunner().run(
-            request,
-            trace_context,
-            initial_state,
-            dataset_name=route_decision.get("dataset_name") or "",
-            **graph_kwargs,
-        )
-    else:
-        subagent_events = DatasetSubAgent(db=db, dataset_id=dataset_id).run(
-            request,
-            trace_context,
-            graph=app_graph,
-            initial_state=initial_state,
-            graph_kwargs=graph_kwargs,
-        )
-
-    async for sub_event in subagent_events:
-        sub_event_type = _subagent_event_type(sub_event)
-        sub_event_payload = _subagent_event_payload(sub_event)
-        if sub_event_type == "result":
-            final_state.update(sub_event_payload.get("final_state") or {})
-            continue
-        if sub_event_type == "candidate_assets":
-            sse_payload = _subagent_event_to_sse_payload(sub_event)
-            final_state["candidate_assets"] = sse_payload.get("candidate_assets")
-            continue
-        if sub_event_type == "query_plan":
-            sse_payload = _subagent_event_to_sse_payload(sub_event)
-            final_state["query_plan"] = sse_payload.get("query_plan") or {}
-            continue
-        if sub_event_type == "graph_event":
-            event = sub_event_payload.get("event") or {}
-            output = _extract_node_output(
-                event,
-                str((event.get("metadata") or {}).get("langgraph_node") or ""),
-            )
-            if output:
-                final_state.update(output)
+    async with _managed_subagent_events(
+        db=db,
+        dataset_id=dataset_id,
+        request=request,
+        trace_context=trace_context,
+        initial_state=initial_state,
+        route_decision=route_decision,
+        app_graph=app_graph,
+    ) as subagent_events:
+        async for sub_event in subagent_events:
+            sub_event_type = _subagent_event_type(sub_event)
+            sub_event_payload = _subagent_event_payload(sub_event)
+            if sub_event_type == "result":
+                final_state.update(sub_event_payload.get("final_state") or {})
+                continue
+            if sub_event_type == "candidate_assets":
+                sse_payload = _subagent_event_to_sse_payload(sub_event)
+                final_state["candidate_assets"] = sse_payload.get("candidate_assets")
+                continue
+            if sub_event_type == "query_plan":
+                sse_payload = _subagent_event_to_sse_payload(sub_event)
+                final_state["query_plan"] = sse_payload.get("query_plan") or {}
+                continue
+            if sub_event_type == "graph_event":
+                event = sub_event_payload.get("event") or {}
+                output = _extract_node_output(
+                    event,
+                    str((event.get("metadata") or {}).get("langgraph_node") or ""),
+                )
+                if output:
+                    final_state.update(output)
     return final_state
 
 
@@ -1911,39 +1940,42 @@ async def _stream_chat_singleturn(
         reported_done: set[str] = set()
         graph_report_think_state = new_think_stream_state()
 
-        graph_kwargs = {
-            "dataset_name": route_decision.get("dataset_name") or "",
-            "version": "v2",
-        }
-        if getattr(get_settings(), "SUBAGENT_RUNNER_MODE", "in_process") == "remote":
-            subagent_events = RemoteDatasetSubAgentRunner().run(
-                subagent_request,
-                trace_context,
-                initial_state,
-                dataset_name=route_decision.get("dataset_name") or "",
-                **graph_kwargs,
-            )
-        else:
-            subagent_events = sub_agent.run(
-                subagent_request,
-                trace_context,
-                graph=app_graph,
-                initial_state=initial_state,
-                graph_kwargs=graph_kwargs,
-            )
+        async with _managed_subagent_events(
+            db=db,
+            dataset_id=effective_dataset_id,
+            request=subagent_request,
+            trace_context=trace_context,
+            initial_state=initial_state,
+            route_decision=route_decision,
+            app_graph=app_graph,
+        ) as subagent_events:
+            async for sub_event in subagent_events:
+                sub_event_type = _subagent_event_type(sub_event)
+                sub_event_payload = _subagent_event_payload(sub_event)
+                if sub_event_type in {"candidate_assets", "query_plan"}:
+                    sse_payload = _subagent_event_to_sse_payload(sub_event)
+                    sse_payload["type"] = "step"
+                    if sub_event_type == "candidate_assets":
+                        final_state["candidate_assets"] = sse_payload.get("candidate_assets")
+                    elif sub_event_type == "query_plan":
+                        query_plan = sse_payload.get("query_plan") or {}
+                        final_state["query_plan"] = query_plan
+                        if final_state.get("query_plan_debug") is None:
+                            final_state["query_plan_debug"] = {
+                                "planner_source": query_plan.get("planner_source"),
+                                "fallback_reason": query_plan.get("fallback_reason"),
+                                "decision_factors": query_plan.get("decision_factors") or [],
+                                "planner_warnings": query_plan.get("planner_warnings") or [],
+                                "governance_suggestions": query_plan.get("governance_suggestions") or [],
+                            }
+                    step_traces.append(sse_payload)
+                    yield _sse_data(sse_payload)
+                    continue
 
-        async for sub_event in subagent_events:
-            sub_event_type = _subagent_event_type(sub_event)
-            sub_event_payload = _subagent_event_payload(sub_event)
-            if sub_event_type in {"candidate_assets", "query_plan"}:
-                sse_payload = _subagent_event_to_sse_payload(sub_event)
-                sse_payload["type"] = "step"
-                if sub_event_type == "candidate_assets":
-                    final_state["candidate_assets"] = sse_payload.get("candidate_assets")
-                elif sub_event_type == "query_plan":
-                    query_plan = sse_payload.get("query_plan") or {}
-                    final_state["query_plan"] = query_plan
+                if sub_event_type == "result":
+                    final_state.update(sub_event_payload.get("final_state") or {})
                     if final_state.get("query_plan_debug") is None:
+                        query_plan = final_state.get("query_plan") or {}
                         final_state["query_plan_debug"] = {
                             "planner_source": query_plan.get("planner_source"),
                             "fallback_reason": query_plan.get("fallback_reason"),
@@ -1951,157 +1983,142 @@ async def _stream_chat_singleturn(
                             "planner_warnings": query_plan.get("planner_warnings") or [],
                             "governance_suggestions": query_plan.get("governance_suggestions") or [],
                         }
-                step_traces.append(sse_payload)
-                yield _sse_data(sse_payload)
-                continue
-
-            if sub_event_type == "result":
-                final_state.update(sub_event_payload.get("final_state") or {})
-                if final_state.get("query_plan_debug") is None:
-                    query_plan = final_state.get("query_plan") or {}
-                    final_state["query_plan_debug"] = {
-                        "planner_source": query_plan.get("planner_source"),
-                        "fallback_reason": query_plan.get("fallback_reason"),
-                        "decision_factors": query_plan.get("decision_factors") or [],
-                        "planner_warnings": query_plan.get("planner_warnings") or [],
-                        "governance_suggestions": query_plan.get("governance_suggestions") or [],
-                    }
-                continue
-
-            if sub_event_type == "graph_event":
-                event = sub_event_payload["event"]
-            else:
-                sse_payload = _subagent_event_to_sse_payload(sub_event)
-                sse_payload.setdefault("node", sub_event_type)
-                node_name = str(sse_payload.get("node"))
-                sse_payload.setdefault(
-                    "display_name",
-                    _NODE_DISPLAY_NAMES.get(node_name, node_name),
-                )
-                sse_payload["type"] = "step"
-                sse_payload.setdefault("status", "done")
-                step_traces.append(sse_payload)
-                yield _sse_data(sse_payload)
-                continue
-
-            kind: str = event["event"]
-            meta: dict = event.get("metadata", {})
-            # langgraph_node 元数据标识当前所属顶层图节点
-            lg_node: str = meta.get("langgraph_node", "")
-
-            # ── 节点开始（每节点只报一次）────────────────────
-            if (
-                kind == "on_chain_start"
-                and lg_node in _NODE_DISPLAY_NAMES
-                and lg_node not in reported_running
-            ):
-                reported_running.add(lg_node)
-                node_start_times[lg_node] = time.monotonic()
-                sse_payload = {
-                    "type": "step",
-                    "node": lg_node,
-                    "display_name": _NODE_DISPLAY_NAMES[lg_node],
-                    "status": "running",
-                }
-                logger.info(f"[_stream_chat] step running: {lg_node}")
-                tracer.start_span(
-                    trace_context,
-                    node=lg_node,
-                    display_name=_NODE_DISPLAY_NAMES[lg_node],
-                    input_payload={
-                        "question": payload.question,
-                        "dataset_id": effective_dataset_id,
-                        "conversation_id": conv_id,
-                        "time_context": lead_agent_context.get("time_context"),
-                        "route_decision": route_decision,
-                        "schema_status": lead_agent_context.get("schema_status"),
-                        "lead_agent_audit": lead_agent_context.get("audit_trace"),
-                        "prior_capsule_status": prior_capsule_status,
-                    },
-                )
-                yield _sse_data(sse_payload)
-
-            # ── 节点完成（每节点只报一次）────────────────────
-            elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES:
-                output = _extract_node_output(event, lg_node)
-                if lg_node in reported_done or not output:
                     continue
-                reported_done.add(lg_node)
-                elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
-                # 合并节点输出到 final_state（允许 None 值传播）
-                final_state.update(output)
-                if lg_node == "report_generator":
-                    visible_tail = flush_think_stream_state(graph_report_think_state)
-                    if visible_tail:
-                        yield _sse_data({"type": "token", "content": visible_tail})
 
-                sse_payload = {
-                    "type": "step",
-                    "node": lg_node,
-                    "display_name": _NODE_DISPLAY_NAMES[lg_node],
-                    "status": "done",
-                    "elapsed_ms": elapsed_ms,
-                }
-                # 节点特定数据
-                # 旧语义解析节点不再作为 LangGraph 顶层节点处理，SubAgent.run 统一输出规划事件。
-                if lg_node == "dsl_generate":
-                    sse_payload["dsl"] = final_state.get("dsl") or {}
-                    sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
-                elif lg_node == "schema_recall":
-                    schema = final_state.get("schema_context", "") or ""
-                    lines_ = [l for l in schema.split("\n") if l.strip() and not l.startswith("-")]
-                    sse_payload["schema_summary"] = lines_[:3]
-                elif lg_node == "dsl_compiler":
-                    sse_payload["sql"] = final_state.get("sql") or ""
-                elif lg_node == "sql_execute":
-                    result = final_state.get("sql_result") or {}
-                    sse_payload["rows"] = result.get("row_count", 0)
-                    sse_payload["columns"] = result.get("columns", [])
-                    sse_payload["column_labels"] = result.get("column_labels") or {}
-                    sse_payload["elapsed_ms"] = elapsed_ms
-                elif lg_node == "sql_audit":
-                    diagnosis = (
-                        final_state.get("sql_diagnosis")
-                        or final_state.get("sql_audit_result")
-                        or {}
+                if sub_event_type == "graph_event":
+                    event = sub_event_payload["event"]
+                else:
+                    sse_payload = _subagent_event_to_sse_payload(sub_event)
+                    sse_payload.setdefault("node", sub_event_type)
+                    node_name = str(sse_payload.get("node"))
+                    sse_payload.setdefault(
+                        "display_name",
+                        _NODE_DISPLAY_NAMES.get(node_name, node_name),
                     )
-                    sse_payload["sql_diagnosis"] = diagnosis
-                    sse_payload["sql_audit_result"] = final_state.get("sql_audit_result") or {}
-                    sse_payload["code"] = diagnosis.get("code")
-                    sse_payload["severity"] = diagnosis.get("severity")
-                    sse_payload["retryable"] = diagnosis.get("retryable")
-                    sse_payload["sql_retry_trace"] = final_state.get("sql_retry_trace") or []
-                step_traces.append(sse_payload)
-                logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
-                tracer.end_span(
-                    trace_context,
-                    node=lg_node,
-                    output_payload=sse_payload,
-                    elapsed_ms=elapsed_ms,
-                    error=final_state.get("error") if lg_node == "sql_audit" else None,
-                )
-                yield _sse_data(sse_payload)
-
-            # ── 图级结束事件：兜底合并完整最终状态 ───────────────
-            elif kind == "on_chain_end" and not lg_node:
-                output = _extract_node_output(event, "")
-                if output:
-                    final_state.update(output)
-
-            # ── LLM token ───────────────────────────────────
-            elif kind == "on_chat_model_stream":
-                # report_generator 节点推送 token（打字效果）
-                # 其他节点输出为结构化 JSON，不推送给前端
-                # 注：同步节点在线程池中运行，token 可能无法全部回传；
-                # 前端 onDone 会用 finalData.answer 作为完整答案兜底
-                if lg_node and lg_node != "report_generator":
+                    sse_payload["type"] = "step"
+                    sse_payload.setdefault("status", "done")
+                    step_traces.append(sse_payload)
+                    yield _sse_data(sse_payload)
                     continue
-                chunk = event.get("data", {}).get("chunk")
-                token: str = getattr(chunk, "content", "") or ""
-                if token:
-                    visible_token = filter_think_stream_chunk(token, graph_report_think_state)
-                    if visible_token:
-                        yield _sse_data({"type": "token", "content": visible_token})
+
+                kind: str = event["event"]
+                meta: dict = event.get("metadata", {})
+                # langgraph_node 元数据标识当前所属顶层图节点
+                lg_node: str = meta.get("langgraph_node", "")
+
+                # ── 节点开始（每节点只报一次）────────────────────
+                if (
+                    kind == "on_chain_start"
+                    and lg_node in _NODE_DISPLAY_NAMES
+                    and lg_node not in reported_running
+                ):
+                    reported_running.add(lg_node)
+                    node_start_times[lg_node] = time.monotonic()
+                    sse_payload = {
+                        "type": "step",
+                        "node": lg_node,
+                        "display_name": _NODE_DISPLAY_NAMES[lg_node],
+                        "status": "running",
+                    }
+                    logger.info(f"[_stream_chat] step running: {lg_node}")
+                    tracer.start_span(
+                        trace_context,
+                        node=lg_node,
+                        display_name=_NODE_DISPLAY_NAMES[lg_node],
+                        input_payload={
+                            "question": payload.question,
+                            "dataset_id": effective_dataset_id,
+                            "conversation_id": conv_id,
+                            "time_context": lead_agent_context.get("time_context"),
+                            "route_decision": route_decision,
+                            "schema_status": lead_agent_context.get("schema_status"),
+                            "lead_agent_audit": lead_agent_context.get("audit_trace"),
+                            "prior_capsule_status": prior_capsule_status,
+                        },
+                    )
+                    yield _sse_data(sse_payload)
+
+                # ── 节点完成（每节点只报一次）────────────────────
+                elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES:
+                    output = _extract_node_output(event, lg_node)
+                    if lg_node in reported_done or not output:
+                        continue
+                    reported_done.add(lg_node)
+                    elapsed_ms = int((time.monotonic() - node_start_times.get(lg_node, 0)) * 1000)
+                    # 合并节点输出到 final_state（允许 None 值传播）
+                    final_state.update(output)
+                    if lg_node == "report_generator":
+                        visible_tail = flush_think_stream_state(graph_report_think_state)
+                        if visible_tail:
+                            yield _sse_data({"type": "token", "content": visible_tail})
+
+                    sse_payload = {
+                        "type": "step",
+                        "node": lg_node,
+                        "display_name": _NODE_DISPLAY_NAMES[lg_node],
+                        "status": "done",
+                        "elapsed_ms": elapsed_ms,
+                    }
+                    # 节点特定数据
+                    # 旧语义解析节点不再作为 LangGraph 顶层节点处理，SubAgent.run 统一输出规划事件。
+                    if lg_node == "dsl_generate":
+                        sse_payload["dsl"] = final_state.get("dsl") or {}
+                        sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
+                    elif lg_node == "schema_recall":
+                        schema = final_state.get("schema_context", "") or ""
+                        lines_ = [l for l in schema.split("\n") if l.strip() and not l.startswith("-")]
+                        sse_payload["schema_summary"] = lines_[:3]
+                    elif lg_node == "dsl_compiler":
+                        sse_payload["sql"] = final_state.get("sql") or ""
+                    elif lg_node == "sql_execute":
+                        result = final_state.get("sql_result") or {}
+                        sse_payload["rows"] = result.get("row_count", 0)
+                        sse_payload["columns"] = result.get("columns", [])
+                        sse_payload["column_labels"] = result.get("column_labels") or {}
+                        sse_payload["elapsed_ms"] = elapsed_ms
+                    elif lg_node == "sql_audit":
+                        diagnosis = (
+                            final_state.get("sql_diagnosis")
+                            or final_state.get("sql_audit_result")
+                            or {}
+                        )
+                        sse_payload["sql_diagnosis"] = diagnosis
+                        sse_payload["sql_audit_result"] = final_state.get("sql_audit_result") or {}
+                        sse_payload["code"] = diagnosis.get("code")
+                        sse_payload["severity"] = diagnosis.get("severity")
+                        sse_payload["retryable"] = diagnosis.get("retryable")
+                        sse_payload["sql_retry_trace"] = final_state.get("sql_retry_trace") or []
+                    step_traces.append(sse_payload)
+                    logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
+                    tracer.end_span(
+                        trace_context,
+                        node=lg_node,
+                        output_payload=sse_payload,
+                        elapsed_ms=elapsed_ms,
+                        error=final_state.get("error") if lg_node == "sql_audit" else None,
+                    )
+                    yield _sse_data(sse_payload)
+
+                # ── 图级结束事件：兜底合并完整最终状态 ───────────────
+                elif kind == "on_chain_end" and not lg_node:
+                    output = _extract_node_output(event, "")
+                    if output:
+                        final_state.update(output)
+
+                # ── LLM token ───────────────────────────────────
+                elif kind == "on_chat_model_stream":
+                    # report_generator 节点推送 token（打字效果）
+                    # 其他节点输出为结构化 JSON，不推送给前端
+                    # 注：同步节点在线程池中运行，token 可能无法全部回传；
+                    # 前端 onDone 会用 finalData.answer 作为完整答案兜底
+                    if lg_node and lg_node != "report_generator":
+                        continue
+                    chunk = event.get("data", {}).get("chunk")
+                    token: str = getattr(chunk, "content", "") or ""
+                    if token:
+                        visible_token = filter_think_stream_chunk(token, graph_report_think_state)
+                        if visible_token:
+                            yield _sse_data({"type": "token", "content": visible_token})
 
         logger.info("[_stream_chat] astream_events 完成")
 
