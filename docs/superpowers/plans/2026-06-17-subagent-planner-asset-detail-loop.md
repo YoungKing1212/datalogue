@@ -1852,7 +1852,7 @@ git commit -m "docs: teach subagent planner detail request rules"
 ## Task 8: Regression Verification and Project Memory
 
 **Files:**
-- Modify: `.codex/项目记忆.md`
+- Modify: `.codex/project-memory.md`
 
 - [ ] **Step 1: Run Python compile checks**
 
@@ -1886,7 +1886,7 @@ Expected: all selected tests pass, confirming the old path remains active by def
 
 - [ ] **Step 4: Add project memory entry**
 
-Append this entry to `.codex/项目记忆.md` with the current completion time:
+Append this entry to `.codex/project-memory.md` with the current completion time:
 
 ```markdown
 ### 2026-06-17 23:30 · SubAgent Planner 资产详情受控循环
@@ -1902,7 +1902,7 @@ Append this entry to `.codex/项目记忆.md` with the current completion time:
 Run:
 
 ```bash
-git add .codex/项目记忆.md
+git add .codex/project-memory.md
 git commit -m "docs: record subagent planner detail loop"
 ```
 

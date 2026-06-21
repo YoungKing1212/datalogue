@@ -261,7 +261,7 @@ def test_langfuse_observation_names_are_chinese():
 
     assert calls[0]["name"] == "DSL 生成"
     assert calls[0]["metadata"]["technical_name"] == "node.dsl_generate"
-    assert calls[1]["name"] == "LLM · SQL 诊断"
+    assert calls[1]["name"] == "llm.sql_audit"
     assert calls[1]["metadata"]["technical_name"] == "llm.sql_audit"
     assert updates[0]["usage_details"] == {"input": 11, "output": 7, "total": 18}
     assert updates[0]["metadata"]["usage_source"] == "provider"
@@ -384,7 +384,7 @@ def test_in_process_subagent_runner_wraps_graph_span(monkeypatch):
 
     assert events[0]["kwargs"]["version"] == "v2"
     assert calls[0][2]["node"] == "subagent.7"
-    assert calls[0][2]["display_name"] == "SubAgent · 销售数据集"
+    assert calls[0][2]["display_name"] == "subagent.7"
     assert calls[0][2]["trace_tags"] == ["sub", "dataset:7"]
     assert calls[1][2]["node"] == "subagent.7"
 

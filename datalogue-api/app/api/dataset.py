@@ -36,6 +36,7 @@ from app.services.dataset_manifest import (
     list_current_manifest_summaries,
     mark_current_manifest_needs_review,
     publish_manifest,
+    rollback_manifest,
     route_check_manifest,
     save_manifest_draft,
 )
@@ -1032,6 +1033,33 @@ def publish_subagent_manifest(
         )
     except ManifestValidationError as exc:
         raise HTTPException(status_code=400, detail={"lint": exc.issues}) from exc
+
+
+@router.post(
+    "/{ds_id}/subagent-manifest/{manifest_version}/rollback",
+    response_model=schemas.DatasetSubAgentManifestOut,
+)
+def rollback_subagent_manifest(
+    ds_id: int,
+    manifest_version: str,
+    payload: schemas.ManifestRollbackPayload,
+    db: Session = Depends(get_db),
+):
+    """把历史 Manifest 版本复制为新的 current 版本。"""
+
+    _ensure_dataset(ds_id, db)
+    try:
+        return rollback_manifest(
+            db,
+            ds_id,
+            manifest_version,
+            created_by=payload.created_by,
+            reason=payload.reason,
+        )
+    except ManifestValidationError as exc:
+        raise HTTPException(status_code=400, detail={"lint": exc.issues}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post(

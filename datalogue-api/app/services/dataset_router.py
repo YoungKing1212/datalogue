@@ -59,7 +59,10 @@ def route_dataset_for_question(
 
     manifests = (
         db.query(models.DatasetSubAgentManifest)
-        .filter(models.DatasetSubAgentManifest.is_current.is_(True))
+        .filter(
+            models.DatasetSubAgentManifest.is_current.is_(True),
+            models.DatasetSubAgentManifest.review_status == "current",
+        )
         .order_by(models.DatasetSubAgentManifest.dataset_id)
         .all()
     )

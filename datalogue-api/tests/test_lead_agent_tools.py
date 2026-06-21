@@ -15,7 +15,9 @@ import json
 from datetime import datetime
 
 from app import models
-from app.services.dataset_manifest import publish_manifest
+import pytest
+
+from app.services.dataset_manifest import ManifestValidationError, publish_manifest
 from app.services.lead_agent import (
     _fallback_multiturn_refinement,
     build_lead_agent_context,
@@ -47,6 +49,10 @@ def _manual_fields():
             "会员画像年龄分布",
             "售后工单处理时长",
         ],
+        "permission_scope": {
+            "status": "allowed",
+            "description": "测试环境允许执行当前数据集已选范围。",
+        },
     }
 
 
@@ -301,11 +307,104 @@ def test_schema_status_marks_current_manifest_needs_review(db_session, sample_da
     )
 
     assert context["schema_status"]["status"] == "needs_review"
+    assert context["should_continue"] is False
+    assert context["dispatch"] is None
+    assert context["manifest_guard"]["status"] == "blocked"
+    assert context["manifest_guard"]["block_reason"] == "manifest_stale"
     refreshed = db_session.get(
         models.DatasetSubAgentManifest,
         (manifest.dataset_id, manifest.manifest_version),
     )
     assert refreshed.review_status == "needs_review"
+
+
+def test_publish_manifest_blocks_unconfigured_permission(db_session, sample_dataset):
+    """权限未显式允许时，Manifest 不能发布成 current。"""
+
+    manual_fields = _manual_fields()
+    manual_fields["permission_scope"] = {
+        "status": "not_configured",
+        "description": "未配置权限，不应允许发布。",
+    }
+
+    with pytest.raises(ManifestValidationError) as exc:
+        publish_manifest(db_session, sample_dataset.id, manual_fields)
+
+    assert any(issue["code"] == "permission_scope_required" for issue in exc.value.issues)
+    assert (
+        db_session.query(models.DatasetSubAgentManifest)
+        .filter(models.DatasetSubAgentManifest.dataset_id == sample_dataset.id)
+        .count()
+        == 0
+    )
+
+
+def test_needs_review_manifest_is_not_auto_selected(db_session, sample_dataset):
+    """needs_review 的 current Manifest 不能继续参与自动路由。"""
+
+    manifest = publish_manifest(db_session, sample_dataset.id, _manual_fields())
+    manifest.review_status = "needs_review"
+    db_session.commit()
+
+    context = build_lead_agent_context(
+        db_session,
+        question="最近30日GMV趋势如何",
+        now=datetime(2026, 6, 12, 9, 30),
+    )
+
+    assert context["route_decision"]["decision"] == "no_match"
+    assert context["should_continue"] is False
+    assert context["manifest_guard"]["status"] == "blocked"
+    assert context["manifest_guard"]["block_reason"] == "route_low_confidence"
+
+
+def test_locked_dataset_without_manifest_is_blocked(db_session, sample_dataset):
+    """显式选择数据集也不能绕过 current Manifest 门禁。"""
+
+    context = build_lead_agent_context(
+        db_session,
+        question="最近30日GMV趋势如何",
+        payload_dataset_id=sample_dataset.id,
+        now=datetime(2026, 6, 12, 9, 30),
+    )
+
+    assert context["route_decision"]["decision"] == "locked"
+    assert context["schema_status"]["status"] == "not_bound"
+    assert context["should_continue"] is False
+    assert context["dispatch"] is None
+    assert context["manifest_guard"]["status"] == "blocked"
+    assert context["manifest_guard"]["block_reason"] == "manifest_missing"
+
+
+def test_manifest_rollback_creates_new_current_version(db_session, sample_dataset):
+    """回滚历史版本时应复制快照生成新版本，而不是复用旧版本号。"""
+
+    from app.services.dataset_manifest import rollback_manifest
+
+    v1 = publish_manifest(db_session, sample_dataset.id, _manual_fields(), created_by="tester")
+    v2_manual = _manual_fields()
+    v2_manual["description"] = (
+        "订单销售数据集用于分析门店订单在日、周、月范围内的GMV、订单数、地区和品类表现，"
+        "覆盖销售运营团队查看华东、华南区域的成交趋势、品类结构、门店波动和经营质量，用于周报复盘。"
+    )
+    v2 = publish_manifest(db_session, sample_dataset.id, v2_manual, created_by="tester")
+
+    rolled = rollback_manifest(
+        db_session,
+        sample_dataset.id,
+        v1.manifest_version,
+        created_by="tester",
+        reason="恢复稳定路由口径",
+    )
+
+    assert rolled.manifest_version == "v3"
+    assert rolled.is_current is True
+    assert rolled.review_status == "current"
+    assert rolled.manifest_json["rollback_from"]["manifest_version"] == v1.manifest_version
+    assert db_session.get(
+        models.DatasetSubAgentManifest,
+        (sample_dataset.id, v2.manifest_version),
+    ).review_status == "archived"
 
 
 def test_tool_policy_locks_explicit_dataset(sample_dataset):

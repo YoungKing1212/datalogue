@@ -30,7 +30,10 @@ from app import models
 from app.core.config import get_settings
 from app.graph.llm import get_llm
 from app.prompts.lead_agent import LEAD_AGENT_SKILL_SELECTOR_SYSTEM, LEAD_AGENT_TOOL_PLANNER_SYSTEM
-from app.services.dataset_manifest import build_dataset_schema_version
+from app.services.dataset_manifest import (
+    build_dataset_schema_version,
+    evaluate_manifest_runtime_guard,
+)
 from app.services.dataset_router import route_dataset_for_question
 from app.services.lead_agent_planning.asset_filter import filter_lead_planner_assets
 from app.services.lead_agent_planning.asset_filter_config import build_filter_config
@@ -1048,7 +1051,7 @@ def check_schema_status(db: Session, route_decision: dict[str, Any]) -> dict[str
             "manifest_version": manifest_version,
             "bound_schema_version": None,
             "latest_schema_version": latest_schema_version,
-            "reason": "当前数据集没有 current Manifest 绑定版本，按显式选择继续执行。",
+            "reason": "当前数据集没有 current Manifest 绑定版本，已阻断执行。",
         }
 
     stale = bound_schema_version != latest_schema_version
@@ -1071,6 +1074,7 @@ def check_schema_status(db: Session, route_decision: dict[str, Any]) -> dict[str
 def build_clarification(
     route_decision: dict[str, Any],
     schema_status: dict[str, Any],
+    manifest_guard: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """ClarificationTool：只生成数据集级澄清，不触碰语义层内部资产。"""
 
@@ -1095,8 +1099,16 @@ def build_clarification(
         return {
             "tool": "clarification",
             "kind": "manifest_stale",
-            "message": "当前 Manifest 绑定 schema 已变化，本轮暂按显式路由继续并记录需 review。",
+            "message": "当前 Manifest 绑定 schema 已变化，本轮已阻断执行，请复核并重新发布 Manifest。",
             "reason": schema_status.get("reason"),
+        }
+    if (manifest_guard or {}).get("status") == "blocked" and decision in {"selected", "locked"}:
+        return {
+            "tool": "clarification",
+            "kind": (manifest_guard or {}).get("block_reason") or "manifest_blocked",
+            "message": "当前 Manifest 未通过执行前校验，本轮已阻断执行。",
+            "reason": (manifest_guard or {}).get("block_reason"),
+            "manifest_guard": manifest_guard,
         }
     return None
 
@@ -1108,11 +1120,14 @@ def build_subagent_dispatch(
     time_context: dict[str, Any],
     thread_context: dict[str, Any],
     schema_status: dict[str, Any],
+    manifest_guard: dict[str, Any] | None = None,
     original_question: str | None = None,
 ) -> dict[str, Any] | None:
     """SubAgentDispatchTool：生成传给后续图工作流的控制面上下文。"""
 
     if route_decision.get("decision") not in {"selected", "locked"}:
+        return None
+    if (manifest_guard or {}).get("status") != "ok":
         return None
     dataset_id = route_decision.get("dataset_id")
     if dataset_id is None:
@@ -1133,6 +1148,7 @@ def build_subagent_dispatch(
         "time_context": time_context,
         "thread_context": thread_context,
         "schema_status": schema_status,
+        "manifest_guard": manifest_guard,
         "route_decision": route_decision,
         "capsule": capsule,
         "subagent_capsule": capsule,
@@ -1184,6 +1200,7 @@ def build_audit_trace(
     system_inferred_tool_calls: list[dict[str, Any]] | None = None,
     policy_violations: list[dict[str, Any]] | None = None,
     planner_fallback: bool = False,
+    manifest_guard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """AuditTraceTool：输出 LeadAgent 工具调用摘要，便于 Langfuse/消息审计保存。"""
 
@@ -1197,6 +1214,8 @@ def build_audit_trace(
         "dataset_id": route_decision.get("dataset_id"),
         "manifest_version": route_decision.get("manifest_version"),
         "schema_status": schema_status.get("status"),
+        "manifest_guard_status": (manifest_guard or {}).get("status"),
+        "manifest_block_reason": (manifest_guard or {}).get("block_reason"),
         "clarification_kind": clarification.get("kind") if clarification else None,
         "dispatched": dispatch is not None,
         "selected_skills": selected_skills or [],
@@ -1237,6 +1256,7 @@ def execute_tool_plan(
         "thread_context": None,
         "route_decision": None,
         "schema_status": None,
+        "manifest_guard": None,
         "clarification": None,
         "dispatch": None,
     }
@@ -1297,15 +1317,28 @@ def execute_tool_plan(
         system_inferred_tool_calls.append(
             {"tool": "schema_status", "reason": "system_required_after_route"}
         )
+    manifest_guard = results.get("manifest_guard")
+    if manifest_guard is None:
+        manifest_guard = evaluate_manifest_runtime_guard(
+            db,
+            route_decision.get("dataset_id"),
+            route_decision=route_decision,
+            schema_status=schema_status,
+        )
+        results["manifest_guard"] = manifest_guard
     clarification = results["clarification"]
     if clarification is None:
-        clarification = build_clarification(route_decision, schema_status)
+        clarification = build_clarification(route_decision, schema_status, manifest_guard)
         if clarification is not None:
             system_inferred_tool_calls.append(
                 {"tool": "clarification", "reason": "system_required_after_route"}
             )
     dispatch = results["dispatch"]
-    if dispatch is None and route_decision.get("decision") in {"selected", "locked"}:
+    if (
+        dispatch is None
+        and route_decision.get("decision") in {"selected", "locked"}
+        and manifest_guard.get("status") == "ok"
+    ):
         resolved_question = results["resolved_question"] or build_resolved_question(
             question,
             results["time_context"],
@@ -1317,6 +1350,7 @@ def execute_tool_plan(
             time_context=results["time_context"] or {},
             thread_context=results["thread_context"] or {},
             schema_status=schema_status,
+            manifest_guard=manifest_guard,
         )
         if dispatch is not None:
             system_inferred_tool_calls.append(
@@ -1334,6 +1368,7 @@ def execute_tool_plan(
         system_inferred_tool_calls=system_inferred_tool_calls,
         policy_violations=policy_violations,
         planner_fallback=bool(plan.get("planner_fallback")),
+        manifest_guard=manifest_guard,
     )
     return {
         "time_context": results["time_context"],
@@ -1342,6 +1377,7 @@ def execute_tool_plan(
         "thread_context": results["thread_context"],
         "route_decision": route_decision,
         "schema_status": schema_status,
+        "manifest_guard": manifest_guard,
         "clarification": clarification,
         "dispatch": dispatch,
         "audit_trace": audit_trace,
@@ -1422,7 +1458,14 @@ def _execute_single_tool(
             return False
         schema_status = results["schema_status"] or check_schema_status(db, route_decision)
         results["schema_status"] = schema_status
-        results["clarification"] = build_clarification(route_decision, schema_status)
+        manifest_guard = results.get("manifest_guard") or evaluate_manifest_runtime_guard(
+            db,
+            route_decision.get("dataset_id"),
+            route_decision=route_decision,
+            schema_status=schema_status,
+        )
+        results["manifest_guard"] = manifest_guard
+        results["clarification"] = build_clarification(route_decision, schema_status, manifest_guard)
         return True
     if tool_name == "subagent_dispatch":
         route_decision = results["route_decision"]
@@ -1434,6 +1477,15 @@ def _execute_single_tool(
             return False
         schema_status = results["schema_status"] or check_schema_status(db, route_decision)
         results["schema_status"] = schema_status
+        manifest_guard = results.get("manifest_guard") or evaluate_manifest_runtime_guard(
+            db,
+            route_decision.get("dataset_id"),
+            route_decision=route_decision,
+            schema_status=schema_status,
+        )
+        results["manifest_guard"] = manifest_guard
+        if manifest_guard.get("status") != "ok":
+            return False
         results["dispatch"] = build_subagent_dispatch(
             question=results["resolved_question"]
             or build_resolved_question(
@@ -1445,6 +1497,7 @@ def _execute_single_tool(
             time_context=results["time_context"] or {},
             thread_context=results["thread_context"] or {},
             schema_status=schema_status,
+            manifest_guard=manifest_guard,
         )
         return results["dispatch"] is not None
     return False
@@ -2126,9 +2179,17 @@ def build_lead_agent_context(
 
     route_decision = execution.get("route_decision") or _default_no_match_decision()
     schema_status = execution.get("schema_status") or check_schema_status(db, route_decision)
+    manifest_guard = execution.get("manifest_guard")
+    if manifest_guard is None:
+        manifest_guard = evaluate_manifest_runtime_guard(
+            db,
+            route_decision.get("dataset_id"),
+            route_decision=route_decision,
+            schema_status=schema_status,
+        )
     clarification = execution.get("clarification")
     if clarification is None:
-        clarification = build_clarification(route_decision, schema_status)
+        clarification = build_clarification(route_decision, schema_status, manifest_guard)
     dispatch = execution.get("dispatch")
     multiturn_refinement = _resolve_multiturn_refinement(
         plan=plan,
@@ -2173,11 +2234,14 @@ def build_lead_agent_context(
         "thread_context": execution.get("thread_context"),
         "route_decision": route_decision,
         "schema_status": schema_status,
+        "manifest_guard": manifest_guard,
         "clarification": clarification,
         "dispatch": dispatch,
         "audit_trace": execution.get("audit_trace"),
-        "should_continue": dispatch is not None,
-        "effective_dataset_id": effective_dataset_id,
+        "should_continue": dispatch is not None and manifest_guard.get("status") == "ok",
+        "effective_dataset_id": effective_dataset_id
+        if dispatch is not None and manifest_guard.get("status") == "ok"
+        else None,
     }
     if tracer is not None and trace_context is not None and hasattr(tracer, "end_span"):
         tracer.end_span(

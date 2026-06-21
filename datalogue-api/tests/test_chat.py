@@ -47,6 +47,10 @@ def _manifest_manual_fields(*, domain="销售运营", subject="订单销售"):
             "会员画像年龄分布",
             "售后工单处理时长",
         ],
+        "permission_scope": {
+            "status": "allowed",
+            "description": "测试环境允许执行该数据集。",
+        },
     }
 
 
@@ -3311,6 +3315,7 @@ class TestChatStreamEvents:
 
     def test_chat_stream_report_generator_strips_think_tokens(self, db_session, sample_dataset):
         """Graph report_generator 的原生 LLM token 不应泄露 Think 标签。"""
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
 
         async def fake_astream_events(state, version):
             yield {
@@ -3543,6 +3548,7 @@ class TestChatStreamEvents:
                     "updates": updates,
                     "user_id": user_id,
                 }
+                return updates
 
         def fake_build_success_task_state(**kwargs):
             captured["max_tokens"] = kwargs["max_tokens"]
@@ -3834,6 +3840,7 @@ class TestChatStreamEvents:
         self, db_session, sample_dataset
     ):
         """final payload 与落库消息都应包含稳定的 explainability/query_profile。"""
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
 
         async def fake_astream_events(state, version):
             yield {
@@ -4183,6 +4190,7 @@ class TestChatStreamEvents:
         self, db_session, sample_dataset
     ):
         """pending 术语澄清回复必须先解析，不能被入口路由的普通 clarify 早退吞掉。"""
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
         conv, pending = TestLangGraphNodes()._create_pending_term_clarification(
             db_session,
             sample_dataset,
@@ -4230,6 +4238,7 @@ class TestChatStreamEvents:
         self, db_session, sample_dataset
     ):
         """入口路由早退也必须写 trace output、TraceIndex 和 final observability metadata。"""
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
 
         def fake_route_query_intent(*args, **kwargs):
             return {

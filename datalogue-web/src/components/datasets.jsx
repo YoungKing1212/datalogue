@@ -44,6 +44,7 @@ import {
   getDatasetSubAgentManifest,
   saveDatasetSubAgentManifest,
   publishDatasetSubAgentManifest,
+  rollbackDatasetSubAgentManifest,
   routeCheckDatasetSubAgentManifest,
 } from '../api/client';
 
@@ -86,6 +87,10 @@ const DEFAULT_MANIFEST_MANUAL_FIELDS = {
   business_domain: [],
   sample_questions: [],
   routing_negative_examples: [],
+  permission_scope: {
+    status: 'not_configured',
+    description: '',
+  },
 };
 
 const MANIFEST_STATUS_LABEL = {
@@ -108,6 +113,10 @@ const manifestManualFieldsFromForm = (form) => ({
   business_domain: splitManifestList(form.business_domain_text),
   sample_questions: splitManifestList(form.sample_questions_text),
   routing_negative_examples: splitManifestList(form.routing_negative_examples_text),
+  permission_scope: {
+    status: form.permission_scope_status || 'not_configured',
+    description: String(form.permission_scope_description || '').trim(),
+  },
 });
 
 const manifestFormFromManualFields = (manual = DEFAULT_MANIFEST_MANUAL_FIELDS) => ({
@@ -115,6 +124,8 @@ const manifestFormFromManualFields = (manual = DEFAULT_MANIFEST_MANUAL_FIELDS) =
   business_domain_text: joinManifestList(manual.business_domain),
   sample_questions_text: joinManifestList(manual.sample_questions),
   routing_negative_examples_text: joinManifestList(manual.routing_negative_examples),
+  permission_scope_status: manual.permission_scope?.status || 'not_configured',
+  permission_scope_description: manual.permission_scope?.description || '',
 });
 
 const normalizeQueryConstraints = (value) => {
@@ -372,6 +383,7 @@ function DatasetsScreen() {
   const [manifestLoading, setManifestLoading] = useState(false);
   const [manifestSaving, setManifestSaving] = useState(false);
   const [manifestPublishing, setManifestPublishing] = useState(false);
+  const [manifestRollingBackVersion, setManifestRollingBackVersion] = useState('');
   const [manifestRouteQuestions, setManifestRouteQuestions] = useState('');
   const [manifestRouteExpected, setManifestRouteExpected] = useState('');
   const [manifestRouteResults, setManifestRouteResults] = useState([]);
@@ -1255,6 +1267,26 @@ function DatasetsScreen() {
     }
   };
 
+  const handleManifestRollback = async (version) => {
+    if (!currentDsId || !version || manifestRollingBackVersion) return;
+    setManifestRollingBackVersion(version);
+    setManifestMessage('');
+    try {
+      await rollbackDatasetSubAgentManifest(currentDsId, version, 'yangkai', '治理页手动回滚');
+      await loadManifestDetail(currentDsId);
+      setManifestMessage(`已基于 ${version} 生成新的 current 版本。`);
+    } catch (err) {
+      const lint = err?.data?.detail?.lint || err?.detail?.lint;
+      if (Array.isArray(lint) && lint.length) {
+        setManifestMessage('回滚失败: ' + lint.map(item => item.message).join('；'));
+      } else {
+        setManifestMessage('回滚失败: ' + (err.message || '未知错误'));
+      }
+    } finally {
+      setManifestRollingBackVersion('');
+    }
+  };
+
   const handleManifestRouteCheck = async () => {
     if (!currentDsId) return;
     const questions = splitManifestList(manifestRouteQuestions);
@@ -1465,6 +1497,10 @@ function DatasetsScreen() {
     const detail = manifestDetail || {};
     const autoFields = detail.auto_fields_preview || {};
     const current = detail.current_manifest;
+    const guard = detail.manifest_guard || {};
+    const permissionScope = current?.permission_scope || autoFields.permission_scope || {};
+    const qualityStatus = current?.quality_status || {};
+    const versions = detail.versions || [];
     const lint = detail.lint || [];
     const lintErrors = lint.filter(item => item.severity === 'error');
     const manual = manifestManualFieldsFromForm(manifestForm);
@@ -1512,6 +1548,10 @@ function DatasetsScreen() {
                   ['数据集', autoFields.name || activeDs?.name || '—'],
                   ['Manifest 版本', current?.manifest_version || '未发布'],
                   ['Schema 绑定', current?.bound_schema_version || autoFields.bound_schema_version || '—'],
+                  ['最新 Schema', detail.latest_schema_version || autoFields.bound_schema_version || '—'],
+                  ['权限状态', permissionScope.status || 'not_configured'],
+                  ['质量状态', qualityStatus.status || '未发布'],
+                  ['执行门禁', guard.status ? `${guard.status}${guard.block_reason ? ` / ${guard.block_reason}` : ''}` : '—'],
                   ['指标数', `${autoFields.key_metrics?.length || 0}`],
                   ['维度数', `${autoFields.key_dimensions?.length || 0}`],
                 ].map(([label, value]) => (
@@ -1587,6 +1627,29 @@ function DatasetsScreen() {
                   style={{ width: '100%', resize: 'vertical', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, lineHeight: 1.5 }}
                 />
               </label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 220px) 1fr', gap: 10 }}>
+                <label style={{ display: 'grid', gap: 5, fontSize: 12 }}>
+                  <span style={{ color: 'var(--text-2)' }}>permission_scope.status</span>
+                  <select
+                    value={manifestForm.permission_scope_status}
+                    onChange={e => setManifestForm(prev => ({ ...prev, permission_scope_status: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13 }}
+                  >
+                    <option value="not_configured">not_configured</option>
+                    <option value="allowed">allowed</option>
+                    <option value="denied">denied</option>
+                  </select>
+                </label>
+                <label style={{ display: 'grid', gap: 5, fontSize: 12 }}>
+                  <span style={{ color: 'var(--text-2)' }}>permission_scope.description</span>
+                  <input
+                    value={manifestForm.permission_scope_description}
+                    onChange={e => setManifestForm(prev => ({ ...prev, permission_scope_description: e.target.value }))}
+                    placeholder="说明当前可执行范围和人工确认依据"
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--hairline)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13 }}
+                  />
+                </label>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
                 <label style={{ display: 'grid', gap: 5, fontSize: 12 }}>
                   <span style={{ color: 'var(--text-2)' }}>sample_questions</span>
@@ -1612,6 +1675,40 @@ function DatasetsScreen() {
             </div>
           </div>
         </div>
+
+        {versions.length > 0 && (
+          <div style={{ marginTop: 14, border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>版本记录</div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {versions.map(version => {
+                const isCurrent = version.is_current;
+                const quality = version.quality_status || {};
+                const permission = version.permission_scope || {};
+                return (
+                  <div key={version.manifest_version} style={{ display: 'grid', gridTemplateColumns: 'minmax(90px, 130px) 1fr auto', gap: 10, alignItems: 'center', border: '1px solid var(--hairline)', borderRadius: 7, padding: 9, background: 'var(--bg)' }}>
+                    <div>
+                      <div className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{version.manifest_version}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{MANIFEST_STATUS_LABEL[version.review_status] || version.review_status}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-3)' }}>
+                      <span className="mono">schema {version.schema_hash || version.bound_schema_version}</span>
+                      <span>permission {permission.status || 'not_configured'}</span>
+                      <span>quality {quality.status || 'unknown'}</span>
+                      {version.created_by && <span>by {version.created_by}</span>}
+                    </div>
+                    <button
+                      className="btn ghost"
+                      disabled={isCurrent || manifestRollingBackVersion === version.manifest_version}
+                      onClick={() => handleManifestRollback(version.manifest_version)}
+                    >
+                      <Icon name="refresh" />{manifestRollingBackVersion === version.manifest_version ? '回滚中…' : isCurrent ? '当前' : '回滚'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div style={{ marginTop: 14, border: '1px solid var(--hairline)', borderRadius: 8, padding: 12, background: 'var(--surface)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
@@ -1650,6 +1747,9 @@ function DatasetsScreen() {
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       <span style={{ padding: '2px 7px', borderRadius: 5, fontSize: 11, color: result.decision === 'hit' ? 'var(--pos)' : result.decision === 'miss' ? 'var(--neg)' : '#b45309', background: result.decision === 'hit' ? 'rgba(34,197,94,0.10)' : result.decision === 'miss' ? 'rgba(239,68,68,0.10)' : 'rgba(245,158,11,0.12)' }}>
                         {result.decision} · {Math.round((result.score || 0) * 100)}%
+                      </span>
+                      <span style={{ padding: '2px 7px', borderRadius: 5, fontSize: 11, color: result.executable ? 'var(--pos)' : 'var(--neg)', background: result.executable ? 'rgba(34,197,94,0.10)' : 'rgba(239,68,68,0.10)' }}>
+                        {result.matched_manifest_version || '—'} · {result.executable ? '可执行' : '不可执行'}
                       </span>
                       <button className="btn ghost" onClick={() => handleSaveManifestRouteCase(result)}>
                         <Icon name="bookmark" />保存用例

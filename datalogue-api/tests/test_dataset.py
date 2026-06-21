@@ -40,6 +40,10 @@ class TestDatasetAPI:
                 "会员画像年龄分布",
                 "售后工单处理时长",
             ],
+            "permission_scope": {
+                "status": "allowed",
+                "description": "允许在测试数据集绑定范围内执行 SubAgent 查询。",
+            },
         }
 
     def _create_selected_table_with_columns(self, db_session, sample_dataset, sample_datasource):

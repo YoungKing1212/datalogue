@@ -6,17 +6,26 @@ services:
       POSTGRES_USER: datalogue
       POSTGRES_PASSWORD: datalogue
       POSTGRES_DB: datalogue
+      LANGFUSE_POSTGRES_USER: ${LANGFUSE_POSTGRES_USER:-langfuse}
+      LANGFUSE_POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-langfuse}
+      LANGFUSE_POSTGRES_DB: ${LANGFUSE_POSTGRES_DB:-langfuse}
     ports:
       - "5432:5432"
     volumes:
       - datalogue_pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init-langfuse-db.sh:/docker-entrypoint-initdb.d/20-init-langfuse-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datalogue -d datalogue"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
   langfuse-worker:
     image: langfuse/langfuse-worker:3
     container_name: datalogue-langfuse-worker
     restart: unless-stopped
     depends_on: &langfuse-depends-on
-      langfuse-postgres:
+      db:
         condition: service_healthy
       langfuse-clickhouse:
         condition: service_healthy
@@ -26,7 +35,7 @@ services:
         condition: service_healthy
     environment: &langfuse-env
       NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
-      DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER:-langfuse}:${LANGFUSE_POSTGRES_PASSWORD:-langfuse}@langfuse-postgres:5432/${LANGFUSE_POSTGRES_DB:-langfuse}
+      DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER:-langfuse}:${LANGFUSE_POSTGRES_PASSWORD:-langfuse}@db:5432/${LANGFUSE_POSTGRES_DB:-langfuse}
       SALT: ${LANGFUSE_SALT:-datalogue-langfuse-dev-salt}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
       TELEMETRY_ENABLED: ${LANGFUSE_TELEMETRY_ENABLED:-false}
@@ -137,29 +146,8 @@ services:
       timeout: 10s
       retries: 10
 
-  langfuse-postgres:
-    image: postgres:16
-    container_name: datalogue-langfuse-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${LANGFUSE_POSTGRES_USER:-langfuse}
-      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-langfuse}
-      POSTGRES_DB: ${LANGFUSE_POSTGRES_DB:-langfuse}
-      TZ: UTC
-      PGTZ: UTC
-    ports:
-      - "127.0.0.1:5433:5432"
-    volumes:
-      - langfuse_postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-
 volumes:
   datalogue_pgdata:
-  langfuse_postgres_data:
   langfuse_clickhouse_data:
   langfuse_clickhouse_logs:
   langfuse_minio_data:

@@ -776,7 +776,7 @@ class TestResolveTermConflict:
         tracer.start_span.assert_called_once()
         kwargs = tracer.start_span.call_args.kwargs
         assert kwargs["node"] == "term_conflict_resolve"
-        assert kwargs["display_name"] == "术语冲突解析"
+        assert kwargs["display_name"] == "term_conflict_resolve"
 
     def test_no_tracer_no_crash(self):
         """tracer=None 时不崩溃，返回结果不变。"""
@@ -1036,7 +1036,7 @@ class TestResolveMetric:
         tracer.start_span.assert_called_once()
         kwargs = tracer.start_span.call_args.kwargs
         assert kwargs["node"] == "metric_resolve"
-        assert kwargs["display_name"] == "指标解析"
+        assert kwargs["display_name"] == "metric_resolve"
 
     def test_no_tracer_no_crash(self):
         """tracer=None 时不崩溃。"""

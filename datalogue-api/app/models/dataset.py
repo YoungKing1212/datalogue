@@ -306,6 +306,31 @@ class DatasetSubAgentManifest(Base, TimestampMixin):
 
     dataset = relationship("SemanticDataset", backref="subagent_manifests")
 
+    @property
+    def schema_hash(self):
+        payload = self.manifest_json or {}
+        quality = payload.get("quality") or {}
+        auto_fields = payload.get("auto_fields") or {}
+        return quality.get("schema_hash") or auto_fields.get("bound_schema_version") or self.bound_schema_version
+
+    @property
+    def permission_scope(self):
+        payload = self.manifest_json or {}
+        auto_fields = payload.get("auto_fields") or {}
+        return auto_fields.get("permission_scope") or {}
+
+    @property
+    def quality_status(self):
+        payload = self.manifest_json or {}
+        quality = dict(payload.get("quality") or {})
+        lint = quality.get("lint") or []
+        has_errors = any((item or {}).get("severity") == "error" for item in lint)
+        if not quality.get("status"):
+            quality["status"] = "failed" if has_errors else "passed"
+        quality.setdefault("lint", lint)
+        quality.setdefault("schema_hash", self.schema_hash)
+        return quality
+
 
 class AnalysisBlueprint(Base, TimestampMixin):
     __tablename__ = "analysis_blueprint"

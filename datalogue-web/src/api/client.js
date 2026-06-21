@@ -358,6 +358,14 @@ export function publishDatasetSubAgentManifest(datasetId, manualFields = null, c
   });
 }
 
+/** 回滚历史 SubAgent Manifest 为新的 current 版本 */
+export function rollbackDatasetSubAgentManifest(datasetId, manifestVersion, createdBy = null, reason = '') {
+  return post(`/api/dataset/${datasetId}/subagent-manifest/${encodeURIComponent(manifestVersion)}/rollback`, {
+    created_by: createdBy,
+    reason,
+  });
+}
+
 /** 当前数据集 SubAgent Manifest 路由自检 */
 export function routeCheckDatasetSubAgentManifest(datasetId, questions, expected = null) {
   return post(`/api/dataset/${datasetId}/subagent-manifest/route-check`, {

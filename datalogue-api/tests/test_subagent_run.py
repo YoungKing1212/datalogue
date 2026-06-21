@@ -20,6 +20,11 @@ from typing import Any
 
 import pytest
 
+from app import models
+from app.core.security import encrypt_password
+from app.models.datasource import Datasource
+import app.services.dataset_manifest as dataset_manifest_service
+from app.services.dataset_manifest import build_dataset_schema_version
 from app.services.dataset_subagent import DatasetSubAgent
 from app.services.runner import DatasetSubAgentRequest
 from app.services.subagent_planning import CandidateAsset, QueryPlan
@@ -73,6 +78,69 @@ class SequentialFakeLLM:
         return FakeLLMResponse(self.contents.pop(0))
 
 
+@pytest.fixture(autouse=True)
+def _default_runtime_manifest_for_dataset_10(db_session, monkeypatch):
+    """为既有 DatasetSubAgent.run 编排测试准备可执行 current Manifest。"""
+
+    original_build_schema_version = dataset_manifest_service.build_dataset_schema_version
+
+    def fake_build_schema_version(db, dataset_id):
+        if int(dataset_id) == 10:
+            return "schema-v1"
+        return original_build_schema_version(db, dataset_id)
+
+    monkeypatch.setattr(
+        dataset_manifest_service,
+        "build_dataset_schema_version",
+        fake_build_schema_version,
+    )
+    datasource = Datasource(
+        id=10,
+        name="subagent-runtime-test-ds",
+        db_type="sqlite",
+        host="localhost",
+        port=0,
+        database_name=":memory:",
+        username="test",
+        password_enc=encrypt_password("testpass"),
+        status="connected",
+    )
+    db_session.add(datasource)
+    db_session.add(
+        models.SemanticDataset(
+            id=10,
+            name="subagent-runtime-test-dataset",
+            datasource_id=10,
+            status="active",
+        )
+    )
+    db_session.add(
+        models.DatasetSubAgentManifest(
+            dataset_id=10,
+            manifest_version="manifest-v1",
+            bound_schema_version="schema-v1",
+            manifest_json={
+                "auto_fields": {
+                    "dataset_id": 10,
+                    "name": "subagent-runtime-test-dataset",
+                    "manifest_version": "manifest-v1",
+                    "bound_schema_version": "schema-v1",
+                    "permission_scope": {"status": "allowed"},
+                },
+                "manual_fields": {},
+                "quality": {
+                    "status": "passed",
+                    "lint": [],
+                    "schema_hash": "schema-v1",
+                },
+            },
+            is_current=True,
+            review_status="current",
+        )
+    )
+    db_session.commit()
+
+
 def _request() -> DatasetSubAgentRequest:
     return DatasetSubAgentRequest(
         question="查询个人日报",
@@ -88,6 +156,28 @@ def _request() -> DatasetSubAgentRequest:
     )
 
 
+def _request_for_dataset(dataset_id: int, *, manifest_version: str, bound_schema_version: str) -> DatasetSubAgentRequest:
+    return DatasetSubAgentRequest(
+        question="查询个人日报",
+        dataset_id=dataset_id,
+        manifest_version=manifest_version,
+        bound_schema_version=bound_schema_version,
+        thread_id="thread-1",
+        time_context={"today": "2026-06-15"},
+        thread_context={},
+        route_decision={"decision": "selected", "dataset_id": dataset_id},
+        schema_status={
+            "status": "ok",
+            "stale": False,
+            "dataset_id": dataset_id,
+            "manifest_version": manifest_version,
+            "bound_schema_version": bound_schema_version,
+            "latest_schema_version": bound_schema_version,
+        },
+        lead_agent_context={"time_context": {"today": "2026-06-15"}},
+    )
+
+
 async def _collect(agent: DatasetSubAgent, request: DatasetSubAgentRequest, **kwargs: Any):
     return [
         event
@@ -97,6 +187,72 @@ async def _collect(agent: DatasetSubAgent, request: DatasetSubAgentRequest, **kw
             **kwargs,
         )
     ]
+
+
+async def test_dataset_subagent_run_blocks_stale_manifest_before_asset_recall(
+    monkeypatch,
+    db_session,
+    sample_dataset,
+):
+    """SubAgent 直接调用也必须在候选资产召回前执行 Manifest 二次门禁。"""
+
+    manifest_version = "v1"
+    bound_schema_version = build_dataset_schema_version(db_session, sample_dataset.id)
+    db_session.add(
+        models.DatasetSubAgentManifest(
+            dataset_id=sample_dataset.id,
+            manifest_version=manifest_version,
+            bound_schema_version=bound_schema_version,
+            manifest_json={
+                "auto_fields": {
+                    "dataset_id": sample_dataset.id,
+                    "name": sample_dataset.name,
+                    "manifest_version": manifest_version,
+                    "bound_schema_version": bound_schema_version,
+                    "permission_scope": {"status": "allowed"},
+                },
+                "manual_fields": {},
+                "quality": {
+                    "status": "passed",
+                    "lint": [],
+                    "schema_hash": bound_schema_version,
+                },
+            },
+            is_current=True,
+            review_status="current",
+        )
+    )
+    db_session.commit()
+    db_session.add(
+        models.SemanticMetric(
+            dataset_id=sample_dataset.id,
+            name="refund_amount",
+            display_name="退款金额",
+            expr="SUM(o.refund_amount)",
+        )
+    )
+    db_session.commit()
+
+    def fail_recall(*_args, **_kwargs):
+        raise AssertionError("stale manifest must block before candidate asset recall")
+
+    monkeypatch.setattr("app.services.dataset_subagent.recall_candidate_assets", fail_recall)
+
+    events = await _collect(
+        DatasetSubAgent(db=db_session, dataset_id=sample_dataset.id),
+        _request_for_dataset(
+            sample_dataset.id,
+            manifest_version=manifest_version,
+            bound_schema_version=bound_schema_version,
+        ),
+        graph=None,
+    )
+
+    assert len(events) == 1
+    final_state = events[0].payload["final_state"]
+    assert final_state["entry_route"] == "blocked"
+    assert final_state["manifest_guard"]["status"] == "blocked"
+    assert final_state["manifest_guard"]["block_reason"] == "manifest_stale"
 
 
 def _empty_recall_result() -> dict[str, Any]:

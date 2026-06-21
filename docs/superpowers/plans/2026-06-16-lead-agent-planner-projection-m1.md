@@ -30,7 +30,7 @@
 
 6. Verification and Project Memory
    - 运行聚焦后端测试。
-   - 更新 `.codex/项目记忆.md`，记录完成时间、涉及文件、关键改动、验证方式和后续风险。
+   - 更新 `.codex/project-memory.md`，记录完成时间、涉及文件、关键改动、验证方式和后续风险。
 
 ## M1 边界
 

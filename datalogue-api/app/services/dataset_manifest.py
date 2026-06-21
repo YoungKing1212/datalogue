@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
@@ -29,6 +30,7 @@ MANUAL_FIELD_KEYS = (
     "business_domain",
     "sample_questions",
     "routing_negative_examples",
+    "permission_scope",
 )
 LOW_INFORMATION_WORDS = ("等", "相关", "业务")
 TIME_OR_SCOPE_TERMS = (
@@ -61,6 +63,7 @@ def normalize_manual_fields(value: dict[str, Any] | None) -> dict[str, Any]:
         "routing_negative_examples": _clean_text_list(
             raw.get("routing_negative_examples"), max_items=5
         ),
+        "permission_scope": _normalize_permission_scope(raw.get("permission_scope")),
     }
 
 
@@ -270,6 +273,15 @@ def lint_manifest(manual_fields: dict[str, Any], auto_fields: dict[str, Any]) ->
                 "routing_negative_examples 需要维护 3-5 条。",
             )
         )
+    permission_scope = (auto_fields or {}).get("permission_scope") or {}
+    if permission_scope.get("status") != "allowed":
+        issues.append(
+            _issue(
+                "permission_scope_required",
+                "error",
+                "permission_scope 必须显式允许执行后才能发布或调度。",
+            )
+        )
     return issues
 
 
@@ -279,14 +291,25 @@ def get_manifest_detail(db: Session, dataset_id: int) -> dict[str, Any]:
     auto_preview = build_auto_fields(db, dataset_id, manifest_version=DRAFT_VERSION)
     current = _current_manifest(db, dataset_id)
     draft = _draft_manifest(db, dataset_id)
+    manual_fields = _manifest_manual_fields(draft or current)
+    auto_preview = _effective_auto_fields(auto_preview, manual_fields)
     stale = False
     if current and current.bound_schema_version != auto_preview["bound_schema_version"]:
         current.review_status = "needs_review"
         stale = True
         db.commit()
         db.refresh(current)
-    manual_fields = _manifest_manual_fields(draft or current)
     lint = lint_manifest(manual_fields, auto_preview)
+    manifest_guard = evaluate_manifest_runtime_guard(
+        db,
+        dataset_id,
+        route_decision={
+            "decision": "locked",
+            "dataset_id": dataset_id,
+            "manifest_version": current.manifest_version if current else None,
+            "bound_schema_version": current.bound_schema_version if current else None,
+        },
+    )
     return {
         "dataset_id": dataset_id,
         "current_manifest": current,
@@ -296,6 +319,9 @@ def get_manifest_detail(db: Session, dataset_id: int) -> dict[str, Any]:
         "lint": lint,
         "stale": stale or bool(current and current.review_status == "needs_review"),
         "review_status": current.review_status if current else "missing",
+        "latest_schema_version": auto_preview["bound_schema_version"],
+        "manifest_guard": manifest_guard,
+        "versions": _manifest_versions(db, dataset_id),
     }
 
 
@@ -310,6 +336,7 @@ def save_manifest_draft(
 
     manual = normalize_manual_fields(manual_fields)
     auto_fields = build_auto_fields(db, dataset_id, manifest_version=DRAFT_VERSION)
+    auto_fields = _effective_auto_fields(auto_fields, manual)
     manifest = _draft_manifest(db, dataset_id)
     if not manifest:
         manifest = models.DatasetSubAgentManifest(
@@ -343,6 +370,7 @@ def publish_manifest(
     source_manual = normalize_manual_fields(manual_fields or _manifest_manual_fields(_draft_manifest(db, dataset_id)))
     version = _next_manifest_version(db, dataset_id)
     auto_fields = build_auto_fields(db, dataset_id, manifest_version=version)
+    auto_fields = _effective_auto_fields(auto_fields, source_manual)
     issues = lint_manifest(source_manual, auto_fields)
     errors = [issue for issue in issues if issue["severity"] == "error"]
     if errors:
@@ -360,7 +388,7 @@ def publish_manifest(
         dataset_id=dataset_id,
         manifest_version=version,
         bound_schema_version=auto_fields["bound_schema_version"],
-        manifest_json=_manifest_payload(auto_fields, source_manual, quality={"lint": issues}),
+        manifest_json=_manifest_payload(auto_fields, source_manual, quality=_quality_payload(issues, auto_fields)),
         is_current=True,
         review_status="current",
         created_by=created_by,
@@ -431,6 +459,8 @@ def route_check_manifest(
                 "question": question,
                 "top_dataset_id": dataset_id if decision != "miss" else None,
                 "matched_manifest_version": manifest.manifest_version,
+                "review_status": manifest.review_status,
+                "executable": manifest.review_status == "current",
                 "score": round(score, 2),
                 "decision": decision,
                 "reasons": reasons,
@@ -461,6 +491,154 @@ class ManifestValidationError(ValueError):
         self.issues = issues
 
 
+def evaluate_manifest_runtime_guard(
+    db: Session,
+    dataset_id: int | None,
+    *,
+    route_decision: dict[str, Any] | None = None,
+    schema_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """执行前 Manifest 门禁，所有阻断场景均 fail-closed。"""
+
+    decision = (route_decision or {}).get("decision")
+    if dataset_id is None or decision not in {"selected", "locked"}:
+        return _guard_payload(
+            status="blocked",
+            block_reason="route_low_confidence",
+            dataset_id=dataset_id,
+            manifest=None,
+            latest_schema_version=(schema_status or {}).get("latest_schema_version"),
+        )
+
+    manifest = _current_manifest(db, int(dataset_id))
+    latest_schema_version = build_dataset_schema_version(db, int(dataset_id))
+    if not manifest:
+        return _guard_payload(
+            status="blocked",
+            block_reason="manifest_missing",
+            dataset_id=int(dataset_id),
+            manifest=None,
+            latest_schema_version=latest_schema_version,
+        )
+
+    if manifest.bound_schema_version != latest_schema_version:
+        manifest.review_status = "needs_review"
+        db.commit()
+        db.refresh(manifest)
+        return _guard_payload(
+            status="blocked",
+            block_reason="manifest_stale",
+            dataset_id=int(dataset_id),
+            manifest=manifest,
+            latest_schema_version=latest_schema_version,
+        )
+
+    if manifest.review_status != "current":
+        return _guard_payload(
+            status="blocked",
+            block_reason="manifest_needs_review",
+            dataset_id=int(dataset_id),
+            manifest=manifest,
+            latest_schema_version=latest_schema_version,
+        )
+
+    permission_scope = manifest.permission_scope or {}
+    if permission_scope.get("status") != "allowed":
+        return _guard_payload(
+            status="blocked",
+            block_reason="permission_denied",
+            dataset_id=int(dataset_id),
+            manifest=manifest,
+            latest_schema_version=latest_schema_version,
+        )
+
+    quality_status = manifest.quality_status or {}
+    lint = quality_status.get("lint") or []
+    has_errors = any((item or {}).get("severity") == "error" for item in lint)
+    if quality_status.get("status") != "passed" or has_errors:
+        return _guard_payload(
+            status="blocked",
+            block_reason="quality_failed",
+            dataset_id=int(dataset_id),
+            manifest=manifest,
+            latest_schema_version=latest_schema_version,
+        )
+
+    return _guard_payload(
+        status="ok",
+        block_reason=None,
+        dataset_id=int(dataset_id),
+        manifest=manifest,
+        latest_schema_version=latest_schema_version,
+    )
+
+
+def rollback_manifest(
+    db: Session,
+    dataset_id: int,
+    manifest_version: str,
+    *,
+    created_by: str | None = None,
+    reason: str | None = None,
+) -> models.DatasetSubAgentManifest:
+    """把历史 Manifest 快照复制成新的 current 版本。"""
+
+    target = db.get(models.DatasetSubAgentManifest, (dataset_id, manifest_version))
+    if not target:
+        raise ValueError("目标 Manifest 版本不存在")
+    latest_schema_version = build_dataset_schema_version(db, dataset_id)
+    if target.bound_schema_version != latest_schema_version:
+        raise ManifestValidationError(
+            [_issue("rollback_schema_stale", "error", "目标版本绑定 schema 已过期，不能回滚。")]
+        )
+    quality_status = target.quality_status
+    if quality_status.get("status") != "passed" or any(
+        (item or {}).get("severity") == "error" for item in quality_status.get("lint") or []
+    ):
+        raise ManifestValidationError(
+            [_issue("rollback_quality_failed", "error", "目标版本质量状态未通过，不能回滚。")]
+        )
+    permission_scope = target.permission_scope or {}
+    if permission_scope.get("status") != "allowed":
+        raise ManifestValidationError(
+            [_issue("rollback_permission_denied", "error", "目标版本权限范围不可执行，不能回滚。")]
+        )
+
+    version = _next_manifest_version(db, dataset_id)
+    (
+        db.query(models.DatasetSubAgentManifest)
+        .filter(
+            models.DatasetSubAgentManifest.dataset_id == dataset_id,
+            models.DatasetSubAgentManifest.is_current.is_(True),
+        )
+        .update({"is_current": False, "review_status": "archived"}, synchronize_session=False)
+    )
+    payload = jsonable_encoder(target.manifest_json or {})
+    payload["rollback_from"] = {
+        "manifest_version": target.manifest_version,
+        "created_by": created_by,
+        "reason": reason,
+        "rolled_back_at": _utc_now_iso(),
+    }
+    auto_fields = payload.get("auto_fields") or {}
+    auto_fields["manifest_version"] = version
+    auto_fields["version"] = version
+    payload["auto_fields"] = auto_fields
+    manifest = models.DatasetSubAgentManifest(
+        dataset_id=dataset_id,
+        manifest_version=version,
+        bound_schema_version=target.bound_schema_version,
+        manifest_json=payload,
+        is_current=True,
+        review_status="current",
+        created_by=created_by,
+    )
+    db.add(manifest)
+    db.commit()
+    db.refresh(manifest)
+    return manifest
+
+
 def _clean_text_list(value: Any, *, max_items: int) -> list[str]:
     if isinstance(value, str):
         raw_items = re.split(r"[\n；;]+", value)
@@ -482,6 +660,16 @@ def _clean_text_list(value: Any, *, max_items: int) -> list[str]:
     return out
 
 
+def _normalize_permission_scope(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"status": "not_configured"}
+    status = str(value.get("status") or "not_configured").strip() or "not_configured"
+    return {
+        **value,
+        "status": status,
+    }
+
+
 def _issue(code: str, severity: str, message: str) -> dict[str, str]:
     return {"code": code, "severity": severity, "message": message}
 
@@ -501,10 +689,53 @@ def _manifest_payload(
     *,
     quality: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    auto = _effective_auto_fields(auto_fields, manual_fields)
     return {
-        "auto_fields": auto_fields,
+        "auto_fields": auto,
         "manual_fields": normalize_manual_fields(manual_fields),
-        "quality": quality or {"lint": lint_manifest(manual_fields, auto_fields)},
+        "quality": quality or _quality_payload(lint_manifest(manual_fields, auto), auto),
+    }
+
+
+def _effective_auto_fields(auto_fields: dict[str, Any], manual_fields: dict[str, Any]) -> dict[str, Any]:
+    auto = dict(auto_fields or {})
+    manual = normalize_manual_fields(manual_fields)
+    permission_scope = manual.get("permission_scope") or auto.get("permission_scope") or {}
+    auto["permission_scope"] = _normalize_permission_scope(permission_scope)
+    auto["bound_schema_version"] = auto.get("bound_schema_version")
+    auto["schema_hash"] = auto.get("bound_schema_version")
+    return auto
+
+
+def _quality_payload(issues: list[dict[str, str]], auto_fields: dict[str, Any]) -> dict[str, Any]:
+    has_errors = any((issue or {}).get("severity") == "error" for issue in issues or [])
+    return {
+        "status": "failed" if has_errors else "passed",
+        "lint": issues or [],
+        "checked_at": _utc_now_iso(),
+        "schema_hash": (auto_fields or {}).get("bound_schema_version"),
+    }
+
+
+def _guard_payload(
+    *,
+    status: str,
+    block_reason: str | None,
+    dataset_id: int | None,
+    manifest: models.DatasetSubAgentManifest | None,
+    latest_schema_version: str | None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "block_reason": block_reason,
+        "dataset_id": dataset_id,
+        "manifest_version": manifest.manifest_version if manifest else None,
+        "bound_schema_version": manifest.bound_schema_version if manifest else None,
+        "latest_schema_version": latest_schema_version,
+        "schema_hash": manifest.schema_hash if manifest else latest_schema_version,
+        "review_status": manifest.review_status if manifest else None,
+        "permission_scope": manifest.permission_scope if manifest else {},
+        "quality_status": manifest.quality_status if manifest else {},
     }
 
 
@@ -522,6 +753,15 @@ def _current_manifest(db: Session, dataset_id: int) -> models.DatasetSubAgentMan
 
 def _draft_manifest(db: Session, dataset_id: int) -> models.DatasetSubAgentManifest | None:
     return db.get(models.DatasetSubAgentManifest, (dataset_id, DRAFT_VERSION))
+
+
+def _manifest_versions(db: Session, dataset_id: int) -> list[models.DatasetSubAgentManifest]:
+    return (
+        db.query(models.DatasetSubAgentManifest)
+        .filter(models.DatasetSubAgentManifest.dataset_id == dataset_id)
+        .order_by(models.DatasetSubAgentManifest.created_at.desc())
+        .all()
+    )
 
 
 def _manifest_manual_fields(manifest: models.DatasetSubAgentManifest | None) -> dict[str, Any]:
@@ -558,6 +798,7 @@ def _manifest_summary(manifest: models.DatasetSubAgentManifest) -> dict[str, Any
         "manifest_version": manifest.manifest_version,
         "bound_schema_version": manifest.bound_schema_version,
         "review_status": manifest.review_status,
+        "schema_hash": manifest.schema_hash,
         "name": auto_fields.get("name"),
         "description": manual_fields.get("description"),
         "business_domain": manual_fields.get("business_domain") or [],
@@ -566,7 +807,12 @@ def _manifest_summary(manifest: models.DatasetSubAgentManifest) -> dict[str, Any
         "key_metrics": auto_fields.get("key_metrics") or [],
         "key_dimensions": auto_fields.get("key_dimensions") or [],
         "permission_scope": auto_fields.get("permission_scope") or {},
+        "quality_status": manifest.quality_status,
     }
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _normalize_text(text: str) -> str:

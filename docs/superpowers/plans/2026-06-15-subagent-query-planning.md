@@ -2353,7 +2353,7 @@ If `agent-panel.jsx` is not changed because generic rendering already works, omi
 ## Task 10: End-to-End Validation and Project Memory
 
 **Files:**
-- Modify: `.codex/项目记忆.md`
+- Modify: `.codex/project-memory.md`
 
 - [ ] **Step 1: Run full backend planning regression**
 
@@ -2419,7 +2419,7 @@ Run:
 date '+%Y-%m-%d %H:%M'
 ```
 
-Use the command output as the markdown heading timestamp, then append this record body under that heading in `.codex/项目记忆.md` in chronological order:
+Use the command output as the markdown heading timestamp, then append this record body under that heading in `.codex/project-memory.md` in chronological order:
 
 ```markdown
 - 功能名称：SubAgent 查询规划第一版
@@ -2449,7 +2449,7 @@ Use the command output as the markdown heading timestamp, then append this recor
 - [ ] **Step 5: Commit Task 10**
 
 ```bash
-git add .codex/项目记忆.md
+git add .codex/project-memory.md
 git commit -m "docs: record subagent query planning"
 ```
 

@@ -35,6 +35,7 @@ from app.services.analysis_blueprint import (
     blueprint_params_from_time_context,
     execute_analysis_blueprint,
 )
+from app.services.dataset_manifest import evaluate_manifest_runtime_guard
 from app.services.observability.tracer import get_observability_tracer
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
 from app.services.subagent_planning import (
@@ -93,6 +94,23 @@ def _dsa_query_plan_span_output(query_plan: QueryPlan) -> dict[str, Any]:
         "decision_factors": query_plan.decision_factors,
         "planner_warnings": query_plan.planner_warnings,
         "governance_suggestions": query_plan.governance_suggestions,
+    }
+
+
+def _dsa_manifest_guard_summary(manifest_guard: dict[str, Any] | None) -> dict[str, Any]:
+    guard = manifest_guard or {}
+    permission_scope = guard.get("permission_scope") or {}
+    quality_status = guard.get("quality_status") or {}
+    return {
+        "manifest_guard_status": guard.get("status"),
+        "block_reason": guard.get("block_reason"),
+        "manifest_version": guard.get("manifest_version"),
+        "bound_schema_version": guard.get("bound_schema_version"),
+        "latest_schema_version": guard.get("latest_schema_version"),
+        "schema_hash": guard.get("schema_hash"),
+        "review_status": guard.get("review_status"),
+        "permission_scope_status": permission_scope.get("status"),
+        "quality_status": quality_status.get("status"),
     }
 
 
@@ -1101,6 +1119,28 @@ class DatasetSubAgent:
         routing = _dsa_build_run_routing(state, request)
         multiturn_context = state.get("multiturn_context") or {}
         tracer = get_observability_tracer()
+        manifest_guard = evaluate_manifest_runtime_guard(
+            self.db,
+            request.dataset_id,
+            route_decision=request.route_decision,
+            schema_status=request.schema_status,
+        )
+        state["manifest_guard"] = manifest_guard
+        if manifest_guard.get("status") != "ok":
+            final_state = {
+                **state,
+                "answer": "当前 Manifest 未通过执行前校验，本轮已阻断执行。",
+                "error": manifest_guard.get("block_reason") or "manifest_blocked",
+                "entry_route": "blocked",
+                "entry_intent": "manifest_guard",
+                "manifest_guard": manifest_guard,
+                "route_decision": request.route_decision,
+                "schema_status": request.schema_status,
+                "should_retry": False,
+            }
+            yield SubAgentEvent(event_type="result", payload={"final_state": final_state})
+            return
+        manifest_guard_summary = _dsa_manifest_guard_summary(manifest_guard)
 
         candidate_span_started_at = time.monotonic()
         try:
@@ -1113,6 +1153,7 @@ class DatasetSubAgent:
                     "question": question,
                     "manifest_version": request.manifest_version,
                     "bound_schema_version": request.bound_schema_version,
+                    **manifest_guard_summary,
                 },
                 trace_tags=["subagent"],
             )
@@ -1175,6 +1216,7 @@ class DatasetSubAgent:
                         "entry_intent": routing.get("entry_intent"),
                         "blueprint_id": routing.get("blueprint_id"),
                     },
+                    **manifest_guard_summary,
                     "candidate_asset_count": len(public_candidate_assets.get("assets") or []),
                     "candidate_asset_summary": public_candidate_assets.get("summary") or {},
                 },

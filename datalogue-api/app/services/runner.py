@@ -27,6 +27,21 @@ from app.core.config import get_settings
 from app.services.observability.tracer import ObservabilityTraceContext, get_observability_tracer
 
 
+def _manifest_guard_trace_fields(request: "DatasetSubAgentRequest") -> dict[str, Any]:
+    guard = (request.lead_agent_context or {}).get("manifest_guard") or {}
+    permission_scope = guard.get("permission_scope") or {}
+    quality_status = guard.get("quality_status") or {}
+    return {
+        "latest_schema_version": guard.get("latest_schema_version"),
+        "schema_hash": guard.get("schema_hash"),
+        "review_status": guard.get("review_status"),
+        "permission_scope_status": permission_scope.get("status"),
+        "quality_status": quality_status.get("status"),
+        "manifest_guard_status": guard.get("status"),
+        "block_reason": guard.get("block_reason"),
+    }
+
+
 @dataclass
 class DatasetSubAgentRequest:
     """SubAgent 调用协议。trace 字段为将来跨进程部署预留，进程内可不填。"""
@@ -66,6 +81,7 @@ class InProcessDatasetSubAgentRunner:
     ) -> AsyncGenerator[dict[str, Any], None]:
         tracer = get_observability_tracer()
         span_key = f"subagent.{request.dataset_id}"
+        manifest_guard_trace = _manifest_guard_trace_fields(request)
         tracer.start_span(
             trace_context,
             node=span_key,
@@ -75,6 +91,7 @@ class InProcessDatasetSubAgentRunner:
                 "dataset_id": request.dataset_id,
                 "manifest_version": request.manifest_version,
                 "bound_schema_version": request.bound_schema_version,
+                **manifest_guard_trace,
                 "prior_capsule_status": request.prior_capsule_status,
                 "prior_capsule_loaded": request.prior_capsule is not None,
                 "trace_id": request.trace_id,
@@ -111,6 +128,7 @@ class InProcessDatasetSubAgentRunner:
                     "dataset_id": request.dataset_id,
                     "manifest_version": request.manifest_version,
                     "bound_schema_version": request.bound_schema_version,
+                    **manifest_guard_trace,
                     "status": "error" if error else "success",
                 },
                 error=error,

@@ -320,6 +320,7 @@ class ManifestManualFields(BaseModel):
     business_domain: List[str] = []
     sample_questions: List[str] = []
     routing_negative_examples: List[str] = []
+    permission_scope: Dict[str, Any] = {}
 
 
 class ManifestAutoFields(BaseModel):
@@ -345,6 +346,9 @@ class DatasetSubAgentManifestOut(BaseModel):
     manifest_json: Dict[str, Any]
     is_current: bool
     review_status: str
+    schema_hash: Optional[str] = None
+    permission_scope: Dict[str, Any] = {}
+    quality_status: Dict[str, Any] = {}
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -361,6 +365,9 @@ class DatasetSubAgentManifestDetailOut(BaseModel):
     lint: List[ManifestLintIssue] = []
     stale: bool = False
     review_status: str = "missing"
+    latest_schema_version: Optional[str] = None
+    manifest_guard: Dict[str, Any] = {}
+    versions: List[DatasetSubAgentManifestOut] = []
 
 
 class ManifestSavePayload(BaseModel):
@@ -371,6 +378,11 @@ class ManifestSavePayload(BaseModel):
 class ManifestPublishPayload(BaseModel):
     manual_fields: Optional[ManifestManualFields] = None
     created_by: Optional[str] = None
+
+
+class ManifestRollbackPayload(BaseModel):
+    created_by: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class ManifestRouteCheckRequest(BaseModel):
@@ -384,6 +396,8 @@ class ManifestRouteCheckResult(BaseModel):
     matched_manifest_version: Optional[str] = None
     score: float
     decision: Literal["hit", "miss", "ambiguous"]
+    review_status: Optional[str] = None
+    executable: bool = False
     reasons: List[str] = []
     suggestions: List[str] = []
 

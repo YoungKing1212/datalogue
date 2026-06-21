@@ -8,17 +8,17 @@
 
 禁止默认全文读取：
 
-- `.codex/项目记忆.md`
+- `.codex/project-memory.md`
 - `docs/superpowers/` 下的长计划和规格文档
 - 大型源码文件或大型测试文件
 
 需要历史信息时，用关键词检索：
 
 ```bash
-rg -n "关键词|文件名" .codex/项目记忆.md
+rg -n "关键词|文件名" .codex/project-memory.md
 ```
 
-完成任务后仍需按 `AGENTS.md` 追加 `.codex/项目记忆.md`。
+完成任务后仍需按 `AGENTS.md` 追加 `.codex/project-memory.md`。
 
 ## Skill routing
 
