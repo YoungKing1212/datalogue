@@ -18,6 +18,7 @@
 - 不主动回滚用户或其他工具已有改动；脏工作区只处理当前任务相关文件。
 - Datalogue 复杂问题优先做真实链路验证：页面/前端回放、Langfuse trace、后端日志、prompt/token、final payload、历史回放交叉取证。
 - Playwright、浏览器或 E2E 截图放 `/private/tmp` 或系统临时目录，不写入仓库。
+- 新增数据库表时，Alembic 迁移必须同步添加中文表注释，并为表内每个字段添加中文字段注释；后续新增字段也必须添加中文字段注释；状态、类型、角色等字典字段要写清 `字典：code=中文含义`。
 
 ## 历史压缩记录
 
@@ -139,3 +140,24 @@
 - 关键改动：将项目记忆文件名改为英文 `.codex/project-memory.md`，内容保持中文；把旧 `.codex/项目记忆.md` 的 1100 多行完成记录压缩为按日期和主题组织的可检索摘要；更新 Agent/Claude/上下文入口文档中的项目记忆路径；删除旧中文文件。
 - 验证方式：使用 `rg` 检查旧文件名引用；读取新文件和入口文档；执行 `git diff --check`。
 - 残留风险：压缩版保留任务级线索和关键判断，不再逐字保存所有历史记录；如需旧版精确措辞，需要从 Git 历史中恢复。
+
+### 2026-06-22 11:35 · 数据库字典字段注释更新
+
+- 涉及文件：`datalogue-api/alembic/versions/l7m8n9o0p1q2_add_dictionary_column_comments.py`、`datalogue-api/alembic/versions/m8n9o0p1q2r3_add_late_table_comments.py`、`datalogue-api/alembic/versions/n9o0p1q2r3s4_complete_existing_comments.py`、`datalogue-api/tests/test_dictionary_column_comments.py`、`.codex/project-memory.md`
+- 关键改动：新增 Alembic 迁移，为数据源状态、消息角色、字段语义角色、审核状态、术语类型、蓝图实现类型、入口路由、Manifest 审核状态等字典字段追加统一的 `字典：code=中文含义` 注释；补充 `conversation_state`、`dataset_subagent_manifest`、`query_artifact` 三个后续新增表的表级中文注释；检查当前 PostgreSQL `public` schema 后，继续补齐 `alembic_version`、LangGraph checkpoint 表、`conversation_state`、`dataset_subagent_manifest`、`query_artifact`、`source_table`、`source_column` 的缺失表/字段注释；迁移会检查表和字段存在性，兼容本地库结构差异。
+- 验证方式：执行 `python3 -m py_compile`；执行 `cd datalogue-api && pytest tests/test_dictionary_column_comments.py -q`；执行 `cd datalogue-api && alembic upgrade head`；通过 PostgreSQL `col_description` 抽查字典字段注释已写入真实数据库；通过 `obj_description` 抽查表注释已写入真实数据库；最后用缺失统计 SQL 确认 `public` schema 表注释缺失数为 0、字段注释缺失数为 0，当前 Alembic 版本为 `n9o0p1q2r3s4 (head)`。
+- 残留风险：字典值来自当前代码、前端选项和既有注释中的稳定取值；未来新增状态码、新表或新增字段时必须同步维护中文注释迁移。
+
+### 2026-06-22 11:45 · 前端品牌 Logo 与浏览器标题图标替换
+
+- 涉及文件：`datalogue-web/public/datalogue-logo.png`、`datalogue-web/public/datalogue-favicon.png`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/styles.css`、`datalogue-web/index.html`、`.codex/project-memory.md`
+- 关键改动：基于新品牌图裁剪生成完整页面 logo 和方形 D 标识 favicon；侧边栏品牌区从 CSS 绘制标识改为图片资产；浏览器标题图标从旧 `favicon.svg` 切换为新的 PNG favicon；将侧栏 logo 显示宽度从 152px 逐步收敛到 112px，并减少品牌区底部留白。
+- 验证方式：执行 `cd datalogue-web && npm run lint`；执行 `cd datalogue-web && npm run build`；启动 `npm run dev -- --host 127.0.0.1` 后用 in-app Browser 检查 `/` 桌面视口和 `390x844` 移动视口，确认侧栏 logo 加载完成、favicon href 指向 `/datalogue-favicon.png`、侧栏导航到 `/chat` 后 logo 仍可见且控制台无 warn/error；优化后复查桌面视口，logo 实际渲染为 112x49，品牌区高度约 63px。
+- 残留风险：窄视口仍沿用现有固定侧栏布局，本次只验证 logo 不丢失、不溢出；未调整整体移动端布局。
+
+### 2026-06-22 12:06 · 数据集页面数据表计数显示已选表
+
+- 涉及文件：`datalogue-web/src/components/datasets.jsx`、`datalogue-web/tests/unit/components/datasets-selected-table-count.test.jsx`、`.codex/project-memory.md`
+- 关键改动：将数据集语义能力工作区顶部“数据表”能力卡计数从 `allSourceTables.length` 改为 `selectedTableIds.size`，避免显示当前连接 schema 的全量表数量；新增组件回归测试，模拟 schema 3 张表但数据集只选 1 张表，固定顶部能力卡显示 1。
+- 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/components/datasets-selected-table-count.test.jsx` 确认测试红灯，失败输出显示“数据表”按钮 count 为 3；修复后再次执行该命令通过；执行 `cd datalogue-web && npm test`，3 个测试文件 14 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过。
+- 残留风险：本次只修正顶部能力卡计数；左侧“已选择/未选择”分组仍按当前搜索过滤结果计数，保持原有交互语义。

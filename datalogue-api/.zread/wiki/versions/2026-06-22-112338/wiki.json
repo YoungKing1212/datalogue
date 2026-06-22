@@ -1,0 +1,231 @@
+{
+  "id": "2026-06-22-112338",
+  "generated_at": "2026-06-22T03:23:38.975701Z",
+  "language": "zh",
+  "pages": [
+    {
+      "slug": "1-gai-shu-ai-yuan-sheng-zhi-neng-wen-shu-ping-tai",
+      "title": "概述：AI 原生智能问数平台",
+      "file": "1-gai-shu-ai-yuan-sheng-zhi-neng-wen-shu-ping-tai.md",
+      "section": "快速入门",
+      "level": "Beginner"
+    },
+    {
+      "slug": "2-kuai-su-kai-shi-huan-jing-da-jian-yu-shou-ci-yun-xing",
+      "title": "快速开始：环境搭建与首次运行",
+      "file": "2-kuai-su-kai-shi-huan-jing-da-jian-yu-shou-ci-yun-xing.md",
+      "section": "快速入门",
+      "level": "Beginner"
+    },
+    {
+      "slug": "3-he-xin-gai-nian-shu-ju-ji-zhi-biao-wei-du-yu-yu-yi-ceng-zhi-li",
+      "title": "核心概念：数据集、指标、维度与语义层治理",
+      "file": "3-he-xin-gai-nian-shu-ju-ji-zhi-biao-wei-du-yu-yu-yi-ceng-zhi-li.md",
+      "section": "快速入门",
+      "level": "Beginner"
+    },
+    {
+      "slug": "4-api-lu-you-zong-lan-shu-ju-yuan-shu-ju-ji-dui-hua-yu-wen-shu-duan-dian",
+      "title": "API 路由总览：数据源、数据集、对话与问数端点",
+      "file": "4-api-lu-you-zong-lan-shu-ju-yuan-shu-ju-ji-dui-hua-yu-wen-shu-duan-dian.md",
+      "section": "快速入门",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "5-nl2dsl2sql-chu-li-guan-dao-cong-zi-ran-yu-yan-dao-jie-gou-hua-cha-xun-de-duan-dao-duan-lian-lu",
+      "title": "NL2DSL2SQL 处理管道：从自然语言到结构化查询的端到端链路",
+      "file": "5-nl2dsl2sql-chu-li-guan-dao-cong-zi-ran-yu-yan-dao-jie-gou-hua-cha-xun-de-duan-dao-duan-lian-lu.md",
+      "section": "核心架构深入",
+      "level": "Advanced"
+    },
+    {
+      "slug": "6-agentstate-zhuang-tai-ding-yi-langgraph-gong-zuo-liu-quan-ju-chuan-di-de-shu-ju-qi-yue",
+      "title": "AgentState 状态定义：LangGraph 工作流全局传递的数据契约",
+      "file": "6-agentstate-zhuang-tai-ding-yi-langgraph-gong-zuo-liu-quan-ju-chuan-di-de-shu-ju-qi-yue.md",
+      "section": "核心架构深入",
+      "level": "Advanced"
+    },
+    {
+      "slug": "7-langgraph-gong-zuo-liu-zhuang-pei-jie-dian-zhu-ce-tiao-jian-lu-you-yu-zhong-shi-luo-ji",
+      "title": "LangGraph 工作流装配：节点注册、条件路由与重试逻辑",
+      "file": "7-langgraph-gong-zuo-liu-zhuang-pei-jie-dian-zhu-ce-tiao-jian-lu-you-yu-zhong-shi-luo-ji.md",
+      "section": "核心架构深入",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "8-dsl-zhong-jian-biao-shi-v2-zi-chan-yin-yong-schema-she-ji-yu-gui-fan-hua",
+      "title": "DSL 中间表示：v2 资产引用 Schema 设计与规范化",
+      "file": "8-dsl-zhong-jian-biao-shi-v2-zi-chan-yin-yong-schema-she-ji-yu-gui-fan-hua.md",
+      "section": "核心架构深入",
+      "level": "Advanced"
+    },
+    {
+      "slug": "9-leadagent-gong-ju-bian-pai-ji-neng-xuan-ze-gong-ju-gui-hua-yu-lu-you-jue-ce",
+      "title": "LeadAgent 工具编排：技能选择、工具规划与路由决策",
+      "file": "9-leadagent-gong-ju-bian-pai-ji-neng-xuan-ze-gong-ju-gui-hua-yu-lu-you-jue-ce.md",
+      "section": "核心架构深入",
+      "group": "控制面（Control Plane）",
+      "level": "Advanced"
+    },
+    {
+      "slug": "10-ru-kou-lu-you-yu-yi-tu-fen-lei-cong-yong-hu-wen-ti-dao-zhi-xing-lu-jing-de-ci-xing-jue-ce",
+      "title": "入口路由与意图分类：从用户问题到执行路径的一次性决策",
+      "file": "10-ru-kou-lu-you-yu-yi-tu-fen-lei-cong-yong-hu-wen-ti-dao-zhi-xing-lu-jing-de-ci-xing-jue-ce.md",
+      "section": "核心架构深入",
+      "group": "控制面（Control Plane）",
+      "level": "Advanced"
+    },
+    {
+      "slug": "11-subagent-diao-du-xie-yi-jin-cheng-nei-yu-yuan-cheng-runner-de-shuang-mo-zhi-xing",
+      "title": "SubAgent 调度协议：进程内与远程 Runner 的双模执行",
+      "file": "11-subagent-diao-du-xie-yi-jin-cheng-nei-yu-yuan-cheng-runner-de-shuang-mo-zhi-xing.md",
+      "section": "核心架构深入",
+      "group": "控制面（Control Plane）",
+      "level": "Advanced"
+    },
+    {
+      "slug": "12-schema-zhao-hui-yu-shu-ju-ji-wen-shu-shang-xia-wen-zu-zhuang",
+      "title": "Schema 召回与数据集问数上下文组装",
+      "file": "12-schema-zhao-hui-yu-shu-ju-ji-wen-shu-shang-xia-wen-zu-zhuang.md",
+      "section": "核心架构深入",
+      "group": "数据面（Data Plane）",
+      "level": "Advanced"
+    },
+    {
+      "slug": "13-dsl-sheng-cheng-xiao-yan-yu-sql-bian-yi-de-zhu-jie-dian-shi-xian",
+      "title": "DSL 生成、校验与 SQL 编译的逐节点实现",
+      "file": "13-dsl-sheng-cheng-xiao-yan-yu-sql-bian-yi-de-zhu-jie-dian-shi-xian.md",
+      "section": "核心架构深入",
+      "group": "数据面（Data Plane）",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "14-sql-zhi-xing-shou-wei-jing-tai-an-quan-xiao-yan-fang-yan-gua-pei-yu-zi-dong-xiu-fu-shen-ji",
+      "title": "SQL 执行守卫：静态安全校验、方言适配与自动修复审计",
+      "file": "14-sql-zhi-xing-shou-wei-jing-tai-an-quan-xiao-yan-fang-yan-gua-pei-yu-zi-dong-xiu-fu-shen-ji.md",
+      "section": "核心架构深入",
+      "group": "数据面（Data Plane）",
+      "level": "Advanced"
+    },
+    {
+      "slug": "15-bao-gao-sheng-cheng-yu-hui-da-jie-shi-cong-cha-xun-jie-guo-dao-zui-zhong-zi-ran-yu-yan-shu-chu",
+      "title": "报告生成与回答解释：从查询结果到最终自然语言输出",
+      "file": "15-bao-gao-sheng-cheng-yu-hui-da-jie-shi-cong-cha-xun-jie-guo-dao-zui-zhong-zi-ran-yu-yan-shu-chu.md",
+      "section": "核心架构深入",
+      "group": "数据面（Data Plane）",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "16-hou-xuan-zi-chan-zhao-hui-duo-lei-xing-yu-yi-zi-chan-de-tong-jian-suo-yu-zhi-xin-du-pai-xu",
+      "title": "候选资产召回：多类型语义资产的统一检索与置信度排序",
+      "file": "16-hou-xuan-zi-chan-zhao-hui-duo-lei-xing-yu-yi-zi-chan-de-tong-jian-suo-yu-zhi-xin-du-pai-xu.md",
+      "section": "SubAgent 查询规划系统",
+      "level": "Advanced"
+    },
+    {
+      "slug": "17-cha-xun-gui-hua-qi-planner-jue-ce-detail-loop-yu-jiang-ji-ce-lue",
+      "title": "查询规划器：Planner 决策、Detail Loop 与降级策略",
+      "file": "17-cha-xun-gui-hua-qi-planner-jue-ce-detail-loop-yu-jiang-ji-ce-lue.md",
+      "section": "SubAgent 查询规划系统",
+      "level": "Advanced"
+    },
+    {
+      "slug": "18-datasetsubagent-men-mian-leadagent-yu-yu-yi-ceng-zhi-jian-de-ge-chi-bian-jie",
+      "title": "DatasetSubAgent 门面：LeadAgent 与语义层之间的隔离边界",
+      "file": "18-datasetsubagent-men-mian-leadagent-yu-yu-yi-ceng-zhi-jian-de-ge-chi-bian-jie.md",
+      "section": "SubAgent 查询规划系统",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "19-duo-shu-ju-ji-fan-out-bian-pai-bing-fa-diao-yong-yu-jie-guo-ju-he",
+      "title": "多数据集 Fan-Out 编排：并发调用与结果聚合",
+      "file": "19-duo-shu-ju-ji-fan-out-bian-pai-bing-fa-diao-yong-yu-jie-guo-ju-he.md",
+      "section": "SubAgent 查询规划系统",
+      "level": "Advanced"
+    },
+    {
+      "slug": "20-duo-lun-shang-xia-wen-gou-jian-qi-zhui-wen-shi-bie-shi-jian-zeng-liang-jie-xi-yu-xiao-nang-he-bing",
+      "title": "多轮上下文构建器：追问识别、时间增量解析与胶囊合并",
+      "file": "20-duo-lun-shang-xia-wen-gou-jian-qi-zhui-wen-shi-bie-shi-jian-zeng-liang-jie-xi-yu-xiao-nang-he-bing.md",
+      "section": "多轮对话与状态管理",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "21-querytaskcapsule-yu-queryartifact-kua-lun-cha-xun-zhuang-tai-de-chi-jiu-hua-xie-yi",
+      "title": "QueryTaskCapsule 与 QueryArtifact：跨轮查询状态的持久化协议",
+      "file": "21-querytaskcapsule-yu-queryartifact-kua-lun-cha-xun-zhuang-tai-de-chi-jiu-hua-xie-yi.md",
+      "section": "多轮对话与状态管理",
+      "level": "Advanced"
+    },
+    {
+      "slug": "22-conversationstore-hui-hua-suo-xiao-xi-ya-suo-yu-xian-cheng-zhuang-tai-guan-li",
+      "title": "ConversationStore：会话锁、消息压缩与线程状态管理",
+      "file": "22-conversationstore-hui-hua-suo-xiao-xi-ya-suo-yu-xian-cheng-zhuang-tai-guan-li.md",
+      "section": "多轮对话与状态管理",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "23-xiao-xi-wang-guan-yong-hu-shu-ru-shi-jian-fen-lei-yu-zao-tui-lu-you",
+      "title": "消息网关：用户输入事件分类与早退路由",
+      "file": "23-xiao-xi-wang-guan-yong-hu-shu-ru-shi-jian-fen-lei-yu-zao-tui-lu-you.md",
+      "section": "多轮对话与状态管理",
+      "level": "Advanced"
+    },
+    {
+      "slug": "24-langfuse-zhui-zong-ji-cheng-trace-span-generation-yu-prompt-guan-li",
+      "title": "Langfuse 追踪集成：Trace、Span、Generation 与 Prompt 管理",
+      "file": "24-langfuse-zhui-zong-ji-cheng-trace-span-generation-yu-prompt-guan-li.md",
+      "section": "可观测性与 LLM 基础设施",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "25-llm-duo-mo-xing-pei-zhi-jiao-se-bang-ding-litellm-gua-pei-yu-jiang-ji-ce-lue",
+      "title": "LLM 多模型配置：角色绑定、LiteLLM 适配与降级策略",
+      "file": "25-llm-duo-mo-xing-pei-zhi-jiao-se-bang-ding-litellm-gua-pei-yu-jiang-ji-ce-lue.md",
+      "section": "可观测性与 LLM 基础设施",
+      "level": "Advanced"
+    },
+    {
+      "slug": "26-prompt-xi-tong-ge-jie-dian-de-ti-shi-ci-mo-ban-yu-langfuse-prompt-guan-li",
+      "title": "Prompt 系统：各节点的提示词模板与 Langfuse Prompt 管理",
+      "file": "26-prompt-xi-tong-ge-jie-dian-de-ti-shi-ci-mo-ban-yu-langfuse-prompt-guan-li.md",
+      "section": "可观测性与 LLM 基础设施",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "27-duo-shu-ju-yuan-lian-jie-yin-qing-fang-yan-gua-pei-schema-tan-cha-yu-neng-li-zhu-ce",
+      "title": "多数据源连接引擎：方言适配、Schema 探查与能力注册",
+      "file": "27-duo-shu-ju-yuan-lian-jie-yin-qing-fang-yan-gua-pei-schema-tan-cha-yu-neng-li-zhu-ce.md",
+      "section": "数据源与部署运维",
+      "level": "Advanced"
+    },
+    {
+      "slug": "28-shu-ju-ku-qian-yi-guan-li-alembic-ban-ben-hua-yu-mo-xing-bian-geng-liu-cheng",
+      "title": "数据库迁移管理：Alembic 版本化与模型变更流程",
+      "file": "28-shu-ju-ku-qian-yi-guan-li-alembic-ban-ben-hua-yu-mo-xing-bian-geng-liu-cheng.md",
+      "section": "数据源与部署运维",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "29-docker-compose-ben-di-kai-fa-huan-jing-postgresql-langfuse-quan-jia-tong",
+      "title": "Docker Compose 本地开发环境：PostgreSQL + Langfuse 全家桶",
+      "file": "29-docker-compose-ben-di-kai-fa-huan-jing-postgresql-langfuse-quan-jia-tong.md",
+      "section": "数据源与部署运维",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "30-ce-shi-ti-xi-pytest-fixture-sqlite-ge-chi-yu-hui-hua-ji-hui-gun",
+      "title": "测试体系：pytest Fixture、SQLite 隔离与会话级回滚",
+      "file": "30-ce-shi-ti-xi-pytest-fixture-sqlite-ge-chi-yu-hui-hua-ji-hui-gun.md",
+      "section": "数据源与部署运维",
+      "level": "Beginner"
+    },
+    {
+      "slug": "31-dai-ma-gui-fan-yu-shen-cha-qing-dan-black-ruff-mypy-zhi-liang-bao-zhang",
+      "title": "代码规范与审查清单：Black、Ruff、mypy 质量保障",
+      "file": "31-dai-ma-gui-fan-yu-shen-cha-qing-dan-black-ruff-mypy-zhi-liang-bao-zhang.md",
+      "section": "数据源与部署运维",
+      "level": "Beginner"
+    }
+  ]
+}

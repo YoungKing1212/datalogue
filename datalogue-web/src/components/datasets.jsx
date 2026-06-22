@@ -1339,7 +1339,7 @@ function DatasetsScreen() {
   const activeDs = datasets.find(d => d.id === activeDsId) || datasets[0];
   const currentDsId = activeDsId || activeDs?.id;
   const primaryCapabilityTabs = [
-    { id: 'tables', label: '数据表', count: allSourceTables.length, icon: 'table', stage: '资产', desc: '同步表结构并选择进入语义层的物理表。' },
+    { id: 'tables', label: '数据表', count: selectedTableIds.size, icon: 'table', stage: '资产', desc: '同步表结构并选择进入语义层的物理表。' },
     { id: 'fields', label: '字段标注', count: selectedColumns.length, icon: 'string', stage: '标注', desc: '审核字段语义、描述和时间/枚举等角色。' },
     { id: 'metrics', label: '指标', count: metrics.length, icon: 'formula', stage: '口径', desc: '维护可复用指标口径和聚合规则。' },
     { id: 'dimensions', label: '维度', count: dimensions.length, icon: 'layers', stage: '口径', desc: '维护分析维度、枚举和值域解释。' },

@@ -56,10 +56,7 @@ function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark" />
-        <div>
-          <div className="brand-name">数语 <span className="brand-sub">Datalogue</span></div>
-        </div>
+        <img className="brand-logo" src="/datalogue-logo.png" alt="数语 Datalogue" />
       </div>
 
       <button className="new-thread" onClick={() => go('chat')}>

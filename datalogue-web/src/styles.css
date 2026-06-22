@@ -64,29 +64,14 @@ input:focus, textarea:focus, button:focus { outline: none; }
 .sidebar .brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 6px 8px 18px;
-  letter-spacing: -0.01em;
+  padding: 4px 8px 10px;
 }
-.sidebar .brand-mark {
-  width: 22px; height: 22px;
-  border-radius: 6px;
-  background:
-    radial-gradient(circle at 30% 30%, oklch(0.78 0.12 220) 0%, oklch(0.55 0.17 245) 60%, oklch(0.42 0.17 250) 100%);
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 4px 12px oklch(0.55 0.17 245 / 0.3);
-  position: relative;
+.sidebar .brand-logo {
+  display: block;
+  width: 112px;
+  max-width: 100%;
+  height: auto;
 }
-.sidebar .brand-mark::after {
-  content: "";
-  position: absolute; inset: 4px;
-  border-radius: 3px;
-  border: 1.5px solid rgba(255,255,255,0.7);
-  border-top-color: transparent;
-  border-right-color: transparent;
-  transform: rotate(-15deg);
-}
-.sidebar .brand-name { font-weight: 600; font-size: 14px; }
-.sidebar .brand-sub { font-size: 11px; color: var(--text-3); margin-left: 2px; font-family: var(--font-mono); letter-spacing: 0.04em; }
 
 .sidebar .new-thread {
   display: flex; align-items: center; gap: 8px;
