@@ -14,7 +14,7 @@
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DatasetCreate(BaseModel):
@@ -50,6 +50,26 @@ class DatasetOut(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SqlPreviewPayload(BaseModel):
+    """Hermes 直连问数的只读 SQL 预览请求。"""
+
+    question: Optional[str] = None
+    sql: str = Field(min_length=1)
+    limit: Optional[int] = Field(default=None, ge=1)
+
+
+class SqlPreviewOut(BaseModel):
+    """只读 SQL 预览响应，Guard 和执行错误都保持结构化。"""
+
+    dataset_id: int
+    sql: str
+    columns: List[str] = []
+    rows: List[Dict[str, Any]] = []
+    row_count: int = 0
+    sql_guard: Dict[str, Any] = {}
+    error: Optional[str] = None
 
 
 class MetricCreate(BaseModel):

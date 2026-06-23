@@ -40,6 +40,7 @@ from app.services.dataset_manifest import (
     route_check_manifest,
     save_manifest_draft,
 )
+from app.services.sql_preview import preview_dataset_sql
 from app.utils.query_constraints import normalize_query_constraints
 
 router = APIRouter()
@@ -115,6 +116,29 @@ def get_dataset(ds_id: int, db: Session = Depends(get_db)):
         logger.warning(f"数据集不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据集不存在")
     return ds
+
+
+@router.post("/{ds_id}/sql/preview", response_model=schemas.SqlPreviewOut)
+def preview_sql_for_dataset(
+    ds_id: int,
+    payload: schemas.SqlPreviewPayload,
+    db: Session = Depends(get_db),
+):
+    """执行当前数据集范围内的只读 SQL 预览，不进入智能问数主链路。"""
+
+    logger.info("SQL preview 请求: ds_id=%s question=%s", ds_id, payload.question)
+    ds = db.get(models.SemanticDataset, ds_id)
+    if not ds:
+        logger.warning("SQL preview 数据集不存在: ds_id=%s", ds_id)
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    # 只把已确认的数据集、SQL 和本次 limit 交给轻量服务，避免写入会话、trace 或触发 LangGraph。
+    return preview_dataset_sql(
+        db,
+        dataset=ds,
+        sql=payload.sql,
+        question=payload.question,
+        limit=payload.limit,
+    )
 
 
 @router.put("/{ds_id}", response_model=schemas.DatasetOut)

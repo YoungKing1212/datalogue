@@ -15,6 +15,9 @@
 语义数据集管理 API 测试
 """
 
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import StaticPool
+
 from app import models
 
 
@@ -100,6 +103,148 @@ class TestDatasetAPI:
         )
         db_session.commit()
         return amount_col, region_col
+
+    def _patch_sql_preview_engine(self, monkeypatch):
+        """构造只给 SQL preview 使用的业务库 Engine，避免测试直连真实外部数据源。"""
+
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE orders_detail ("
+                    "id INTEGER PRIMARY KEY, region TEXT, amount NUMERIC, created_at TEXT)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO orders_detail (region, amount, created_at) VALUES "
+                    "('华东', 120.5, '2026-06-01'),"
+                    "('华南', 80, '2026-06-02')"
+                )
+            )
+        monkeypatch.setattr(
+            "app.services.sql_preview.create_engine_for_datasource",
+            lambda _datasource: engine,
+        )
+        return engine
+
+    def test_sql_preview_select_returns_rows(
+        self, client, db_session, sample_dataset, sample_datasource, monkeypatch
+    ):
+        """合法 SELECT 只读 SQL 可通过数据集绑定数据源返回列、行和行数。"""
+
+        self._create_selected_table_with_columns(db_session, sample_dataset, sample_datasource)
+        self._patch_sql_preview_engine(monkeypatch)
+
+        resp = client.post(
+            f"/api/dataset/{sample_dataset.id}/sql/preview",
+            json={
+                "question": "按地区统计订单数",
+                "sql": "SELECT region, COUNT(*) AS cnt FROM orders_detail GROUP BY region",
+                "limit": 10,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["dataset_id"] == sample_dataset.id
+        assert data["sql_guard"]["ok"] is True
+        assert "LIMIT" in data["sql"].upper()
+        assert data["columns"] == ["region", "cnt"]
+        assert data["row_count"] == 2
+        assert {row["region"] for row in data["rows"]} == {"华东", "华南"}
+
+    def test_sql_preview_blocks_dml(
+        self, client, db_session, sample_dataset, sample_datasource, monkeypatch
+    ):
+        """DELETE/UPDATE/INSERT/DROP 等写入类 SQL 必须被 SQL Guard 拦截。"""
+
+        self._create_selected_table_with_columns(db_session, sample_dataset, sample_datasource)
+        self._patch_sql_preview_engine(monkeypatch)
+
+        resp = client.post(
+            f"/api/dataset/{sample_dataset.id}/sql/preview",
+            json={"sql": "DELETE FROM orders_detail WHERE id = 1"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["rows"] == []
+        assert data["row_count"] == 0
+        assert data["sql_guard"]["ok"] is False
+        assert data["sql_guard"]["code"] in {"FORBIDDEN_KEYWORD", "NOT_READONLY"}
+        assert data["error"]
+
+    def test_sql_preview_blocks_unselected_table(
+        self, client, db_session, sample_dataset, sample_datasource, monkeypatch
+    ):
+        """SQL 只能访问当前数据集已选择的 source tables。"""
+
+        self._create_selected_table_with_columns(db_session, sample_dataset, sample_datasource)
+        self._patch_sql_preview_engine(monkeypatch)
+
+        resp = client.post(
+            f"/api/dataset/{sample_dataset.id}/sql/preview",
+            json={"sql": "SELECT * FROM unselected_orders LIMIT 10"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sql_guard"]["ok"] is False
+        assert data["sql_guard"]["code"] == "SQL_GUARD_BLOCKED"
+        assert "未授权" in data["error"]
+
+    def test_sql_preview_clamps_limit(
+        self, client, db_session, sample_dataset, sample_datasource, monkeypatch
+    ):
+        """超过数据集 max_limit 的 LIMIT 会被 Guard 裁剪后再执行。"""
+
+        self._create_selected_table_with_columns(db_session, sample_dataset, sample_datasource)
+        sample_dataset.query_constraints = {
+            "enabled": True,
+            "default_time_range_days": 30,
+            "default_limit": 5,
+            "max_limit": 1,
+        }
+        db_session.commit()
+        self._patch_sql_preview_engine(monkeypatch)
+
+        resp = client.post(
+            f"/api/dataset/{sample_dataset.id}/sql/preview",
+            json={"sql": "SELECT id, region FROM orders_detail LIMIT 99"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sql_guard"]["ok"] is True
+        assert data["row_count"] == 1
+        assert any("裁剪为 1" in warning for warning in data["sql_guard"]["warnings"])
+
+    def test_sql_preview_missing_datasource_returns_structured_error(
+        self, client, db_session, sample_dataset
+    ):
+        """数据集绑定的数据源缺失时，不进入 SQL 执行，返回结构化错误。"""
+
+        sample_dataset.datasource_id = 999999
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/dataset/{sample_dataset.id}/sql/preview",
+            json={"sql": "SELECT 1"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["dataset_id"] == sample_dataset.id
+        assert data["columns"] == []
+        assert data["rows"] == []
+        assert data["row_count"] == 0
+        assert data["sql_guard"]["ok"] is False
+        assert "数据源" in data["error"]
 
     def test_list_datasets_empty(self, client):
         """空数据集列表"""

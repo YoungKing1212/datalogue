@@ -1,0 +1,6 @@
+interface:
+  display_name: "Datalogue Assets"
+  short_description: "查询数语数据集、指标、维度、蓝图和 Schema"
+  default_prompt: "Use $datalogue to inspect available Datalogue datasets, metrics, dimensions, blueprints, and schema assets."
+policy:
+  allow_implicit_invocation: true
