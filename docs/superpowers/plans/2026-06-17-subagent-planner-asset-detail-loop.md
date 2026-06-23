@@ -1251,7 +1251,7 @@ from .asset_detail import (
     validate_asset_detail_requests,
 )
 from .contracts import QueryPlan
-from .planner import build_fallback_query_plan, parse_asset_detail_requests
+from .planner import build_rule_based_query_plan, parse_asset_detail_requests
 
 
 PlannerCall = Callable[..., QueryPlan | dict[str, Any]]
@@ -1326,7 +1326,7 @@ class PlannerDetailLoop:
 
             requests = parse_asset_detail_requests(response)
             if not requests:
-                fallback = build_fallback_query_plan(
+                fallback = build_rule_based_query_plan(
                     question,
                     candidate_assets=catalog,
                     routing=routing,

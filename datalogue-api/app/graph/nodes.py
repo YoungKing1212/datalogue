@@ -1682,9 +1682,24 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         all_matched = metric_resolution.get("all_matched", True)
         unresolved = metric_resolution.get("unresolved", [])
 
-        # 推断路径：指标未在语义层中定义，基于表结构让 LLM 直接生成 SQL
-        if not all_matched and ddl_context:
-            logger.info(f"走推断路径: 未解析指标={unresolved}")
+        # 检查语义层中是否存在可用的语义资产（指标/维度/蓝图）
+        # 如果语义层资产为空，即便 all_matched 为 True（例如 metric_resolution
+        # 未设置或空列表的真空真），确定性路径也无法生成有效 DSL，应回退到
+        # 基于 DDL 的推断路径。
+        has_semantic_assets = bool(
+            (structured or {}).get("metrics")
+            or (structured or {}).get("dimensions")
+            or (structured or {}).get("blueprints")
+        )
+
+        # 推断路径：指标未在语义层中定义 或 语义层无可用的语义资产，
+        # 基于表结构（DDL）让 LLM 直接生成 SQL
+        if (not all_matched or not has_semantic_assets) and ddl_context:
+            logger.info(
+                "走推断路径: 未解析指标=%s, has_semantic_assets=%s",
+                unresolved,
+                has_semantic_assets,
+            )
             # 如果数据集没有选择任何表，直接报错，不让 LLM 瞎猜
             if "该数据集尚未选择任何表" in ddl_context:
                 return {

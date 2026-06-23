@@ -805,7 +805,7 @@ git commit -m "feat: recall subagent candidate assets"
 Create the first part of `datalogue-api/tests/test_subagent_query_planner.py`:
 
 ```python
-from app.services.subagent_planning.planner import build_fallback_query_plan
+from app.services.subagent_planning.planner import build_rule_based_query_plan
 
 
 def _candidate(asset_type, asset_id, name, confidence=0.8, metadata=None):
@@ -831,7 +831,7 @@ def test_fallback_detail_query_uses_query_graph_without_metrics():
         "summary": {"field_count": 1, "table_count": 1, "blueprint_count": 0},
     }
 
-    plan = build_fallback_query_plan(
+    plan = build_rule_based_query_plan(
         question="查询10条用户日志",
         routing={"entry_route": "query_graph", "entry_intent": "detail_query"},
         candidate_assets=candidate_assets,
@@ -859,7 +859,7 @@ def test_fallback_blueprint_hit_detail_query_becomes_reference():
         "summary": {"field_count": 1, "table_count": 1, "blueprint_count": 1},
     }
 
-    plan = build_fallback_query_plan(
+    plan = build_rule_based_query_plan(
         question="查询10条用户日志",
         routing={"entry_route": "analysis_blueprint", "entry_intent": "analysis_blueprint", "blueprint_id": 3},
         candidate_assets=candidate_assets,
@@ -889,7 +889,7 @@ def test_fallback_blueprint_query_missing_required_input_clarifies():
         "summary": {"field_count": 0, "table_count": 0, "blueprint_count": 1},
     }
 
-    plan = build_fallback_query_plan(
+    plan = build_rule_based_query_plan(
         question="查一下日报",
         routing={"entry_route": "analysis_blueprint", "entry_intent": "analysis_blueprint", "blueprint_id": 3},
         candidate_assets=candidate_assets,
@@ -990,7 +990,7 @@ def _with_usage(asset: CandidateAsset, usage: str, reject_reason: str | None = N
     )
 
 
-def build_fallback_query_plan(
+def build_rule_based_query_plan(
     *,
     question: str,
     routing: dict[str, Any],
@@ -1090,10 +1090,10 @@ def build_fallback_query_plan(
 Modify `datalogue-api/app/services/subagent_planning/__init__.py`:
 
 ```python
-from app.services.subagent_planning.planner import build_fallback_query_plan
+from app.services.subagent_planning.planner import build_rule_based_query_plan
 ```
 
-Add `build_fallback_query_plan` to `__all__`.
+Add `build_rule_based_query_plan` to `__all__`.
 
 - [ ] **Step 5: Run fallback planner tests**
 
@@ -1327,7 +1327,7 @@ def plan_query(
         plan = normalize_query_plan(raw_plan)
         return _validate_hard_rules(plan, question=question, candidate_assets=candidate_assets)
     except Exception as exc:  # noqa: BLE001
-        return build_fallback_query_plan(
+        return build_rule_based_query_plan(
             question=question,
             routing=routing,
             candidate_assets=candidate_assets,
@@ -1340,7 +1340,7 @@ def plan_query(
 Modify `datalogue-api/app/services/subagent_planning/__init__.py`:
 
 ```python
-from app.services.subagent_planning.planner import build_fallback_query_plan, plan_query
+from app.services.subagent_planning.planner import build_rule_based_query_plan, plan_query
 ```
 
 Add `plan_query` to `__all__`.

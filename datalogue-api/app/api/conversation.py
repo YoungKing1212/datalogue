@@ -83,7 +83,11 @@ def list_conversations(
     return (
         db.query(models.Conversation)
         .filter(models.Conversation.archived == archived)
-        .order_by(models.Conversation.updated_at.desc())
+        .order_by(  # 新建空会话可能只有 created_at，排序需稳定兜底。
+            models.Conversation.updated_at.desc().nullslast(),
+            models.Conversation.created_at.desc().nullslast(),
+            models.Conversation.id.desc(),
+        )
         .all()
     )
 

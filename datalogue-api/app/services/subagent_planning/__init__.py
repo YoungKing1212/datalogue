@@ -44,7 +44,7 @@ from app.services.subagent_planning.execution import (
     build_reject_result,
 )
 from app.services.subagent_planning.planner import (
-    build_fallback_query_plan,
+    build_rule_based_query_plan,
     plan_query,
     plan_query_with_detail_context,
 )
@@ -69,7 +69,7 @@ __all__ = [
     "build_blueprint_reference_context",
     "build_candidate_assets_from_context",
     "build_clarify_result",
-    "build_fallback_query_plan",
+    "build_rule_based_query_plan",
     "build_reject_result",
     "build_sql_generation_context",
     "normalize_query_plan",

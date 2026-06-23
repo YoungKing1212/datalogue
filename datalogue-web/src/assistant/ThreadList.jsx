@@ -1,16 +1,16 @@
 // ThreadList — 独立左侧列，列出所有对话
 // 用 ThreadListPrimitive + ThreadListItemPrimitive 渲染，自动接 ThreadListAdapter
-// "新对话"按钮改成自定义：直接调 createConversation 拿到 remoteId 并 navigate
+// "新对话"按钮只切换本地草稿，首条消息发送时再持久化数据库会话
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ThreadListPrimitive,
   ThreadListItemPrimitive,
+  useAui,
   useAuiState,
 } from '@assistant-ui/react';
 import { Icon } from '../components/icons';
-import { createConversation } from '../api/client';
 
 /**
  * 单条 thread item：标题 + hover 删除按钮
@@ -33,23 +33,75 @@ function ThreadListItem() {
   );
 }
 
+function DraftThreadListItem() {
+  const navigate = useNavigate();
+  const aui = useAui();
+  const newThreadId = useAuiState((s) => s.threads?.newThreadId);
+  const mainThreadId = useAuiState((s) => s.threads?.mainThreadId);
+  if (!newThreadId) return null;
+
+  const isActive = newThreadId === mainThreadId;
+  const onClick = async () => {
+    await aui.threads().switchToNewThread(); // 切回内存草稿，不触发后端 conversation 创建。
+    navigate('/chat');
+  };
+
+  return (
+    <div
+      className={`thread-list-item ${isActive ? 'active' : ''}`}
+      data-testid="thread-list-draft-item"
+      data-draft="true"
+    >
+      <button
+        type="button"
+        className="thread-list-item-trigger"
+        data-testid="thread-list-draft-trigger"
+        onClick={onClick}
+      >
+        <Icon name="chat" style={{ width: 13, height: 13, color: 'var(--text-3)' }} />
+        <span>新对话</span>
+      </button>
+    </div>
+  );
+}
+
 /**
- * 自定义"新对话"按钮：直接调 createConversation 创建空会话并跳到 /chat/:id
- * useRemoteThreadListRuntime({threadId: routeId}) 会自动同步 runtime
+ * 自定义"新对话"按钮：只创建 assistant-ui 本地草稿。
+ * 用户发送首条消息时，thread-list adapter.initialize() 才会创建后端 conversation。
  */
+export async function startNewConversationDraft({
+  switchToNewThread,
+  navigate,
+  logger = console,
+}) {
+  try {
+    await switchToNewThread(); // 只切换本地 new thread，避免空会话提前写入数据库。
+    navigate('/chat');
+    return true;
+  } catch (e) {
+    logger.error('[thread-list] switch to draft failed', e);
+    return false;
+  }
+}
+
 function NewThreadButton() {
   const navigate = useNavigate();
+  const aui = useAui();
+  const [isCreating, setIsCreating] = useState(false);
   const onClick = async () => {
+    if (isCreating) return;
+    setIsCreating(true);
     try {
-      const conv = await createConversation({});
-      const newRemoteId = String(conv.id);
-      navigate(`/chat/${newRemoteId}`);
-    } catch (e) {
-      console.error('[新对话] 创建失败', e);
+      await startNewConversationDraft({
+        switchToNewThread: () => aui.threads().switchToNewThread(),
+        navigate,
+      });
+    } finally {
+      setIsCreating(false);
     }
   };
   return (
-    <button type="button" className="thread-list-new" onClick={onClick}>
+    <button type="button" className="thread-list-new" onClick={onClick} disabled={isCreating}>
       <Icon name="plus" style={{ width: 13, height: 13 }} />
       新对话
     </button>
@@ -68,6 +120,7 @@ export function ThreadList() {
         <div className="thread-list-section">
           <div className="thread-list-section-head">最近对话</div>
           <div className="thread-list-items">
+            <DraftThreadListItem />
             <ThreadListPrimitive.Items components={{ ThreadListItem }} />
           </div>
         </div>

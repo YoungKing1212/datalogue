@@ -148,11 +148,11 @@ class ConversationStore:
             return {}
         state = self.load_or_create(session_id=session_id, user_id=user_id or "1")
         capsules = dict(state.subagent_capsules or {})
-        current = capsules.get(THREAD_STATE_KEY)
+        current = capsules.get(THREAD_STATE_KEY)  # 线程级控制面状态与 dataset capsule 分桶隔离。
         thread_state = dict(current) if isinstance(current, dict) else {}
-        thread_state.update(patch)
-        thread_state = jsonable_encoder(thread_state)
-        capsules[THREAD_STATE_KEY] = thread_state
+        thread_state.update(patch)  # 浅合并本轮状态补丁，避免覆盖未涉及的控制面字段。
+        thread_state = jsonable_encoder(thread_state)  # JSON 列写入前清理 datetime/Decimal 等类型。
+        capsules[THREAD_STATE_KEY] = thread_state  # 写回固定线程状态桶，保留其他 dataset capsule。
         state.subagent_capsules = capsules
         state.updated_at = datetime.now(timezone.utc)
         self.db.add(state)
@@ -169,7 +169,7 @@ class ConversationStore:
         capsules = dict(state.subagent_capsules or {})
         thread_state = capsules.get(THREAD_STATE_KEY)
         thread_state = thread_state if isinstance(thread_state, dict) else {}
-        last_user = next((item for item in reversed(messages) if item.get("role") == "user"), None)
+        last_user = next((item for item in reversed(messages) if item.get("role") == "user"), None)  # 只给控制面最近用户问题。
         last_assistant = next(
             (item for item in reversed(messages) if item.get("role") == "assistant"),
             None,
@@ -204,7 +204,7 @@ class ConversationStore:
         kind = str(pending.get("kind") or "")
 
         if kind in {"manifest_route", "dataset_missing", "dataset_choice"}:
-            selected_dataset_id = _resolve_dataset_candidate(pending, response, question)
+            selected_dataset_id = _resolve_dataset_candidate(pending, response, question)  # 恢复 dataset 澄清选择。
             if selected_dataset_id is not None:
                 return {
                     "status": "resolved",
@@ -224,7 +224,7 @@ class ConversationStore:
             return {"status": "pending", "type": "dataset", "pending": pending}
 
         if kind == "term_conflict_clarification":
-            injected = dict(response)
+            injected = dict(response)  # 术语澄清回答要注入原链路，不能当成普通新问题。
             if pending.get("clarification_id") and not injected.get("clarification_id"):
                 injected["clarification_id"] = pending.get("clarification_id")
             if question and not injected.get("selected_text"):
@@ -351,7 +351,7 @@ class ConversationStore:
     ) -> bool:
         now = datetime.utcnow()
         locked_until = now + timedelta(seconds=ttl_seconds)
-        updated = (
+        updated = (  # 条件 UPDATE 保证并发请求只有一个 turn 能把 idle 推进到 pending。
             self.db.query(models.ConversationState)
             .filter(models.ConversationState.session_id == session_id)
             .filter(
@@ -420,7 +420,7 @@ class ConversationStore:
             raise ValueError(f"ConversationState 不存在: {session_id}")
         now = datetime.utcnow().isoformat()
         messages = list(state.messages or [])
-        messages.append(
+        messages.append(  # 用户消息与 turn_index 同事务提交，保证历史回放和多轮 prompt 对齐。
             {
                 "turn": int(state.turn_index or 0) + 1,
                 "conversation_id": conversation_id,
@@ -430,7 +430,7 @@ class ConversationStore:
             }
         )
         if answer:
-            messages.append(
+            messages.append(  # assistant 消息跟随同一 turn 写入，便于历史回放成对恢复。
                 {
                     "turn": int(state.turn_index or 0) + 1,
                     "conversation_id": conversation_id,
@@ -450,7 +450,7 @@ class ConversationStore:
             state.pending_clarification = pending_clarification
         if subagent_capsules is not None:
             state.subagent_capsules = subagent_capsules
-        self._maybe_compact_state(state, trace_context=trace_context)
+        self._maybe_compact_state(state, trace_context=trace_context)  # 落库前压缩，写入最近窗口和摘要。
         state.status = "idle"
         state.lock_owner = None
         state.locked_until = None

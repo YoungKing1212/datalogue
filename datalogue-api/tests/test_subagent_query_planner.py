@@ -13,7 +13,7 @@ from app.services.subagent_planning.contracts import (
 from app.services.subagent_planning.planner import (
     _planner_human_prompt,
     _planner_system_prompt,
-    build_fallback_query_plan,
+    build_rule_based_query_plan,
     plan_query,
     plan_query_with_detail_context,
 )
@@ -36,6 +36,35 @@ class FakeLLM:
         if self.exc:
             raise self.exc
         return FakeLLMResponse(self.content)
+
+
+class FakeRichLLMResponse:
+    def __init__(self, content):
+        self.content = content
+        self.response_metadata = {
+            "finish_reason": "stop",
+            "model_name": "deepseek-v4-pro",
+            "request_id": "req-debug",
+        }
+        self.usage_metadata = {"input_tokens": 128, "output_tokens": 0}
+
+    def __repr__(self):
+        return (
+            "FakeRichLLMResponse(content='', "
+            "response_metadata={'finish_reason': 'stop', 'request_id': 'req-debug'})"
+        )
+
+
+class FakeRichLLM:
+    def __init__(self, content=""):
+        self.content = content
+        self.messages = None
+
+    model_name = "fake-planner-model"
+
+    def invoke(self, messages):
+        self.messages = messages
+        return FakeRichLLMResponse(self.content)
 
 
 class SequentialFakeLLM:
@@ -141,8 +170,8 @@ def _blueprint(parameters=None, asset_id=7, name="个人日报查询", confidenc
     )
 
 
-def test_fallback_detail_query_uses_query_graph_without_metrics():
-    plan = build_fallback_query_plan(
+def test_rule_based_detail_query_uses_query_graph_without_metrics():
+    plan = build_rule_based_query_plan(
         "查询10条用户日志",
         [_field(), _table()],
     )
@@ -153,8 +182,8 @@ def test_fallback_detail_query_uses_query_graph_without_metrics():
     assert plan.explanation["why_continue_without_metric"] == "明细查询不要求必须命中指标或维度。"
 
 
-def test_fallback_detail_query_records_main_table_and_join_hints():
-    plan = build_fallback_query_plan(
+def test_rule_based_detail_query_records_main_table_and_join_hints():
+    plan = build_rule_based_query_plan(
         "查询汤杰10条工作日志",
         [_blueprint(), _daily_field("rzrq"), _daily_field("zt", "状态"), _daily_table(), _person_table()],
     )
@@ -179,7 +208,7 @@ def test_fallback_detail_query_records_main_table_and_join_hints():
 
 
 def test_dataset10_log_detail_uses_template_plan():
-    plan = build_fallback_query_plan(
+    plan = build_rule_based_query_plan(
         "查询10条用户日志",
         [_daily_field("rzrq"), _daily_table(), _person_table()],
         routing={"dataset_id": 10},
@@ -195,7 +224,7 @@ def test_dataset10_log_detail_uses_template_plan():
 
 
 def test_dataset10_log_detail_template_filters_person_name():
-    plan = build_fallback_query_plan(
+    plan = build_rule_based_query_plan(
         "我想看姓名为杨凯的日志",
         [_daily_field("rzrq"), _daily_table(), _person_table()],
         routing={"dataset_id": 10},
@@ -208,7 +237,7 @@ def test_dataset10_log_detail_template_filters_person_name():
 
 
 def test_dataset10_log_detail_template_supports_filter_refinement_without_log_keyword():
-    plan = build_fallback_query_plan(
+    plan = build_rule_based_query_plan(
         "我想看姓名为杨凯的",
         [_blueprint(), _daily_field("rzrq"), _daily_table(), _person_table()],
         routing={
@@ -229,7 +258,7 @@ def test_dataset10_log_detail_template_supports_filter_refinement_without_log_ke
 
 
 def test_dataset10_log_detail_template_uses_lead_refinement_slots():
-    plan = build_fallback_query_plan(
+    plan = build_rule_based_query_plan(
         "我只想看杨凯 2025年的",
         [_blueprint(), _daily_field("rzrq"), _daily_table(), _person_table()],
         routing={
@@ -261,8 +290,8 @@ def test_dataset10_log_detail_template_uses_lead_refinement_slots():
     assert "DATE_SUB(CURDATE(), INTERVAL 30 DAY)" not in sql_template
 
 
-def test_fallback_blueprint_hit_detail_query_becomes_reference():
-    plan = build_fallback_query_plan(
+def test_rule_based_blueprint_hit_detail_query_becomes_reference():
+    plan = build_rule_based_query_plan(
         "查询10条用户日志",
         [_blueprint(), _field(), _table()],
     )
@@ -282,8 +311,8 @@ def test_fallback_blueprint_hit_detail_query_becomes_reference():
     assert plan.planner_warnings[0]["code"] == "blueprint_rejected_for_detail"
 
 
-def test_fallback_compares_multiple_blueprint_candidates():
-    plan = build_fallback_query_plan(
+def test_rule_based_compares_multiple_blueprint_candidates():
+    plan = build_rule_based_query_plan(
         "查询张三昨天的个人日报",
         [
             _blueprint(asset_id=1, name="个人日报查询", confidence=0.92),
@@ -302,8 +331,8 @@ def test_fallback_compares_multiple_blueprint_candidates():
     )
 
 
-def test_fallback_does_not_execute_unmatched_blueprint_candidate():
-    plan = build_fallback_query_plan(
+def test_rule_based_does_not_execute_unmatched_blueprint_candidate():
+    plan = build_rule_based_query_plan(
         "生成销售报告",
         [
             _blueprint(asset_id=1, name="个人日报查询", confidence=0.0),
@@ -318,8 +347,8 @@ def test_fallback_does_not_execute_unmatched_blueprint_candidate():
     assert "没有有效匹配信号" in rejected_blueprint.reject_reason
 
 
-def test_fallback_blueprint_query_missing_required_input_clarifies():
-    plan = build_fallback_query_plan(
+def test_rule_based_blueprint_query_missing_required_input_clarifies():
+    plan = build_rule_based_query_plan(
         "查一下日报",
         [
             _blueprint(
@@ -337,8 +366,8 @@ def test_fallback_blueprint_query_missing_required_input_clarifies():
     assert plan.clarification
 
 
-def test_fallback_detail_query_uses_blueprint_as_reference_when_required_inputs_missing():
-    plan = build_fallback_query_plan(
+def test_rule_based_detail_query_uses_blueprint_as_reference_when_required_inputs_missing():
+    plan = build_rule_based_query_plan(
         "查询张三个人日报明细",
         [
             _blueprint(
@@ -359,8 +388,8 @@ def test_fallback_detail_query_uses_blueprint_as_reference_when_required_inputs_
     assert plan.reference_assets[0].asset_type == "blueprint"
 
 
-def test_fallback_accepts_asset_recall_result_dict_for_detail_query():
-    plan = build_fallback_query_plan(
+def test_rule_based_accepts_asset_recall_result_dict_for_detail_query():
+    plan = build_rule_based_query_plan(
         "查询10条用户日志",
         {"assets": [_field().to_dict(), _table()], "summary": {}, "recall_debug": {}},
     )
@@ -370,8 +399,47 @@ def test_fallback_accepts_asset_recall_result_dict_for_detail_query():
     assert {asset.asset_type for asset in plan.selected_assets} == {"field", "table"}
 
 
-def test_fallback_accepts_keyword_routing_and_fallback_reason():
-    plan = build_fallback_query_plan(
+def test_rule_based_aggregate_amount_query_uses_field_table_assets():
+    saving_amount = CandidateAsset(
+        asset_type="field",
+        asset_id="table:bid_project.column:saving_amount",
+        name="saving_amount",
+        display_name="节省金额",
+        source="schema",
+        confidence=0.88,
+        metadata={"table_name": "bid_project", "column_name": "saving_amount"},
+    )
+    bid_year = CandidateAsset(
+        asset_type="field",
+        asset_id="table:bid_project.column:bid_year",
+        name="bid_year",
+        display_name="招标年份",
+        source="schema",
+        confidence=0.84,
+        metadata={"table_name": "bid_project", "column_name": "bid_year"},
+    )
+
+    plan = build_rule_based_query_plan(
+        "查询2026年招标总共省了多少钱，以万元为单位",
+        [saving_amount, bid_year, _table("bid_project")],
+        fallback_reason="Expecting value: line 1 column 1 (char 0)",
+    )
+
+    assert plan.query_type == "metric_query"
+    assert plan.execution_strategy == "query_graph"
+    assert plan.planner_source == "fallback"
+    assert plan.fallback_reason == "Expecting value: line 1 column 1 (char 0)"
+    assert {asset.name for asset in plan.selected_assets} == {
+        "saving_amount",
+        "bid_year",
+        "bid_project",
+    }
+    assert any(factor["code"] == "aggregate_field_table_coverage" for factor in plan.decision_factors)
+    assert plan.debug["selected_main_table"] == "bid_project"
+
+
+def test_rule_based_accepts_keyword_routing_and_fallback_reason():
+    plan = build_rule_based_query_plan(
         question="查询10条用户日志",
         routing={"route": "dataset_subagent", "inputs": {"limit": 10}},
         candidate_assets={"assets": [_field().to_dict(), _table()]},
@@ -454,8 +522,8 @@ def test_planner_system_prompt_includes_asset_detail_loop_rules_when_enabled():
     assert "目录中的资产" in prompt
 
 
-def test_fallback_blueprint_query_with_inputs_executes_blueprint():
-    plan = build_fallback_query_plan(
+def test_rule_based_blueprint_query_with_inputs_executes_blueprint():
+    plan = build_rule_based_query_plan(
         question="查一下日报",
         routing={"inputs": {"user_name": "KenYang", "start_date": "2026-06-15"}},
         candidate_assets=[
@@ -637,8 +705,101 @@ def test_plan_query_falls_back_when_llm_raises_openai_connection_error(
     assert plan.execution_strategy == "reject"
 
 
-def test_fallback_reject_generates_governance_suggestions():
-    plan = build_fallback_query_plan("这个数据集支持什么天气预报")
+def test_plan_query_empty_llm_response_uses_aggregate_field_table_fallback(
+    monkeypatch,
+    db_session,
+):
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: FakeLLM(content=""),
+    )
+    saving_amount = CandidateAsset(
+        asset_type="field",
+        asset_id="table:bid_project.column:saving_amount",
+        name="saving_amount",
+        display_name="节省金额",
+        source="schema",
+        confidence=0.88,
+        metadata={"table_name": "bid_project", "column_name": "saving_amount"},
+    )
+
+    plan = plan_query(
+        db=db_session,
+        question="查询2026年招标总共省了多少钱，以万元为单位",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={
+            "assets": [
+                saving_amount.to_dict(),
+                _table("bid_project"),
+            ],
+        },
+    )
+
+    assert plan.query_type == "metric_query"
+    assert plan.execution_strategy == "query_graph"
+    assert plan.planner_source == "fallback"
+    assert plan.debug["validation_error"] == "Expecting value: line 1 column 1 (char 0)"
+
+
+def test_plan_query_logs_raw_llm_response_when_validation_fails(
+    monkeypatch,
+    db_session,
+    caplog,
+):
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: FakeRichLLM(),
+    )
+    caplog.set_level("WARNING", logger="app.services.subagent_planning.planner")
+
+    plan = plan_query(
+        db=db_session,
+        question="这个数据集支持什么天气预报",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": []},
+    )
+
+    assert plan.planner_source == "fallback"
+    assert "raw_response_debug=" in caplog.text
+    assert "FakeRichLLMResponse" in caplog.text
+    assert "finish_reason" in caplog.text
+    assert "output_tokens" in caplog.text
+
+
+def test_plan_query_debug_logs_raw_llm_response_before_parsing(
+    monkeypatch,
+    db_session,
+    caplog,
+):
+    llm_payload = {
+        "query_type": "unsupported",
+        "execution_strategy": "reject",
+        "confidence": 0.2,
+        "planner_source": "llm",
+        "explanation": {"summary": "无法支持天气预报。"},
+    }
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda temperature=0.0, **kwargs: FakeRichLLM(json.dumps(llm_payload, ensure_ascii=False)),
+    )
+    caplog.set_level("DEBUG", logger="app.services.subagent_planning.planner")
+
+    plan = plan_query(
+        db=db_session,
+        question="这个数据集支持什么天气预报",
+        routing={"route": "dataset_subagent"},
+        candidate_assets={"assets": []},
+    )
+
+    assert plan.planner_source == "llm"
+    assert "subagent_query_planner LLM 原始响应" in caplog.text
+    assert "raw_response_debug=" in caplog.text
+    assert "FakeRichLLMResponse" in caplog.text
+    assert "usage_metadata" in caplog.text
+
+
+def test_rule_based_reject_generates_governance_suggestions():
+    plan = build_rule_based_query_plan("这个数据集支持什么天气预报")
 
     assert plan.execution_strategy == "reject"
     assert plan.decision_factors[0]["code"] == "insufficient_assets"

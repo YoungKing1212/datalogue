@@ -121,6 +121,45 @@ class TestChatAPI:
         assert "sql_retry_trace" in _STATE_OUTPUT_KEYS
         assert "answer_explanation" in _STATE_OUTPUT_KEYS
 
+    def test_chat_stream_log_summary_extracts_debug_fields(self):
+        """聊天流日志摘要应保留排查 final payload 所需的关键字段。"""
+        from app.api.chat import _chat_stream_log_summary
+
+        summary = _chat_stream_log_summary(
+            {
+                "type": "final",
+                "answer": "查询完成",
+                "entry_route": "reject",
+                "entry_reason": "no_query_target",
+                "error": None,
+                "sql": "",
+                "sql_list": ["select 1"],
+                "conversation_id": 12,
+                "message_id": 34,
+                "query_plan": {
+                    "query_type": "unsupported",
+                    "planner_source": "fallback",
+                    "fallback_reason": "candidate_assets_insufficient",
+                },
+            }
+        )
+
+        assert summary == {
+            "payload_type": "final",
+            "conversation_id": 12,
+            "message_id": 34,
+            "entry_route": "reject",
+            "entry_reason": "no_query_target",
+            "query_plan_type": "unsupported",
+            "planner_source": "fallback",
+            "fallback_reason": "candidate_assets_insufficient",
+            "has_sql": True,
+            "sql_count": 1,
+            "has_error": False,
+            "error": None,
+            "answer_len": 4,
+        }
+
     def test_query_plan_prompt_exposes_main_table_and_join_hints(self):
         """DSL prompt 中应带主表和 JOIN 线索，避免生成端再次选错表。"""
         from app.graph.nodes import _format_query_plan_for_prompt
@@ -3237,7 +3276,7 @@ class TestChatStreamEvents:
         event = {
             "event": "on_chain_end",
             "data": {"output": {"intent": "query", "entities": {"metrics": ["gmv"]}}},
-            "metadata": {"langgraph_node": "intent_recognition"},
+            "metadata": {"langgraph_node": "schema_recall"},
         }
 
         output = _extract_node_output(event, "intent_recognition")
@@ -3245,8 +3284,10 @@ class TestChatStreamEvents:
         assert output["intent"] == "query"
         assert output["entities"]["metrics"] == ["gmv"]
 
-    def test_chat_stream_event_types(self, client, sample_dataset):
+    def test_chat_stream_event_types(self, client, sample_dataset, db_session):
         """SSE 流式接口每个事件必须含 type 字段，值为 step / token / final 之一"""
+        # 发布 manifest 以通过 manifest guard，否则路由会被 locked 阻断
+        publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
         payload = {"question": "查询所有订单", "dataset_id": sample_dataset.id}
         with (
             patch("app.api.chat.build_workflow") as mock_wf,
@@ -3259,15 +3300,15 @@ class TestChatStreamEvents:
             async def fake_astream_events(state, version):
                 yield {
                     "event": "on_chain_start",
-                    "name": "intent_recognition",
+                    "name": "schema_recall",
                     "data": {},
-                    "metadata": {"langgraph_node": "intent_recognition"},
+                    "metadata": {"langgraph_node": "schema_recall"},
                 }
                 yield {
                     "event": "on_chain_end",
-                    "name": "intent_recognition",
+                    "name": "schema_recall",
                     "data": {"output": {"intent": "query", "entities": {}}},
-                    "metadata": {"langgraph_node": "intent_recognition"},
+                    "metadata": {"langgraph_node": "schema_recall"},
                 }
                 yield {
                     "event": "on_chain_start",
@@ -3951,15 +3992,15 @@ class TestChatStreamEvents:
             async def fake_astream_events(state, version):
                 yield {
                     "event": "on_chain_start",
-                    "name": "intent_recognition",
+                    "name": "schema_recall",
                     "data": {},
-                    "metadata": {"langgraph_node": "intent_recognition"},
+                    "metadata": {"langgraph_node": "schema_recall"},
                 }
                 yield {
                     "event": "on_chain_end",
-                    "name": "intent_recognition",
+                    "name": "schema_recall",
                     "data": {"output": {"intent": "query", "entities": {}}},
-                    "metadata": {"langgraph_node": "intent_recognition"},
+                    "metadata": {"langgraph_node": "schema_recall"},
                 }
 
             mock_graph = MagicMock()

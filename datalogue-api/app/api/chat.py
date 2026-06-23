@@ -95,24 +95,27 @@ logger = logging.getLogger(__name__)
 
 
 # 节点名称到前端/Trace 展示名的映射；展示名统一使用原始节点名，便于按节点检索 trace。
+# Phase 3-7 改造中已从 Graph 删除的节点同步清理：
+#   merge_prior_context, clarification_resolution, intent_recognition,
+#   entry_intent_classification, analysis_blueprint_execute,
+#   term_conflict_resolve, metric_resolve
 _NODE_DISPLAY_NAMES = {
+    # Chat 层
     "message_gateway": "message_gateway",
-    "merge_prior_context": "merge_prior_context",
-    "clarification_resolution": "clarification_resolution",
-    "intent_recognition": "intent_recognition",
-    "entry_intent_classification": "entry_intent_classification",
-    "analysis_blueprint_execute": "analysis_blueprint_execute",
-    "candidate_assets": "subagent.candidate_assets",
-    "query_plan": "subagent.query_plan",
+    # Graph 节点（build_workflow 注册的 9 个节点）
+    "lead_agent": "lead_agent",
     "schema_recall": "schema_recall",
-    "term_conflict_resolve": "term_conflict_resolve",
-    "metric_resolve": "metric_resolve",
     "dsl_generate": "dsl_generate",
     "dsl_validate": "dsl_validate",
     "dsl_compiler": "dsl_compiler",
     "sql_execute": "sql_execute",
     "sql_audit": "sql_audit",
     "report_generator": "report_generator",
+    "increment_retry": "increment_retry",
+    # SubAgent 事件（SSE 展示用）
+    "candidate_assets": "subagent.candidate_assets",
+    "query_plan": "subagent.query_plan",
+    # LeadAgent 自动路由报告
     "lead_agent_report_generator": "lead_agent_report_generator",
 }
 
@@ -241,6 +244,43 @@ TERM_CLARIFICATION_TTL_MINUTES = 30
 def _sse_data(payload: dict) -> dict:
     """将 SSE payload 转成 JSON 字符串，兼容 datetime/date/Decimal 等对象。"""
     return {"data": json.dumps(jsonable_encoder(payload), ensure_ascii=False)}
+
+
+def _chat_stream_log_summary(payload: dict | None) -> dict[str, Any]:
+    """提取 /chat/stream 排障日志中的稳定关键字段，避免日志被完整 payload 淹没。"""
+
+    payload = payload or {}
+    # final / subagent result payload 很大，只保留能对齐 Network、Langfuse 和后端状态的字段。
+    query_plan = payload.get("query_plan") if isinstance(payload.get("query_plan"), dict) else {}
+    sql_list = payload.get("sql_list") if isinstance(payload.get("sql_list"), list) else []
+    answer = payload.get("answer")
+    error = payload.get("error")
+    return {
+        "payload_type": payload.get("type"),
+        "conversation_id": payload.get("conversation_id"),
+        "message_id": payload.get("message_id"),
+        "entry_route": payload.get("entry_route"),
+        "entry_reason": payload.get("entry_reason"),
+        "query_plan_type": query_plan.get("query_type"),
+        "planner_source": query_plan.get("planner_source"),
+        "fallback_reason": query_plan.get("fallback_reason"),
+        "has_sql": bool(payload.get("sql")) or bool(sql_list),
+        "sql_count": len(sql_list),
+        "has_error": bool(error),
+        "error": str(error)[:500] if error else None,
+        "answer_len": len(str(answer)) if answer is not None else 0,
+    }
+
+
+def _log_chat_stream_checkpoint(checkpoint: str, **fields: Any) -> None:
+    """统一 /chat/stream 行级日志格式，便于按 checkpoint 串起一次请求。"""
+
+    # checkpoint 用作 grep 入口，fields 保持 JSON，方便后续脚本化比对同一轮问数。
+    logger.info(
+        "[chat.stream.%s] %s",
+        checkpoint,
+        json.dumps(jsonable_encoder(fields), ensure_ascii=False, default=str),
+    )
 
 
 def _subagent_event_type(sub_event: Any) -> str:
@@ -1158,7 +1198,17 @@ async def _stream_chat_singleturn(
     defer_trace_close: bool = False,
 ):
     """SSE 流式问数：驱动 LangGraph 工作流，逐步发送节点进度事件。"""
-    logger.info(f"[_stream_chat] 开始处理问题: {payload.question[:50]}")
+    _log_chat_stream_checkpoint(  # 单轮链路入口，后续 checkpoint 都以此为起点。
+        "singleturn_start",
+        question_preview=payload.question[:80],
+        payload_dataset_id=payload.dataset_id,
+        conversation_id=payload.conversation_id,
+        has_multiturn_context=bool(multiturn_context),
+        has_conversation_state=conversation_state is not None,
+        pending_resolution_status=(pending_resolution or {}).get("status")
+        if isinstance(pending_resolution, dict)
+        else None,
+    )
     conv_id: int | None = payload.conversation_id
     effective_dataset_id: int | None = payload.dataset_id
 
@@ -1195,8 +1245,7 @@ async def _stream_chat_singleturn(
         db.refresh(conv)
         conv_id = int(conv.id)
 
-    # 保存用户消息
-    db.add(
+    db.add(  # 用户消息先落库，后续日志和 trace 才能稳定回查 conversation。
         models.Message(
             conversation_id=conv_id,
             role="user",
@@ -1204,6 +1253,14 @@ async def _stream_chat_singleturn(
         )
     )
     db.commit()
+    _log_chat_stream_checkpoint(  # 会话和用户消息已落库，conversation_id 可用于查 DB。
+        "conversation_ready",
+        conversation_id=conv_id,
+        effective_dataset_id=effective_dataset_id,
+        conversation_dataset_id=conv.dataset_id,
+        title=conv.title,
+        thread_id=conv.thread_id,
+    )
 
     if (
         isinstance(pending_resolution, dict)
@@ -1229,9 +1286,15 @@ async def _stream_chat_singleturn(
                     "clarification_response": None,
                 }
             )
+            _log_chat_stream_checkpoint(  # dataset 澄清恢复会改写本轮问题和 dataset_id。
+                "pending_dataset_restored",
+                conversation_id=conv_id,
+                restored_dataset_id=effective_dataset_id,
+                restored_question_preview=restored_question[:80],
+            )
 
     tracer = get_observability_tracer()
-    trace_context = tracer.create_trace_context(
+    trace_context = tracer.create_trace_context(  # 创建 Langfuse/session 上下文，后续 span 共享。
         conversation_id=conv_id,
         dataset_id=effective_dataset_id,
         user_id=str(conv.user_id or 1),
@@ -1249,6 +1312,15 @@ async def _stream_chat_singleturn(
         trace_context_sink.append(trace_context)
     obs_context_manager = set_observability_context(trace_context.request_context())
     obs_context_manager.__enter__()
+    _log_chat_stream_checkpoint(  # 记录 trace/session，便于从 app.log 反查 Langfuse。
+        "trace_context_created",
+        conversation_id=conv_id,
+        effective_dataset_id=effective_dataset_id,
+        trace_id=trace_context.trace_id,
+        session_id=trace_context.session_id,
+        observability_enabled=trace_context.enabled,
+        observability_active=trace_context.active,
+    )
 
     tracer.start_span(
         trace_context,
@@ -1297,6 +1369,14 @@ async def _stream_chat_singleturn(
             multiturn_context,
             last_success_task_status,
         ),
+    )
+    # gateway_classified 是进入 LeadAgent 前的本地判定，常用于区分 clarify/dataset_select/继续问数。
+    _log_chat_stream_checkpoint(
+        "gateway_classified",
+        conversation_id=conv_id,
+        active_dataset_id=active_dataset_id,
+        turn_event=turn_event,
+        last_success_task_status=last_success_task_status,
     )
     tracer.start_span(
         trace_context,
@@ -1432,6 +1512,17 @@ async def _stream_chat_singleturn(
         },
     )
     route_decision = lead_agent_context["route_decision"]
+    # LeadAgent 的 route_decision 决定是否能继续到 SubAgent，失败时先看这个 checkpoint。
+    _log_chat_stream_checkpoint(
+        "lead_context_ready",
+        conversation_id=conv_id,
+        effective_dataset_id=effective_dataset_id,
+        should_continue=lead_agent_context.get("should_continue"),
+        route_decision=route_decision,
+        schema_status=lead_agent_context.get("schema_status"),
+        selected_skills=lead_agent_context.get("selected_skills") or [],
+        planned_tool_calls=lead_agent_context.get("planned_tool_calls") or [],
+    )
     lead_event = _lead_agent_event(lead_agent_context)
     route_event = _route_decision_event(route_decision)
     yield _sse_data(lead_event)
@@ -1516,6 +1607,24 @@ async def _stream_chat_singleturn(
                 "message_id": assistant_message.id,
                 "title": conv.title,
             }
+        )
+        _log_chat_stream_checkpoint(
+            "lead_route_blocked",
+            # manifest/schema/permission 类阻断不会进入 SubAgent，用 final 摘要统一记录可见结果。
+            **_chat_stream_log_summary(
+                {
+                    "type": "final",
+                    "answer": answer,
+                    "entry_route": route_decision.get("decision"),
+                    "entry_reason": route_decision.get("reason"),
+                    "conversation_id": conv.id,
+                    "message_id": assistant_message.id,
+                    "query_plan": None,
+                    "sql": None,
+                    "sql_list": [],
+                    "error": None,
+                }
+            ),
         )
         return
 
@@ -1619,6 +1728,14 @@ async def _stream_chat_singleturn(
         trace_context=trace_context,
     )
     if merge_decision.interpret_payload is not None:
+        # interpret_result 是多轮本地解释早退，不进入 Graph；这里标记可避免误查 SQL 生成链路。
+        _log_chat_stream_checkpoint(
+            "merge_interpret_early_return",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            turn_type=merge_decision.turn_type,
+            merge_debug=merge_decision.merge_debug,
+        )
         async for sse_event in _interpret_early_return(
             db=db,
             conv=conv,
@@ -1670,6 +1787,20 @@ async def _stream_chat_singleturn(
         tracer=tracer,
         trace_context=trace_context,
     )
+    # entry_routing_done 是 LeadAgent 总入口路由的最终结论，后续早退或 SubAgent 都从这里分流。
+    _log_chat_stream_checkpoint(
+        "entry_routing_done",
+        conversation_id=conv_id,
+        effective_dataset_id=effective_dataset_id,
+        routing_question_preview=routing_question[:80],
+        term_resolution_status=term_resolution.get("status"),
+        entry_intent=routing.get("entry_intent"),
+        entry_route=routing.get("entry_route"),
+        entry_reason=routing.get("entry_reason"),
+        route_payload_kind=(routing.get("route_payload") or {}).get("kind")
+        if isinstance(routing.get("route_payload"), dict)
+        else None,
+    )
     yield _sse_data(
         {
             "type": "step",
@@ -1711,6 +1842,15 @@ async def _stream_chat_singleturn(
         routing["route_payload"] = term_resolution.get("route_payload") or routing.get(
             "route_payload"
         )
+        # term 澄清未解决时直接早退；日志保留 status，方便判断是过期、缺失还是未匹配。
+        _log_chat_stream_checkpoint(
+            "term_resolution_early_return",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            term_resolution_status=term_resolution.get("status"),
+            entry_route=routing.get("entry_route"),
+            entry_reason=routing.get("entry_reason"),
+        )
         async for sse_event in _early_route_return(
             db=db,
             conv=conv,
@@ -1729,6 +1869,15 @@ async def _stream_chat_singleturn(
         return
 
     if routing.get("entry_route") in {"direct_answer", "reject", "knowledge_qa", "clarify"}:
+        # direct/reject/knowledge/clarify 都是非 SQL 路径，记录 entry_route 后交给统一早退收尾。
+        _log_chat_stream_checkpoint(
+            "entry_route_early_return",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            entry_route=routing.get("entry_route"),
+            entry_reason=routing.get("entry_reason"),
+            entry_intent=routing.get("entry_intent"),
+        )
         async for sse_event in _early_route_return(
             db=db,
             conv=conv,
@@ -1745,12 +1894,6 @@ async def _stream_chat_singleturn(
         ):
             yield sse_event
         return
-
-    # DatasetSubAgent.run 统一接管候选资产召回、查询规划和具体执行策略。
-    # chat 层只保留 LeadAgent 路由、历史/多轮和 pending clarification 解析。
-    sub_agent = DatasetSubAgent(
-        db=db, dataset_id=int(effective_dataset_id) if effective_dataset_id else 0
-    )
 
     # Phase 4: 注入 term 解析结果（resolved 时把 question 恢复到原问题 + selected_term_id）
     _initial_question = (
@@ -1843,9 +1986,17 @@ async def _stream_chat_singleturn(
             resolved_question=lead_agent_context.get("resolved_question") or resolved_question,
             turn_index=getattr(conversation_state, "turn_index", None),
             prior_capsule_status=prior_capsule_status,
-        )
+    )
     if fanout_invocations:
         fanout_step_started_at = time.monotonic()
+        # fanout 是 LeadAgent 规划出的多数据集分支，单独打点避免和普通单数据集 SubAgent 混淆。
+        _log_chat_stream_checkpoint(
+            "fanout_start",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            dataset_ids=[item.dataset_id for item in fanout_invocations],
+            invocation_count=len(fanout_invocations),
+        )
         fanout_step = {
             "type": "step",
             "node": "subagent_fanout",
@@ -1908,6 +2059,15 @@ async def _stream_chat_singleturn(
             adapter=SubAgentToolAdapter(artifact_store=ArtifactStore(db)),
         ).run(fanout_invocations)
         fanout_answer = SubAgentFanOutAnswerSynthesizer().synthesize(fanout_result)
+        # fanout_done 只记录各子任务状态和答案长度，不展开每个子任务的大 payload。
+        _log_chat_stream_checkpoint(
+            "fanout_done",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            result_count=len(fanout_result.results),
+            statuses=[item.llm_visible.status.value for item in fanout_result.results],
+            answer_len=len(fanout_answer),
+        )
         subagent_tool_results = jsonable_encoder(
             [item.llm_visible.model_dump(mode="json") for item in fanout_result.results]
         )
@@ -2024,6 +2184,8 @@ async def _stream_chat_singleturn(
             "langfuse_session_id": trace_context.session_id,
             "observability": trace_context.observability_payload(),
         }
+        # fanout final 也走同一摘要格式，便于和普通 final_payload_ready 横向对比。
+        _log_chat_stream_checkpoint("fanout_final_payload_ready", **_chat_stream_log_summary(final_payload))
         yield _sse_data(final_payload)
         if not defer_trace_close:
             tracer.close_trace(trace_context)
@@ -2052,9 +2214,24 @@ async def _stream_chat_singleturn(
     )
     final_state: dict = dict(initial_state)
     node_start_times: dict[str, float] = {}
+    _log_chat_stream_checkpoint(  # 只有走到这里才会调用 DatasetSubAgent。
+        "subagent_request_ready",
+        conversation_id=conv_id,
+        effective_dataset_id=effective_dataset_id,
+        request_dataset_id=subagent_request.dataset_id,
+        entry_route=routing.get("entry_route"),
+        manifest_version=route_decision.get("manifest_version"),
+        bound_schema_version=route_decision.get("bound_schema_version"),
+        prior_capsule_status=prior_capsule_status,
+    )
 
     try:
-        logger.info("[_stream_chat] 开始 astream_events 工作流...")
+        _log_chat_stream_checkpoint(  # Graph 开始前打点，后续由 SubAgent 事件补齐结果。
+            "graph_stream_start",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            entry_route=routing.get("entry_route"),
+        )
         # 去重集合：astream_events v2 中子 chain 也会触发 on_chain_start/end，
         # 同一 langgraph_node 名称可能重复出现，只取每个节点的第一次事件
         reported_running: set[str] = set()
@@ -2078,6 +2255,16 @@ async def _stream_chat_singleturn(
                     sse_payload["type"] = "step"
                     if sub_event_type == "candidate_assets":
                         final_state["candidate_assets"] = sse_payload.get("candidate_assets")
+                        candidate_assets = sse_payload.get("candidate_assets")
+                        _log_chat_stream_checkpoint(  # 候选资产数量用于区分召回不足和规划失败。
+                            "subagent_candidate_assets",
+                            conversation_id=conv_id,
+                            effective_dataset_id=effective_dataset_id,
+                            asset_count=len(candidate_assets)
+                            if isinstance(candidate_assets, list)
+                            else None,
+                            payload_keys=sorted(sse_payload.keys()),
+                        )
                     elif sub_event_type == "query_plan":
                         query_plan = sse_payload.get("query_plan") or {}
                         final_state["query_plan"] = query_plan
@@ -2089,12 +2276,24 @@ async def _stream_chat_singleturn(
                                 "planner_warnings": query_plan.get("planner_warnings") or [],
                                 "governance_suggestions": query_plan.get("governance_suggestions") or [],
                             }
+                        _log_chat_stream_checkpoint(  # query_plan 摘要用于定位 fallback/unsupported 分支。
+                            "subagent_query_plan",
+                            conversation_id=conv_id,
+                            effective_dataset_id=effective_dataset_id,
+                            query_plan_type=query_plan.get("query_type"),
+                            execution_strategy=query_plan.get("execution_strategy"),
+                            planner_source=query_plan.get("planner_source"),
+                            fallback_reason=query_plan.get("fallback_reason"),
+                            has_sql_template=bool(query_plan.get("sql_template")),
+                            decision_factor_count=len(query_plan.get("decision_factors") or []),
+                            warning_count=len(query_plan.get("planner_warnings") or []),
+                        )
                     step_traces.append(sse_payload)
                     yield _sse_data(sse_payload)
                     continue
 
                 if sub_event_type == "result":
-                    final_state.update(sub_event_payload.get("final_state") or {})
+                    final_state.update(sub_event_payload.get("final_state") or {})  # SubAgent result 写回最终状态。
                     if final_state.get("query_plan_debug") is None:
                         query_plan = final_state.get("query_plan") or {}
                         final_state["query_plan_debug"] = {
@@ -2105,6 +2304,24 @@ async def _stream_chat_singleturn(
                             "governance_suggestions": query_plan.get("governance_suggestions")
                             or [],
                         }
+                    _log_chat_stream_checkpoint(  # result 与最终 SSE 可能有二次加工，需单独留证。
+                        "subagent_result",
+                        conversation_id=conv_id,
+                        effective_dataset_id=effective_dataset_id,
+                        summary=_chat_stream_log_summary(
+                            {
+                                "type": "subagent_result",
+                                "answer": final_state.get("answer"),
+                                "entry_route": final_state.get("entry_route"),
+                                "entry_reason": final_state.get("entry_reason"),
+                                "query_plan": final_state.get("query_plan"),
+                                "sql": final_state.get("sql"),
+                                "sql_list": final_state.get("sql_list") or [],
+                                "error": final_state.get("error"),
+                                "conversation_id": conv_id,
+                            }
+                        ),
+                    )
                     continue
 
                 if sub_event_type == "graph_event":
@@ -2188,7 +2405,11 @@ async def _stream_chat_singleturn(
                         sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
                     elif lg_node == "schema_recall":
                         schema = final_state.get("schema_context", "") or ""
-                        lines_ = [l for l in schema.split("\n") if l.strip() and not l.startswith("-")]
+                        lines_ = [
+                            line
+                            for line in schema.split("\n")
+                            if line.strip() and not line.startswith("-")
+                        ]
                         sse_payload["schema_summary"] = lines_[:3]
                     elif lg_node == "dsl_compiler":
                         sse_payload["sql"] = final_state.get("sql") or ""
@@ -2242,10 +2463,34 @@ async def _stream_chat_singleturn(
                         if visible_token:
                             yield _sse_data({"type": "token", "content": visible_token})
 
-        logger.info("[_stream_chat] astream_events 完成")
+        _log_chat_stream_checkpoint(  # Graph 完成摘要用于和最终 payload 对比。
+            "graph_stream_done",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            reported_nodes=sorted(reported_done),
+            summary=_chat_stream_log_summary(
+                {
+                    "type": "graph_done",
+                    "answer": final_state.get("answer"),
+                    "entry_route": final_state.get("entry_route"),
+                    "entry_reason": final_state.get("entry_reason"),
+                    "query_plan": final_state.get("query_plan"),
+                    "sql": final_state.get("sql"),
+                    "sql_list": final_state.get("sql_list") or [],
+                    "error": final_state.get("error"),
+                    "conversation_id": conv_id,
+                }
+            ),
+        )
 
     except Exception as e:
-        logger.exception(f"[_stream_chat] 工作流异常: {e}")
+        _log_chat_stream_checkpoint(
+            "graph_stream_exception",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            error=str(e),
+        )
+        logger.exception("[_stream_chat] 工作流异常: %s", e)
         tracer.update_trace_output(
             trace_context, output=f"处理出错：{e}", metadata={"status": "failed"}
         )
@@ -2366,7 +2611,19 @@ async def _stream_chat_singleturn(
         answer = "抱歉，暂时无法回答这个问题。请尝试选择数据集后提问，或检查语义层配置。"
 
     final_state["answer"] = answer
-    result_artifact = build_query_result_artifact(
+    _log_chat_stream_checkpoint(  # 记录 answer 来源，区分模型结果、错误分支和本地兜底。
+        "answer_resolved",
+        conversation_id=conv_id,
+        effective_dataset_id=effective_dataset_id,
+        generation_mode=generation_mode,
+        retry_count=retry_count,
+        has_error=bool(error),
+        answer_len=len(answer),
+        sql_diagnosis_code=sql_diagnosis.get("code")
+        if isinstance(sql_diagnosis, dict)
+        else None,
+    )
+    result_artifact = build_query_result_artifact(  # 生成多轮可引用的结果 artifact。
         question=final_state.get("resolved_question")
         or lead_agent_context.get("resolved_question")
         or payload.question,
@@ -2495,7 +2752,7 @@ async def _stream_chat_singleturn(
     tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
 
     # jsonable_encoder 把 datetime / Decimal 等转为 JSON 安全类型，再存 JSON 列
-    response_metadata = jsonable_encoder(
+    response_metadata = jsonable_encoder(  # 存 JSON 列前清理 datetime/Decimal 等类型。
         {
             "answer_explanation": answer_explanation,
             "lead_agent_context": lead_agent_context,
@@ -2550,10 +2807,20 @@ async def _stream_chat_singleturn(
         step_trace=jsonable_encoder(step_traces),
         response_metadata=response_metadata,
     )
-    db.add(assistant_message)
+    db.add(assistant_message)  # assistant 消息落库后，历史回放才能拿到完整 step_trace。
     db.commit()
     db.refresh(assistant_message)
-    query_artifact_store.attach_message_id(
+    _log_chat_stream_checkpoint(  # DB 落库确认点，message_id 可用于回查历史消息。
+        "assistant_message_saved",
+        conversation_id=conv_id,
+        message_id=assistant_message.id,
+        effective_dataset_id=effective_dataset_id,
+        step_trace_count=len(step_traces),
+        response_metadata_keys=sorted(response_metadata.keys())
+        if isinstance(response_metadata, dict)
+        else [],
+    )
+    query_artifact_store.attach_message_id(  # 把 artifact ref 反连到 assistant message，便于历史追溯。
         [final_state.get("result_ref"), final_state.get("report_ref")],
         message_id=int(assistant_message.id),
     )
@@ -2659,10 +2926,8 @@ async def _stream_chat_singleturn(
         "observability": trace_context.observability_payload(),
         "multiturn_observability_metrics": multiturn_observability_metrics,
     }
-    logger.info(
-        f"[_stream_chat] final: answer_len={len(answer)}, sql={sql}, error={error}, mode={generation_mode}"
-    )
-    yield _sse_data(final_payload)
+    _log_chat_stream_checkpoint("final_payload_ready", **_chat_stream_log_summary(final_payload))  # 对齐 DevTools final。
+    yield _sse_data(final_payload)  # final 发出后客户端可能立即断开。
     if not defer_trace_close:
         tracer.close_trace(trace_context)
     obs_context_manager.__exit__(None, None, None)
@@ -2708,7 +2973,6 @@ def _persist_completed_turn(
         control_planes = [subagent_control_plane]
     else:
         control_planes = []
-    control_plane = control_planes[0] if control_planes else {}
     updated_capsules = None
     for item in control_planes:
         capsule = item.get("capsule") if isinstance(item.get("capsule"), dict) else None
@@ -2717,7 +2981,7 @@ def _persist_completed_turn(
             if isinstance(capsule, dict)
             else item.get("dataset_id")
         )
-        candidate_capsules = store.with_updated_capsule(
+        candidate_capsules = store.with_updated_capsule(  # 将 SubAgent 返回 capsule 写入对应 dataset 桶。
             final_state,
             dataset_id=capsule_dataset_id,
             capsule=capsule,
@@ -2726,12 +2990,12 @@ def _persist_completed_turn(
             final_state.subagent_capsules = candidate_capsules
             updated_capsules = candidate_capsules
     if updated_capsules is None:
-        updated_capsules = store.with_updated_capsule(
+        updated_capsules = store.with_updated_capsule(  # 无控制面 capsule 时回退使用 final payload。
             final_state,
             dataset_id=active_dataset_id,
             capsule=final_payload.get("out_capsule"),
         )
-    pending_for_store = pending_clarification_from_final_payload(
+    pending_for_store = pending_clarification_from_final_payload(  # 从 final payload 提取下一轮 pending 澄清。
         final_payload,
         original_question=payload_question,
     )
@@ -2754,7 +3018,7 @@ def _persist_completed_turn(
         bool(final_payload.get("sql")),
         len(control_planes),
     )
-    store.append_completed_turn(
+    store.append_completed_turn(  # SSE final 前同步写入完成轮，保证下一轮读到状态。
         session_id=final_session_id,
         question=payload_question,
         answer=final_payload.get("answer"),
@@ -2913,7 +3177,22 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     """
 
     settings = get_settings()
+    # wrapper_start 记录 feature flag 和 session 输入，先判断本轮是否会进入多轮状态包装。
+    _log_chat_stream_checkpoint(
+        "wrapper_start",
+        question_preview=payload.question[:80],
+        payload_dataset_id=payload.dataset_id,
+        conversation_id=payload.conversation_id,
+        session_id=payload.session_id,
+        multiturn_enabled=bool(settings.MULTITURN_ENABLED),
+    )
     if not settings.MULTITURN_ENABLED:
+        # 关闭多轮时直接下钻单轮链路，后续不会出现锁和 ConversationState 写回日志。
+        _log_chat_stream_checkpoint(
+            "multiturn_disabled",
+            conversation_id=payload.conversation_id,
+            payload_dataset_id=payload.dataset_id,
+        )
         async for event in _stream_chat_singleturn(payload, db):
             yield event
         return
@@ -2940,6 +3219,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         lock_owner=lock_owner,
         ttl_seconds=settings.MULTITURN_LOCK_TTL_SECONDS,
     ):
+        # 锁冲突会直接返回 final，不进入单轮链路；这里记录 owner 和 TTL 便于排查并发请求。
+        _log_chat_stream_checkpoint(
+            "turn_lock_rejected",
+            business_session_id=business_session_id,
+            lock_owner=lock_owner,
+            ttl_seconds=settings.MULTITURN_LOCK_TTL_SECONDS,
+        )
         yield _sse_data(
             {
                 "type": "final",
@@ -2952,6 +3238,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             }
         )
         return
+    # 锁获取成功后才解析 pending clarification，保证同一 session 只有一轮在改状态。
+    _log_chat_stream_checkpoint(
+        "turn_lock_acquired",
+        business_session_id=business_session_id,
+        lock_owner=lock_owner,
+        ttl_seconds=settings.MULTITURN_LOCK_TTL_SECONDS,
+    )
 
     final_payload: dict | None = None
     completed = False
@@ -3006,11 +3299,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                     parsed = json.loads(data)
                     if parsed.get("type") == "final":
                         final_payload = parsed
-                        # 关键：SSE 在客户端收到 final 后会立即关闭连接，
-                        # yield 之后的代码可能因 CancelledError 不执行，
-                        # 因此这里在 yield 前同步写入多轮状态，保证下一轮能读上轮胶囊。
+                        _log_chat_stream_checkpoint(  # yield final 前的多轮状态写回触发点。
+                            "wrapper_final_seen",
+                            business_session_id=business_session_id,
+                            summary=_chat_stream_log_summary(final_payload),
+                        )
                         try:
-                            completed = _persist_completed_turn(
+                            completed = _persist_completed_turn(  # 必须在 yield final 前写库。
                                 store=store,
                                 state=state,
                                 user_id=user_id,
@@ -3036,15 +3331,30 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             tracer = get_observability_tracer()
             tracer.close_trace(trace_context_sink[0])
         if not completed:
-            logger.info("[_stream_chat] 多轮请求未正常完成，仅释放会话锁: %s", business_session_id)
-        store.release_turn_lock(session_id=business_session_id, lock_owner=lock_owner)
+            _log_chat_stream_checkpoint(
+                "wrapper_incomplete",
+                business_session_id=business_session_id,
+                final_seen=final_payload is not None,
+            )
+        _log_chat_stream_checkpoint(  # finally 中留锁释放日志，避免会话长期 pending 难查。
+            "turn_lock_released",
+            business_session_id=business_session_id,
+            lock_owner=lock_owner,
+            completed=completed,
+        )
+        store.release_turn_lock(session_id=business_session_id, lock_owner=lock_owner)  # 客户端断开也必须释放锁。
 
 
 @router.post("/stream")
 def chat_stream(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
     """流式问数接口，返回 SSE 事件流。"""
-    logger.info(
-        f"[chat_stream] 接收到请求: question={payload.question[:30]}, dataset_id={payload.dataset_id}"
+    _log_chat_stream_checkpoint(  # HTTP 入口只记录轻量请求面，细节由下游 checkpoint 补齐。
+        "request_received",
+        question_preview=payload.question[:80],
+        payload_dataset_id=payload.dataset_id,
+        conversation_id=payload.conversation_id,
+        session_id=payload.session_id,
+        has_clarification_response=payload.clarification_response is not None,
     )
     return EventSourceResponse(_stream_chat(payload, db))
 
@@ -3286,39 +3596,40 @@ async def _interpret_early_return(
             "status": "done",
         }
     )
-    yield _sse_data(
-        {
-            "type": "final",
-            "sql": None,
-            "sql_list": [],
-            "answer": answer,
-            "entry_intent": entry_intent,
-            "entry_route": entry_route,
-            "entry_reason": "interpret_result_early_return",
-            "lead_agent_context": lead_agent_context,
-            "original_question": payload.question,
-            "resolved_question": final_state["resolved_question"],
-            "time_context": lead_agent_context.get("time_context"),
-            "route_decision": route_decision,
-            "schema_status": lead_agent_context.get("schema_status"),
-            "clarification": None,
-            "route_payload": route_payload,
-            "turn_event": final_state.get("turn_event"),
-            "query_task_capsule": query_task_capsule,
-            "sql_result": None,
-            "query_profile": None,
-            "explainability": None,
-            "response_metadata": response_metadata,
-            "conversation_id": conv.id,
-            "message_id": assistant_message.id,
-            "title": conv.title,
-            "langfuse_trace_id": trace_context.trace_id,
-            "langfuse_session_id": trace_context.session_id,
-            "observability": trace_context.observability_payload(),
-            "trace_metadata": trace_metadata,
-            "out_capsule": interpret_payload.get("out_capsule"),
-        }
-    )
+    # interpret early return 直接构造 final，需在 yield 前打点，否则客户端断开后可能看不到收尾。
+    final_payload = {
+        "type": "final",
+        "sql": None,
+        "sql_list": [],
+        "answer": answer,
+        "entry_intent": entry_intent,
+        "entry_route": entry_route,
+        "entry_reason": "interpret_result_early_return",
+        "lead_agent_context": lead_agent_context,
+        "original_question": payload.question,
+        "resolved_question": final_state["resolved_question"],
+        "time_context": lead_agent_context.get("time_context"),
+        "route_decision": route_decision,
+        "schema_status": lead_agent_context.get("schema_status"),
+        "clarification": None,
+        "route_payload": route_payload,
+        "turn_event": final_state.get("turn_event"),
+        "query_task_capsule": query_task_capsule,
+        "sql_result": None,
+        "query_profile": None,
+        "explainability": None,
+        "response_metadata": response_metadata,
+        "conversation_id": conv.id,
+        "message_id": assistant_message.id,
+        "title": conv.title,
+        "langfuse_trace_id": trace_context.trace_id,
+        "langfuse_session_id": trace_context.session_id,
+        "observability": trace_context.observability_payload(),
+        "trace_metadata": trace_metadata,
+        "out_capsule": interpret_payload.get("out_capsule"),
+    }
+    _log_chat_stream_checkpoint("interpret_final_payload_ready", **_chat_stream_log_summary(final_payload))
+    yield _sse_data(final_payload)
 
 
 async def _early_route_return(
@@ -3406,35 +3717,36 @@ async def _early_route_return(
     )
     obs_context_manager.__exit__(None, None, None)
 
-    yield _sse_data(
-        {
-            "type": "final",
-            "sql": None,
-            "sql_list": [],
-            "answer": answer,
-            "entry_intent": entry_intent,
-            "entry_route": entry_route,
-            "entry_reason": routing.get("entry_reason"),
-            "lead_agent_context": lead_agent_context,
-            "original_question": payload.question,
-            "resolved_question": final_state["resolved_question"],
-            "time_context": lead_agent_context.get("time_context"),
-            "route_decision": route_decision,
-            "schema_status": lead_agent_context.get("schema_status"),
-            "clarification": None,
-            "route_payload": route_payload,
-            "turn_event": final_state.get("turn_event"),
-            "query_task_capsule": query_task_capsule,
-            "sql_result": None,
-            "query_profile": None,
-            "explainability": None,
-            "response_metadata": response_metadata,
-            "conversation_id": conv.id,
-            "message_id": assistant_message.id,
-            "title": conv.title,
-            "langfuse_trace_id": trace_context.trace_id,
-            "langfuse_session_id": trace_context.session_id,
-            "observability": trace_context.observability_payload(),
-            "trace_metadata": trace_metadata,
-        }
-    )
+    # 普通早退覆盖 reject/clarify/direct_answer/knowledge_qa，统一在 yield 前记录最终可见 payload。
+    final_payload = {
+        "type": "final",
+        "sql": None,
+        "sql_list": [],
+        "answer": answer,
+        "entry_intent": entry_intent,
+        "entry_route": entry_route,
+        "entry_reason": routing.get("entry_reason"),
+        "lead_agent_context": lead_agent_context,
+        "original_question": payload.question,
+        "resolved_question": final_state["resolved_question"],
+        "time_context": lead_agent_context.get("time_context"),
+        "route_decision": route_decision,
+        "schema_status": lead_agent_context.get("schema_status"),
+        "clarification": None,
+        "route_payload": route_payload,
+        "turn_event": final_state.get("turn_event"),
+        "query_task_capsule": query_task_capsule,
+        "sql_result": None,
+        "query_profile": None,
+        "explainability": None,
+        "response_metadata": response_metadata,
+        "conversation_id": conv.id,
+        "message_id": assistant_message.id,
+        "title": conv.title,
+        "langfuse_trace_id": trace_context.trace_id,
+        "langfuse_session_id": trace_context.session_id,
+        "observability": trace_context.observability_payload(),
+        "trace_metadata": trace_metadata,
+    }
+    _log_chat_stream_checkpoint("early_final_payload_ready", **_chat_stream_log_summary(final_payload))
+    yield _sse_data(final_payload)

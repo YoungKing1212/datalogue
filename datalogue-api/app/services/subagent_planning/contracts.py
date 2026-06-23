@@ -13,10 +13,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi.encoders import jsonable_encoder
+
+logger = logging.getLogger(__name__)
 
 CandidateAssetType = Literal["blueprint", "metric", "dimension", "term", "field", "table"]
 QueryType = Literal[
@@ -94,12 +97,18 @@ class CandidateAsset:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "CandidateAsset":
-        asset_type = str(payload.get("asset_type") or "")
+        asset_type = str(payload.get("asset_type") or "")  # 资产来自召回/LLM，错误需保留定位信息。
         usage = str(payload.get("usage") or "candidate")
         if asset_type not in CANDIDATE_ASSET_TYPES:
-            raise QueryPlanValidationError(f"asset_type invalid: {asset_type}")
+            raise QueryPlanValidationError(
+                f"asset_type invalid: '{asset_type}' (valid: {sorted(CANDIDATE_ASSET_TYPES)}), "
+                f"asset_id={payload.get('asset_id')}, name={payload.get('name')}"
+            )
         if usage not in ASSET_USAGES:
-            raise QueryPlanValidationError(f"asset usage invalid: {usage}")
+            raise QueryPlanValidationError(
+                f"asset usage invalid: '{usage}' (valid: {sorted(ASSET_USAGES)}), "
+                f"asset_type={asset_type}, asset_id={payload.get('asset_id')}"
+            )
         return cls(
             asset_type=asset_type,
             asset_id=payload.get("asset_id") or payload.get("id") or "",
@@ -140,7 +149,7 @@ class QueryPlan:
     debug: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.query_type not in QUERY_TYPES:
+        if self.query_type not in QUERY_TYPES:  # 非法枚举必须 fail-fast，让调用方进入 fallback。
             raise QueryPlanValidationError(f"query_type invalid: {self.query_type}")
         if self.execution_strategy not in EXECUTION_STRATEGIES:
             raise QueryPlanValidationError(f"execution_strategy invalid: {self.execution_strategy}")
@@ -319,7 +328,7 @@ def _optional_string_from_payload(value: Any, field_name: str) -> str | None:
 
 
 def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
-    query_type = str(payload.get("query_type") or "")
+    query_type = str(payload.get("query_type") or "")  # LLM JSON 先校验顶层枚举，再逐字段归一化。
     execution_strategy = str(payload.get("execution_strategy") or "")
     planner_source = str(payload.get("planner_source") or "deterministic")
     if query_type not in QUERY_TYPES:
@@ -328,47 +337,75 @@ def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
         raise QueryPlanValidationError(f"execution_strategy invalid: {execution_strategy}")
     if planner_source not in PLANNER_SOURCES:
         raise QueryPlanValidationError(f"planner_source invalid: {planner_source}")
+
+    def _field(field_name: str, fn, *args):
+        """包装字段提取，在校验失败时附加上下文字段名，方便排查。"""
+        try:
+            return fn(*args)
+        except QueryPlanValidationError as e:
+            raise QueryPlanValidationError(
+                f"Field '{field_name}' validation failed: {e}"
+            ) from e
+
     return QueryPlan(
         query_type=query_type,
         execution_strategy=execution_strategy,
         confidence=float(payload.get("confidence") or 0),
-        selected_assets=_assets_from_payload(payload.get("selected_assets"), "selected"),
-        reference_assets=_assets_from_payload(payload.get("reference_assets"), "reference"),
-        rejected_assets=_assets_from_payload(payload.get("rejected_assets"), "rejected"),
-        required_inputs=_required_inputs_from_payload(payload.get("required_inputs")),
+        selected_assets=_field(
+            "selected_assets",
+            _assets_from_payload, payload.get("selected_assets"), "selected",
+        ),
+        reference_assets=_field(
+            "reference_assets",
+            _assets_from_payload, payload.get("reference_assets"), "reference",
+        ),
+        rejected_assets=_field(
+            "rejected_assets",
+            _assets_from_payload, payload.get("rejected_assets"), "rejected",
+        ),
+        required_inputs=_field(
+            "required_inputs",
+            _required_inputs_from_payload, payload.get("required_inputs"),
+        ),
         clarification=payload.get("clarification") if isinstance(payload.get("clarification"), dict) else None,
         fallback_reason=payload.get("fallback_reason"),
         planner_source=planner_source,
         explanation=dict(payload.get("explanation") or {}),
-        decision_factors=_dict_list_from_payload(
-            payload.get("decision_factors"),
+        decision_factors=_field(
             "decision_factors",
+            _dict_list_from_payload, payload.get("decision_factors"), "decision_factors",
         ),
-        planner_warnings=_dict_list_from_payload(
-            payload.get("planner_warnings"),
+        planner_warnings=_field(
             "planner_warnings",
+            _dict_list_from_payload, payload.get("planner_warnings"), "planner_warnings",
         ),
-        governance_suggestions=_dict_list_from_payload(
-            payload.get("governance_suggestions"),
+        governance_suggestions=_field(
             "governance_suggestions",
+            _dict_list_from_payload, payload.get("governance_suggestions"), "governance_suggestions",
         ),
-        detail_rounds=_int_from_payload(payload.get("detail_rounds"), "detail_rounds"),
-        attempted_detail_requests=_strict_dict_list_from_payload(
-            payload.get("attempted_detail_requests"),
+        detail_rounds=_field(
+            "detail_rounds",
+            _int_from_payload, payload.get("detail_rounds"), "detail_rounds",
+        ),
+        attempted_detail_requests=_field(
             "attempted_detail_requests",
+            _strict_dict_list_from_payload, payload.get("attempted_detail_requests"), "attempted_detail_requests",
         ),
-        asset_detail_coverage=_dict_from_payload(
-            payload.get("asset_detail_coverage"),
+        asset_detail_coverage=_field(
             "asset_detail_coverage",
+            _dict_from_payload, payload.get("asset_detail_coverage"), "asset_detail_coverage",
         ),
-        missing_context=_string_list_from_payload(
-            payload.get("missing_context"),
+        missing_context=_field(
             "missing_context",
+            _string_list_from_payload, payload.get("missing_context"), "missing_context",
         ),
-        why_not_generate_sql=_optional_string_from_payload(
-            payload.get("why_not_generate_sql"),
+        why_not_generate_sql=_field(
             "why_not_generate_sql",
+            _optional_string_from_payload, payload.get("why_not_generate_sql"), "why_not_generate_sql",
         ),
-        risk_flags=_string_list_from_payload(payload.get("risk_flags"), "risk_flags"),
+        risk_flags=_field(
+            "risk_flags",
+            _string_list_from_payload, payload.get("risk_flags"), "risk_flags",
+        ),
         debug=dict(payload.get("debug") or {}),
     )

@@ -1,11 +1,12 @@
 # ============================================================
 # File Name   : planner.py
 # Description:
-#   DatasetSubAgent 查询规划的规则兜底 planner。
+#   DatasetSubAgent 查询规划的规则规划器与 LLM Planner 编排入口。
 #
 # Responsibilities:
-#   - 在 LLM 规划不可用或置信不足时，根据候选资产生成保守查询计划。
-#   - 支持明细查询、指标查询和蓝图缺参澄清的基础规则分流。
+#   - 在调用 LLM 前执行确定性预判，短路低风险查询计划。
+#   - 在 LLM 规划不可用或输出不合法时，根据候选资产生成保守查询计划。
+#   - 支持明细查询、指标查询和蓝图缺参澄清的规则分流。
 #
 # Author      : yangkai
 # Created On  : 2026-06-15
@@ -14,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from json import JSONDecodeError
 from copy import deepcopy
@@ -34,8 +36,24 @@ from app.services.subagent_planning.contracts import (
     normalize_query_plan,
 )
 
-DETAIL_PATTERNS = ("明细", "列表", "日志", "记录", "最近", "前", "条", "limit")
+logger = logging.getLogger(__name__)
+
+DETAIL_PATTERNS = ("明细", "列表", "日志", "记录", "最近", "前", "条", "limit")  # LLM 前预判和 fallback 共用信号。
 METRIC_PATTERNS = ("统计", "数量", "总数", "平均", "占比", "汇总", "趋势")
+AGGREGATE_FIELD_PATTERNS = (
+    "总共",
+    "一共",
+    "合计",
+    "总计",
+    "累计",
+    "多少钱",
+    "多少金额",
+    "金额",
+    "万元",
+    "省了",
+    "节省",
+    "节约",
+)
 BLUEPRINT_PATTERNS = ("日报", "周报", "月报", "分析", "报告")
 LOG_DETAIL_PATTERNS = ("日志", "工作日志", "用户日志", "记录")
 DAILY_BLUEPRINT_PATTERNS = ("日报", "个人日报", "任务日报")
@@ -172,7 +190,7 @@ def _assets(candidate_assets: CandidateAssetInput) -> list[CandidateAsset]:
                 continue
             assets.append(CandidateAsset.from_dict(item))
         except (QueryPlanValidationError, TypeError, ValueError):
-            continue
+            continue  # 单个坏资产不能拖垮整轮 planner，后续分支会按剩余资产降级。
     return assets
 
 
@@ -239,7 +257,7 @@ def _required_inputs(blueprint: CandidateAsset | None, routing: Any = None) -> l
             continue
         if _routing_has_input(routing, str(name)):
             continue
-        required.append(
+        required.append(  # 蓝图缺参转 clarify，避免 blueprint_execute 带空参数执行。
             {
                 "name": str(name),
                 "required": True,
@@ -411,6 +429,10 @@ def _asset_column_name(asset: CandidateAsset) -> str:
 
 def _is_log_detail_query(question: str) -> bool:
     return _contains_any(question, LOG_DETAIL_PATTERNS)
+
+
+def _is_aggregate_field_query(question: str) -> bool:
+    return _contains_any(question, AGGREGATE_FIELD_PATTERNS)
 
 
 def _routing_entry_intent(routing: Any) -> str:
@@ -702,13 +724,24 @@ def _reject_blueprint_for_detail(asset: CandidateAsset) -> CandidateAsset:
     return rejected
 
 
-def build_fallback_query_plan(
+def build_rule_based_query_plan(
     question: str,
     candidate_assets: CandidateAssetInput = None,
     *,
     routing: Any = None,
     fallback_reason: str | None = None,
 ) -> QueryPlan:
+    """根据候选资产构造规则查询计划。
+
+    该接口同时服务两个阶段：
+    - `fallback_reason is None`：作为 LLM 调用前的确定性预判器，允许明显可执行的
+      明细查询直接进入 QueryGraph。
+    - `fallback_reason` 有值：作为 LLM 调用失败或响应校验失败后的规则兜底，并在
+      QueryPlan 中保留失败原因与 planner warning。
+
+    本函数不调用 LLM，只基于问题文本、路由信息和候选资产生成保守的 QueryPlan。
+    """
+
     assets = _assets(candidate_assets)
     all_blueprints = _assets_by_type(assets, "blueprint")
     blueprints = _assets_by_type(assets, "blueprint", matched_only=True)
@@ -728,7 +761,7 @@ def build_fallback_query_plan(
     field_table_assets = [asset for asset in assets if asset.asset_type in {"field", "table"}]
     metric_dimension_assets = [asset for asset in assets if asset.asset_type in {"metric", "dimension"}]
     is_detail_query = _contains_any(question, DETAIL_PATTERNS) or _routing_is_detail_query(routing)
-    is_metric_query = _contains_any(question, METRIC_PATTERNS)
+    is_metric_query = _contains_any(question, METRIC_PATTERNS) or _is_aggregate_field_query(question)
     is_blueprint_query = _contains_any(question, BLUEPRINT_PATTERNS)
     detail_with_field_context = is_detail_query and bool(field_table_assets)
     planner_source = "fallback" if fallback_reason else "deterministic"
@@ -743,7 +776,7 @@ def build_fallback_query_plan(
     )
     template_debug = _dataset10_log_template_debug(question, routing, field_table_assets)
     if is_blueprint_query and blueprint and required_inputs and not detail_with_field_context:
-        return QueryPlan(
+        return QueryPlan(  # 蓝图缺必填参数必须早退澄清，防止模板误执行。
             query_type="blueprint_query",
             execution_strategy="clarify",
             confidence=0.78,
@@ -770,7 +803,7 @@ def build_fallback_query_plan(
         )
 
     if is_blueprint_query and blueprint and not detail_with_field_context:
-        return QueryPlan(
+        return QueryPlan(  # 参数满足且非明细时才允许 blueprint_execute。
             query_type="blueprint_query",
             execution_strategy="blueprint_execute",
             confidence=0.82,
@@ -798,7 +831,7 @@ def build_fallback_query_plan(
         and _is_dataset10_log_template_query(question, routing)
         and _is_daily_blueprint(blueprint)
     ):
-        template_source = "template" if template_debug and not fallback_reason else planner_source
+        template_source = "template" if template_debug and not fallback_reason else planner_source  # 明细问法走 QueryGraph。
         rejected_daily_blueprints = [
             _reject_blueprint_for_detail(asset)
             for asset in blueprints
@@ -935,6 +968,35 @@ def build_fallback_query_plan(
             governance_suggestions=common_suggestions,
         )
 
+    if is_metric_query and field_table_assets:
+        return QueryPlan(
+            query_type="metric_query",
+            execution_strategy="query_graph",
+            confidence=0.62,
+            selected_assets=_selected_detail_assets(field_table_assets),
+            fallback_reason=fallback_reason or "aggregate_field_table_fallback",
+            planner_source=planner_source,
+            explanation={
+                "summary": "识别为统计类查询，使用字段和表资产构建 QueryGraph。",
+                "why_continue_without_metric": "字段和表资产已覆盖问题，缺少指标或维度资产时仍可尝试生成聚合查询。",
+            },
+            decision_factors=[
+                _factor(
+                    "metric_query_signal",
+                    "问题包含统计、金额或聚合查询信号。",
+                    [*METRIC_PATTERNS, *AGGREGATE_FIELD_PATTERNS],
+                ),
+                _factor(
+                    "aggregate_field_table_coverage",
+                    "已召回字段或表，可继续构建 QueryGraph。",
+                    [_asset_label(asset) for asset in field_table_assets[:8]],
+                ),
+            ],
+            planner_warnings=common_warnings,
+            governance_suggestions=common_suggestions,
+            debug=_query_plan_debug(field_table_assets),
+        )
+
     rejected_asset_keys = {
         (asset.asset_type, str(asset.asset_id))
         for asset in rejected_blueprints
@@ -947,6 +1009,22 @@ def build_fallback_query_plan(
             if (asset.asset_type, str(asset.asset_id)) not in rejected_asset_keys
         ],
     ]
+
+    logger.info(
+        "build_rule_based_query_plan 触发规则拒绝: question_preview=%s,"
+        " is_detail_query=%s, is_metric_query=%s, is_blueprint_query=%s,"
+        " metric_dimension_asset_count=%d, field_table_asset_count=%d,"
+        " blueprint_count=%d, fallback_reason=%s, candidate_asset_count=%d",
+        str(question)[:120],
+        is_detail_query,
+        is_metric_query,
+        is_blueprint_query,
+        len(metric_dimension_assets),
+        len(field_table_assets),
+        len(blueprints),
+        fallback_reason,
+        len(assets),
+    )
 
     return QueryPlan(
         query_type="unsupported",
@@ -1027,6 +1105,24 @@ def _compact_prompt_value(value: Any, *, depth: int = 0) -> Any:
             for key, item in list(value.items())[:_prompt_list_limit()]
         }
     return _truncate_text(str(value))
+
+
+def _planner_response_debug(response: Any) -> str:
+    """生成 LLM 原始响应的安全诊断摘要，供响应内容为空或 JSON 非法时排查。"""
+
+    content = _planner_response_content(response)
+    payload: dict[str, Any] = {
+        "response_type": f"{type(response).__module__}.{type(response).__name__}",
+        "content_type": f"{type(content).__module__}.{type(content).__name__}",
+        "response_repr": _truncate_text(repr(response), 2000),
+    }
+    if content not in (None, ""):
+        payload["content_preview"] = _truncate_text(str(content), 2000)
+    for attr in ("id", "name", "response_metadata", "usage_metadata", "additional_kwargs"):
+        value = getattr(response, attr, None)
+        if value not in (None, "", [], {}):
+            payload[attr] = _compact_prompt_value(value)
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _detail_loop_public_key_is_dangerous(key: Any) -> bool:
@@ -1415,6 +1511,16 @@ def _validate_hard_rules(
     if plan.query_type == "detail_query" and plan.execution_strategy == "clarify" and has_field_or_table:
         raise QueryPlanValidationError("detail_query cannot clarify when field/table candidates exist")
 
+    # 记录通过校验的关键信息，方便排查
+    logger.debug(
+        "subagent_query_planner hard rules passed: query_type=%s, execution_strategy=%s, "
+        "has_field_or_table=%s, candidate_asset_count=%d",
+        plan.query_type,
+        plan.execution_strategy,
+        has_field_or_table,
+        len(_assets(candidate_assets)),
+    )
+
 
 def _is_llm_call_error(exc: BaseException) -> bool:
     if isinstance(exc, (RuntimeError, TimeoutError, ConnectionError)):
@@ -1473,7 +1579,15 @@ def plan_query(
     multiturn_context: Any = None,
     lead_agent_context: Any = None,
 ) -> QueryPlan:
-    deterministic_plan = build_fallback_query_plan(
+    """生成 DatasetSubAgent 查询计划。
+
+    执行顺序：
+    1. 先调用 `build_rule_based_query_plan` 做确定性预判；低风险明细查询可直接返回。
+    2. 预判不能短路时调用 LLM Planner，并校验 QueryPlan 契约和硬规则。
+    3. LLM 不可用、返回空内容或响应不合法时，再调用同一规则规划器生成兜底计划。
+    """
+
+    deterministic_plan = build_rule_based_query_plan(
         question=question,
         routing=routing,
         candidate_assets=candidate_assets,
@@ -1511,7 +1625,7 @@ def plan_query(
             raise
         validation_error = _compact_error_text(exc)
         return _with_validation_error(
-            build_fallback_query_plan(
+            build_rule_based_query_plan(
                 question=question,
                 routing=routing,
                 candidate_assets=candidate_assets,
@@ -1551,14 +1665,26 @@ def plan_query(
                 pass
             raise
         validation_error = _compact_error_text(exc)
+        logger.warning(
+            "subagent_query_planner LLM 调用失败，回退到规则兜底 plan。"
+            " validation_error=%s",
+            validation_error,
+        )
         plan = _with_validation_error(
-            build_fallback_query_plan(
+            build_rule_based_query_plan(
                 question=question,
                 routing=routing,
                 candidate_assets=candidate_assets,
                 fallback_reason=validation_error,
             ),
             validation_error,
+        )
+        logger.info(
+            "subagent_query_planner LLM 调用失败 fallback plan: execution_strategy=%s, "
+            "explanation_summary=%s, fallback_reason=%s",
+            plan.execution_strategy,
+            (plan.explanation or {}).get("summary"),
+            plan.fallback_reason,
         )
         try:
             tracer.end_generation(
@@ -1578,10 +1704,22 @@ def plan_query(
         return plan
 
     response_content = _planner_response_content(response)
+    logger.debug(
+        "subagent_query_planner LLM 原始响应: raw_response_debug=%s",
+        _planner_response_debug(response),
+    )
     try:
         payload = _safe_json_parse(response_content)
         plan = normalize_query_plan(payload)
         _validate_hard_rules(plan, question=question, candidate_assets=candidate_assets)
+        logger.info(
+            "subagent_query_planner LLM 规划成功: query_type=%s, execution_strategy=%s, "
+            "confidence=%.2f, selected_asset_count=%d",
+            plan.query_type,
+            plan.execution_strategy,
+            plan.confidence,
+            len(plan.selected_assets),
+        )
         try:
             tracer.end_generation(
                 generation,
@@ -1600,14 +1738,32 @@ def plan_query(
         return plan
     except (JSONDecodeError, QueryPlanValidationError, ValueError, TypeError) as exc:
         validation_error = _compact_error_text(exc)
+        # 详细日志：记录 LLM 返回但校验失败的完整响应，便于排查回退原因
+        logger.warning(
+            "subagent_query_planner LLM 响应校验失败，回退到规则兜底 plan。"
+            " validation_error=%s, raw_response_length=%d, raw_response_preview=%s,"
+            " raw_response_debug=%s",
+            validation_error,
+            len(str(response_content)),
+            str(response_content)[:2000],
+            _planner_response_debug(response),
+        )
         plan = _with_validation_error(
-            build_fallback_query_plan(
+            build_rule_based_query_plan(
                 question=question,
                 routing=routing,
                 candidate_assets=candidate_assets,
                 fallback_reason=validation_error,
             ),
             validation_error,
+        )
+        logger.info(
+            "subagent_query_planner fallback plan: execution_strategy=%s, planner_source=%s, "
+            "explanation_summary=%s, fallback_reason=%s",
+            plan.execution_strategy,
+            plan.planner_source,
+            (plan.explanation or {}).get("summary"),
+            plan.fallback_reason,
         )
         try:
             tracer.end_generation(
@@ -1639,6 +1795,12 @@ def plan_query_with_detail_context(
     multiturn_context: Any = None,
     lead_agent_context: Any = None,
 ) -> QueryPlan | dict[str, Any]:
+    """在资产详情补合循环中生成查询计划或下一轮详情请求。
+
+    与 `plan_query` 不同，本接口的 LLM 允许先返回 `asset_detail_requests`，请求补充
+    表结构或资产详情；当 LLM 调用失败或最终计划不合法时，仍回到规则规划器生成保守计划。
+    """
+
     messages = [
         SystemMessage(content=_planner_system_prompt(detail_loop_enabled=True)),
         HumanMessage(
@@ -1674,7 +1836,7 @@ def plan_query_with_detail_context(
             raise
         validation_error = _compact_error_text(exc)
         return _with_validation_error(
-            build_fallback_query_plan(
+            build_rule_based_query_plan(
                 question=question,
                 routing=routing,
                 candidate_assets=lightweight_catalog,
@@ -1715,7 +1877,7 @@ def plan_query_with_detail_context(
             raise
         validation_error = _compact_error_text(exc)
         plan = _with_validation_error(
-            build_fallback_query_plan(
+            build_rule_based_query_plan(
                 question=question,
                 routing=routing,
                 candidate_assets=lightweight_catalog,
@@ -1741,6 +1903,10 @@ def plan_query_with_detail_context(
         return plan
 
     response_content = _planner_response_content(response)
+    logger.debug(
+        "subagent_query_planner (detail loop) LLM 原始响应: raw_response_debug=%s",
+        _planner_response_debug(response),
+    )
     try:
         payload = _safe_json_parse(response_content)
         if parse_asset_detail_requests(payload):
@@ -1764,6 +1930,14 @@ def plan_query_with_detail_context(
             plan,
             lightweight_catalog=lightweight_catalog,
         )
+        logger.info(
+            "subagent_query_planner (detail loop) LLM 规划成功: query_type=%s, execution_strategy=%s, "
+            "confidence=%.2f, selected_asset_count=%d",
+            plan.query_type,
+            plan.execution_strategy,
+            plan.confidence,
+            len(plan.selected_assets),
+        )
         try:
             tracer.end_generation(
                 generation,
@@ -1782,14 +1956,30 @@ def plan_query_with_detail_context(
         return plan
     except (JSONDecodeError, QueryPlanValidationError, ValueError, TypeError) as exc:
         validation_error = _compact_error_text(exc)
+        logger.warning(
+            "subagent_query_planner (detail loop) LLM 响应校验失败，回退到规则兜底 plan。"
+            " validation_error=%s, raw_response_length=%d, raw_response_preview=%s,"
+            " raw_response_debug=%s",
+            validation_error,
+            len(str(response_content)),
+            str(response_content)[:2000],
+            _planner_response_debug(response),
+        )
         plan = _with_validation_error(
-            build_fallback_query_plan(
+            build_rule_based_query_plan(
                 question=question,
                 routing=routing,
                 candidate_assets=lightweight_catalog,
                 fallback_reason=validation_error,
             ),
             validation_error,
+        )
+        logger.info(
+            "subagent_query_planner (detail loop) fallback plan: execution_strategy=%s, "
+            "explanation_summary=%s, fallback_reason=%s",
+            plan.execution_strategy,
+            (plan.explanation or {}).get("summary"),
+            plan.fallback_reason,
         )
         try:
             tracer.end_generation(

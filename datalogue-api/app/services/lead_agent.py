@@ -131,7 +131,7 @@ def build_tool_policy(
     """ToolPolicy：生成 LeadAgent 本轮可用工具和硬性边界。"""
 
     conversation_dataset_id = conversation.dataset_id if conversation else None
-    locked_dataset_id = (
+    locked_dataset_id = (  # 数据集锁优先级：payload > 多轮 active > 会话绑定。
         payload_dataset_id
         if payload_dataset_id is not None
         else (active_dataset_id if active_dataset_id is not None else conversation_dataset_id)
@@ -143,7 +143,7 @@ def build_tool_policy(
         dataset_lock_source = "multiturn_active"
     elif conversation_dataset_id is not None:
         dataset_lock_source = "conversation"
-    constraints = [
+    constraints = [  # 进入 Planner 提示词和 audit_trace，约束 LeadAgent 控制面边界。
         "LeadAgent 只能使用控制面工具，不可读取指标、维度、术语、蓝图、SQL 或字段级 schema。",
         "ToolPolicy.blocked_tools 中的工具即使被 LLM 规划也不能执行。",
         "未确认 dataset 时不可执行 subagent_dispatch。",
@@ -269,7 +269,7 @@ def _deterministic_tool_plan(
     allowed_tools = set(tool_policy.get("allowed_tools") or [])
     if not set(FAST_PATH_TOOLS).issubset(allowed_tools):
         return None
-    return {
+    return {  # 只在“锁定数据集 + 新自包含查询”成立时绕开 LLM。
         "reasoning_summary": "锁定数据集的新自包含查询命中确定性控制面快路径。",
         "selected_skills": FAST_PATH_SKILLS,
         "tool_calls": [
@@ -307,7 +307,7 @@ def plan_tool_calls_with_llm(
     if deterministic_plan:
         if tracer is not None and trace_context is not None:
             try:
-                tracer.start_span(
+                tracer.start_span(  # 跳过 LLM 也写同名 observation，便于 Langfuse 对比路径。
                     trace_context,
                     node="llm.lead_agent_tool_planner",
                     display_name="llm.lead_agent_tool_planner",
@@ -501,7 +501,11 @@ def plan_tool_calls_with_llm(
             return build_fallback_plan(reason="skill_selector_invalid_json")
 
         selected_skill_names = skill_selection["selected_skills"]
-        selected_skill_payloads = _skill_payloads_by_name(skills, selected_skill_names)
+        selected_skill_payloads = _skill_payloads_by_name(skills, selected_skill_names)  # 取完整 skill 后再裁剪。
+        selected_skill_summaries = [  # tool_schemas 已携带工具信息，这里只给 Planner skill 摘要。
+            {"name": s["name"], "purpose": s.get("purpose", "")}
+            for s in selected_skill_payloads
+        ]
         disclosed_tool_schemas = _tool_schemas_for_skills(selected_skill_names, skills, tool_policy)
 
         # Phase 3: 使用同一批过滤后的资产，按 tool_planning 阶段重新投影。
@@ -535,7 +539,7 @@ def plan_tool_calls_with_llm(
             "question": question,
             "conversation": conversation_summary,
             "tool_policy": tool_policy,
-            "selected_skills": selected_skill_payloads,
+            "selected_skills": selected_skill_summaries,
             "tool_schemas": disclosed_tool_schemas,
             "candidate_assets": tool_asset_projection,
         }

@@ -29,22 +29,22 @@ LITELLM_SDK_PROVIDERS = {"litellm_sdk", "litellm-sdk"}
 STRUCTURED_OUTPUT_RESPONSE_FORMAT = {"type": "json_object"}
 ROLE_CALL_POLICIES: dict[str, dict[str, Any]] = {
     "intent": {
-        "max_tokens": 256,
+        "max_tokens": 20480,
         "response_format": STRUCTURED_OUTPUT_RESPONSE_FORMAT,
         "structured_output": True,
     },
     "lead_agent": {
-        "max_tokens": 800,
+        "max_tokens": 20480,
         "response_format": STRUCTURED_OUTPUT_RESPONSE_FORMAT,
         "structured_output": True,
     },
     "dsl": {
-        "max_tokens": 800,
+        "max_tokens": 20480,
         "response_format": STRUCTURED_OUTPUT_RESPONSE_FORMAT,
         "structured_output": True,
     },
     "sql_audit": {
-        "max_tokens": 512,
+        "max_tokens": 20480,
         "structured_output": False,
     },
 }

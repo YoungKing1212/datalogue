@@ -9,6 +9,8 @@
 - 本文件不是启动上下文；需要历史背景时，按关键词、模块名、文件名或任务名检索。
 - 任务路由优先读取 `docs/上下文入口.md`，再按需检索本文件。
 - 旧文件 `.codex/项目记忆.md` 已在 2026-06-20 压缩迁移到本文件。
+- 新增或修改关键代码时，必须在重要分支、边界条件、方法调用、关键赋值、跨层状态写入/回放、外部副作用、降级/fallback 和异常处理处补充中文关键行级注释；优先写在对应调用或关键操作同一行的行尾，不逐行机械注释。
+- “最新详细记录”超过 10 条时，必须把较早详细记录压缩进“历史压缩记录”；“历史压缩记录”中的压缩条目超过 10 条时，继续深度压缩为更高层主题摘要。
 
 ## 当前协作默认值
 
@@ -22,58 +24,13 @@
 
 ## 历史压缩记录
 
-### 2026-06-05
+### 2026-06-05 至 2026-06-14
 
-- 建立项目开发标准、项目记忆规则和 Python 文件头注释模板。
-- 前端侧隐藏语义治理助手入口，优化数据集数据预览组件。
-
-### 2026-06-08
-
-- 建立问数入口意图分类与路由策略。
-- 分析蓝图从 mock SQL 分析逐步接入真实 AI/语义执行链路，补充 SQL 参数保护、耗时日志、同步请求、手动草稿、创建向导 UI、发布流程简化和详情节点修复。
-- 修复入口分类、蓝图执行和 SSE 序列化问题。
-- 增加数据集级 SQL 查询约束配置。
-
-### 2026-06-09
-
-- 升级 NL2DSL 资产引用 Schema，使用语义资产解析替换指标解析节点。
-- 接入业务术语运行时归一化和数据集问数上下文组装服务。
-- 建立 SQL 静态安全校验、SQLGlot AST 解析、方言规范化、失败诊断、自动修复与重试闭环。
-- 增加回答解释、低置信确认、SQL 结果折叠、SQL 复制、风险提示逐行展示等前端体验。
-- 修复历史会话数据集绑定丢失。
-- 增强术语和蓝图语义验证。
-
-### 2026-06-10
-
-- 完成术语冲突澄清回复闭环。
-- 增强多数据源能力和企业驱动离线交付方案。
-- 接入 LiteLLM 前端配置化、模型配置表单、自动填充和测试连接能力。
-- 产出 Langfuse 可观测能力需求与开发文档，并支持导出 Word。
-
-### 2026-06-11
-
-- 接入 Langfuse 本地部署、SDK 运行环境修复、Trace 深链、查询审计、内嵌 Trace 渲染和历史消息 Trace 可见性。
-- 将术语功能降级为语义词典。
-- 固定数据集能力 Tab 像素布局，做响应式与可访问性收尾。
-- 补齐 Langfuse 耗时、Token、性能指标和中文/原始节点名口径。
-- 支持 LLM Think 模式配置化关闭。
-- 试验 shadcn/ui 迁移，后因视觉和回归问题回滚。
-
-### 2026-06-12
-
-- 建立 Dataset SubAgent Manifest 治理契约和 LeadAgent Manifest 自动路由。
-- 接入 LeadAgent 控制面 Tools、ToolPolicy、Skills 自主决策、Planner Langfuse 监测、渐进式披露和自动路由报告生成。
-- 区分 Lead/Sub Trace 层级，修复 Manifest 候选展示名。
-- 建立多轮能力基础：SubAgent 数据面 merge/digest、LeadAgent 控制面记忆、ConversationStore、胶囊管道、澄清跨轮恢复、消息压缩、Langfuse 多轮观测、回归与灰度。
-- 修复 assistant 聊天链路稳定 session 与后端会话 ID 映射。
-- 生成用户手册、操作手册和真实页面截图版文档。
-- 完成 ChatBI 思考过程三层展示和 Langfuse Prompt 批量创建脚本。
-
-### 2026-06-13 至 2026-06-14
-
-- 增强 LeadAgent LLM 交互日志，修复意图识别澄清回复。
-- 产出数语系统设计方案文档。
-- 修复术语澄清早退顺序、LangGraph noop、工作日志问题页面链路等问题。
+- 建立早期工程规范、项目记忆、Python 文件头模板和基础前端工作台体验。
+- 打通问数入口、蓝图分析、NL2DSL/语义资产、术语归一化、数据集上下文、SQL 安全校验与自动修复、回答解释和低置信确认等问数基础链路。
+- 接入 LiteLLM 配置化、Langfuse 本地观测、Trace 深链、查询审计、历史 Trace 可见性、Think 模式关闭和相关设计/开发文档。
+- 建立 Dataset SubAgent Manifest、LeadAgent 控制面工具/Planner、渐进式披露、多轮 ConversationStore/capsule/澄清恢复、ChatBI 思考过程和 Prompt 批量创建基础。
+- 持续修复入口分类、SSE 序列化、历史会话数据集绑定、术语澄清早退、LangGraph noop、工作日志页面链路、Manifest 展示和 assistant-ui 会话映射等早期问题。
 
 ### 2026-06-15
 
@@ -123,6 +80,12 @@
 - 合并本地 Docker Compose 系统 PostgreSQL 与 Langfuse PostgreSQL：删除独立 `langfuse-postgres`，让 Langfuse 使用同一 PostgreSQL 实例中的独立 database；迁移后 Langfuse public 表数量 70，`curl -I http://localhost:3000` 返回 200。
 - Manifest 治理与执行前 fail-closed 门禁：阻断 current Manifest 缺失、schema stale、review 非 current、权限未允许、quality failed 和低置信路由；新增 rollback API 和前端 Manifest 面板。验证包括 166 条后端测试、`py_compile`、前端 lint/build。
 - 新增 `datalogue-api/AGENTS.md`，固化 API 子目录 Codex 交接规则。
+- 将旧版中文项目记忆压缩迁移为英文文件名 `.codex/project-memory.md`，同步更新 Agent/Claude/上下文入口引用，保留中文正文和任务级检索线索。
+
+### 2026-06-22
+
+- 补齐数据库字典字段、后续新增表和 LangGraph checkpoint 相关表/字段中文注释迁移，真实 PostgreSQL 抽查确认表注释和字段注释缺失数为 0。
+- 替换前端侧栏品牌 Logo 与浏览器 favicon，完成桌面和移动视口可见性检查。
 
 ## 高价值判断
 
@@ -134,30 +97,79 @@
 
 ## 最新详细记录
 
-### 2026-06-20 18:13 · 项目记忆英文文件名与中文压缩内容迁移
-
-- 涉及文件：`datalogue-api/AGENTS.md`、`AGENTS.md`、`CLAUDE.md`、`docs/上下文入口.md`、`.codex/project-memory.md`、`.codex/项目记忆.md`
-- 关键改动：将项目记忆文件名改为英文 `.codex/project-memory.md`，内容保持中文；把旧 `.codex/项目记忆.md` 的 1100 多行完成记录压缩为按日期和主题组织的可检索摘要；更新 Agent/Claude/上下文入口文档中的项目记忆路径；删除旧中文文件。
-- 验证方式：使用 `rg` 检查旧文件名引用；读取新文件和入口文档；执行 `git diff --check`。
-- 残留风险：压缩版保留任务级线索和关键判断，不再逐字保存所有历史记录；如需旧版精确措辞，需要从 Git 历史中恢复。
-
-### 2026-06-22 11:35 · 数据库字典字段注释更新
-
-- 涉及文件：`datalogue-api/alembic/versions/l7m8n9o0p1q2_add_dictionary_column_comments.py`、`datalogue-api/alembic/versions/m8n9o0p1q2r3_add_late_table_comments.py`、`datalogue-api/alembic/versions/n9o0p1q2r3s4_complete_existing_comments.py`、`datalogue-api/tests/test_dictionary_column_comments.py`、`.codex/project-memory.md`
-- 关键改动：新增 Alembic 迁移，为数据源状态、消息角色、字段语义角色、审核状态、术语类型、蓝图实现类型、入口路由、Manifest 审核状态等字典字段追加统一的 `字典：code=中文含义` 注释；补充 `conversation_state`、`dataset_subagent_manifest`、`query_artifact` 三个后续新增表的表级中文注释；检查当前 PostgreSQL `public` schema 后，继续补齐 `alembic_version`、LangGraph checkpoint 表、`conversation_state`、`dataset_subagent_manifest`、`query_artifact`、`source_table`、`source_column` 的缺失表/字段注释；迁移会检查表和字段存在性，兼容本地库结构差异。
-- 验证方式：执行 `python3 -m py_compile`；执行 `cd datalogue-api && pytest tests/test_dictionary_column_comments.py -q`；执行 `cd datalogue-api && alembic upgrade head`；通过 PostgreSQL `col_description` 抽查字典字段注释已写入真实数据库；通过 `obj_description` 抽查表注释已写入真实数据库；最后用缺失统计 SQL 确认 `public` schema 表注释缺失数为 0、字段注释缺失数为 0，当前 Alembic 版本为 `n9o0p1q2r3s4 (head)`。
-- 残留风险：字典值来自当前代码、前端选项和既有注释中的稳定取值；未来新增状态码、新表或新增字段时必须同步维护中文注释迁移。
-
-### 2026-06-22 11:45 · 前端品牌 Logo 与浏览器标题图标替换
-
-- 涉及文件：`datalogue-web/public/datalogue-logo.png`、`datalogue-web/public/datalogue-favicon.png`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/styles.css`、`datalogue-web/index.html`、`.codex/project-memory.md`
-- 关键改动：基于新品牌图裁剪生成完整页面 logo 和方形 D 标识 favicon；侧边栏品牌区从 CSS 绘制标识改为图片资产；浏览器标题图标从旧 `favicon.svg` 切换为新的 PNG favicon；将侧栏 logo 显示宽度从 152px 逐步收敛到 112px，并减少品牌区底部留白。
-- 验证方式：执行 `cd datalogue-web && npm run lint`；执行 `cd datalogue-web && npm run build`；启动 `npm run dev -- --host 127.0.0.1` 后用 in-app Browser 检查 `/` 桌面视口和 `390x844` 移动视口，确认侧栏 logo 加载完成、favicon href 指向 `/datalogue-favicon.png`、侧栏导航到 `/chat` 后 logo 仍可见且控制台无 warn/error；优化后复查桌面视口，logo 实际渲染为 112x49，品牌区高度约 63px。
-- 残留风险：窄视口仍沿用现有固定侧栏布局，本次只验证 logo 不丢失、不溢出；未调整整体移动端布局。
-
 ### 2026-06-22 12:06 · 数据集页面数据表计数显示已选表
 
 - 涉及文件：`datalogue-web/src/components/datasets.jsx`、`datalogue-web/tests/unit/components/datasets-selected-table-count.test.jsx`、`.codex/project-memory.md`
 - 关键改动：将数据集语义能力工作区顶部“数据表”能力卡计数从 `allSourceTables.length` 改为 `selectedTableIds.size`，避免显示当前连接 schema 的全量表数量；新增组件回归测试，模拟 schema 3 张表但数据集只选 1 张表，固定顶部能力卡显示 1。
 - 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/components/datasets-selected-table-count.test.jsx` 确认测试红灯，失败输出显示“数据表”按钮 count 为 3；修复后再次执行该命令通过；执行 `cd datalogue-web && npm test`，3 个测试文件 14 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过。
 - 残留风险：本次只修正顶部能力卡计数；左侧“已选择/未选择”分组仍按当前搜索过滤结果计数，保持原有交互语义。
+
+### 2026-06-22 12:57 · LeadAgent 两阶段 Planner Prompt 去重并同步 Langfuse
+
+- 涉及文件：`datalogue-api/app/prompts/lead_agent.py`、`.codex/project-memory.md`
+- 关键改动：压缩 `lead_agent_skill_selector` 和 `lead_agent_tool_planner` 的重复说明；第一阶段聚焦 Skill 选择边界，第二阶段保留工具规划、candidate_assets 使用和多轮追问约束；两个 prompt 输出 JSON 契约保持不变；通过 Langfuse Prompt Management 将 `lead_agent_skill_selector`、`lead_agent_tool_planner` 的 `production` label 同步为 v4。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_observability.py tests/test_lead_agent_tools.py -q`，47 条用例通过；执行 Langfuse 同步后重新拉取两个 prompt，确认远端 v4 内容与本地注册表完全一致；对比本地 prompt 长度从 3799 字符降至 3053 字符。
+- 残留风险：本次只优化系统提示词文本，未新增真实 `/chat` 回放样例；后续若观察到 Skill 选择或 dispatch 倾向变化，需要结合 Langfuse trace 再微调规则顺序。
+
+### 2026-06-22 13:04 · 新建对话固定进入最近对话顶部
+
+- 涉及文件：`datalogue-web/src/assistant/ThreadList.jsx`、`datalogue-web/tests/unit/assistant/thread-list-new-conversation.test.jsx`、`datalogue-api/app/api/conversation.py`、`datalogue-api/tests/test_conversation.py`、`.codex/project-memory.md`
+- 关键改动：新建对话按钮创建后先刷新 assistant-ui thread list，再跳转到新会话，避免本地运行时把新 thread 追加到列表底部；后端 `/api/conversation` 列表排序增加 `updated_at desc nullslast`、`created_at desc nullslast`、`id desc` 稳定兜底。
+- 验证方式：执行 `cd datalogue-web && npm test -- tests/unit/assistant/thread-list-new-conversation.test.jsx`；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_conversation.py -q`；执行 `cd datalogue-web && npm run lint`、`npm run build`；使用 in-app Browser 打开 `http://localhost:5173/chat`，点击最近对话区域“新对话”，确认跳转 `/chat/4` 后最近对话第一项和 active 项均为“新对话”，控制台无 error/warn。
+- 残留风险：本地验证会在开发库里额外创建空“新对话”测试记录；本次未清理用户现有对话数据。
+
+### 2026-06-23 10:56 · SubAgent Planner 金额聚合兜底不再误拒
+
+- 涉及文件：`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/tests/test_subagent_query_planner.py`、`.codex/project-memory.md`
+- 关键改动：为规则规划器增加金额/合计类聚合问法识别，例如“总共”“多少钱”“万元”“省了”“节省”；当 LLM 返回空响应或非法 JSON，且候选资产中已有字段/表但没有指标/维度资产时，不再落入 `unsupported/reject`，而是生成 `metric_query + query_graph` 计划并把字段/表作为 selected assets 交给 QueryGraph 继续生成 SQL。
+- 验证方式：先执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py::test_rule_based_aggregate_amount_query_uses_field_table_assets -q` 确认新增用例红灯，失败表现为 `unsupported`；修复后再次执行该用例通过；补充 `plan_query` 空 LLM 响应链路测试并通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py -q`，33 条用例通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_run.py -q`，14 条用例通过。
+- 残留风险：本次修复聚焦 planner fallback，不直接解决 DeepSeek 空响应本身；如果真实 SQL 仍生成失败，需要继续按 QueryGraph 的最终 DSL/SQL、dataset 12 字段描述和 Langfuse trace 取证。
+
+### 2026-06-23 11:07 · `/chat/stream` 主链路行级日志增强
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_chat.py`、`.codex/project-memory.md`
+- 关键改动：新增 `_chat_stream_log_summary()` 和 `_log_chat_stream_checkpoint()`，统一 `/chat/stream` 关键节点日志格式；在请求入口、多轮包装、会话准备、trace context、gateway 分类、LeadAgent 路由、早退分支、SubAgent 候选资产/query plan/result、fanout、Graph 完成、助手消息落库和 final payload 输出前增加 `chat.stream.<checkpoint>` 行级日志，日志摘要包含 `entry_route`、`entry_reason`、`query_plan_type`、`planner_source`、`fallback_reason`、`has_sql`、`sql_count`、`has_error`、`answer_len` 等字段。
+- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_chat.py::TestChatAPI::test_chat_stream_log_summary_extracts_debug_fields -q` 确认新增 helper 测试红灯，失败原因为 `_chat_stream_log_summary` 不存在；实现后再次执行该用例通过；执行 `cd datalogue-api && python3 -m ruff check app/api/chat.py tests/test_chat.py` 通过。
+- 残留风险：本次验证覆盖日志摘要 helper 和静态检查，未启动本地 `/chat` 页面做真实 SSE 日志回放；如果需要排查某个具体问题，仍应结合后端日志、DevTools Network final payload 和 Langfuse trace 三方对齐。
+
+### 2026-06-23 11:07 · SubAgent 规则规划器中性命名与接口注释
+
+- 涉及文件：`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/app/services/subagent_planning/__init__.py`、`datalogue-api/tests/test_subagent_query_planner.py`、`docs/上下文入口.md`、`docs/superpowers/plans/2026-06-15-subagent-query-planning.md`、`docs/superpowers/plans/2026-06-17-subagent-planner-asset-detail-loop.md`、`.codex/project-memory.md`
+- 关键改动：将 `build_fallback_query_plan` 更名为 `build_rule_based_query_plan`，公共导出和测试引用同步更新；补全规则规划器、`plan_query()`、`plan_query_with_detail_context()` 的接口 docstring，明确 `fallback_reason is None` 是 LLM 前确定性预判，有值时才是 LLM 失败后的规则兜底。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py -q`；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_run.py -q`；执行 `cd datalogue-api && .venv/bin/python -m py_compile app/services/subagent_planning/planner.py app/services/subagent_planning/__init__.py`；执行 `rg -n "build_fallback_query_plan" datalogue-api/app datalogue-api/tests docs` 确认代码与当前项目文档入口无旧接口名；执行 `git diff --check -- datalogue-api/app/services/subagent_planning/planner.py datalogue-api/app/services/subagent_planning/__init__.py datalogue-api/tests/test_subagent_query_planner.py docs/上下文入口.md docs/superpowers/plans/2026-06-15-subagent-query-planning.md docs/superpowers/plans/2026-06-17-subagent-planner-asset-detail-loop.md .codex/project-memory.md`。
+- 残留风险：本次是命名和注释澄清，不改变 planner 的执行策略；如果仓库外部代码仍直接 import 旧函数名，需要同步迁移。
+
+### 2026-06-23 11:17 · `/chat/stream` 日志链路代码注释增强
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`.codex/project-memory.md`
+- 关键改动：围绕 `_chat_stream_log_summary()`、`_log_chat_stream_checkpoint()` 和 `/chat/stream` 主链路 checkpoint 增加行级中文注释；注释解释各日志点对应的链路事实，例如请求入口、会话落库、trace 创建、gateway 分类、LeadAgent 路由、早退分支、SubAgent 候选资产/query plan/result、Graph 完成、answer 兜底、final payload 和多轮状态写回触发点。
+- 验证方式：执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py`；执行 `cd datalogue-api && python3 -m ruff check app/api/chat.py`。
+- 残留风险：本次仅增强代码阅读注释，不改变运行逻辑；仍未启动本地 `/chat` 页面回放真实 SSE 日志。
+
+### 2026-06-23 11:24 · 项目关键代码注释规范与记忆压缩规则固化
+
+- 涉及文件：`AGENTS.md`、`datalogue-api/AGENTS.md`、`docs/上下文入口.md`、`.codex/project-memory.md`、`datalogue-api/app/services/lead_agent.py`、`datalogue-api/app/services/conversation_store.py`、`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/app/services/subagent_planning/contracts.py`、`datalogue-api/app/api/conversation.py`、`datalogue-web/src/assistant/ThreadList.jsx`
+- 关键改动：固化“新增或修改关键代码时补充中文关键行级注释”的长期规则；固化项目记忆最新详细记录超过 10 条时压缩、历史压缩条目超过 10 条时深度压缩的规则；把较早 3 条详细记录压缩进历史区，并把 2026-06-05 至 2026-06-14 的历史压缩条目深度合并为主题摘要；在 LeadAgent ToolPolicy/快路径、多轮状态写入与澄清恢复、SubAgent 规则 planner、QueryPlan 契约校验、对话列表排序和新建会话刷新顺序处补充关键注释。
+- 验证方式：执行 `cd datalogue-api && python3 -m py_compile app/services/lead_agent.py app/services/conversation_store.py app/services/subagent_planning/planner.py app/services/subagent_planning/contracts.py app/api/conversation.py`；执行 `cd datalogue-api && python3 -m ruff check app/services/lead_agent.py app/services/conversation_store.py app/services/subagent_planning/planner.py app/services/subagent_planning/contracts.py app/api/conversation.py`；执行 `cd datalogue-web && npm run lint`；执行 `git diff --check -- AGENTS.md datalogue-api/AGENTS.md docs/上下文入口.md .codex/project-memory.md datalogue-api/app/services/lead_agent.py datalogue-api/app/services/conversation_store.py datalogue-api/app/services/subagent_planning/planner.py datalogue-api/app/services/subagent_planning/contracts.py datalogue-api/app/api/conversation.py datalogue-web/src/assistant/ThreadList.jsx`。
+- 残留风险：本次是注释和规则治理，不改变业务逻辑；“整个项目”按当前高风险核心链路补关键注释，未对所有历史文件做机械扫注释。
+
+### 2026-06-23 11:36 · 关键注释调整为调用行/操作行行尾注释
+
+- 涉及文件：`AGENTS.md`、`datalogue-api/AGENTS.md`、`docs/上下文入口.md`、`.codex/project-memory.md`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/lead_agent.py`、`datalogue-api/app/services/conversation_store.py`、`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/app/services/subagent_planning/contracts.py`、`datalogue-api/app/api/conversation.py`、`datalogue-web/src/assistant/ThreadList.jsx`
+- 关键改动：按“方法调用或关键操作所在行增加注释”的口径，调整前一轮偏前置的说明性注释；在 `_log_chat_stream_checkpoint()`、`tracer.create_trace_context()`、`build_query_result_artifact()`、`store.append_completed_turn()`、`_persist_completed_turn()`、`store.release_turn_lock()`、`QueryPlan(...)`、`thread_state.update()`、`reloadThreads()` 等关键调用或操作行增加短行尾注释；同步更新 AGENTS、上下文入口和项目记忆规则，明确以后优先使用调用行/操作行行尾注释。
+- 验证方式：执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/services/lead_agent.py app/services/conversation_store.py app/services/subagent_planning/planner.py app/services/subagent_planning/contracts.py app/api/conversation.py`；执行 `cd datalogue-api && python3 -m ruff check app/api/chat.py app/services/lead_agent.py app/services/conversation_store.py app/services/subagent_planning/planner.py app/services/subagent_planning/contracts.py app/api/conversation.py`；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `git diff --check -- datalogue-api/app/api/chat.py datalogue-api/app/services/lead_agent.py datalogue-api/app/services/conversation_store.py datalogue-api/app/services/subagent_planning/planner.py datalogue-api/app/services/subagent_planning/contracts.py datalogue-api/app/api/conversation.py datalogue-web/src/assistant/ThreadList.jsx`。
+- 残留风险：本次仍是阅读性注释和规则治理，不改变业务逻辑；未对项目所有历史文件逐一扫描，只覆盖当前最关键且近期已改动的问数主链路。
+
+### 2026-06-23 11:48 · SubAgent Planner 打印 LLM 原始响应诊断
+
+- 涉及文件：`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/tests/test_subagent_query_planner.py`、`.codex/project-memory.md`
+- 关键改动：新增 `_planner_response_debug()`，在 `subagent_query_planner` 普通规划和 detail loop 的每次 LLM 成功返回后立即打印 DEBUG 级 `raw_response_debug`，并在响应校验失败 warning 中继续追加同一诊断字段；诊断内容包含 response 类型、content 类型、response `repr`、`response_metadata`、`usage_metadata` 和 `additional_kwargs`，用于排查 `content=""` 但服务端返回对象仍有 finish reason、request id 或 token usage 的场景。
+- 验证方式：先执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py::test_plan_query_logs_raw_llm_response_when_validation_fails -q` 确认新增用例红灯，失败表现为日志缺少 `raw_response_debug=`；再执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py::test_plan_query_debug_logs_raw_llm_response_before_parsing -q` 确认 DEBUG 原始响应日志缺失；实现后两个用例通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py -q`，35 条用例通过；执行 `cd datalogue-api && .venv/bin/python -m py_compile app/services/subagent_planning/planner.py`。
+- 残留风险：日志只做截断后的诊断摘要，不会改变 LLM 返回内容或 fallback 行为；DEBUG 日志会增加本地排障输出量，问题定位完成后可降级为配置开关或移除。
+
+### 2026-06-23 12:41 · 新对话本地草稿可见且未发送不持久化
+
+- 涉及文件：`datalogue-web/src/assistant/ThreadList.jsx`、`datalogue-web/tests/unit/assistant/thread-list-new-conversation.test.jsx`、`.codex/project-memory.md`
+- 关键改动：新对话按钮不再调用 `createConversation`，改为只执行 `aui.threads().switchToNewThread()` 并导航回 `/chat`；新增 `DraftThreadListItem`，当 assistant-ui 存在 `newThreadId` 时在“最近对话”顶部显示本地“新对话”草稿并按 `mainThreadId` 高亮；首条消息发送时仍由 `thread-list-adapter.initialize()` 创建后端 conversation；按钮保留创建中禁用保护，避免连续点击造成 runtime 状态抖动。
+- 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/assistant/thread-list-new-conversation.test.jsx` 确认组件层用例红灯，失败表现为找不到 `thread-list-draft-item`；实现后再次执行该命令，4 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过；调用 `GET /api/conversation?archived=false` 记录点击前数量为 4，使用 in-app Browser 打开 `http://localhost:5173/chat/4` 后点击 `.thread-list-new` 且不发送消息，URL 回到 `/chat`，左栏第 0 项为 active draft“新对话”，再次请求后端列表数量仍为 4。
+- 残留风险：本次只验证“未发送不新增数据库会话”和本地草稿可见；未实际发送一条新消息走 LLM 全链路验证创建后的标题刷新和列表排序。

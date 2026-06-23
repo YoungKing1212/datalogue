@@ -27,6 +27,17 @@ class TestConversationAPI:
         assert resp.status_code == 200
         assert resp.json() == []
 
+    def test_list_conversations_orders_newest_first(self, client):
+        """最近对话按最新会话排在顶部。"""
+        first = client.post("/api/conversation", json={"title": "第一条"}).json()
+        second = client.post("/api/conversation", json={"title": "第二条"}).json()
+
+        resp = client.get("/api/conversation")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [item["id"] for item in data[:2]] == [second["id"], first["id"]]
+
     def test_get_conversation_not_found(self, client):
         """获取不存在的对话"""
         resp = client.get("/api/conversation/99999")
