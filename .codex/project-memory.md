@@ -86,6 +86,18 @@
 
 - 补齐数据库字典字段、后续新增表和 LangGraph checkpoint 相关表/字段中文注释迁移，真实 PostgreSQL 抽查确认表注释和字段注释缺失数为 0。
 - 替换前端侧栏品牌 Logo 与浏览器 favicon，完成桌面和移动视口可见性检查。
+- 修正数据集页面顶部“数据表”能力卡计数为当前数据集已选表数量，并补组件回归测试、lint 和 build 验证。
+- 去重 LeadAgent 两阶段 Planner Prompt，并同步 Langfuse Prompt Management 的 production v4，回读确认远端与本地一致。
+- 修复新建对话排序与本地草稿体验：新对话优先显示在最近对话顶部，未发送时不落库，发送首条消息时再创建后端会话。
+
+### 2026-06-23
+
+- SubAgent Planner 金额/合计类聚合兜底增强：当 LLM 空响应或非法 JSON 且候选资产已有字段/表时，不再误判 `unsupported/reject`，而是生成 `metric_query + query_graph` 计划交给 QueryGraph 继续执行；补充 planner 和 subagent run 回归测试。
+- `/chat/stream` 主链路 checkpoint 日志增强：统一记录 request、trace、gateway、LeadAgent 路由、SubAgent 候选资产/query plan/result、Graph 完成、落库和 final payload 等关键节点，并补充关键链路行级注释，便于页面、SSE、后端日志和 Langfuse trace 交叉取证。
+- SubAgent 规则规划器命名澄清：将 `build_fallback_query_plan` 更名为 `build_rule_based_query_plan`，同步公共导出、测试和规划文档，明确 LLM 前确定性预判与 LLM 失败后规则兜底的边界。
+- 固化关键代码中文行级注释规范与项目记忆压缩规则：更新 AGENTS、上下文入口和核心问数链路注释，要求新增或修改关键业务代码时在重要分支、跨层状态、fallback、外部副作用等位置补充解释业务边界的中文注释。
+- 关键注释进一步调整为调用行/操作行行尾注释：覆盖 chat stream checkpoint、trace context、artifact、conversation store、planner、thread list 等关键调用点，并通过 py_compile、ruff、前端 lint 和 diff check 验证。
+- SubAgent Planner LLM 原始响应诊断：新增 `_planner_response_debug()`，在普通规划和 detail loop 的 LLM 返回后记录截断后的响应类型、content 类型、metadata、usage 和 additional kwargs，便于排查空响应、非法 JSON 与服务端 token/finish reason 的真实关系；通过 planner targeted tests 和 py_compile 验证。
 
 ## 高价值判断
 
@@ -97,79 +109,65 @@
 
 ## 最新详细记录
 
-### 2026-06-22 12:06 · 数据集页面数据表计数显示已选表
-
-- 涉及文件：`datalogue-web/src/components/datasets.jsx`、`datalogue-web/tests/unit/components/datasets-selected-table-count.test.jsx`、`.codex/project-memory.md`
-- 关键改动：将数据集语义能力工作区顶部“数据表”能力卡计数从 `allSourceTables.length` 改为 `selectedTableIds.size`，避免显示当前连接 schema 的全量表数量；新增组件回归测试，模拟 schema 3 张表但数据集只选 1 张表，固定顶部能力卡显示 1。
-- 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/components/datasets-selected-table-count.test.jsx` 确认测试红灯，失败输出显示“数据表”按钮 count 为 3；修复后再次执行该命令通过；执行 `cd datalogue-web && npm test`，3 个测试文件 14 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过。
-- 残留风险：本次只修正顶部能力卡计数；左侧“已选择/未选择”分组仍按当前搜索过滤结果计数，保持原有交互语义。
-
-### 2026-06-22 12:57 · LeadAgent 两阶段 Planner Prompt 去重并同步 Langfuse
-
-- 涉及文件：`datalogue-api/app/prompts/lead_agent.py`、`.codex/project-memory.md`
-- 关键改动：压缩 `lead_agent_skill_selector` 和 `lead_agent_tool_planner` 的重复说明；第一阶段聚焦 Skill 选择边界，第二阶段保留工具规划、candidate_assets 使用和多轮追问约束；两个 prompt 输出 JSON 契约保持不变；通过 Langfuse Prompt Management 将 `lead_agent_skill_selector`、`lead_agent_tool_planner` 的 `production` label 同步为 v4。
-- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_observability.py tests/test_lead_agent_tools.py -q`，47 条用例通过；执行 Langfuse 同步后重新拉取两个 prompt，确认远端 v4 内容与本地注册表完全一致；对比本地 prompt 长度从 3799 字符降至 3053 字符。
-- 残留风险：本次只优化系统提示词文本，未新增真实 `/chat` 回放样例；后续若观察到 Skill 选择或 dispatch 倾向变化，需要结合 Langfuse trace 再微调规则顺序。
-
-### 2026-06-22 13:04 · 新建对话固定进入最近对话顶部
-
-- 涉及文件：`datalogue-web/src/assistant/ThreadList.jsx`、`datalogue-web/tests/unit/assistant/thread-list-new-conversation.test.jsx`、`datalogue-api/app/api/conversation.py`、`datalogue-api/tests/test_conversation.py`、`.codex/project-memory.md`
-- 关键改动：新建对话按钮创建后先刷新 assistant-ui thread list，再跳转到新会话，避免本地运行时把新 thread 追加到列表底部；后端 `/api/conversation` 列表排序增加 `updated_at desc nullslast`、`created_at desc nullslast`、`id desc` 稳定兜底。
-- 验证方式：执行 `cd datalogue-web && npm test -- tests/unit/assistant/thread-list-new-conversation.test.jsx`；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_conversation.py -q`；执行 `cd datalogue-web && npm run lint`、`npm run build`；使用 in-app Browser 打开 `http://localhost:5173/chat`，点击最近对话区域“新对话”，确认跳转 `/chat/4` 后最近对话第一项和 active 项均为“新对话”，控制台无 error/warn。
-- 残留风险：本地验证会在开发库里额外创建空“新对话”测试记录；本次未清理用户现有对话数据。
-
-### 2026-06-23 10:56 · SubAgent Planner 金额聚合兜底不再误拒
-
-- 涉及文件：`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/tests/test_subagent_query_planner.py`、`.codex/project-memory.md`
-- 关键改动：为规则规划器增加金额/合计类聚合问法识别，例如“总共”“多少钱”“万元”“省了”“节省”；当 LLM 返回空响应或非法 JSON，且候选资产中已有字段/表但没有指标/维度资产时，不再落入 `unsupported/reject`，而是生成 `metric_query + query_graph` 计划并把字段/表作为 selected assets 交给 QueryGraph 继续生成 SQL。
-- 验证方式：先执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py::test_rule_based_aggregate_amount_query_uses_field_table_assets -q` 确认新增用例红灯，失败表现为 `unsupported`；修复后再次执行该用例通过；补充 `plan_query` 空 LLM 响应链路测试并通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py -q`，33 条用例通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_run.py -q`，14 条用例通过。
-- 残留风险：本次修复聚焦 planner fallback，不直接解决 DeepSeek 空响应本身；如果真实 SQL 仍生成失败，需要继续按 QueryGraph 的最终 DSL/SQL、dataset 12 字段描述和 Langfuse trace 取证。
-
-### 2026-06-23 11:07 · `/chat/stream` 主链路行级日志增强
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_chat.py`、`.codex/project-memory.md`
-- 关键改动：新增 `_chat_stream_log_summary()` 和 `_log_chat_stream_checkpoint()`，统一 `/chat/stream` 关键节点日志格式；在请求入口、多轮包装、会话准备、trace context、gateway 分类、LeadAgent 路由、早退分支、SubAgent 候选资产/query plan/result、fanout、Graph 完成、助手消息落库和 final payload 输出前增加 `chat.stream.<checkpoint>` 行级日志，日志摘要包含 `entry_route`、`entry_reason`、`query_plan_type`、`planner_source`、`fallback_reason`、`has_sql`、`sql_count`、`has_error`、`answer_len` 等字段。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_chat.py::TestChatAPI::test_chat_stream_log_summary_extracts_debug_fields -q` 确认新增 helper 测试红灯，失败原因为 `_chat_stream_log_summary` 不存在；实现后再次执行该用例通过；执行 `cd datalogue-api && python3 -m ruff check app/api/chat.py tests/test_chat.py` 通过。
-- 残留风险：本次验证覆盖日志摘要 helper 和静态检查，未启动本地 `/chat` 页面做真实 SSE 日志回放；如果需要排查某个具体问题，仍应结合后端日志、DevTools Network final payload 和 Langfuse trace 三方对齐。
-
-### 2026-06-23 11:07 · SubAgent 规则规划器中性命名与接口注释
-
-- 涉及文件：`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/app/services/subagent_planning/__init__.py`、`datalogue-api/tests/test_subagent_query_planner.py`、`docs/上下文入口.md`、`docs/superpowers/plans/2026-06-15-subagent-query-planning.md`、`docs/superpowers/plans/2026-06-17-subagent-planner-asset-detail-loop.md`、`.codex/project-memory.md`
-- 关键改动：将 `build_fallback_query_plan` 更名为 `build_rule_based_query_plan`，公共导出和测试引用同步更新；补全规则规划器、`plan_query()`、`plan_query_with_detail_context()` 的接口 docstring，明确 `fallback_reason is None` 是 LLM 前确定性预判，有值时才是 LLM 失败后的规则兜底。
-- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py -q`；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_run.py -q`；执行 `cd datalogue-api && .venv/bin/python -m py_compile app/services/subagent_planning/planner.py app/services/subagent_planning/__init__.py`；执行 `rg -n "build_fallback_query_plan" datalogue-api/app datalogue-api/tests docs` 确认代码与当前项目文档入口无旧接口名；执行 `git diff --check -- datalogue-api/app/services/subagent_planning/planner.py datalogue-api/app/services/subagent_planning/__init__.py datalogue-api/tests/test_subagent_query_planner.py docs/上下文入口.md docs/superpowers/plans/2026-06-15-subagent-query-planning.md docs/superpowers/plans/2026-06-17-subagent-planner-asset-detail-loop.md .codex/project-memory.md`。
-- 残留风险：本次是命名和注释澄清，不改变 planner 的执行策略；如果仓库外部代码仍直接 import 旧函数名，需要同步迁移。
-
-### 2026-06-23 11:17 · `/chat/stream` 日志链路代码注释增强
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`.codex/project-memory.md`
-- 关键改动：围绕 `_chat_stream_log_summary()`、`_log_chat_stream_checkpoint()` 和 `/chat/stream` 主链路 checkpoint 增加行级中文注释；注释解释各日志点对应的链路事实，例如请求入口、会话落库、trace 创建、gateway 分类、LeadAgent 路由、早退分支、SubAgent 候选资产/query plan/result、Graph 完成、answer 兜底、final payload 和多轮状态写回触发点。
-- 验证方式：执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py`；执行 `cd datalogue-api && python3 -m ruff check app/api/chat.py`。
-- 残留风险：本次仅增强代码阅读注释，不改变运行逻辑；仍未启动本地 `/chat` 页面回放真实 SSE 日志。
-
-### 2026-06-23 11:24 · 项目关键代码注释规范与记忆压缩规则固化
-
-- 涉及文件：`AGENTS.md`、`datalogue-api/AGENTS.md`、`docs/上下文入口.md`、`.codex/project-memory.md`、`datalogue-api/app/services/lead_agent.py`、`datalogue-api/app/services/conversation_store.py`、`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/app/services/subagent_planning/contracts.py`、`datalogue-api/app/api/conversation.py`、`datalogue-web/src/assistant/ThreadList.jsx`
-- 关键改动：固化“新增或修改关键代码时补充中文关键行级注释”的长期规则；固化项目记忆最新详细记录超过 10 条时压缩、历史压缩条目超过 10 条时深度压缩的规则；把较早 3 条详细记录压缩进历史区，并把 2026-06-05 至 2026-06-14 的历史压缩条目深度合并为主题摘要；在 LeadAgent ToolPolicy/快路径、多轮状态写入与澄清恢复、SubAgent 规则 planner、QueryPlan 契约校验、对话列表排序和新建会话刷新顺序处补充关键注释。
-- 验证方式：执行 `cd datalogue-api && python3 -m py_compile app/services/lead_agent.py app/services/conversation_store.py app/services/subagent_planning/planner.py app/services/subagent_planning/contracts.py app/api/conversation.py`；执行 `cd datalogue-api && python3 -m ruff check app/services/lead_agent.py app/services/conversation_store.py app/services/subagent_planning/planner.py app/services/subagent_planning/contracts.py app/api/conversation.py`；执行 `cd datalogue-web && npm run lint`；执行 `git diff --check -- AGENTS.md datalogue-api/AGENTS.md docs/上下文入口.md .codex/project-memory.md datalogue-api/app/services/lead_agent.py datalogue-api/app/services/conversation_store.py datalogue-api/app/services/subagent_planning/planner.py datalogue-api/app/services/subagent_planning/contracts.py datalogue-api/app/api/conversation.py datalogue-web/src/assistant/ThreadList.jsx`。
-- 残留风险：本次是注释和规则治理，不改变业务逻辑；“整个项目”按当前高风险核心链路补关键注释，未对所有历史文件做机械扫注释。
-
-### 2026-06-23 11:36 · 关键注释调整为调用行/操作行行尾注释
-
-- 涉及文件：`AGENTS.md`、`datalogue-api/AGENTS.md`、`docs/上下文入口.md`、`.codex/project-memory.md`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/lead_agent.py`、`datalogue-api/app/services/conversation_store.py`、`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/app/services/subagent_planning/contracts.py`、`datalogue-api/app/api/conversation.py`、`datalogue-web/src/assistant/ThreadList.jsx`
-- 关键改动：按“方法调用或关键操作所在行增加注释”的口径，调整前一轮偏前置的说明性注释；在 `_log_chat_stream_checkpoint()`、`tracer.create_trace_context()`、`build_query_result_artifact()`、`store.append_completed_turn()`、`_persist_completed_turn()`、`store.release_turn_lock()`、`QueryPlan(...)`、`thread_state.update()`、`reloadThreads()` 等关键调用或操作行增加短行尾注释；同步更新 AGENTS、上下文入口和项目记忆规则，明确以后优先使用调用行/操作行行尾注释。
-- 验证方式：执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/services/lead_agent.py app/services/conversation_store.py app/services/subagent_planning/planner.py app/services/subagent_planning/contracts.py app/api/conversation.py`；执行 `cd datalogue-api && python3 -m ruff check app/api/chat.py app/services/lead_agent.py app/services/conversation_store.py app/services/subagent_planning/planner.py app/services/subagent_planning/contracts.py app/api/conversation.py`；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `git diff --check -- datalogue-api/app/api/chat.py datalogue-api/app/services/lead_agent.py datalogue-api/app/services/conversation_store.py datalogue-api/app/services/subagent_planning/planner.py datalogue-api/app/services/subagent_planning/contracts.py datalogue-api/app/api/conversation.py datalogue-web/src/assistant/ThreadList.jsx`。
-- 残留风险：本次仍是阅读性注释和规则治理，不改变业务逻辑；未对项目所有历史文件逐一扫描，只覆盖当前最关键且近期已改动的问数主链路。
-
-### 2026-06-23 11:48 · SubAgent Planner 打印 LLM 原始响应诊断
-
-- 涉及文件：`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/tests/test_subagent_query_planner.py`、`.codex/project-memory.md`
-- 关键改动：新增 `_planner_response_debug()`，在 `subagent_query_planner` 普通规划和 detail loop 的每次 LLM 成功返回后立即打印 DEBUG 级 `raw_response_debug`，并在响应校验失败 warning 中继续追加同一诊断字段；诊断内容包含 response 类型、content 类型、response `repr`、`response_metadata`、`usage_metadata` 和 `additional_kwargs`，用于排查 `content=""` 但服务端返回对象仍有 finish reason、request id 或 token usage 的场景。
-- 验证方式：先执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py::test_plan_query_logs_raw_llm_response_when_validation_fails -q` 确认新增用例红灯，失败表现为日志缺少 `raw_response_debug=`；再执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py::test_plan_query_debug_logs_raw_llm_response_before_parsing -q` 确认 DEBUG 原始响应日志缺失；实现后两个用例通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_subagent_query_planner.py -q`，35 条用例通过；执行 `cd datalogue-api && .venv/bin/python -m py_compile app/services/subagent_planning/planner.py`。
-- 残留风险：日志只做截断后的诊断摘要，不会改变 LLM 返回内容或 fallback 行为；DEBUG 日志会增加本地排障输出量，问题定位完成后可降级为配置开关或移除。
-
 ### 2026-06-23 12:41 · 新对话本地草稿可见且未发送不持久化
 
 - 涉及文件：`datalogue-web/src/assistant/ThreadList.jsx`、`datalogue-web/tests/unit/assistant/thread-list-new-conversation.test.jsx`、`.codex/project-memory.md`
 - 关键改动：新对话按钮不再调用 `createConversation`，改为只执行 `aui.threads().switchToNewThread()` 并导航回 `/chat`；新增 `DraftThreadListItem`，当 assistant-ui 存在 `newThreadId` 时在“最近对话”顶部显示本地“新对话”草稿并按 `mainThreadId` 高亮；首条消息发送时仍由 `thread-list-adapter.initialize()` 创建后端 conversation；按钮保留创建中禁用保护，避免连续点击造成 runtime 状态抖动。
 - 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/assistant/thread-list-new-conversation.test.jsx` 确认组件层用例红灯，失败表现为找不到 `thread-list-draft-item`；实现后再次执行该命令，4 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过；调用 `GET /api/conversation?archived=false` 记录点击前数量为 4，使用 in-app Browser 打开 `http://localhost:5173/chat/4` 后点击 `.thread-list-new` 且不发送消息，URL 回到 `/chat`，左栏第 0 项为 active draft“新对话”，再次请求后端列表数量仍为 4。
 - 残留风险：本次只验证“未发送不新增数据库会话”和本地草稿可见；未实际发送一条新消息走 LLM 全链路验证创建后的标题刷新和列表排序。
+
+### 2026-06-23 17:08 · 生成用户版项目整体介绍手册
+
+- 涉及文件：`docs/数语项目整体介绍手册.docx`、`.codex/project-memory.md`
+- 关键改动：生成面向业务用户、项目负责人和使用方的 Word 版介绍手册；按用户反馈弱化技术实现和内部代码名称，重点说明数语已经具备的功能、每项能力大致如何实现、能解决的业务问题、典型场景、使用流程、与普通报表/简单聊天机器人的区别、当前边界和可交付内容。
+- 验证方式：使用文档构建脚本生成 DOCX；通过 bundled LibreOffice 渲染为 6 页 PNG/PDF；抽查首页、功能表格页、使用流程页、对比页和边界页，确认无文字裁剪、表格跨页断裂、编号延续或提示框拆分问题。
+- 残留风险：本文是用户版整体介绍，不替代销售材料、正式产品白皮书或逐页截图版操作手册；若用于外部客户交付，后续可补品牌视觉、真实页面截图和客户场景案例。
+
+### 2026-06-23 17:35 · Hermes Skill 直连数语只读问数预览
+
+- 涉及文件：`datalogue-api/app/api/dataset.py`、`datalogue-api/app/services/sql_preview.py`、`datalogue-api/app/schemas/dataset.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/tests/test_dataset.py`、`hermes-skills/datalogue/scripts/api_assets.py`、`hermes-skills/datalogue/SKILL.md`、`hermes-skills/datalogue/SOUL.md`、`hermes-skills/datalogue/references/capabilities.md`、`.codex/project-memory.md`
+- 关键改动：新增 `POST /api/dataset/{ds_id}/sql/preview`，按 dataset 绑定 datasource、已选 source tables、`guard_readonly_sql` 和 `query_constraints` 执行只读 SQL 预览，不写 conversation/message/trace，也不进入 LeadAgent/LangGraph；Hermes Skill 新增 `plan-query` 和 `execute-sql`，前者组装数据集候选、选中数据集资产和 schema，后者只调用后端 preview 接口；同步更新 Skill/SOUL/capabilities 的轻量问数流程和 SQL 生成边界。
+- 验证方式：先执行 `pytest datalogue-api/tests/test_dataset.py -k "sql_preview"` 确认新增用例红灯，失败表现为 `app.services.sql_preview` 不存在和路由 404；实现后该组 5 条用例通过；执行 `pytest datalogue-api/tests/test_dataset.py`，32 条通过；执行 `python3 -m py_compile hermes-skills/datalogue/scripts/api_assets.py datalogue-api/app/services/sql_preview.py`；执行 `python3 hermes-skills/datalogue/scripts/api_assets.py capabilities`；执行 live `health`、`list-datasets`、`plan-query "双周会议部门项目进展" --limit 3 --schema-limit 10`；执行 live `execute-sql 12 --sql "SELECT deptcode, COUNT(*) AS cnt FROM xm_zbjgbp GROUP BY deptcode LIMIT 5"` 返回 3 行；执行 live `execute-sql 12 --sql "DELETE FROM xm_zbjgbp WHERE 1 = 0"` 被 Guard 以 `FORBIDDEN_KEYWORD` 拦截。
+- 残留风险：第一版 SQL 由 Hermes 模型生成，后端只做安全校验和执行，不做 SQL 自动修复；`plan-query` 默认返回选中数据集的部分 schema，复杂问题可能需要 Hermes 继续调用 `describe-dataset` 获取更完整字段上下文。
+
+### 2026-06-24 00:08 · 生成当前项目工作总结与下步计划文档
+
+- 涉及文件：`docs/当前项目工作总结与下步计划.md`、`.codex/project-memory.md`
+- 关键改动：新增面向项目负责人、业务使用方和产品/研发协作人员的阶段总结文档，说明整体建设思路、已完成任务、成果截图、当前成熟度判断、P0/P1/P2 下步计划和真实链路验收口径；复用 `docs/user-manual-screenshots/` 和 `docs/datalogue_full_execution_flow.png` 的现有成果截图。
+- 验证方式：确认文档引用的 7 张图片均存在；执行 `git diff --check -- docs/当前项目工作总结与下步计划.md` 通过；按项目记忆规则将最早一条最新详细记录压缩进历史区，保持最新详细记录不超过 10 条。
+- 残留风险：本文使用现有截图和当前代码/记忆/文档梳理生成，未重新启动本地页面截取最新运行态截图；若用于正式外部汇报，可继续导出为 PPT/Word 并补充客户场景案例。
+
+### 2026-06-24 00:17 · 工作总结文档改为功能点逐项展开
+
+- 涉及文件：`docs/当前项目工作总结与下步计划.md`、`.codex/project-memory.md`
+- 关键改动：按用户反馈移除“已完成工作任务”和“下步工作计划”里的功能点表格，改为一个功能点一个功能点展开说明；每个已落地功能补充“解决的问题、设计思路、当前效果”，下步计划补充任务目标、推进逻辑和验收关注点，让非研发读者能理解为什么要这么做。
+- 验证方式：执行 `rg -n "\\| 模块|\\| 任务|建议任务|已完成内容：" docs/当前项目工作总结与下步计划.md` 未发现旧表格标记；执行 `git diff --check -- docs/当前项目工作总结与下步计划.md` 通过；按项目记忆规则将当前最早一条详细记录压缩进历史区，保持最新详细记录不超过 10 条。
+- 残留风险：本次仍基于现有截图和文字材料改写，未重新导出 Word/PPT 版；若用于汇报，可继续做版式化交付。
+
+### 2026-06-24 00:25 · 工作总结文档补齐功能点对应截图
+
+- 涉及文件：`docs/当前项目工作总结与下步计划.md`、`.codex/project-memory.md`
+- 关键改动：按用户反馈把截图从集中展示改为跟随具体功能点展示；27 个已完成功能点均补充对应截图说明和图片引用，前端/治理功能使用页面截图，后端链路/工程治理能力使用完整执行链路图、查询审计页或 Schema 页面承接。
+- 验证方式：脚本检查“已完成工作任务”区 27 个功能点全部包含图片引用；脚本检查全篇 37 个图片引用文件均存在；执行 `git diff --check -- docs/当前项目工作总结与下步计划.md` 通过；按项目记忆规则将当前最早一条详细记录压缩进历史区，保持最新详细记录不超过 10 条。
+- 残留风险：后端链路类功能没有独立产品页，当前用链路图/审计页对应其可见承接面；若后续要做正式汇报，可再补真实 Langfuse 页面或日志截图。
+
+### 2026-06-24 00:47 · 工作总结 Word 增强版补齐截图与执行链路图
+
+- 涉及文件：`/Users/yangkai/Downloads/数语智能问数平台-项目介绍与工作总结-增强版.docx`、`/Users/yangkai/Downloads/datalogue_execution_chain_explained.png`、`.codex/project-memory.md`
+- 关键改动：在用户提供的 Word 文档基础上生成增强版，保留原始文档不覆盖；为能力详解部分新增“数语智能问数执行链路说明图”，用图解释从用户提问、LeadAgent 编排、Manifest 门禁、Dataset SubAgent、QueryGraph、SQL 执行到答案解释的执行链路；为每个具体功能点插入对应截图或组合截图；在后续工作计划中新增 ECharts 报表生成、多租户能力和权限管理体系三项企业级治理计划。
+- 验证方式：使用 bundled Python 检查增强版 DOCX 包含 28 个内嵌图片，且 `ECharts 报表生成`、`多租户能力`、`权限管理体系` 三个计划标题均存在；通过 bundled LibreOffice 将增强版 DOCX 渲染为 34 页 PNG/PDF；抽查执行链路图页、功能截图页、计划页和结论页，确认图片和文字无明显裁剪、重叠或断裂。
+- 残留风险：截图复用当前项目已有用户手册截图和生成的链路说明图；后续若页面样式或功能命名调整，应重新截取最新运行态页面并同步替换文档图片。
+
+### 2026-06-24 01:04 · 工作总结 Word 截图替换为当前运行态
+
+- 涉及文件：`/Users/yangkai/Downloads/数语智能问数平台-项目介绍与工作总结-增强版-最新截图.docx`、`/Users/yangkai/Downloads/datalogue_latest_screenshots_20260624/`、`/Users/yangkai/Downloads/datalogue_docx_assets_latest/`、`.codex/project-memory.md`
+- 关键改动：启动当前前端页面并复用本地后端健康服务，重新截取工作台、问数中心、查询审计、数据集治理各 Tab、数据源 Schema、API 管理、系统设置等当前运行态截图；按原 Word 图片位尺寸生成单图和组合图，替换增强版 DOCX 中除执行链路图外的所有页面截图，生成“最新截图”版本。
+- 验证方式：使用 Chrome headless 批量截取 37 张当前页面截图并生成总览拼图；处理为 21 张 Word 图像资产后替换 DOCX 内嵌媒体；使用 bundled Python 检查最新截图版仍包含 28 个内嵌图片且 ECharts、多租户、权限管理三项计划标题保留；通过 bundled LibreOffice 渲染为 34 页 PNG/PDF；抽查工作台、数据集、执行链路、历史/审计、LLM、数据源/API 等关键页，确认无白屏、错误遮罩、明显裁剪或重叠。
+- 残留风险：截图反映 2026-06-24 01:04 本地运行态；数据源 Schema 截图过程中前端控制台曾出现一次 Schema fetch warning，但最终截图页有可见 Schema/数据源状态，后续若后端数据或页面样式变化仍需重新截取。
+
+### 2026-06-24 10:11 · 工作总结 Word 分拆执行链路图
+
+- 涉及文件：`/Users/yangkai/Downloads/数语智能问数平台-项目介绍与工作总结-增强版-分链路图.docx`、`/Users/yangkai/Downloads/datalogue_chain_diagrams_split/`、`.codex/project-memory.md`
+- 关键改动：基于用户已修改的“增强版-最新截图”Word 文档继续生成新版，不覆盖原文件；保留总体介绍处的总体链路图，并为 LeadAgent、Dataset SubAgent、QueryGraph/SubGraph、Trace 观测分别生成独立执行链路图，替换原先多个功能点复用同一张总体图的问题；同步更新功能点的“界面 / 链路承载”和图片说明文字，强调总体图与具体能力链路图的边界。
+- 验证方式：使用 bundled Python 检查新版 DOCX 包含 29 个内嵌图片，且 `总体版`、`LeadAgent 控制链路图`、`Dataset SubAgent 执行链路图`、`QueryGraph / SubGraph 执行链路图`、`Trace 观测链路图` 等说明均存在；确认四个功能链路段落分别引用 4 个不同媒体文件；通过 bundled LibreOffice 渲染为 36 页 PNG/PDF，并抽查总体图、LeadAgent、Dataset SubAgent、QueryGraph/SubGraph、Trace 观测关键页无明显裁剪、重叠或错图。
+- 残留风险：本次新增链路图是解释型架构图，不是实时页面截图；后续如果 Agent 职责、Trace 字段或 QueryGraph 节点命名调整，需要同步更新对应链路图与文档说明。
