@@ -20,6 +20,7 @@ from datetime import datetime
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Type
 
@@ -27,6 +28,7 @@ import httpx
 import litellm
 
 from agentscope.agent import Agent
+from agentscope.agent._config import ModelConfig
 from agentscope.credential import OpenAICredential
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg, TextBlock, ToolCallBlock, UserMsg
@@ -105,6 +107,7 @@ class DatalogueToolTrace:
     tool_names: list[str] = field(default_factory=list)
     called_paths: list[str] = field(default_factory=list)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
+    react_events: list[dict[str, Any]] = field(default_factory=list)
     preview_result: dict[str, Any] | None = None
     artifact: dict[str, Any] | None = None
     result_ref: str | None = None
@@ -121,6 +124,7 @@ class DatalogueReactMvpResult:
     result_ref: str | None
     artifact: dict[str, Any] | None
     tool_trace: list[dict[str, Any]]
+    react_trace: list[dict[str, Any]]
     registered_tools: list[str]
     capability_manifest: dict[str, Any]
     system_prompt: str
@@ -197,6 +201,54 @@ def _json_preview(payload: Any, *, limit: int = 1200) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
+
+
+def _text_preview(text: str | None, *, limit: int = 1200) -> str:
+    value = text or ""
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}...<truncated {len(value) - limit} chars>"
+
+
+def _trace_content_blocks(content: list[Any]) -> list[dict[str, Any]]:
+    traced: list[dict[str, Any]] = []
+    for block in content:
+        if isinstance(block, TextBlock):
+            traced.append(
+                {
+                    "type": "assistant_visible_text",
+                    "text": _text_preview(block.text),
+                }
+            )
+            continue
+        if isinstance(block, ToolCallBlock):
+            traced.append(
+                {
+                    "type": "tool_call",
+                    "name": block.name,
+                    "input": block.input,
+                    "id": block.id,
+                }
+            )
+            continue
+        traced.append({"type": type(block).__name__, "value": str(block)})
+    return traced
+
+
+def _trace_messages(messages: list[dict[str, Any]], *, limit: int = 4) -> list[dict[str, Any]]:
+    traced: list[dict[str, Any]] = []
+    for message in messages[-max(limit, 1) :]:
+        copied = dict(message)
+        if isinstance(copied.get("content"), str):
+            copied["content"] = _text_preview(copied["content"], limit=1800)
+        traced.append(copied)
+    return traced
+
+
+def _log_react_event(trace: DatalogueToolTrace | None, event: dict[str, Any]) -> None:
+    if trace is not None:
+        trace.react_events.append(event)
+    logger.info("[AgentScope Hermes MVP][ReAct trace] %s", _json_preview(event, limit=2400))
 
 
 def _compact_columns(columns: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -302,13 +354,21 @@ class DatalogueToolAdapter(ToolBase):
         )
 
     def _record_event(self, phase: str, payload: dict[str, Any]) -> None:
-        self.trace.tool_events.append(
+        event = {
+            "tool": self.name,
+            "phase": phase,
+            "payload": payload,
+            "at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self.trace.tool_events.append(event)
+        _log_react_event(
+            self.trace,
             {
+                "event": "tool_observation",
                 "tool": self.name,
                 "phase": phase,
                 "payload": payload,
-                "at": datetime.now().isoformat(timespec="seconds"),
-            }
+            },
         )
 
     async def _get_json(self, client: httpx.AsyncClient, path: str) -> Any:
@@ -647,10 +707,13 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
         self,
         *,
         resolved_config: Any,
+        trace: DatalogueToolTrace | None = None,
         context_size: int = 32768,
     ) -> None:
         self.resolved_config = resolved_config
         self.formatter = OpenAIChatFormatter()
+        self.trace = trace
+        self.react_turn = 0
         super().__init__(
             credential=OpenAICredential(
                 api_key=resolved_config.api_key,
@@ -675,6 +738,7 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
             httpx.TransportError,
             litellm.exceptions.APIConnectionError,
             litellm.exceptions.Timeout,
+            litellm.exceptions.InternalServerError,
         )
 
     async def _call_api(
@@ -687,6 +751,21 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
     ) -> ChatResponse:
         formatted_messages = await self.formatter.format(messages)
         fmt_tools, fmt_tool_choice = OpenAIChatModel._format_tools(self, tools, tool_choice)
+        self.react_turn += 1
+        turn = self.react_turn
+        request_event: dict[str, Any] = {
+            "event": "llm_request",
+            "turn": turn,
+            "model": model_name,
+            "message_count": len(formatted_messages),
+            "tools": [tool.get("function", {}).get("name") for tool in fmt_tools or []],
+            "tool_choice": fmt_tool_choice,
+        }
+        if self.trace is not None and self.trace.react_events:
+            request_event["previous_event_count"] = len(self.trace.react_events)
+        if os.getenv("AGENTSCOPE_MVP_LOG_REACT_MESSAGES") == "1":
+            request_event["message_tail"] = _trace_messages(formatted_messages)
+        _log_react_event(self.trace, request_event)
         logger.info(
             "[AgentScope Hermes MVP][LLM request] model=%s message_count=%s tools=%s tool_choice=%s",
             model_name,
@@ -713,6 +792,31 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
         start = datetime.now()
         response = await litellm.acompletion(**kwargs)
         parsed = self._parse_litellm_response(start, response)
+        response_blocks = _trace_content_blocks(parsed.content)
+        _log_react_event(
+            self.trace,
+            {
+                "event": "llm_response",
+                "turn": turn,
+                "response_id": parsed.id,
+                "blocks": response_blocks,
+                "usage": parsed.usage,
+            },
+        )
+        for block in response_blocks:
+            if block["type"] == "assistant_visible_text":
+                logger.info(
+                    "[AgentScope Hermes MVP][ReAct assistant text][turn=%s]\n%s",
+                    turn,
+                    block["text"],
+                )
+            if block["type"] == "tool_call":
+                logger.info(
+                    "[AgentScope Hermes MVP][ReAct action][turn=%s] tool=%s input=%s",
+                    turn,
+                    block["name"],
+                    _json_preview(block["input"], limit=2000),
+                )
         logger.info(
             "[AgentScope Hermes MVP][LLM response] id=%s block_types=%s usage=%s",
             parsed.id,
@@ -754,7 +858,7 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
         )
 
 
-def _build_agentscope_model() -> LiteLLMAgentScopeChatModel:
+def _build_agentscope_model(trace: DatalogueToolTrace | None = None) -> LiteLLMAgentScopeChatModel:
     settings = get_settings()
     with SessionLocal() as db:
         resolved = resolve_llm_config(settings, role="lead_agent", db=db)
@@ -768,7 +872,7 @@ def _build_agentscope_model() -> LiteLLMAgentScopeChatModel:
         getattr(resolved, "base_url", None),
         getattr(resolved, "request_timeout_seconds", None),
     )
-    return LiteLLMAgentScopeChatModel(resolved_config=resolved)
+    return LiteLLMAgentScopeChatModel(resolved_config=resolved, trace=trace)
 
 
 async def run_datalogue_react_mvp(
@@ -797,8 +901,9 @@ async def run_datalogue_react_mvp(
     agent = Agent(
         name=manifest.agent_name,
         system_prompt=system_prompt,
-        model=_build_agentscope_model(),
+        model=_build_agentscope_model(trace),
         toolkit=Toolkit(tools=tools),
+        model_config=ModelConfig(max_retries=2),
     )
     dataset_hint = f"已知 dataset_id={dataset_id}。" if dataset_id is not None else "dataset_id 未指定，请自主选择合适数据集。"
     user_msg = UserMsg(
@@ -819,6 +924,7 @@ async def run_datalogue_react_mvp(
             result_ref=trace.result_ref,
             artifact=trace.artifact,
             tool_trace=trace.tool_events,
+            react_trace=trace.react_events,
             registered_tools=registered_tools,
             capability_manifest=asdict(manifest),
             system_prompt=system_prompt,

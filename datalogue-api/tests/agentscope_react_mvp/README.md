@@ -26,14 +26,14 @@ curl http://127.0.0.1:8000/health
 uv pip install agentscope==2.0.2
 ```
 
-先执行默认测试，确认 manifest 过滤逻辑通过、真实请求用例默认跳过：
+执行默认测试，确认 manifest 过滤逻辑通过，并运行当前真实请求用例：
 
 ```bash
 cd datalogue-api
 .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q
 ```
 
-执行真实 DatasetAgent MVP 测试：
+执行真实 DatasetAgent MVP 测试并把过程日志打印到控制台：
 
 ```bash
 cd datalogue-api
@@ -41,7 +41,21 @@ RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 \
   .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s
 ```
 
-`-s` 会把测试中的日志直接输出到终端。你可以看到 Agent 启动、加载后的工具列表、LLM tool-call 请求、每个真实 HTTP 路径、生成的 SQL、SQL preview 返回摘要、`result_ref`、`artifact`、最终中文回答和 `preview_result` 前 5 行。
+`-s` 会把测试中的日志直接输出到终端。你可以看到 Agent 启动、加载后的工具列表、每一轮 LLM request/response、assistant 可见文本、tool_call 名称与入参、工具 observation、每个真实 HTTP 路径、生成的 SQL、SQL preview 返回摘要、`result_ref`、`artifact`、最终中文回答和 `preview_result` 前 5 行。
+
+默认日志会打印最近 12 条 `react_trace`，用于观察 AgentScope ReAct 的可见执行链路。如果要打印完整 `react_trace`，额外加上：
+
+```bash
+AGENTSCOPE_MVP_LOG_FULL_REACT_TRACE=1
+```
+
+如果要把每轮 LLM 请求的消息尾部也写入 `react_trace`，额外加上：
+
+```bash
+AGENTSCOPE_MVP_LOG_REACT_MESSAGES=1
+```
+
+`AGENTSCOPE_MVP_LOG_REACT_MESSAGES=1` 会显著增加日志体积，适合排查 prompt、历史 observation 和工具 schema 如何进入下一轮请求；不要把它当作生产默认日志。
 
 如果要打印完整 preview 结果，额外加上：
 
@@ -49,7 +63,7 @@ RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 \
 AGENTSCOPE_MVP_LOG_FULL_RESULT=1
 ```
 
-不设置 `RUN_AGENTSCOPE_REACT_MVP=1` 时，该测试会跳过，避免普通测试套件请求真实 LLM 和真实服务。
+`RUN_AGENTSCOPE_REACT_MVP=1` 保留为显式标记，表示本次是在主动执行真实 LLM 和真实 Datalogue 服务链路。
 
 ## 当前判断
 

@@ -61,6 +61,12 @@ def _preview_result_for_log(preview_result: dict[str, Any] | None) -> dict[str, 
     }
 
 
+def _react_trace_for_log(react_trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if os.getenv("AGENTSCOPE_MVP_LOG_FULL_REACT_TRACE") == "1":
+        return react_trace
+    return react_trace[-12:]
+
+
 def _import_mvp_module():
     try:
         from agentscope_react_mvp import mvp
@@ -128,6 +134,15 @@ async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> Non
         "[AgentScope MVP][Test artifact]\n%s",
         json.dumps(result.artifact, ensure_ascii=False, indent=2, default=str),
     )
+    logger.info(
+        "[AgentScope MVP][Test react_trace]\n%s",
+        json.dumps(
+            _react_trace_for_log(result.react_trace),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+    )
     logger.info("[AgentScope MVP][Test registered_tools] %s", result.registered_tools)
 
     assert "recall_assets" in result.registered_tools
@@ -152,6 +167,10 @@ async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> Non
     assert result.artifact["truth_source"] == "datalogue_sql_preview"
     assert result.artifact["persisted"] is False
     assert result.tool_trace
+    assert result.react_trace
+    assert any(event["event"] == "llm_request" for event in result.react_trace)
+    assert any(event["event"] == "llm_response" for event in result.react_trace)
+    assert any(event["event"] == "tool_observation" for event in result.react_trace)
     assert result.capability_manifest["agent_role"] == "dataset_agent"
     assert result.capability_manifest["raw_sql_visible_to_lead_agent"] is False
     assert "SOUL.md" in result.prompt_sources
