@@ -99,6 +99,7 @@
 - 关键注释进一步调整为调用行/操作行行尾注释：覆盖 chat stream checkpoint、trace context、artifact、conversation store、planner、thread list 等关键调用点，并通过 py_compile、ruff、前端 lint 和 diff check 验证。
 - SubAgent Planner LLM 原始响应诊断：新增 `_planner_response_debug()`，在普通规划和 detail loop 的 LLM 返回后记录截断后的响应类型、content 类型、metadata、usage 和 additional kwargs，便于排查空响应、非法 JSON 与服务端 token/finish reason 的真实关系；通过 planner targeted tests 和 py_compile 验证。
 - 新对话本地草稿体验修正：新建对话未发送时只保留 assistant-ui 本地草稿，不新增数据库 conversation；首条消息发送时再由 thread-list adapter 创建后端会话，并通过组件测试、lint/build 和真实会话数量检查验证。
+- 生成面向业务用户和项目负责人的数语项目整体介绍手册，弱化内部代码细节，说明已具备功能、业务问题、典型场景、使用流程、边界和可交付内容，并通过 DOCX 渲染抽查验证版式。
 
 ## 高价值判断
 
@@ -109,13 +110,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-23 17:08 · 生成用户版项目整体介绍手册
-
-- 涉及文件：`docs/数语项目整体介绍手册.docx`、`.codex/project-memory.md`
-- 关键改动：生成面向业务用户、项目负责人和使用方的 Word 版介绍手册；按用户反馈弱化技术实现和内部代码名称，重点说明数语已经具备的功能、每项能力大致如何实现、能解决的业务问题、典型场景、使用流程、与普通报表/简单聊天机器人的区别、当前边界和可交付内容。
-- 验证方式：使用文档构建脚本生成 DOCX；通过 bundled LibreOffice 渲染为 6 页 PNG/PDF；抽查首页、功能表格页、使用流程页、对比页和边界页，确认无文字裁剪、表格跨页断裂、编号延续或提示框拆分问题。
-- 残留风险：本文是用户版整体介绍，不替代销售材料、正式产品白皮书或逐页截图版操作手册；若用于外部客户交付，后续可补品牌视觉、真实页面截图和客户场景案例。
 
 ### 2026-06-23 17:35 · Hermes Skill 直连数语只读问数预览
 
@@ -179,3 +173,10 @@
 - 关键改动：为 AgentScope ReAct MVP 增加控制台日志，输出测试入口、LLM 配置、tool-call 请求、每个真实 HTTP GET/POST 路径、Plan 工具返回的数据集/表/字段规模、Execute 工具生成的 SQL、SQL preview 的 guard/columns/row_count/rows 摘要、最终中文回答和 preview 结果；测试断言改为动态验证 selected tables、selected columns 和 sql preview 路径，不再绑定固定 dataset 11，适配用户将用例改成“查询杨凯2024年的工作日志”后的 Agent 自主选 dataset 行为；README 补充 `-s` 查看日志和 `AGENTSCOPE_MVP_LOG_FULL_RESULT=1` 打印完整结果。
 - 验证方式：执行 `.venv/bin/python -m py_compile tests/agentscope_react_mvp/mvp.py tests/agentscope_react_mvp/test_live_react_agent.py` 通过；执行 `.venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q` 默认跳过真实请求；执行 `git diff --check` 通过；执行 `RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s`，1 条真实集成测试通过，日志显示 Agent 自主查看 dataset 12 后补调 dataset 10，执行 3 次 SQL preview，最终返回 100 行杨凯 2024 年工作日志和中文汇总。
 - 残留风险：日志输出依赖 `pytest -s`；完整 preview 结果可能较长，默认只打印前 5 行，必要时用 `AGENTSCOPE_MVP_LOG_FULL_RESULT=1` 查看全量。
+
+### 2026-06-25 13:38 · AgentScope Hermes-style DatasetAgent MVP
+
+- 涉及文件：`datalogue-api/tests/agentscope_react_mvp/mvp.py`、`datalogue-api/tests/agentscope_react_mvp/test_live_react_agent.py`、`datalogue-api/tests/agentscope_react_mvp/README.md`、`.codex/project-memory.md`
+- 关键改动：将原本的自由 ReAct 测试升级为 Hermes-style DatasetAgent MVP；加载 `hermes-skills/datalogue/SOUL.md`、`SKILL.md` 和 `references/capabilities.md` 生成 AgentScope system prompt；新增 `CapabilityManifest` 控制 DatasetAgent 内部工具注册，LeadAgent 只作为窄工具面边界写入 prompt；工具面改为 `recall_assets`、`plan_query`、`guard_sql`、`preview_sql`、`execute_query`、`persist_artifact`、`summarize_result`，其中真正执行仍只走 Datalogue guarded SQL preview；工具结果改为返回 `result_ref`、`artifact`、`summary`、`sql_guard` 和 `tool_trace`，保留 `conversation_state/query_artifact/Manifest/SQL audit/Langfuse trace` 是业务真相源的边界。
+- 验证方式：执行 `.venv/bin/python -m py_compile tests/agentscope_react_mvp/mvp.py tests/agentscope_react_mvp/test_live_react_agent.py` 通过；执行 `.venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q`，1 条 manifest 过滤测试通过、1 条真实请求用例默认跳过；执行 `curl -sS -m 5 http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`；执行 `RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s`，2 条测试通过，真实日志显示 AgentScope 仅看到 manifest 暴露工具，先查 dataset 12 后切到 dataset 10，调用 `guard_sql`、`execute_query`、`persist_artifact`、`summarize_result`，返回 `mvp://query_artifact/10/db52860f3da182d8` 和 100 行杨凯 2024 年工作日志摘要；执行 `git diff --check` 通过。
+- 残留风险：当前仍是测试目录内的实验性 MVP，`artifact.persisted=false`，没有真实写入 `query_artifact` 或接入 `/chat/stream` 事件流；`execute_query` 在 MVP 中复用 SQL preview，后续产品化需要接入正式 artifact store、权限策略、trace observation、失败重试和 SQL 修复。

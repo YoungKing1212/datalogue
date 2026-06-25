@@ -22,10 +22,8 @@ from typing import Any
 
 
 import pytest
-import python_multipart
 
 
-pytestmark = pytest.mark.asyncio
 logger = logging.getLogger(__name__)
 
 
@@ -63,10 +61,36 @@ def _preview_result_for_log(preview_result: dict[str, Any] | None) -> dict[str, 
     }
 
 
+def _import_mvp_module():
+    try:
+        from agentscope_react_mvp import mvp
+    except ImportError as exc:
+        pytest.skip(f"运行 AgentScope MVP 测试前需要安装 agentscope 2.0：{exc}")
+    return mvp
+
+
+def test_capability_manifest_filters_dataset_agent_tools() -> None:
+    mvp = _import_mvp_module()
+    trace = mvp.DatalogueToolTrace()
+    manifest = mvp.default_capability_manifest(allowed_tools=("recall_assets", "preview_sql"))
+
+    tools = mvp.build_dataset_agent_tools(
+        base_url="http://127.0.0.1:8000",
+        trace=trace,
+        manifest=manifest,
+    )
+
+    assert [tool.name for tool in tools] == ["recall_assets", "preview_sql"]
+    assert "guard_sql" not in [tool.name for tool in tools]
+    assert "execute_query" not in [tool.name for tool in tools]
+    assert "persist_artifact" not in [tool.name for tool in tools]
+
+
 @pytest.mark.integration
+@pytest.mark.asyncio
 async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> None:
-    if os.getenv("RUN_AGENTSCOPE_REACT_MVP") != "1":
-        pytest.skip("设置 RUN_AGENTSCOPE_REACT_MVP=1 后才请求真实服务和真实 LLM")
+    # if os.getenv("RUN_AGENTSCOPE_REACT_MVP") != "1":
+    #     pytest.skip("设置 RUN_AGENTSCOPE_REACT_MVP=1 后才请求真实服务和真实 LLM")
 
     _configure_console_logging()
     base_url = os.getenv("DATALOGUE_BASE_URL", "http://127.0.0.1:8000")
@@ -79,12 +103,9 @@ async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> Non
         question,
     )
 
-    try:
-        from agentscope_react_mvp.mvp import run_datalogue_react_mvp
-    except ImportError as exc:
-        pytest.fail(f"运行真实 AgentScope MVP 前需要安装 agentscope 2.0：{exc}", pytrace=False)
+    mvp = _import_mvp_module()
 
-    result = await run_datalogue_react_mvp(
+    result = await mvp.run_datalogue_react_mvp(
         question=question,
         dataset_id=dataset_id,
         base_url=base_url,
@@ -102,9 +123,19 @@ async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> Non
     )
     logger.info("[AgentScope MVP][Test tool_names] %s", result.tool_names)
     logger.info("[AgentScope MVP][Test called_paths] %s", result.called_paths)
+    logger.info("[AgentScope MVP][Test result_ref] %s", result.result_ref)
+    logger.info(
+        "[AgentScope MVP][Test artifact]\n%s",
+        json.dumps(result.artifact, ensure_ascii=False, indent=2, default=str),
+    )
+    logger.info("[AgentScope MVP][Test registered_tools] %s", result.registered_tools)
 
-    assert "DataloguePlanQueryTool" in result.tool_names
-    assert "DatalogueExecuteSqlTool" in result.tool_names
+    assert "recall_assets" in result.registered_tools
+    assert "plan_query" in result.registered_tools
+    assert "preview_sql" in result.registered_tools
+    assert "summarize_result" in result.registered_tools
+    assert any(tool_name in result.tool_names for tool_name in ("recall_assets", "plan_query"))
+    assert any(tool_name in result.tool_names for tool_name in ("preview_sql", "execute_query"))
     assert "/api/dataset" in result.called_paths
     assert any(path.endswith("/selected-tables") for path in result.called_paths)
     assert any(path.endswith("/selected-columns") for path in result.called_paths)
@@ -114,4 +145,18 @@ async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> Non
     assert result.preview_result is not None
     assert result.preview_result["sql_guard"]["ok"] is True
     assert _first_positive_number(result.preview_result["rows"]) is not None
+    assert result.result_ref is not None
+    assert result.result_ref.startswith("mvp://query_artifact/")
+    assert result.artifact is not None
+    assert result.artifact["result_ref"] == result.result_ref
+    assert result.artifact["truth_source"] == "datalogue_sql_preview"
+    assert result.artifact["persisted"] is False
+    assert result.tool_trace
+    assert result.capability_manifest["agent_role"] == "dataset_agent"
+    assert result.capability_manifest["raw_sql_visible_to_lead_agent"] is False
+    assert "SOUL.md" in result.prompt_sources
+    assert "SKILL.md" in result.prompt_sources
+    assert "Hermes SOUL.md" in result.system_prompt
+    assert "capability_manifest" in result.system_prompt
+    assert "DatasetAgent" in result.system_prompt
     assert result.final_text.strip()
