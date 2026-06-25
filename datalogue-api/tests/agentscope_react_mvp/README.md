@@ -31,6 +31,14 @@ RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 \
   .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s
 ```
 
+`-s` 会把测试中的日志直接输出到终端。你可以看到 Agent 启动、LLM tool-call 请求、每个真实 HTTP 路径、生成的 SQL、SQL preview 返回摘要、最终中文回答和 `preview_result` 前 5 行。
+
+如果要打印完整 preview 结果，额外加上：
+
+```bash
+AGENTSCOPE_MVP_LOG_FULL_RESULT=1
+```
+
 不设置 `RUN_AGENTSCOPE_REACT_MVP=1` 时，该测试会跳过，避免普通测试套件请求真实 LLM 和真实服务。
 
 ## 当前判断

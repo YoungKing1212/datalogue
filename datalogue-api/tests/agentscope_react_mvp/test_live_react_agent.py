@@ -14,13 +14,28 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import sys
 from typing import Any
 
+
 import pytest
+import python_multipart
 
 
 pytestmark = pytest.mark.asyncio
+logger = logging.getLogger(__name__)
+
+
+def _configure_console_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
 
 
 def _first_positive_number(rows: list[dict[str, Any]]) -> int | float | None:
@@ -34,10 +49,35 @@ def _first_positive_number(rows: list[dict[str, Any]]) -> int | float | None:
     return None
 
 
+def _preview_result_for_log(preview_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not preview_result or os.getenv("AGENTSCOPE_MVP_LOG_FULL_RESULT") == "1":
+        return preview_result
+    return {
+        "dataset_id": preview_result.get("dataset_id"),
+        "sql": preview_result.get("sql"),
+        "columns": preview_result.get("columns"),
+        "row_count": preview_result.get("row_count"),
+        "sql_guard": preview_result.get("sql_guard"),
+        "error": preview_result.get("error"),
+        "rows_first_5": (preview_result.get("rows") or [])[:5],
+    }
+
+
 @pytest.mark.integration
 async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> None:
     if os.getenv("RUN_AGENTSCOPE_REACT_MVP") != "1":
         pytest.skip("设置 RUN_AGENTSCOPE_REACT_MVP=1 后才请求真实服务和真实 LLM")
+
+    _configure_console_logging()
+    base_url = os.getenv("DATALOGUE_BASE_URL", "http://127.0.0.1:8000")
+    question = "我想查询杨凯2024年的工作日志。"
+    dataset_id = None
+    logger.info(
+        "[AgentScope MVP][Test start] base_url=%s dataset_id=%s question=%s",
+        base_url,
+        dataset_id,
+        question,
+    )
 
     try:
         from agentscope_react_mvp.mvp import run_datalogue_react_mvp
@@ -45,17 +85,30 @@ async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> Non
         pytest.fail(f"运行真实 AgentScope MVP 前需要安装 agentscope 2.0：{exc}", pytrace=False)
 
     result = await run_datalogue_react_mvp(
-        question="请使用数语工具统计 dataset 11 的项目合同数量，并给出最终数字。",
-        dataset_id=11,
-        base_url=os.getenv("DATALOGUE_BASE_URL", "http://127.0.0.1:8000"),
+        question=question,
+        dataset_id=dataset_id,
+        base_url=base_url,
     )
+
+    logger.info("[AgentScope MVP][Test final_text]\n%s", result.final_text)
+    logger.info(
+        "[AgentScope MVP][Test preview_result]\n%s",
+        json.dumps(
+            _preview_result_for_log(result.preview_result),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+    )
+    logger.info("[AgentScope MVP][Test tool_names] %s", result.tool_names)
+    logger.info("[AgentScope MVP][Test called_paths] %s", result.called_paths)
 
     assert "DataloguePlanQueryTool" in result.tool_names
     assert "DatalogueExecuteSqlTool" in result.tool_names
     assert "/api/dataset" in result.called_paths
-    assert "/api/dataset/11/selected-tables" in result.called_paths
-    assert "/api/dataset/11/selected-columns" in result.called_paths
-    assert "/api/dataset/11/sql/preview" in result.called_paths
+    assert any(path.endswith("/selected-tables") for path in result.called_paths)
+    assert any(path.endswith("/selected-columns") for path in result.called_paths)
+    assert any(path.endswith("/sql/preview") for path in result.called_paths)
     assert "/api/chat/stream" not in result.called_paths
     assert "/api/conversation" not in result.called_paths
     assert result.preview_result is not None

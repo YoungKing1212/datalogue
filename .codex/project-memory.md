@@ -98,6 +98,7 @@
 - 固化关键代码中文行级注释规范与项目记忆压缩规则：更新 AGENTS、上下文入口和核心问数链路注释，要求新增或修改关键业务代码时在重要分支、跨层状态、fallback、外部副作用等位置补充解释业务边界的中文注释。
 - 关键注释进一步调整为调用行/操作行行尾注释：覆盖 chat stream checkpoint、trace context、artifact、conversation store、planner、thread list 等关键调用点，并通过 py_compile、ruff、前端 lint 和 diff check 验证。
 - SubAgent Planner LLM 原始响应诊断：新增 `_planner_response_debug()`，在普通规划和 detail loop 的 LLM 返回后记录截断后的响应类型、content 类型、metadata、usage 和 additional kwargs，便于排查空响应、非法 JSON 与服务端 token/finish reason 的真实关系；通过 planner targeted tests 和 py_compile 验证。
+- 新对话本地草稿体验修正：新建对话未发送时只保留 assistant-ui 本地草稿，不新增数据库 conversation；首条消息发送时再由 thread-list adapter 创建后端会话，并通过组件测试、lint/build 和真实会话数量检查验证。
 
 ## 高价值判断
 
@@ -108,13 +109,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-23 12:41 · 新对话本地草稿可见且未发送不持久化
-
-- 涉及文件：`datalogue-web/src/assistant/ThreadList.jsx`、`datalogue-web/tests/unit/assistant/thread-list-new-conversation.test.jsx`、`.codex/project-memory.md`
-- 关键改动：新对话按钮不再调用 `createConversation`，改为只执行 `aui.threads().switchToNewThread()` 并导航回 `/chat`；新增 `DraftThreadListItem`，当 assistant-ui 存在 `newThreadId` 时在“最近对话”顶部显示本地“新对话”草稿并按 `mainThreadId` 高亮；首条消息发送时仍由 `thread-list-adapter.initialize()` 创建后端 conversation；按钮保留创建中禁用保护，避免连续点击造成 runtime 状态抖动。
-- 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/assistant/thread-list-new-conversation.test.jsx` 确认组件层用例红灯，失败表现为找不到 `thread-list-draft-item`；实现后再次执行该命令，4 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过；调用 `GET /api/conversation?archived=false` 记录点击前数量为 4，使用 in-app Browser 打开 `http://localhost:5173/chat/4` 后点击 `.thread-list-new` 且不发送消息，URL 回到 `/chat`，左栏第 0 项为 active draft“新对话”，再次请求后端列表数量仍为 4。
-- 残留风险：本次只验证“未发送不新增数据库会话”和本地草稿可见；未实际发送一条新消息走 LLM 全链路验证创建后的标题刷新和列表排序。
 
 ### 2026-06-23 17:08 · 生成用户版项目整体介绍手册
 
@@ -178,3 +172,10 @@
 - 关键改动：新增独立真实集成测试目录，使用 AgentScope 2.0 `Agent`、`Toolkit` 和 `ToolBase` 封装数语最小工具面；`DataloguePlanQueryTool` 真实请求数据集、已选表、已选字段和语义资产，`DatalogueExecuteSqlTool` 真实调用 `/api/dataset/{id}/sql/preview`；新增 `LiteLLMAgentScopeChatModel`，复用数语数据库中的 `lead_agent` LLM 配置，让 AgentScope ReAct 决策继续由 AgentScope 驱动，同时绕过当前 AgentScope OpenAI SDK 直连 DeepSeek 的连接问题；测试断言 Agent 自主调用两个工具、命中真实 API 路径、不进入 `/api/chat/stream` 和 `/api/conversation`，并以 SQL preview 结构化结果验证最终统计值。
 - 验证方式：先在 `main` 回滚非文档测试目录并提交文档更新，再切换到 `codex/agentscope-react-mvp` 分支开发；执行 `curl http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`；执行 Hermes 等价 live `execute-sql 11 --sql "SELECT COUNT(*) AS cnt FROM project_contract_management"` 返回 `cnt=6583`；执行 `.venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q` 默认跳过真实请求；执行 `RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s`，1 条真实集成测试通过，Agent 自主调用 `DataloguePlanQueryTool` 和 `DatalogueExecuteSqlTool` 并通过后端 SQL Guard；执行 `.venv/bin/python -m py_compile tests/agentscope_react_mvp/mvp.py tests/agentscope_react_mvp/test_live_react_agent.py` 和 `git diff --check` 通过。
 - 残留风险：该目录是实验性 MVP，不是正式生产 Agent 运行时；当前依赖 `agentscope==2.0.2` 需手动安装，且模型底层通过 LiteLLM 适配器复用数语配置，后续产品化还需补正式依赖管理、trace 观测、失败重试、SQL 自动修复和权限策略。
+
+### 2026-06-25 11:39 · AgentScope 真实测试增加过程日志
+
+- 涉及文件：`datalogue-api/tests/agentscope_react_mvp/mvp.py`、`datalogue-api/tests/agentscope_react_mvp/test_live_react_agent.py`、`datalogue-api/tests/agentscope_react_mvp/README.md`、`.codex/project-memory.md`
+- 关键改动：为 AgentScope ReAct MVP 增加控制台日志，输出测试入口、LLM 配置、tool-call 请求、每个真实 HTTP GET/POST 路径、Plan 工具返回的数据集/表/字段规模、Execute 工具生成的 SQL、SQL preview 的 guard/columns/row_count/rows 摘要、最终中文回答和 preview 结果；测试断言改为动态验证 selected tables、selected columns 和 sql preview 路径，不再绑定固定 dataset 11，适配用户将用例改成“查询杨凯2024年的工作日志”后的 Agent 自主选 dataset 行为；README 补充 `-s` 查看日志和 `AGENTSCOPE_MVP_LOG_FULL_RESULT=1` 打印完整结果。
+- 验证方式：执行 `.venv/bin/python -m py_compile tests/agentscope_react_mvp/mvp.py tests/agentscope_react_mvp/test_live_react_agent.py` 通过；执行 `.venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q` 默认跳过真实请求；执行 `git diff --check` 通过；执行 `RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s`，1 条真实集成测试通过，日志显示 Agent 自主查看 dataset 12 后补调 dataset 10，执行 3 次 SQL preview，最终返回 100 行杨凯 2024 年工作日志和中文汇总。
+- 残留风险：日志输出依赖 `pytest -s`；完整 preview 结果可能较长，默认只打印前 5 行，必要时用 `AGENTSCOPE_MVP_LOG_FULL_RESULT=1` 查看全量。

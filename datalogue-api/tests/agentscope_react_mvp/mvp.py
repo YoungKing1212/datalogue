@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+import logging
 from typing import Any, Type
 
 import httpx
@@ -37,6 +38,8 @@ from app.core.database import SessionLocal
 from app.services.llm_config import resolve_llm_config
 from app.graph.llm import _litellm_model_name
 
+
+logger = logging.getLogger(__name__)
 
 SQL_GENERATION_RULES = [
     "只能基于 selected_tables / selected_columns 中出现的表和字段生成 SQL。",
@@ -67,6 +70,13 @@ class DatalogueReactMvpResult:
 
 def _json_chunk(payload: dict[str, Any]) -> ToolChunk:
     return ToolChunk(content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))])
+
+
+def _json_preview(payload: Any, *, limit: int = 1200) -> str:
+    text = json.dumps(payload, ensure_ascii=False, default=str)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
 
 
 def _compact_columns(columns: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -130,16 +140,28 @@ class _DatalogueToolBase(ToolBase):
 
     async def _get_json(self, client: httpx.AsyncClient, path: str) -> Any:
         self.trace.called_paths.append(path)  # 真实请求路径用于证明没有进入完整 chat/conversation 链路。
+        logger.info("[AgentScope MVP][HTTP GET] %s", path)
         response = await client.get(path)
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+        logger.info("[AgentScope MVP][HTTP GET OK] %s status=%s", path, response.status_code)
+        return payload
 
     async def _get_optional_json(self, client: httpx.AsyncClient, path: str) -> Any:
         self.trace.called_paths.append(path)  # 可选语义资产失败时返回结构化错误，不中断 Agent 自主决策。
+        logger.info("[AgentScope MVP][HTTP GET optional] %s", path)
         response = await client.get(path)
         if response.status_code >= 400:
+            logger.warning(
+                "[AgentScope MVP][HTTP GET optional failed] %s status=%s body=%s",
+                path,
+                response.status_code,
+                response.text,
+            )
             return {"error": response.text}
-        return response.json()
+        payload = response.json()
+        logger.info("[AgentScope MVP][HTTP GET optional OK] %s status=%s", path, response.status_code)
+        return payload
 
     async def _post_json(
         self,
@@ -148,9 +170,12 @@ class _DatalogueToolBase(ToolBase):
         payload: dict[str, Any],
     ) -> Any:
         self.trace.called_paths.append(path)  # SQL 只能通过 preview API 进入后端 Guard。
+        logger.info("[AgentScope MVP][HTTP POST] %s payload=%s", path, _json_preview(payload))
         response = await client.post(path, json=payload)
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        logger.info("[AgentScope MVP][HTTP POST OK] %s status=%s", path, response.status_code)
+        return result
 
 
 class DataloguePlanQueryTool(_DatalogueToolBase):
@@ -178,6 +203,13 @@ class DataloguePlanQueryTool(_DatalogueToolBase):
         schema_limit: int = 80,
     ) -> ToolChunk:
         self.trace.tool_names.append(self.name)
+        logger.info(
+            "[AgentScope MVP][Tool start] %s question=%s dataset_id=%s schema_limit=%s",
+            self.name,
+            question,
+            dataset_id,
+            schema_limit,
+        )
         async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout_seconds) as client:
             datasets = await self._get_json(client, "/api/dataset")
             selected_dataset_id = dataset_id
@@ -212,6 +244,14 @@ class DataloguePlanQueryTool(_DatalogueToolBase):
             "sql_generation_rules": SQL_GENERATION_RULES,
             "next_step": "Generate SELECT/WITH SQL from selected_context, then call DatalogueExecuteSqlTool.",
         }
+        logger.info(
+            "[AgentScope MVP][Tool result] %s selected_dataset_id=%s dataset_count=%s table_count=%s column_count=%s",
+            self.name,
+            selected_dataset_id,
+            len(datasets or []),
+            len(selected_tables or []),
+            len(selected_columns or []),
+        )
         return _json_chunk(payload)
 
 
@@ -245,10 +285,24 @@ class DatalogueExecuteSqlTool(_DatalogueToolBase):
         if limit is not None:
             payload["limit"] = limit
 
+        logger.info(
+            "[AgentScope MVP][Tool start] %s dataset_id=%s sql=%s",
+            self.name,
+            dataset_id,
+            sql,
+        )
         async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout_seconds) as client:
             result = await self._post_json(client, f"/api/dataset/{dataset_id}/sql/preview", payload)
 
         self.trace.preview_result = result  # 测试只信后端 preview 结构化结果，不从模型文本里猜数字。
+        logger.info(
+            "[AgentScope MVP][Tool result] %s guard_ok=%s columns=%s row_count=%s rows=%s",
+            self.name,
+            (result.get("sql_guard") or {}).get("ok"),
+            result.get("columns"),
+            result.get("row_count"),
+            _json_preview(result.get("rows")),
+        )
         return _json_chunk(result)
 
 
@@ -299,6 +353,13 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
     ) -> ChatResponse:
         formatted_messages = await self.formatter.format(messages)
         fmt_tools, fmt_tool_choice = OpenAIChatModel._format_tools(self, tools, tool_choice)
+        logger.info(
+            "[AgentScope MVP][LLM request] model=%s message_count=%s tools=%s tool_choice=%s",
+            model_name,
+            len(formatted_messages),
+            [tool.get("function", {}).get("name") for tool in fmt_tools or []],
+            fmt_tool_choice,
+        )
         kwargs: dict[str, Any] = {
             "model": model_name,
             "messages": formatted_messages,
@@ -317,7 +378,14 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
 
         start = datetime.now()
         response = await litellm.acompletion(**kwargs)
-        return self._parse_litellm_response(start, response)
+        parsed = self._parse_litellm_response(start, response)
+        logger.info(
+            "[AgentScope MVP][LLM response] id=%s block_types=%s usage=%s",
+            parsed.id,
+            [type(block).__name__ for block in parsed.content],
+            parsed.usage,
+        )
+        return parsed
 
     def _parse_litellm_response(self, start: datetime, response: Any) -> ChatResponse:
         content_blocks: list[Any] = []
@@ -358,6 +426,14 @@ def _build_agentscope_model() -> LiteLLMAgentScopeChatModel:
         resolved = resolve_llm_config(settings, role="lead_agent", db=db)
     if not resolved.api_key:
         raise RuntimeError("当前 Datalogue LLM 配置没有可用 API key，无法运行 AgentScope ReAct MVP")
+    logger.info(
+        "[AgentScope MVP][LLM config] source=%s provider=%s model=%s base_url=%s timeout=%s",
+        getattr(resolved, "source", None),
+        getattr(resolved, "provider", None),
+        getattr(resolved, "model", None),
+        getattr(resolved, "base_url", None),
+        getattr(resolved, "request_timeout_seconds", None),
+    )
     return LiteLLMAgentScopeChatModel(resolved_config=resolved)
 
 
@@ -368,6 +444,12 @@ async def run_datalogue_react_mvp(
     base_url: str,
 ) -> DatalogueReactMvpResult:
     trace = DatalogueToolTrace()
+    logger.info(
+        "[AgentScope MVP][Run start] base_url=%s dataset_id=%s question=%s",
+        base_url,
+        dataset_id,
+        question,
+    )
     toolkit = Toolkit(
         tools=[
             DataloguePlanQueryTool(base_url=base_url, trace=trace),
@@ -389,16 +471,25 @@ async def run_datalogue_react_mvp(
         name="user",
         content=(
             f"{question}\n"
-            f"已知 dataset_id={dataset_id}。请不要直接回答，必须先调用规划工具，再调用 SQL preview 工具。"
+            # f"已知 dataset_id={dataset_id}。请不要直接回答，必须先调用规划工具，再调用 SQL preview 工具。"
         ),
     )
     try:
         reply = await agent.reply(user_msg)  # 由 AgentScope 自主 ReAct 决策工具调用顺序，而不是测试手动编排。
-        return DatalogueReactMvpResult(
+        result = DatalogueReactMvpResult(
             final_text=_text_from_reply(reply),
             tool_names=trace.tool_names,
             called_paths=trace.called_paths,
             preview_result=trace.preview_result,
         )
+        logger.info(
+            "[AgentScope MVP][Run result] tools=%s called_paths=%s final_text=%s preview=%s",
+            result.tool_names,
+            result.called_paths,
+            result.final_text,
+            _json_preview(result.preview_result),
+        )
+        return result
     finally:
+        logger.info("[AgentScope MVP][Run cleanup] closing litellm async clients")
         await litellm.close_litellm_async_clients()  # 真实 LLM 请求结束后关闭异步连接，避免 pytest teardown 留 pending task。
