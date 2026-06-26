@@ -159,6 +159,71 @@ describe('ArtifactCard', () => {
     expect(screen.getByTestId('message-content')).toBeInTheDocument();
   });
 
+  it('renders refs array and summary fallback from C-ready artifact cards', () => {
+    render(
+      <ArtifactCard
+        artifact={{
+          title: 'BI 查询结果',
+          status: 'ready',
+          summary: '候选产物摘要',
+          preview_payload: '已生成结果摘要',
+          refs: [
+            { ref_id: 'artifact:result:1', ref_type: 'result' },
+            { ref: 'artifact:trace:1', kind: 'trace' },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('候选产物摘要')).toBeInTheDocument();
+    expect(screen.getByText('已生成结果摘要')).toBeInTheDocument();
+    expect(screen.getByText('artifact:result:1')).toBeInTheDocument();
+    expect(screen.getByText('artifact:trace:1')).toBeInTheDocument();
+  });
+
+  it('renders safe key-value preview payload without table rows', () => {
+    render(
+      <ArtifactCard
+        artifact={{
+          ...basicArtifact,
+          preview_payload: { status_label: 'ready' },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('status_label')).toBeInTheDocument();
+    expect(screen.getAllByText('ready').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('accepts action_id and payload_ref aliases for retry', () => {
+    const listener = vi.fn();
+    window.addEventListener('datalogue:artifact-action', listener);
+
+    render(
+      <ArtifactCard
+        artifact={{
+          ...basicArtifact,
+          actions: [
+            {
+              action_id: 'retry',
+              label: '重试',
+              enabled: true,
+              payload_ref: 'checkpoint://task-2/query_context_ready',
+            },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+
+    expect(listener.mock.calls[0][0].detail).toEqual({
+      actionType: 'retry',
+      checkpointRef: 'checkpoint://task-2/query_context_ready',
+    });
+    window.removeEventListener('datalogue:artifact-action', listener);
+  });
+
   it('renders chart hint when preview_payload has chartType', () => {
     render(
       <ArtifactCard

@@ -7626,6 +7626,35 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   color: var(--text-3);
   font-size: 12px;
 }
+.artifact-card-preview-text {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.artifact-card-preview-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.artifact-card-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.artifact-card-preview-grid dt {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.artifact-card-preview-grid dd {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .artifact-card-report {
   font-size: 13px;
 }

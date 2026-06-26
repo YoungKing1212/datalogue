@@ -39,7 +39,7 @@ const DISABLED_REASONS = {
 };
 
 function actionType(action) {
-  return String(action?.action_type || action?.actionType || '').trim();
+  return String(action?.action_type || action?.actionType || action?.action_id || action?.actionId || '').trim();
 }
 
 function actionLabel(action) {
@@ -60,7 +60,7 @@ function actionIcon(actionTypeValue) {
 }
 
 function actionCheckpointRef(action) {
-  return action?.checkpoint_ref || action?.checkpointRef || null;
+  return action?.checkpoint_ref || action?.checkpointRef || action?.payload_ref || action?.payloadRef || null;
 }
 
 function normalizeAction(action) {
@@ -145,6 +145,20 @@ function PreviewTable({ columns, rows, maxRows = 5 }) {
 function PreviewBody({ previewPayload }) {
   if (!previewPayload) return null;
 
+  if (typeof previewPayload === 'string') {
+    return <p className="artifact-card-preview-text">{previewPayload}</p>;
+  }
+
+  if (Array.isArray(previewPayload)) {
+    return (
+      <ul className="artifact-card-preview-list">
+        {previewPayload.slice(0, 5).map((item, index) => (
+          <li key={`${index}-${String(item).slice(0, 20)}`}>{String(item)}</li>
+        ))}
+      </ul>
+    );
+  }
+
   const { rows, columns, markdown, text, content, chartType } = previewPayload || {};
   if (Array.isArray(rows) && rows.length > 0) {
     return <PreviewTable columns={columns} rows={rows} />;
@@ -165,6 +179,21 @@ function PreviewBody({ previewPayload }) {
         <Icon name="chart_bar" style={{ width: 16, height: 16 }} />
         <span>图表类型：{chartType}</span>
       </div>
+    );
+  }
+
+  const entries = Object.entries(previewPayload || {})
+    .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value));
+  if (entries.length > 0) {
+    return (
+      <dl className="artifact-card-preview-grid">
+        {entries.map(([key, value]) => (
+          <div key={key}>
+            <dt>{key}</dt>
+            <dd>{String(value)}</dd>
+          </div>
+        ))}
+      </dl>
     );
   }
 
@@ -231,13 +260,14 @@ export function ArtifactCard({ artifact, onAction, collapsed: initialCollapsed =
   const {
     title = '产物',
     status,
-    summary_for_chat: summary,
     preview_payload: previewPayload,
     actions = [],
   } = artifact;
+  const summary = artifact.summary_for_chat || artifact.summaryForChat || artifact.summary || '';
+  const refsFromList = Array.isArray(artifact.refs) ? artifact.refs : [];
   const refs = [
-    artifact.primary_ref || artifact.primaryRef,
-    ...(artifact.related_refs || artifact.relatedRefs || []),
+    artifact.primary_ref || artifact.primaryRef || refsFromList[0],
+    ...(artifact.related_refs || artifact.relatedRefs || refsFromList.slice(1) || []),
   ]
     .map(formatRef)
     .filter(Boolean)
