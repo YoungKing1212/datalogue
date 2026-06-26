@@ -78,6 +78,9 @@ class AgentState(TypedDict):
     candidate_assets: Optional[dict]  # SubAgent 统一候选资产召回结果，含 blueprint/metric/dimension/term/field/table
     query_plan: Optional[dict]  # SubAgent 查询规划结果，决定 blueprint_execute/query_graph/clarify 等执行策略
     query_plan_debug: Optional[dict]  # 查询规划调试信息，供 trace 和审计页使用
+    query_plan_compilation: Optional[dict]  # 工具编译器产物，SQL 只允许作为执行/trace/artifact 元数据流转
+    control_plane: Optional[dict]  # 控制面执行元数据，不进入 LLM prompt
+    query_artifact: Optional[dict]  # 查询产物元数据，供多轮和审计引用
     # 数据集级 LLM 约束（硬性要求）— schema_recall_node 写入，report_generator 等
     # 不读 schema_context 的节点直接从这里取
     dataset_prompt_instructions: Optional[str]
@@ -90,6 +93,7 @@ class AgentState(TypedDict):
     sql: Optional[str]  # 编译后的 SQL
     sql_result: Optional[dict]  # 查询结果 {"columns": [], "rows": []}
     datasource_dialect: Optional[str]  # 实际执行 SQL 的数据源方言
+    execution_source: Optional[str]  # SQL 来源，例如 tool_compiler
 
     # 输出层
     answer: Optional[str]  # 最终自然语言回答
