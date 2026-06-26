@@ -126,6 +126,8 @@
 - Multica 数语智能问数小队创建：创建 `数语智能问数小队`，leader 设为 CEO，将 Datalogue 数据问数、后端、前端、QA、文档等成员加入 roster，并明确小队由 leader 分派而非自动 fan-out。
 - C 产品形态优先且 BI 内核 B-governed 工作规划：沉淀 B-first C-ready 决策总览、任务清单、AgentScope 2.0 集成系统设计和二十余条能力路由/Artifact/ask_bi/旧会话边界决策。
 - 默认测试套件稳定性修复：恢复 AgentScope live 集成测试显式开关，更新 intent 角色 LLM `max_tokens` 断言，默认后端全量 pytest 和前端 lint/test/build 通过，仅保留既有 warning 与 ruff 历史问题。
+- B-first C-ready 计划细化与 Obsidian 同步：拆分后续改造记录、正式开发计划、决策总览和 AgentScope 2.0 集成系统设计，明确 P0/P1/P2 与五件套验收口径。
+- Multica 开发测试并行员工扩编：为数语小队新增 LeadAgent、数据治理 SQL、前端工作台、后端回归、前端 E2E、观测链路等 6 个并行员工角色，并验证 squad roster。
 
 ## 高价值判断
 
@@ -136,20 +138,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 13:00 · B-first C-ready 后续改造记录与正式开发计划
-
-- 涉及文件：`docs/architecture/B-first C-ready 后续改造记录.md`、`docs/architecture/B-first C-ready 正式开发计划.md`、`docs/architecture/B-first C-ready 头脑风暴决策总览.md`、`docs/architecture/AgentScope 2.0 集成系统设计方案.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/2026-06-26 B-first C-ready 能力路由头脑风暴/`、`.codex/project-memory.md`
-- 关键改动：将今天头脑风暴中所有 B-first 但 C-ready 的出口单独整理成后续改造记录，明确 Chat as Shell Entry、`ask_bi`、event envelope、ArtifactCard、Action Registry、AgentScopeShellAdapter、ReportAgent、PythonAgent、AuditAgent、双层时间线、完整 BI 工作台和 AgentScope runtime 的预留边界与接入条件；新增正式开发计划，按 P0/P1/P2 拆出 `capability_manifest`、Capability Router、BI_SOUL 内部契约、QueryGraph Compiler / Dialect Adapter 外壳、ToolAdapter 分层、event envelope、`ask_bi`、AgentScope Shell Adapter、ArtifactCard、候选数据集确认、retry checkpoint、旧会话兼容边界和五件套验收任务，并标注依赖、涉及文件、测试文件和验收用例；新增 AgentScope 2.0 集成系统设计方案，整理当前阶段完整系统架构、模块边界、非目标、验收标准，以及 P0/P1/P1.5/P2 完成后继续推进 AgentScope 2.0 完整集成所需的 G1 Shell Adapter、G2 Event / Runner Adapter、G3 多 Agent 产品链路目标；同步把新文档纳入总览的文档拆分建议。
-- 验证方式：执行 Markdown 占位扫描，确认新增文档和更新文档未残留占位内容；执行 `wc -l` 检查仓库副本与 Obsidian 副本行数一致；执行 `git diff --check -- docs/architecture .codex/project-memory.md` 通过。
-- 残留风险：本次产物是正式开发计划文档，不包含代码实现；计划中的新增文件和测试需要后续按任务分批实施并进行真实链路五件套验收。
-
-### 2026-06-26 16:28 · Multica 开发测试并行员工扩编
-
-- 涉及文件：`.codex/project-memory.md`、`.codex/config.toml`、Multica agent/squad 配置
-- 关键改动：在现有 `数语智能问数小队` 基础上新增 6 个并行员工智能体：`Datalogue-后端工程师-LeadAgent链路`、`Datalogue-后端工程师-数据治理SQL`、`Datalogue-前端工程师-工作台`、`Datalogue-测试工程师-后端回归`、`Datalogue-测试工程师-前端E2E`、`Datalogue-测试工程师-观测链路`；为新增员工配置中文职责 Prompt、workspace 可见性、项目 MCP 配置（dbhub/playwright，平台 redacted 回显）和对应 skills；将 6 个员工加入 squad `2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1`，并更新 leader instructions，明确 stage 1 分析拆分、stage 2 并行开发、stage 3 并行测试、stage 4 文档总结的分派方式。
-- 验证方式：执行 `multica squad get 2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1 --output json | jq '{id,name,member_count,leader_id,updated_at}'` 确认 `member_count=12`；执行 `multica squad member list 2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1 --output json` 确认新增 6 个角色已在 roster；执行 `multica agent list --output json` 过滤新增 agent，确认 skills 已绑定且 `mcp_config_redacted=true`；执行 `test ! -e .multica/datalogue-mcp-config.json` 确认创建用临时 MCP 文件已删除。
-- 残留风险：Multica squad 仍然只路由到 leader，不会自动 fan-out；后续真正并行工作仍需要 CEO 作为 leader 通过子 issue 和 stage 主动分派，且本次没有启动真实开发/测试任务。
 
 ### 2026-06-26 16:44 · BI_SOUL 内部契约与外部入口同步校验
 
@@ -213,3 +201,10 @@
 - 关键改动：合入 retry checkpoint 注册与恢复链路，final payload 发出前注册安全 `checkpoint_ref` 并写入 `retry_checkpoint`，前端 ArtifactCard 的 `retry` action 只发送 checkpointRef；合并 #7 event envelope 和 #10 final 注册顺序，先挂载 checkpoint 再生成用户可见 envelope；保留 #11 安全 action 协议，`export/continue_edit` 仍禁用，只有 retry 可在存在 checkpoint 时触发自定义事件。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_retry_checkpoint.py tests/test_chat.py::TestLangGraphNodes::test_dataset_confirmation_fact_persists_checkpoint -q`，4 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_chat.py tests/test_event_envelope.py -q`，121 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/services/conversation_store.py app/schemas/chat.py` 通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx`，1 个测试文件 4 条用例通过。
 - 残留风险：retry 恢复当前只回放安全业务上下文，不回放 SQL/schema/control_plane；前端还没有 DAT-16 的统一 Chat adapter 接管该自定义事件。
+
+### 2026-06-26 19:45 · DAT-11 AgentScope Shell Adapter 最小验证线
+
+- 涉及文件：`.omx/plans/DAT-11-agentscope-shell-adapter.md`、`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/services/bi_workbench_tool.py`、`datalogue-api/app/services/agentscope_shell_adapter.py`、`datalogue-api/app/services/agentscope_event_adapter.py`、`datalogue-api/tests/test_agentscope_shell_adapter.py`、`datalogue-api/tests/test_agentscope_event_adapter.py`、`datalogue-api/tests/test_bi_workbench_tool.py`、`datalogue-api/tests/test_event_envelope.py`、`.codex/project-memory.md`
+- 关键改动：合入 AgentScope Shell Adapter 最小验证线，固定第一阶段只允许 `ask_bi`，不开放公开 API、不启动 AgentScope runner、不替换 `/chat/stream`；`AgentScopeEventAdapter` 只把 `DatalogueEventEnvelope` 映射为 Shell 可见事件或 trace 事件，并丢弃 `control_plane`；解决 #9 与 #7/#8 的 add/add 冲突，保留真实异步 `ask_bi` 主链转接，同时兼容 `ref/ref_id`、`summary/summary_for_chat` 等前后端历史字段。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q`，16 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/services/bi_workbench_tool.py app/services/agentscope_shell_adapter.py app/services/agentscope_event_adapter.py` 通过。
+- 残留风险：当前仍是 contract-first Shell Adapter，不接真实 AgentScope runtime、不接公开 API；后续若要完整 AgentScope 2.0 集成，需要在 event stream adapter、runner adapter 和多 Agent 产品链路成熟后再打开。

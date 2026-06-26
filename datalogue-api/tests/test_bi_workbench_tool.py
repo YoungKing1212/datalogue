@@ -6,17 +6,20 @@
 # Responsibilities:
 #   - 验证 ask_bi 入参、出参和 Chat 主链转接边界。
 #   - 覆盖用户可见响应不泄露 SQL、schema、capsule 或 control_plane。
+#   - 验证 AgentScope 注入 handler 仍被响应 schema 约束。
 #
 # Author      : yangkai
 # Created On  : 2026-06-26
 # ============================================================
+
+from __future__ import annotations
 
 import json
 
 import pytest
 
 from app.schemas.bi_workbench import AskBIRequest
-from app.services.bi_workbench_tool import ask_bi
+from app.services.bi_workbench_tool import BIWorkbenchTool, ask_bi
 
 
 def _sse(payload: dict):
@@ -77,7 +80,9 @@ async def test_ask_bi_returns_stable_outer_contract_without_internal_leaks():
     assert response.candidate_datasets == [{"dataset_id": 12, "name": "工作日志"}]
     assert response.answer == "杨凯 2024 年工作日志共 10 条。"
     assert response.primary_ref.ref_id == "artifact:result:1"
+    assert response.primary_ref.ref == "artifact:result:1"
     assert response.related_refs[0].ref_id == "artifact:report:1"
+    assert response.artifact_card.primary_ref.ref == response.primary_ref.ref
 
     visible_json = response.model_dump_json()
     for forbidden in (
@@ -112,3 +117,32 @@ async def test_ask_bi_maps_clarification_to_waiting_user_status():
     assert response.error is None
     assert response.event_envelope.event_type == "clarification.required"
     assert response.candidate_datasets == [{"dataset_id": 7, "name": "销售"}]
+
+
+@pytest.mark.asyncio
+async def test_bi_workbench_tool_accepts_injected_safe_handler():
+    async def handler(request: AskBIRequest):
+        primary_ref = {"ref": "artifact:bi_answer:1", "kind": "answer", "title": "BI 查询结果摘要"}
+        return {
+            "task_id": "task-handler",
+            "event_envelope": {
+                "event_type": "answer.completed",
+                "task_id": "task-handler",
+                "payload": {"answer": "handler answer", "primary_ref": primary_ref},
+            },
+            "answer": "handler answer",
+            "artifact_card": {
+                "title": "BI 查询结果",
+                "summary_for_chat": "handler answer",
+                "primary_ref": primary_ref,
+            },
+            "primary_ref": primary_ref,
+            "status": "completed",
+        }
+
+    response = await BIWorkbenchTool(handler=handler).ask_bi(
+        AskBIRequest(question="查销售额", confirmed_dataset_id=3)
+    )
+
+    assert response.answer == "handler answer"
+    assert response.primary_ref.ref.startswith("artifact:bi_answer:")

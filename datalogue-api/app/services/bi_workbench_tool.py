@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -22,6 +23,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.schemas.bi_workbench import (
+    ArtifactAction,
     ArtifactCard,
     ArtifactRef,
     AskBIRequest,
@@ -31,6 +33,7 @@ from app.schemas.bi_workbench import (
 from app.schemas.chat import ChatRequest
 
 ChatStreamCallable = Callable[[ChatRequest, Session | None], AsyncIterator[dict[str, Any]]]
+AskBIHandler = Callable[[AskBIRequest], AskBIResponse | dict[str, Any] | Any]
 
 
 _SAFE_CANDIDATE_DATASET_KEYS = {
@@ -59,12 +62,25 @@ class BIWorkbenchTool:
         db: Session | None = None,
         *,
         stream_chat: ChatStreamCallable | None = None,
+        handler: AskBIHandler | None = None,
     ) -> None:
         self.db = db
         self._stream_chat = stream_chat
+        self._handler = handler
+
+    async def ask_bi(self, request: AskBIRequest) -> AskBIResponse:
+        """AgentScope Shell 使用的工具方法名；内部仍复用 ask 主实现。"""
+
+        return await self.ask(request)
 
     async def ask(self, request: AskBIRequest) -> AskBIResponse:
         """执行 ask_bi，并把 Chat SSE 收敛为稳定的 BI 工作台响应。"""
+
+        if self._handler is not None:
+            handled = self._handler(request)
+            if inspect.isawaitable(handled):
+                handled = await handled
+            return handled if isinstance(handled, AskBIResponse) else AskBIResponse(**handled)
 
         task_id = f"task-{uuid.uuid4().hex}"
         chat_payload = self._build_chat_request(request)
@@ -157,7 +173,7 @@ class BIWorkbenchTool:
                 # 事件 payload 只承载外层状态和引用，不回传 Chat final_state 原文。
                 "status": status,
                 "answer": answer,
-                "primary_ref": primary_ref.model_dump() if primary_ref else None,
+                "primary_ref": primary_ref.model_dump(mode="json") if primary_ref else None,
                 "candidate_datasets": candidate_datasets,
             },
             trace_id=self._optional_str(final_payload.get("trace_id")),
@@ -227,9 +243,27 @@ class BIWorkbenchTool:
         if not answer and not refs:
             return None
         return ArtifactCard(
+            title="BI 查询结果",
             summary=answer or "查询已完成，结果请通过引用查看。",
+            summary_for_chat=answer or "查询已完成，结果请通过引用查看。",
             preview_payload={"answer": answer} if answer else {},
+            actions=[
+                ArtifactAction(
+                    action_id="export",
+                    label="导出",
+                    enabled=False,
+                    disabled_reason="第一阶段不启动 ReportAgent 导出链路。",
+                ),
+                ArtifactAction(
+                    action_id="continue_edit",
+                    label="继续编辑",
+                    enabled=False,
+                    disabled_reason="第一阶段只打开详情面板，不启动 ReportAgent。",
+                ),
+            ],
             refs=refs,
+            primary_ref=primary_ref,
+            related_refs=related_refs,
         )
 
     def _related_refs(
@@ -249,7 +283,8 @@ class BIWorkbenchTool:
         if not ref_id:
             return None
         ref_type = default_type if default_type in {"result", "report", "artifact", "checkpoint"} else "unknown"
-        return ArtifactRef(ref_id=self._public_ref_id(ref_id), ref_type=ref_type)
+        public_ref_id = self._public_ref_id(ref_id)
+        return ArtifactRef(ref_id=public_ref_id, ref=public_ref_id, ref_type=ref_type, kind=ref_type)
 
     def _public_ref_id(self, ref_id: str) -> str:
         # Chat 主链内部 result_ref 可能带 sql_result 语义，ask_bi 对外只暴露不含执行类型的句柄。
