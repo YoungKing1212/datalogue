@@ -76,6 +76,15 @@ from .conversation import (
     ConversationRename,
 )
 from .chat import ChatRequest, ChatFeedback, ClarificationResponse
+from .bi_workbench import (
+    ArtifactAction,
+    ArtifactCard,
+    ArtifactRef,
+    AskBIRequest,
+    AskBIResponse,
+    DatalogueEventEnvelope,
+    validate_event_visibility,
+)
 from .capsule import CapsuleMeta, QueryContext, ResultDigest, SubAgentCapsule
 from .bi_workbench import (
     DatalogueEventEnvelope,
@@ -156,6 +165,13 @@ __all__ = [
     "ChatRequest",
     "ChatFeedback",
     "ClarificationResponse",
+    "ArtifactAction",
+    "ArtifactCard",
+    "ArtifactRef",
+    "AskBIRequest",
+    "AskBIResponse",
+    "DatalogueEventEnvelope",
+    "validate_event_visibility",
     "CapsuleMeta",
     "QueryContext",
     "ResultDigest",

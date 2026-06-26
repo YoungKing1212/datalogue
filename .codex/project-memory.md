@@ -123,6 +123,7 @@
 ### 2026-06-26
 
 - Multica Datalogue 员工智能体创建与技能绑定：创建 datalogue skill、上传 SOUL/capabilities/API assets，并配置数据问数分析师、后端、前端、QA、文档等员工智能体及 CEO skill。
+- Multica 数语智能问数小队创建：创建 `数语智能问数小队`，leader 设为 CEO，将 Datalogue 数据问数、后端、前端、QA、文档等成员加入 roster，并明确小队由 leader 分派而非自动 fan-out。
 
 ## 高价值判断
 
@@ -133,13 +134,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 12:13 · Multica 数语智能问数小队创建
-
-- 涉及文件：`.codex/project-memory.md`
-- 关键改动：创建 Multica squad `数语智能问数小队`（`2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1`），leader 设为 `CEO`；将 `Datalogue-数据问数分析师`、`Datalogue-后端工程师`、`Datalogue-前端体验工程师`、`Datalogue-QA观测工程师`、`Datalogue-文档交付专员` 加入小队，并分别设置 roster role；补充 squad leader instructions，明确小队不会自动 fan-out，任务先路由到 CEO，由 CEO 按目标、约束、风险和成员能力创建子 issue 或直接处理。
-- 验证方式：执行 `multica squad get 2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1 --output json` 确认 `member_count=6`、leader 为 CEO、instructions 已写入；执行 `multica squad member list 2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1 --output json` 确认 leader 和 5 个员工成员均存在且 role 正确；按项目记忆规则将最早一条最新详细记录压缩进历史区，保持最新详细记录不超过 10 条。
-- 残留风险：Multica squad 当前产品行为是路由到 leader，不会自动把任务分发给所有成员；后续如果要实现阶段化自动协作，还需要基于 issue stage、子 issue 或 autopilot 单独设计流程。
 
 ### 2026-06-26 12:33 · C 产品形态优先且 BI 内核 B-governed 工作规划
 
@@ -210,3 +204,10 @@
 - 关键改动：合入 `DatalogueEventEnvelope`，为 SSE 输出补统一 envelope 结构，保留 legacy 顶层字段兼容；Chat 流式事件可以同时携带 `event_envelope` 和既有 payload，给后续 AgentScope event adapter 与前端 C-ready timeline 留出口。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_event_envelope.py tests/test_chat.py -q`，121 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/schemas/__init__.py app/api/chat.py` 通过。
 - 残留风险：当前只是标准化 envelope，不替换 SSE 主协议；前端 `chat-adapter.js` 解析 envelope、AgentScope event stream adapter 和五件套真实链路验收仍需后续 DAT-16/DAT-18 收口。
+
+### 2026-06-26 19:28 · DAT-4 ask_bi 外层工具契约
+
+- 涉及文件：`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/services/bi_workbench_tool.py`、`datalogue-api/tests/test_bi_workbench_tool.py`、`.codex/project-memory.md`
+- 关键改动：合入 `AskBIRequest`、`AskBIResponse`、`ArtifactRef`、`ArtifactAction` 和 `ArtifactCard`，新增 `ask_bi` 外层工具入口，把现有 Chat 主链流式结果转成 C-ready 外层响应；解决 `bi_workbench.py` add/add 冲突，保留 #7 的 `DatalogueEventEnvelope`、事件类型、可见性、sanitize 和 builder，同时保留 #8 的 ask_bi / Artifact 契约；用户可见响应继续 fail closed 阻断 raw SQL、schema、capsule、control_plane 和 raw result。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q`，5 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/services/bi_workbench_tool.py app/schemas/__init__.py` 通过。
+- 残留风险：`ask_bi` 目前是外层工具契约和 Chat 转接封装，尚未由 AgentScopeShellAdapter 或前端独立工作台实际调用；Artifact refs 的持久化和旧会话兼容仍需 DAT-17 收口。
