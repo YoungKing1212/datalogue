@@ -124,6 +124,7 @@
 
 - Multica Datalogue 员工智能体创建与技能绑定：创建 datalogue skill、上传 SOUL/capabilities/API assets，并配置数据问数分析师、后端、前端、QA、文档等员工智能体及 CEO skill。
 - Multica 数语智能问数小队创建：创建 `数语智能问数小队`，leader 设为 CEO，将 Datalogue 数据问数、后端、前端、QA、文档等成员加入 roster，并明确小队由 leader 分派而非自动 fan-out。
+- C 产品形态优先且 BI 内核 B-governed 工作规划：沉淀 B-first C-ready 决策总览、任务清单、AgentScope 2.0 集成系统设计和二十余条能力路由/Artifact/ask_bi/旧会话边界决策。
 
 ## 高价值判断
 
@@ -134,13 +135,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 12:33 · C 产品形态优先且 BI 内核 B-governed 工作规划
-
-- 涉及文件：`docs/architecture/B-first C-ready 头脑风暴决策总览.md`、`docs/architecture/B-first C-ready 智能问数能力路由改造任务清单.md`、`docs/architecture/B-first C-ready 后续改造记录.md`、`docs/architecture/AgentScope 2.0 集成系统设计方案.md`、`docs/architecture/b-first-c-ready-decisions/02-决策沉淀 Hook 规则.md`、`docs/architecture/b-first-c-ready-decisions/decisions/001-capability_manifest 定位为轻量能力广告.md`、`docs/architecture/b-first-c-ready-decisions/decisions/010-C 产品形态优先且 BI 内核保持 B-governed.md` 至 `docs/architecture/b-first-c-ready-decisions/decisions/029-旧会话不支持 artifact_card 历史回放.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/2026-06-26 B-first C-ready 能力路由头脑风暴/`、`.codex/project-memory.md`
-- 关键改动：将总路线从 `B-first, C-ready` 升级为 `C-shaped product, B-governed BI core`，明确产品形态直接采用 C，但 BI 查询内核保持 B-governed；新增第十至第二十二个已敲定决策，覆盖 Agentic Shell 入口、Chat 任务时间线、ArtifactCard、preview_payload、Action Registry、refs、export / continue_edit 预留、`ask_bi`、`retry` 和主链路分层验收；新增第二十三个已敲定决策，规定 `DSL / QueryGraph / query_plan` 保留为 DatasetAgent 内部语义计划，LLM 只辅助生成或修复语义计划，SQL 编译、数据源方言适配、SQL Guard、preview / execute 和 artifact 持久化由 Tools 完成，最终 SQL 只进入 `control_plane`、artifact 和 trace；新增第二十四个已敲定决策，规定 `QueryGraph Compiler` 第一阶段采用 `query_plan_compiler.py` / `sql_dialect_adapter.py` 外壳封装方案，内部先复用现有 QueryGraph、SQL 生成、Guard 和 preview 链路，后续再逐步替换内部实现；新增第二十五个已敲定决策，规定 AgentScope 2.0 第一阶段作为 `AgentScopeShellAdapter` 显式接入外层 Shell 编排验证，只能调用 `ask_bi`，不接管 `/chat/stream` 或 BI 主链 runtime；新增第二十六个已敲定决策，规定 `AgentScopeShellAdapter` 放入后端正式 service，但第一阶段只做内部调用和 contract test，不开放公开 API、前端入口或独立 runner；新增第二十七至第二十九个已敲定决策，规定 `SOUL.md` 抽成 Datalogue 内部 `BI_SOUL.md` 契约再同步出去、SQL 方言适配第一阶段只覆盖当前真实数据源、旧会话不支持 ArtifactCard / event envelope / refs / 新 conversation_state 的历史回放；新增 AgentScope 2.0 集成系统设计方案，明确当前阶段系统边界、P0/P1/P1.5/P2 开发计划和完整集成 AgentScope 2.0 的 G1/G2/G3 后续目标；任务清单继续保留 P0-P4 作为能力清单、Capability Router、共享 DatasetAgent Runtime、DatasetAgentToolAdapter、事件观测协议等 BI 内核治理工作包，并把 P5 升级为 C 产品形态入口与 C-ready 工作规划，拆出 Agentic Shell、BIWorkbenchTool、ReportAgent、PythonAgent、AuditAgent、AgentScopeShellAdapter、产物引用和任务事件协议；P6 继续保留 AgentScope 主链 runtime 接入预备，不让 AgentScope 第一阶段直接接管主链 runtime。
-- 验证方式：执行 Markdown 占位扫描，确认文档未残留占位内容；执行 `wc -l` 检查仓库副本与 Obsidian 副本行数一致；执行 `git diff --check -- docs/architecture .codex/project-memory.md` 通过。
-- 残留风险：本次仍是头脑风暴后的任务清单，不是已批准的正式开发计划；后续需要继续收敛 capability manifest schema、接口协议和里程碑后再进入实施计划。
 
 ### 2026-06-26 12:43 · 默认测试套件稳定性修复
 
@@ -211,3 +205,10 @@
 - 关键改动：合入 `AskBIRequest`、`AskBIResponse`、`ArtifactRef`、`ArtifactAction` 和 `ArtifactCard`，新增 `ask_bi` 外层工具入口，把现有 Chat 主链流式结果转成 C-ready 外层响应；解决 `bi_workbench.py` add/add 冲突，保留 #7 的 `DatalogueEventEnvelope`、事件类型、可见性、sanitize 和 builder，同时保留 #8 的 ask_bi / Artifact 契约；用户可见响应继续 fail closed 阻断 raw SQL、schema、capsule、control_plane 和 raw result。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q`，5 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/services/bi_workbench_tool.py app/schemas/__init__.py` 通过。
 - 残留风险：`ask_bi` 目前是外层工具契约和 Chat 转接封装，尚未由 AgentScopeShellAdapter 或前端独立工作台实际调用；Artifact refs 的持久化和旧会话兼容仍需 DAT-17 收口。
+
+### 2026-06-26 19:30 · DAT-7 Artifact Action 安全协议
+
+- 涉及文件：`datalogue-api/app/services/artifact_actions.py`、`datalogue-api/tests/test_reserved_actions_contract.py`、`datalogue-api/tests/test_llm_config.py`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`.omx/plans/DAT-7-轻量协议验收与全量回归计划.md`、`.codex/project-memory.md`
+- 关键改动：合入 ArtifactCard action 安全协议，前端卡片只渲染声明式 action、禁用态和 disabled reason，不直接启动 ReportAgent/导出副作用；后端保留 reserved action 合约测试；解决 `test_llm_config.py` 冲突，改为按 `ROLE_CALL_POLICIES["intent"]["max_tokens"]` 断言，保留当前策略修复。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_reserved_actions_contract.py tests/test_llm_config.py::test_get_llm_uses_database_role_config -q`，4 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/artifact_actions.py` 通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx`，1 个测试文件 3 条用例通过。
+- 残留风险：#10 retry action 后续需要合入同一个 `artifact-card.jsx`，必须以本安全 action 协议为基础；真正 export / continue_edit / ReportAgent 仍保持禁用或详情面板，不启动链路。
