@@ -118,6 +118,7 @@
 - AgentScope 真实测试过程日志增强：补充 LLM 配置、工具 HTTP 请求、Plan/Execute 摘要、SQL preview、最终回答和动态数据集选择日志，支持 `pytest -s` 查看完整执行过程。
 - AgentScope Hermes-style DatasetAgent MVP：加载 Hermes SOUL/SKILL/capabilities 生成 AgentScope system prompt，用最小工具面验证 DatasetAgent 可通过 guarded SQL preview 自主查数，保留正式 artifact store、trace 和 `/chat/stream` 产品化为后续工作。
 - 项目文档多目录治理：将 `docs/` 根目录混放材料迁移到 product/architecture/observability/deliverables/assets/archive 等目录，保留 `docs/上下文入口.md` 和 `docs/README.md` 作为导航，并通过图片/链接和 `git diff --check` 验证。
+- Obsidian 智能问数长期知识沉淀：新增受约束 Agent 架构、语义治理与执行安全、真实链路验收方法三篇知识库方法论，沉淀 Capability Manifest、Manifest fail-closed、QueryArtifact/result_ref 和五件套验收原则。
 
 ## 高价值判断
 
@@ -128,13 +129,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-25 20:24 · Obsidian 智能问数长期知识沉淀
-
-- 涉及文件：`/Users/yangkai/KenYang/文档库/develop-doc-repositry/项目知识库/智能问数/企业级智能问数受约束 Agent 架构.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/项目知识库/智能问数/智能问数语义治理与执行安全.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/项目知识库/智能问数/智能问数真实链路验收方法.md`、`.codex/project-memory.md`
-- 关键改动：将当前 Datalogue 实践从工作记录抽象为 Obsidian 项目知识库长期沉淀，新增三篇方法论文档，分别沉淀受约束 Agent 架构、语义治理与执行安全、真实链路验收方法；内容强调 LeadAgent/DatasetAgent 边界、Capability Manifest、Manifest fail-closed、QueryArtifact/result_ref、多轮状态真相源、SQL Guard、Trace/日志/payload/页面交叉取证等可复用原则。
-- 验证方式：执行 `wc -l` 确认三篇文档已写入且总计 889 行；执行占位词扫描确认三篇文档未残留占位内容；按项目记忆规则将最早一条最新详细记录压缩进历史区，保持最新详细记录不超过 10 条。
-- 残留风险：本次是长期知识库文字沉淀，没有重新运行 Datalogue 真实问数链路；后续如果 AgentScope 产品化方案、Manifest 字段或 Trace 事件名继续演进，需要同步更新这些方法论文档。
 
 ### 2026-06-26 12:10 · Multica Datalogue 员工智能体创建与技能绑定
 
@@ -205,3 +199,10 @@
 - 关键改动：合入 QueryPlan Compiler 外壳，将 DatasetAgent 内部 `QueryPlan` 编译为 `tool_compiler` 来源 SQL，并把 SQL 只写入 control_plane / query_artifact / trace；保留 `llm_sql/direct_sql/raw_sql/sql` 执行来源检测，命中即 fail closed；将 SQL Dialect Adapter 从静态多方言允许改为当前真实数据源 dialect 单值门禁，QueryPlan 目标方言和当前数据源不一致时返回 `DIALECT_UNSUPPORTED_FOR_CURRENT_DATASOURCE`；DatasetSubAgent 调用处显式传入 `datasource_context.dialect/db_type` 作为当前数据源方言。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_subagent_run.py -q`，23 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/query_plan_compiler.py app/services/sql_dialect_adapter.py app/services/dataset_subagent.py app/graph/nodes.py app/graph/state.py` 通过。
 - 残留风险：当前 compiler 仍是外壳实现，内部 SELECT 生成能力只覆盖已水合字段资产和少量 schema fallback；完整 QueryGraph/DSL 语义编译替换、更多真实数据源方言支持和多方言矩阵测试属于后续阶段。
+
+### 2026-06-26 19:23 · DAT-8 SubAgent ToolAdapter 三层输出
+
+- 涉及文件：`datalogue-api/app/services/subagent_tool_adapter.py`、`datalogue-api/tests/test_subagent_tool_adapter.py`、`.omx/plans/2026-06-26-p0-4-subagent-tool-adapter-three-layer.md`、`.codex/project-memory.md`
+- 关键改动：合入 SubAgent ToolAdapter 三层输出改造，区分 `llm_visible`、`control_plane` 和 `external_artifact`，将大结果、raw SQL、trace 主体等敏感或重载内容限制在控制面/产物面，面向 LLM 的工具输出保持摘要化和低泄露风险。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_subagent_tool_adapter.py -q`，10 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/subagent_tool_adapter.py` 通过。
+- 残留风险：当前验证覆盖 ToolAdapter 契约本身；后续 #7 event envelope、#8 ask_bi、Artifact refs 和前端承接还需要继续确保三层输出不会被重新混入用户可见 SSE。
