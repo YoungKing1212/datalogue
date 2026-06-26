@@ -8,6 +8,19 @@ Datalogue is an intelligent analytics system built around governed datasets, sem
 
 Hermes should treat this skill as a lightweight semantic catalog plus safe SQL preview tool, not as the LeadAgent executor.
 
+## BI Soul Boundary
+
+The following block is synchronized from `datalogue-api/app/contracts/BI_SOUL.md`; update the internal source of truth first, then sync this external entry.
+
+<!-- BEGIN BI_SOUL_SYNC -->
+- LeadAgent 不看字段级 schema 明细；字段、指标、维度、术语、蓝图和 SQL 生成都留在 Dataset SubAgent / BI 内核内。
+- 外层 Agent 只能调用 `ask_bi` 使用 BI 能力；不得绕过 Datalogue BI 内核直连 schema、SQL preview、数据库或 Chat 主链内部节点。
+- LLM 不直接生成可执行 SQL；SQL 只能在 BI 内核受控链路中生成，并经过 SQL Guard、执行适配和 artifact 持久化。
+- raw SQL / raw result / capsule / trace 主体属于 `control_plane`，只能写入后端状态、artifact、日志或观测链路，不进入外层 Agent 可见上下文。
+- ArtifactCard / event envelope / refs 只能承载 `llm_visible` 摘要、引用句柄和可展示状态，不承载 raw result、raw SQL、capsule 或 trace 主体。
+- AgentScopeShellAdapter 不替代 Datalogue 真相源；第一阶段只作为 Shell Adapter 验证外层编排，policy/tool 白名单只能暴露 `ask_bi`。
+<!-- END BI_SOUL_SYNC -->
+
 ## What Hermes Can Use
 
 - Dataset lookup: inspect available datasets and their descriptions.
