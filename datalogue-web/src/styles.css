@@ -7453,131 +7453,456 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
     flex-wrap: wrap;
   }
 }
-/* ArtifactCard 承载前端可见产物摘要；action 只能使用后端给出的安全引用。 */
-.artifact-card {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px;
-  background: var(--panel);
-  color: var(--text);
-}
 
+/* ================================================
+   C-ready ArtifactCard — 统一产物卡片
+   ================================================ */
+.artifact-card {
+  margin-top: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
 .artifact-card-head {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.artifact-card-head h3 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-}
-
-.artifact-card-head p,
-.artifact-card-preview-text {
-  margin: 6px 0 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.artifact-card-status {
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.artifact-card-preview-list {
-  margin: 12px 0 0;
-  padding-left: 18px;
-  color: var(--text);
-  font-size: 13px;
-}
-
-.artifact-card-preview-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 8px;
-  margin: 12px 0 0;
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
 }
-
-.artifact-card-preview-grid div {
+.artifact-card-head:hover {
+  background: var(--bg-2);
+}
+.artifact-card-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
-
-.artifact-card-preview-grid dt {
-  color: var(--muted);
-  font-size: 12px;
+.artifact-card-head-left strong {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.artifact-card-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.artifact-card-summary {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.artifact-card-chev {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+  color: var(--text-3);
+}
+.artifact-card-head[aria-expanded="false"] .artifact-card-chev {
+  transform: rotate(-90deg);
 }
 
-.artifact-card-preview-grid dd {
-  margin: 2px 0 0;
-  font-size: 13px;
-  overflow-wrap: anywhere;
+/* status badge */
+.artifact-card-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.artifact-card-status-completed {
+  background: var(--pos-soft);
+  color: var(--pos);
+}
+.artifact-card-status-generating {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.artifact-card-status-error {
+  background: var(--neg-soft);
+  color: var(--neg);
+}
+.artifact-card-status-partial {
+  background: var(--warn);
+  color: #fff;
 }
 
+/* body */
+.artifact-card-body {
+  padding: 0 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* refs */
 .artifact-card-refs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.artifact-ref {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 3px 6px;
-  color: var(--muted);
-  font-size: 12px;
-  background: var(--surface);
-}
-
-.artifact-card-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.artifact-card-action-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.artifact-card-action {
-  display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 30px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 0 10px;
-  background: var(--surface);
-  color: var(--text);
-  font-size: 13px;
-  text-decoration: none;
-  cursor: pointer;
+  flex-wrap: wrap;
+  font-size: 11.5px;
 }
-
-.artifact-card-action:disabled {
-  cursor: not-allowed;
-  color: var(--muted);
+.artifact-card-ref-label {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.artifact-card-ref {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-card-ref-related {
   opacity: 0.65;
 }
 
-.artifact-card-action .icon {
+/* preview table */
+.artifact-card-table-wrap {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.artifact-card-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+}
+.artifact-card-table th,
+.artifact-card-table td {
+  padding: 5px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--hairline);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-card-table th {
+  background: var(--bg-2);
+  font-weight: 500;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.artifact-card-table td {
+  color: var(--text);
+}
+.artifact-card-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.artifact-card-table-more {
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+  background: var(--bg-2);
+}
+.artifact-card-empty {
+  padding: 14px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.artifact-card-report {
+  font-size: 13px;
+}
+.artifact-card-chart-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* actions */
+.artifact-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.artifact-card-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.artifact-card-action:hover:not(:disabled) {
+  background: var(--bg-2);
+}
+.artifact-card-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.artifact-card-action-hint {
+  font-size: 10.5px;
+  color: var(--text-3);
+  padding-left: 2px;
+}
+
+/* ================================================
+   C-ready TaskTimeline — 业务级任务时间线
+   ================================================ */
+.task-timeline {
+  margin-top: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.task-timeline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+.task-timeline-head:hover {
+  background: var(--bg-2);
+}
+.task-timeline-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.task-timeline-head-left strong {
+  font-weight: 600;
+}
+.task-timeline-count {
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 1px 6px;
+  border-radius: 100px;
+  background: var(--bg-2);
+}
+.task-timeline-chev {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+  color: var(--text-3);
+}
+.task-timeline-head[aria-expanded="false"] .task-timeline-chev {
+  transform: rotate(-90deg);
+}
+
+.task-timeline-body {
+  padding: 0 14px 14px;
+  position: relative;
+}
+
+/* 时间线节点 */
+.task-timeline-node {
+  display: flex;
+  gap: 12px;
+  position: relative;
+  padding-top: 10px;
+}
+.task-timeline-node:first-child {
+  padding-top: 0;
+}
+
+/* 连接线 */
+.task-timeline-connector {
+  position: absolute;
+  left: 10px;
+  top: 30px;
+  bottom: 0;
+  width: 1px;
+  background: var(--hairline-strong);
+}
+
+/* 图标 */
+.task-timeline-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+}
+.task-timeline-icon-done,
+.task-timeline-icon-running,
+.task-timeline-icon-error,
+.task-timeline-icon-pending {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.task-timeline-icon-done {
+  background: var(--pos-soft);
+}
+.task-timeline-icon-running {
+  background: var(--accent-soft);
+}
+.task-timeline-icon-error {
+  background: var(--neg-soft);
+}
+.task-timeline-icon-pending {
+  background: var(--bg-2);
+  border: 1.5px dashed var(--hairline-strong);
   width: 14px;
   height: 14px;
 }
 
-.artifact-card-disabled-reason {
-  color: var(--muted);
+/* 节点内容区 */
+.task-timeline-node-body {
+  flex: 1;
+  min-width: 0;
+}
+.task-timeline-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.task-timeline-node-pending .task-timeline-label {
+  color: var(--text-3);
+}
+.task-timeline-node-running .task-timeline-label {
+  color: var(--accent);
+}
+.task-timeline-text {
   font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* ================================================
+   C-ready CandidateDatasetCard — 候选数据集确认
+   ================================================ */
+.candidate-dataset-card {
+  margin-top: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.candidate-dataset-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+.candidate-dataset-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--accent);
+}
+.candidate-dataset-head strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.candidate-dataset-head span {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.candidate-dataset-options {
+  display: flex;
+  flex-direction: column;
+}
+.candidate-dataset-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+.candidate-dataset-option:last-child {
+  border-bottom: none;
+}
+.candidate-dataset-option:hover {
+  background: var(--bg-2);
+}
+.candidate-dataset-index {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.candidate-dataset-body {
+  flex: 1;
+  min-width: 0;
+}
+.candidate-dataset-body strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+.candidate-dataset-body em {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-style: normal;
+}
+.candidate-dataset-action {
+  flex-shrink: 0;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.candidate-dataset-option:hover .candidate-dataset-action {
+  opacity: 1;
 }

@@ -13,6 +13,8 @@ import {
 import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
 import MessageContent from '../components/message-content';
+import TaskTimeline from '../components/task-timeline';
+import ArtifactCard from '../components/artifact-card';
 import { getArtifact, submitMessageFeedback } from '../api/client';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
@@ -714,6 +716,66 @@ function TermClarificationCard({ clarification, routePayload, onSelect }) {
   );
 }
 
+/**
+ * CandidateDatasetCard — C-ready 候选数据集确认卡片
+ * 只展示 dataset_name 和 short_reason（业务原因），
+ * 不展示字段、表、资产详情。提供 confirm / change_dataset 操作。
+ */
+function CandidateDatasetCard({ candidateDatasets, onConfirm }) {
+  if (!candidateDatasets || !Array.isArray(candidateDatasets.candidates) || !candidateDatasets.candidates.length) {
+    return null;
+  }
+
+  const handleConfirm = (candidate) => {
+    if (onConfirm) onConfirm(candidate);
+    if (candidate.dataset_id != null) {
+      // 构造 clarification response，与 TermClarificationCard 保持一致
+      window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
+        clarification_id: candidateDatasets.clarification_id || null,
+        selected_index: candidate.index,
+        selected_text: candidate.dataset_name,
+        selected_dataset_id: candidate.dataset_id,
+      };
+    }
+    window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
+      detail: { text: `确认使用：${candidate.dataset_name}` },
+    }));
+  };
+
+  return (
+    <div className="candidate-dataset-card">
+      <div className="candidate-dataset-head">
+        <span className="candidate-dataset-icon">
+          <Icon name="database" />
+        </span>
+        <div>
+          <strong>候选数据集确认</strong>
+          <span>根据您的问题，匹配到以下候选数据集，请确认</span>
+        </div>
+      </div>
+      <div className="candidate-dataset-options">
+        {candidateDatasets.candidates.map((candidate, index) => (
+          <button
+            key={candidate.dataset_id || index}
+            type="button"
+            className="candidate-dataset-option"
+            onClick={() => handleConfirm({ ...candidate, index: index + 1 })}
+          >
+            <span className="candidate-dataset-index">{index + 1}</span>
+            <span className="candidate-dataset-body">
+              <strong>{candidate.dataset_name || `候选数据集 ${index + 1}`}</strong>
+              {candidate.short_reason && <em>{candidate.short_reason}</em>}
+            </span>
+            <span className="candidate-dataset-action">
+              <Icon name="arrow_up_right" style={{ width: 12, height: 12 }} />
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TraceLinkCard({ traceId, sessionId, observability, stepTrace = [] }) {
   if (!traceId && !sessionId) return null;
 
@@ -985,6 +1047,10 @@ export function AIMessage({ showSql = true }) {
   const resultRef = custom.resultRef || null;
   const reportRef = custom.reportRef || null;
   const subagentToolResults = custom.subagentToolResults || null;
+  // C-ready 数据结构
+  const taskTimeline = custom.taskTimeline || null;
+  const artifactCard = custom.artifactCard || null;
+  const candidateDatasets = custom.candidateDatasets || null;
 
   const handleSelectClarification = (candidate, optionIndex, label, kind = 'term') => {
     const clarificationId =
@@ -1067,6 +1133,9 @@ export function AIMessage({ showSql = true }) {
         </span>
       </div>
 
+      {/* 业务时间线 — 展示任务理解 / 数据集匹配 / BI 执行 / 结果产物 / 下一步 */}
+      <TaskTimeline events={taskTimeline} />
+
       {/* 内容区 — reasoning 由 ChainOfThought 接管，text 走 markdown */}
       <MessagePrimitive.Parts
         components={{
@@ -1085,6 +1154,9 @@ export function AIMessage({ showSql = true }) {
         onSelect={handleSelectClarification}
       />
 
+      {/* C-ready 候选数据集确认 — 只展示 dataset_name + 业务原因 */}
+      <CandidateDatasetCard candidateDatasets={candidateDatasets} />
+
       <TraceLinkCard
         traceId={langfuseTraceId}
         sessionId={langfuseSessionId}
@@ -1097,6 +1169,9 @@ export function AIMessage({ showSql = true }) {
         reportRef={reportRef}
         subagentToolResults={subagentToolResults}
       />
+
+      {/* C-ready ArtifactCard — 统一产物卡片 */}
+      <ArtifactCard artifact={artifactCard} />
 
       {/* SQL 执行结果表格 */}
       {sqlResult && sqlResult.rows && sqlResult.rows.length > 0 && (

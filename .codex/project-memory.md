@@ -223,3 +223,10 @@
 - 关键改动：按 DAT-11 要求先保存开发计划；新增 AgentScope Shell Adapter service，第一阶段固定只允许 `ask_bi`，不开放公开 API、不接前端、不启动 runner；新增 AgentScope Event Adapter，`control_plane` 事件只计入内部丢弃数，不进入 Shell 可见事件或 trace 事件输出；适配当前已合入的 async `ask_bi`、`DatalogueEventEnvelope` 和 `ArtifactRef.ref_id` 契约。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q` 通过；执行 `cd datalogue-api && python3 -m py_compile app/services/agentscope_shell_adapter.py app/services/agentscope_event_adapter.py app/schemas/bi_workbench.py app/services/bi_workbench_tool.py` 通过；执行 `git diff --check` 通过。
 - 残留风险：当前是 contract-first 最小验证线，未接真实 `/chat/stream`、未导入 AgentScope runtime、未做真实 BI 主链回放。
+
+### 2026-06-26 18:26 · P1 Chat Shell：ArtifactCard、任务时间线与候选确认
+
+- 涉及文件：`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/task-timeline.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/components/task-timeline.test.jsx`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：新增 C-ready ArtifactCard、TaskTimeline 和 CandidateDatasetCard；chat-adapter 将 event envelope / 旧 SSE 事件归一为 `taskTimeline`、`artifactCard` 和 `candidateDatasets`；候选确认只展示 dataset name 与 short reason，不暴露字段、表、SQL 或资产详情；ArtifactCard 复用已合入 action 协议，第一阶段 `export` / `continue_edit` 禁用，`retry` 只派发 checkpointRef。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`；执行 `cd datalogue-web && npm run lint`；执行 `cd datalogue-web && npm run build`；执行 `git diff --check`。
+- 残留风险：本次仍以现有 Chat 入口承接 C-ready 结构，未新建独立 BI 工作台；真实页面、DevTools Network 和后端 SSE 的端到端回放留给 DAT-18 五件套验收。
