@@ -131,6 +131,7 @@
 - BI_SOUL 内部契约与 Hermes SOUL 同步校验：新增 BI 不可越界 source of truth、同步服务和测试，明确外层 Agent 只能调用 `ask_bi`，raw SQL/raw result/capsule 属于控制面。
 - DAT-15 数据集能力清单：新增 `CapabilityManifest` / `CapabilityManifestSummary`、业务级泄露扫描和 `GET /api/dataset/{dataset_id}/capability-manifest` 调试接口，为 LeadAgent Capability Router 提供真实 manifest summary 依赖。
 - DAT-13 LeadAgent Capability Router：数据集路由改为只消费 `CapabilityManifestSummary`，低置信/close-score 只返回候选确认，并在用户确认后写入 `conversation_state.facts` 的 `confirmed_dataset_id` 与 retry checkpoint。
+- DAT-9 QueryGraph Compiler 方言边界收窄：合入 QueryPlan Compiler 外壳，将 SQL 只写入 control_plane / query_artifact / trace，并把方言门禁收窄为当前真实数据源 dialect，不允许 LLM 通过 raw_sql/direct_sql/llm_sql/sql 作为执行来源。
 
 ## 高价值判断
 
@@ -141,13 +142,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 19:22 · DAT-9 QueryGraph Compiler 方言边界收窄
-
-- 涉及文件：`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/app/services/sql_dialect_adapter.py`、`datalogue-api/app/services/dataset_subagent.py`、`datalogue-api/app/graph/nodes.py`、`datalogue-api/app/graph/state.py`、`datalogue-api/app/services/subagent_planning/`、`datalogue-api/tests/test_query_plan_compiler.py`、`datalogue-api/tests/test_sql_dialect_adapter.py`、`datalogue-api/tests/test_subagent_run.py`、`.codex/project-memory.md`
-- 关键改动：合入 QueryPlan Compiler 外壳，将 DatasetAgent 内部 `QueryPlan` 编译为 `tool_compiler` 来源 SQL，并把 SQL 只写入 control_plane / query_artifact / trace；保留 `llm_sql/direct_sql/raw_sql/sql` 执行来源检测，命中即 fail closed；将 SQL Dialect Adapter 从静态多方言允许改为当前真实数据源 dialect 单值门禁，QueryPlan 目标方言和当前数据源不一致时返回 `DIALECT_UNSUPPORTED_FOR_CURRENT_DATASOURCE`；DatasetSubAgent 调用处显式传入 `datasource_context.dialect/db_type` 作为当前数据源方言。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_subagent_run.py -q`，23 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/query_plan_compiler.py app/services/sql_dialect_adapter.py app/services/dataset_subagent.py app/graph/nodes.py app/graph/state.py` 通过。
-- 残留风险：当前 compiler 仍是外壳实现，内部 SELECT 生成能力只覆盖已水合字段资产和少量 schema fallback；完整 QueryGraph/DSL 语义编译替换、更多真实数据源方言支持和多方言矩阵测试属于后续阶段。
 
 ### 2026-06-26 19:23 · DAT-8 SubAgent ToolAdapter 三层输出
 
@@ -211,3 +205,10 @@
 - 关键改动：合入主链路自动化验收框架，新增成功问数、低置信候选确认、无法回答拒答、受控失败 retry 和旧历史不伪造 ArtifactCard 的验收用例；扩展 `chat.stream` 摘要字段，记录 `result_ref/report_ref/langfuse_trace_id/langfuse_session_id`；前端 adapter 测试覆盖 final SSE 中 observability 和 artifact refs 写入页面 metadata；新增五件套验收记录模板，为 DAT-18 真实链路记录提供结构。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，122 条用例通过；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js`，1 个测试文件 5 条用例通过。
 - 残留风险：DAT-14 仍是自动化验收框架，Langfuse observation、页面 ArtifactCard、后端日志和数据库状态的一次真实问题五件套记录仍需 DAT-18 补齐。
+
+### 2026-06-26 21:25 · DAT-18 五件套验收记录落档
+
+- 涉及文件：`docs/main-chain-acceptance-records/2026-06-26-b-first-c-core-chain.md`、`.codex/project-memory.md`
+- 关键改动：新增 B-first C-ready 主链路五件套验收记录，明确自动化代表问题 `最近30日GMV趋势如何` 已覆盖 SSE、后端 checkpoint、trace index、query_artifact 和 conversation_state 交叉核对；同时单列真实业务问题 `查询杨凯 2024 年工作日志` 的页面 Chat、Langfuse UI 和手工截图/录屏补录项，避免把测试替身误记为真实运行证据。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py tests/test_observability.py tests/test_artifact_api.py -q`，142 条用例通过；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js`，1 个测试文件 5 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
+- 残留风险：真实浏览器页面、Langfuse UI 和本地服务手工链路尚未在本轮启动验证；发布前必须补录同一 `task_id / trace_id / artifact_ref` 在页面、SSE、后端日志、Langfuse、数据库五处一致的证据。
