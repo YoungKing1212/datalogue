@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ArtifactCard } from './artifact-card.jsx';
@@ -46,6 +46,39 @@ describe('ArtifactCard', () => {
 
     expect(screen.getByRole('button', { name: /继续编辑/ })).toBeDisabled();
     expect(screen.getByText('继续编辑能力将在后续版本开放')).toBeInTheDocument();
+  });
+
+  it('dispatches retry with checkpoint_ref only', () => {
+    const listener = vi.fn();
+    window.addEventListener('datalogue:artifact-action', listener);
+
+    render(
+      <ArtifactCard
+        artifact={{
+          ...artifact,
+          status: 'failed',
+          actions: [
+            {
+              action_type: 'retry',
+              label: '重试',
+              enabled: true,
+              checkpoint_ref: 'checkpoint://task-1/query_context_ready',
+              sql: 'SELECT * FROM orders',
+              control_plane: { schema: 'orders' },
+            },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].detail).toEqual({
+      actionType: 'retry',
+      checkpointRef: 'checkpoint://task-1/query_context_ready',
+    });
+    window.removeEventListener('datalogue:artifact-action', listener);
   });
 
   it('ignores unknown actions and hides internal payload fields', () => {

@@ -125,6 +125,7 @@
 - Multica Datalogue 员工智能体创建与技能绑定：创建 datalogue skill、上传 SOUL/capabilities/API assets，并配置数据问数分析师、后端、前端、QA、文档等员工智能体及 CEO skill。
 - Multica 数语智能问数小队创建：创建 `数语智能问数小队`，leader 设为 CEO，将 Datalogue 数据问数、后端、前端、QA、文档等成员加入 roster，并明确小队由 leader 分派而非自动 fan-out。
 - C 产品形态优先且 BI 内核 B-governed 工作规划：沉淀 B-first C-ready 决策总览、任务清单、AgentScope 2.0 集成系统设计和二十余条能力路由/Artifact/ask_bi/旧会话边界决策。
+- 默认测试套件稳定性修复：恢复 AgentScope live 集成测试显式开关，更新 intent 角色 LLM `max_tokens` 断言，默认后端全量 pytest 和前端 lint/test/build 通过，仅保留既有 warning 与 ruff 历史问题。
 
 ## 高价值判断
 
@@ -135,13 +136,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 12:43 · 默认测试套件稳定性修复
-
-- 涉及文件：`datalogue-api/tests/agentscope_react_mvp/test_live_react_agent.py`、`datalogue-api/tests/test_llm_config.py`、`.codex/project-memory.md`
-- 关键改动：恢复 AgentScope ReAct MVP live integration 测试的 `RUN_AGENTSCOPE_REACT_MVP=1` 显式开关，避免默认后端 pytest 在本地 Datalogue API 未启动时调用真实服务和真实 LLM；同步将 `intent` 角色 LLM 策略测试中的 `max_tokens` 断言更新为当前 `ROLE_CALL_POLICIES` 的 `20480`，对齐 2026-06-23 的策略调整。
-- 验证方式：执行 `.venv/bin/python -m pytest tests/test_llm_config.py::test_get_llm_uses_database_role_config -q` 通过；执行 `.venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q` 得到 `1 passed, 1 skipped`；执行 `.venv/bin/python -m pytest` 得到 `726 passed, 5 skipped, 327 warnings`；前端已执行 `npm run lint`、`npm run test`、`npm run build`，其中 lint/build 仅有 warning。
-- 残留风险：`ruff check .` 仍报告 64 个既有静态问题，其中 `app/services/lead_agent_routing.py:914` 存在 `json` 未定义风险；后端 `.venv` 未安装 ruff，本次使用系统 ruff 只做发现，不顺手清理历史 lint。
 
 ### 2026-06-26 13:00 · B-first C-ready 后续改造记录与正式开发计划
 
@@ -212,3 +206,10 @@
 - 关键改动：合入 ArtifactCard action 安全协议，前端卡片只渲染声明式 action、禁用态和 disabled reason，不直接启动 ReportAgent/导出副作用；后端保留 reserved action 合约测试；解决 `test_llm_config.py` 冲突，改为按 `ROLE_CALL_POLICIES["intent"]["max_tokens"]` 断言，保留当前策略修复。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_reserved_actions_contract.py tests/test_llm_config.py::test_get_llm_uses_database_role_config -q`，4 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/artifact_actions.py` 通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx`，1 个测试文件 3 条用例通过。
 - 残留风险：#10 retry action 后续需要合入同一个 `artifact-card.jsx`，必须以本安全 action 协议为基础；真正 export / continue_edit / ReportAgent 仍保持禁用或详情面板，不启动链路。
+
+### 2026-06-26 19:35 · DAT-12 Retry Checkpoint 安全恢复
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/schemas/chat.py`、`datalogue-api/app/services/conversation_store.py`、`datalogue-api/tests/test_retry_checkpoint.py`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/styles.css`、`.omx/plans/DAT-12-retry-checkpoint-plan.md`、`.codex/project-memory.md`
+- 关键改动：合入 retry checkpoint 注册与恢复链路，final payload 发出前注册安全 `checkpoint_ref` 并写入 `retry_checkpoint`，前端 ArtifactCard 的 `retry` action 只发送 checkpointRef；合并 #7 event envelope 和 #10 final 注册顺序，先挂载 checkpoint 再生成用户可见 envelope；保留 #11 安全 action 协议，`export/continue_edit` 仍禁用，只有 retry 可在存在 checkpoint 时触发自定义事件。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_retry_checkpoint.py tests/test_chat.py::TestLangGraphNodes::test_dataset_confirmation_fact_persists_checkpoint -q`，4 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_chat.py tests/test_event_envelope.py -q`，121 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/services/conversation_store.py app/schemas/chat.py` 通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx`，1 个测试文件 4 条用例通过。
+- 残留风险：retry 恢复当前只回放安全业务上下文，不回放 SQL/schema/control_plane；前端还没有 DAT-16 的统一 Chat adapter 接管该自定义事件。

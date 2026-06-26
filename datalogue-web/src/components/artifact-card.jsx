@@ -1,30 +1,66 @@
+import { Icon } from './icons';
+
 const RESERVED_ACTIONS = {
+  retry: {
+    label: '重试',
+    icon: 'refresh',
+    disabledReason: '缺少可恢复的 checkpoint',
+  },
   export: {
     label: '导出',
+    icon: 'download',
     disabledReason: '导出能力将在后续版本开放',
+    forceDisabled: true,
   },
   continue_edit: {
     label: '继续编辑',
+    icon: 'edit',
     disabledReason: '继续编辑能力将在后续版本开放',
+    forceDisabled: true,
   },
 };
+
+function actionType(action) {
+  return String(action?.action_type || action?.actionType || '').trim();
+}
+
+function actionCheckpointRef(action) {
+  return action?.checkpoint_ref || action?.checkpointRef || null;
+}
 
 function normalizeActions(actions) {
   return (Array.isArray(actions) ? actions : [])
     .map((action) => {
-      const actionType = String(action?.action_type || '').trim();
-      const config = RESERVED_ACTIONS[actionType];
+      const type = actionType(action);
+      const config = RESERVED_ACTIONS[type];
       if (!config) {
-        if (actionType) console.debug('ArtifactCard ignored unknown action', actionType);
+        if (type) console.debug?.('ArtifactCard ignored unknown action', type);
         return null;
       }
+      const checkpointRef = actionCheckpointRef(action);
+      const enabled = type === 'retry'
+        ? Boolean(checkpointRef) && action?.enabled !== false && action?.disabled !== true
+        : false;
       return {
-        actionType,
+        type,
         label: action?.label || config.label,
-        disabledReason: action?.disabled_reason || config.disabledReason,
+        icon: config.icon,
+        enabled: config.forceDisabled ? false : enabled,
+        checkpointRef,
+        disabledReason: action?.disabled_reason || action?.disabledReason || config.disabledReason,
       };
     })
     .filter(Boolean);
+}
+
+function dispatchRetry(action) {
+  if (!action.checkpointRef) return;
+  window.dispatchEvent(
+    new CustomEvent('datalogue:artifact-action', {
+      // retry 只发送 checkpointRef，避免把 SQL/schema/control_plane 回传到前端动作面。
+      detail: { actionType: 'retry', checkpointRef: action.checkpointRef },
+    }),
+  );
 }
 
 function normalizePreview(previewPayload) {
@@ -38,13 +74,14 @@ function normalizePreview(previewPayload) {
 function formatRef(ref) {
   if (!ref) return '';
   if (typeof ref === 'string') return ref;
-  return ref.ref || ref.artifact_ref || '';
+  return ref.ref || ref.ref_id || ref.artifact_ref || '';
 }
 
 function ArtifactRefs({ primaryRef, relatedRefs }) {
   const refs = [primaryRef, ...(Array.isArray(relatedRefs) ? relatedRefs : [])]
     .map(formatRef)
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, 4);
   if (!refs.length) return null;
   return (
     <div className="artifact-ref-list">
@@ -56,6 +93,19 @@ function ArtifactRefs({ primaryRef, relatedRefs }) {
 }
 
 function ArtifactPreview({ previewPayload }) {
+  if (typeof previewPayload === 'string') {
+    return <p className="artifact-card-preview-text">{previewPayload}</p>;
+  }
+  if (Array.isArray(previewPayload)) {
+    return (
+      <ul className="artifact-card-preview-list">
+        {previewPayload.slice(0, 5).map((item, index) => (
+          <li key={`${index}-${String(item).slice(0, 20)}`}>{String(item)}</li>
+        ))}
+      </ul>
+    );
+  }
+
   const { rows, columns } = normalizePreview(previewPayload);
   if (!columns.length) return null;
   return (
@@ -80,28 +130,49 @@ function ArtifactPreview({ previewPayload }) {
   );
 }
 
+function ArtifactAction({ action }) {
+  return (
+    <span className="artifact-card-action-wrap">
+      <button
+        className="artifact-card-action"
+        type="button"
+        disabled={!action.enabled}
+        onClick={() => {
+          if (action.type === 'retry') dispatchRetry(action);
+        }}
+      >
+        <Icon name={action.icon} />
+        <span>{action.label}</span>
+      </button>
+      {!action.enabled && action.disabledReason && (
+        <small className="artifact-card-disabled-reason">{action.disabledReason}</small>
+      )}
+    </span>
+  );
+}
+
 export function ArtifactCard({ artifact }) {
   const visibleActions = normalizeActions(artifact?.actions);
   if (!artifact) return null;
 
   return (
-    <section className="artifact-card" aria-label={artifact.title || 'Artifact'}>
+    <section className={`artifact-card artifact-card-${artifact.status || 'unknown'}`} aria-label={artifact.title || 'Artifact'}>
       <div className="artifact-card-head">
-        <strong>{artifact.title || '查询产物'}</strong>
-        {artifact.status && <span>{artifact.status}</span>}
+        <div>
+          <strong>{artifact.title || '查询产物'}</strong>
+          {artifact.summary_for_chat && <p>{artifact.summary_for_chat}</p>}
+        </div>
+        {artifact.status && <span className="artifact-card-status">{artifact.status}</span>}
       </div>
-      {artifact.summary_for_chat && <p>{artifact.summary_for_chat}</p>}
-      <ArtifactPreview previewPayload={artifact.preview_payload} />
-      <ArtifactRefs primaryRef={artifact.primary_ref} relatedRefs={artifact.related_refs} />
+      <ArtifactPreview previewPayload={artifact.preview_payload || artifact.previewPayload} />
+      <ArtifactRefs
+        primaryRef={artifact.primary_ref || artifact.primaryRef}
+        relatedRefs={artifact.related_refs || artifact.relatedRefs}
+      />
       {visibleActions.length > 0 && (
         <div className="artifact-card-actions">
           {visibleActions.map((action) => (
-            <div className="artifact-card-action-wrap" key={action.actionType}>
-              <button className="artifact-card-action" type="button" disabled>
-                {action.label}
-              </button>
-              <small>{action.disabledReason}</small>
-            </div>
+            <ArtifactAction action={action} key={action.type} />
           ))}
         </div>
       )}
