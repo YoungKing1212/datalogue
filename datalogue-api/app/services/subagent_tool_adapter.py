@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from enum import Enum
 from typing import Any
 
@@ -70,6 +71,8 @@ class ControlPlanePart(BaseModel):
     last_success_task: dict[str, Any] | None = None
     result_ref: str | None = None
     report_ref: str | None = None
+    raw_sql: str | None = None
+    raw_result: Any | None = None
     prior_capsule_status: dict[str, Any] = Field(default_factory=dict)
     raw_error: Any | None = None
 
@@ -100,6 +103,20 @@ class SubAgentToolAdapter:
     """把现有流式 SubAgent 完成态拆成 LLM 可见层和控制面层。"""
 
     LLM_VISIBLE_TOKEN_BUDGET = 200
+    RESULT_SCHEMA_VERSION = "subagent_tool_result.v1"
+    TOOL_NAME = "dataset_subagent"
+    _FORBIDDEN_VISIBLE_KEYWORDS = {
+        "raw_sql",
+        "raw_result",
+        "sql_result",
+        "capsule",
+        "schema",
+        "trace_body",
+        "control_plane",
+        "out_capsule",
+        "query_task_capsule",
+    }
+    _SQL_SHAPE_RE = re.compile(r"(?is)\b(select|insert|update|delete|with)\b.+\bfrom\b")
 
     def __init__(self, artifact_store: Any | None = None) -> None:
         self.artifact_store = artifact_store
@@ -135,16 +152,13 @@ class SubAgentToolAdapter:
             trace_id=trace_id,
         )
         llm_visible = self._build_llm_visible(invocation, state)
+        llm_visible = self._sanitize_llm_visible_internal_payload(llm_visible)  # 可见面统一过泄露扫描，防止上游摘要混入 SQL/胶囊。
         llm_visible = self._enforce_llm_visible_budget_or_truncate(llm_visible)
         control_plane = self._build_control_plane(invocation, state)
         return SubAgentToolResult(
             llm_visible=llm_visible,
             control_plane=control_plane,
-            trace_metadata={
-                "status": llm_visible.status.value,
-                "dataset_id": invocation.dataset_id,
-                "prior_capsule_status": invocation.prior_capsule_status,
-            },
+            trace_metadata=self._build_trace_metadata(invocation, state, llm_visible),
         )
 
     def render_for_llm(self, result: SubAgentToolResult) -> str:
@@ -259,9 +273,32 @@ class SubAgentToolAdapter:
             last_success_task=jsonable_encoder(last_success_task) if last_success_task else None,
             result_ref=self._optional_str(final_state.get("result_ref")),
             report_ref=self._optional_str(final_state.get("report_ref")),
+            raw_sql=self._optional_str(final_state.get("sql")),
+            raw_result=jsonable_encoder(final_state.get("sql_result")) if final_state.get("sql_result") is not None else None,
             prior_capsule_status=dict(invocation.prior_capsule_status or {}),
             raw_error=error,
         )
+
+    def _build_trace_metadata(
+        self,
+        invocation: SubAgentInvocation,
+        final_state: dict[str, Any],
+        llm_visible: LLMVisiblePart,
+    ) -> dict[str, Any]:
+        """生成只含追踪索引的 metadata；trace 正文和控制面 payload 留在 control_plane。"""
+
+        artifact_id = llm_visible.result_ref or llm_visible.report_ref
+        return {
+            "schema_version": self.RESULT_SCHEMA_VERSION,
+            "tool_name": self.TOOL_NAME,
+            "status": llm_visible.status.value,
+            "dataset_id": invocation.dataset_id,
+            "guard_status": self._guard_status(final_state),
+            "artifact_id": artifact_id,
+            "result_ref": llm_visible.result_ref,
+            "report_ref": llm_visible.report_ref,
+            "prior_capsule_status": invocation.prior_capsule_status,
+        }
 
     def _with_artifact_refs(
         self,
@@ -306,6 +343,58 @@ class SubAgentToolAdapter:
         value = final_state.get("answer_preview") or final_state.get("answer") or default
         text = str(value)
         return text if len(text) <= 240 else f"{text[:240]}..."
+
+    def _sanitize_llm_visible_internal_payload(
+        self, part: LLMVisiblePart
+    ) -> LLMVisiblePart:
+        """发现可见摘要夹带控制面线索时降级为安全引用文案。"""
+
+        payload = part.model_dump(mode="json")
+        if not self._contains_forbidden_visible_payload(payload):
+            return part
+        logger.warning(
+            "subagent llm visible payload contained internal fields; sanitized dataset_id=%s status=%s",
+            part.dataset_id,
+            part.status.value,
+        )
+        if part.status == LLMVisibleStatus.CLARIFICATION_NEEDED:
+            return part.model_copy(
+                update={"clarification_question": "请补充必要信息后再继续查询。"}
+            )
+        if part.status == LLMVisibleStatus.ERROR:
+            return part.model_copy(update={"error_summary": "查询过程出错，已记录。"})
+        # 成功/空结果路径只保留引用，不让 SQL、raw result 或 capsule 以摘要文本形式进入 LLM。
+        return part.model_copy(update={"display_summary": "查询完成，结果已生成引用。"})
+
+    def _contains_forbidden_visible_payload(self, value: Any, *, key_name: str = "") -> bool:
+        key = str(key_name or "").lower()
+        if key and any(keyword in key for keyword in self._FORBIDDEN_VISIBLE_KEYWORDS):
+            return True
+        if isinstance(value, dict):
+            return any(
+                self._contains_forbidden_visible_payload(child, key_name=str(child_key))
+                for child_key, child in value.items()
+            )
+        if isinstance(value, list):
+            return any(self._contains_forbidden_visible_payload(item) for item in value)
+        if isinstance(value, str):
+            lowered = value.lower()
+            return any(keyword in lowered for keyword in self._FORBIDDEN_VISIBLE_KEYWORDS) or bool(
+                self._SQL_SHAPE_RE.search(value)
+            )
+        return False
+
+    def _guard_status(self, final_state: dict[str, Any]) -> str | None:
+        """兼容不同执行节点的 guard 字段命名，避免 trace metadata 依赖单一实现。"""
+
+        for key in ("guard_status", "manifest_guard_status", "sql_guard_status"):
+            value = final_state.get(key)
+            if value:
+                return str(value)
+        guard_result = final_state.get("guard_result")
+        if isinstance(guard_result, dict) and guard_result.get("status"):
+            return str(guard_result["status"])
+        return None
 
     def _sanitize_error(self, error: Any) -> str:
         text = str(error or "")

@@ -14,13 +14,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.services.subagent_tool_adapter import (
-    LLMVisibleBudgetExceededError,
     LLMVisibleStatus,
     SubAgentInvocation,
     SubAgentToolAdapter,
+    SubAgentToolResult,
 )
 
 
@@ -98,6 +96,64 @@ def test_assemble_ok_builds_llm_visible_and_control_plane():
         == "artifact:sql_result:json"
     )
     assert "rows" not in result.control_plane.last_success_task["result_artifact"]
+
+
+def test_subagent_tool_result_keeps_raw_payload_only_in_control_plane():
+    result = SubAgentToolResult(
+        llm_visible={
+            "status": "ok",
+            "dataset_id": 10,
+            "display_summary": "查询完成",
+            "result_ref": "result://1",
+        },
+        control_plane={
+            "raw_sql": "select * from plan_task_daily_record",
+            "raw_result": [{"name": "FORBIDDEN_RAW_RESULT"}],
+        },
+        trace_metadata={"schema_version": "subagent_tool_result.v1"},
+    )
+
+    visible_payload = result.llm_visible.model_dump(mode="json")
+    assert "raw_sql" not in str(visible_payload)
+    assert "FORBIDDEN_RAW_RESULT" not in str(visible_payload)
+    assert result.control_plane.raw_sql.startswith("select")
+    assert result.control_plane.raw_result[0]["name"] == "FORBIDDEN_RAW_RESULT"
+
+
+def test_assemble_result_emits_stable_trace_metadata():
+    final_state = _ok_final_state()
+    final_state["guard_status"] = "passed"
+    final_state["result_ref"] = "artifact:sql_result:json"
+
+    result = SubAgentToolAdapter().assemble_from_final_state(
+        _invocation(),
+        final_state,
+    )
+
+    assert result.trace_metadata["schema_version"] == "subagent_tool_result.v1"
+    assert result.trace_metadata["tool_name"] == "dataset_subagent"
+    assert result.trace_metadata["dataset_id"] == 10
+    assert result.trace_metadata["status"] == "ok"
+    assert result.trace_metadata["guard_status"] == "passed"
+    assert result.trace_metadata["artifact_id"] == "artifact:sql_result:json"
+
+
+def test_llm_visible_summary_with_internal_payload_is_sanitized():
+    final_state = _ok_final_state()
+    final_state["display_summary"] = (
+        "raw_sql: SELECT * FROM forbidden_table; raw_result: FORBIDDEN_RAW_RESULT"
+    )
+
+    result = SubAgentToolAdapter().assemble_from_final_state(
+        _invocation(),
+        final_state,
+    )
+
+    visible_payload = result.llm_visible.model_dump(mode="json")
+    assert result.llm_visible.display_summary == "查询完成，结果已生成引用。"
+    assert "raw_sql" not in str(visible_payload)
+    assert "FORBIDDEN_RAW_RESULT" not in str(visible_payload)
+    assert result.control_plane.raw_sql.startswith("SELECT rzrq")
 
 
 def test_control_plane_last_success_task_uses_configured_budget(monkeypatch):
