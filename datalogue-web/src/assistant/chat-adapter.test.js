@@ -1,12 +1,37 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildCandidateConfirmation,
   buildTaskTimeline,
   extractArtifactCard,
   extractCandidateDatasets,
+  makeChatAdapter,
   normalizeEventEnvelope,
 } from './chat-adapter';
+import { buildHistoryMessageCustom } from './thread-list-adapter';
+
+vi.mock('../api/client', () => ({
+  streamChatEvents: vi.fn(),
+}));
+
+vi.mock('./thread-list-adapter', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveRemoteId: vi.fn(() => null),
+    resolveRecentInitializedRemoteId: vi.fn(() => null),
+  };
+});
+
+const { streamChatEvents } = await import('../api/client');
+
+async function collectRun(adapter, input) {
+  const chunks = [];
+  for await (const chunk of adapter.run(input)) {
+    chunks.push(chunk);
+  }
+  return chunks;
+}
 
 describe('chat-adapter C-ready protocol helpers', () => {
   it('normalizes event_envelope while keeping legacy payload compatible', () => {
@@ -93,5 +118,69 @@ describe('chat-adapter C-ready protocol helpers', () => {
       '下一步动作',
     ]);
     expect(timeline.find((item) => item.id === 'execute_bi').status).toBe('done');
+  });
+});
+
+describe('main chain acceptance metadata adapter', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('maps final SSE observability and artifact refs into page metadata', async () => {
+    streamChatEvents.mockReturnValue((async function* events() {
+      yield {
+        type: 'step',
+        node: 'query_plan',
+        status: 'done',
+        query_plan: { query_type: 'metric_query', execution_strategy: 'query_graph' },
+      };
+      yield {
+        type: 'final',
+        answer: '最近30日 GMV 为 100。',
+        sql: 'SELECT 100 AS gmv',
+        sql_result: null,
+        query_plan: { query_type: 'metric_query' },
+        candidate_assets: { summary: { metrics: 1 } },
+        result_ref: 'artifact:result-1',
+        report_ref: 'artifact:report-1',
+        message_id: 42,
+        conversation_id: 7,
+        langfuse_trace_id: 'trace-1',
+        langfuse_session_id: 'session-1',
+        observability: { trace_id: 'trace-1', session_id: 'session-1' },
+      };
+    })());
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 3 } });
+    const chunks = await collectRun(adapter, {
+      messages: [{ role: 'user', content: [{ type: 'text', text: '最近30日GMV趋势如何' }] }],
+      abortSignal: { aborted: false },
+      unstable_threadId: 'local-thread',
+    });
+
+    const final = chunks.at(-1);
+    expect(final.status).toEqual({ type: 'complete', reason: 'stop' });
+    expect(final.metadata.custom.resultRef).toBe('artifact:result-1');
+    expect(final.metadata.custom.reportRef).toBe('artifact:report-1');
+    expect(final.metadata.custom.langfuseTraceId).toBe('trace-1');
+    expect(final.metadata.custom.observability).toEqual({ trace_id: 'trace-1', session_id: 'session-1' });
+    expect(final.metadata.custom.stepTrace).toHaveLength(1);
+    expect(final.metadata.custom.sqlResult).toBeNull();
+  });
+
+  it('does not fabricate ArtifactCard refs when replaying old history metadata', () => {
+    const custom = buildHistoryMessageCustom({
+      id: 99,
+      response_metadata: {
+        query_plan: { query_type: 'metric_query' },
+        langfuse: { trace_id: 'trace-old', session_id: 'session-old' },
+      },
+    });
+
+    expect(custom.resultRef).toBeNull();
+    expect(custom.reportRef).toBeNull();
+    expect(custom.subagentToolResults).toBeNull();
+    expect(custom.artifactCard).toBeNull();
+    expect(custom.langfuseTraceId).toBe('trace-old');
   });
 });

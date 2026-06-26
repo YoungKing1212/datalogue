@@ -130,6 +130,7 @@
 - Multica 开发测试并行员工扩编：为数语小队新增 LeadAgent、数据治理 SQL、前端工作台、后端回归、前端 E2E、观测链路等 6 个并行员工角色，并验证 squad roster。
 - BI_SOUL 内部契约与 Hermes SOUL 同步校验：新增 BI 不可越界 source of truth、同步服务和测试，明确外层 Agent 只能调用 `ask_bi`，raw SQL/raw result/capsule 属于控制面。
 - DAT-15 数据集能力清单：新增 `CapabilityManifest` / `CapabilityManifestSummary`、业务级泄露扫描和 `GET /api/dataset/{dataset_id}/capability-manifest` 调试接口，为 LeadAgent Capability Router 提供真实 manifest summary 依赖。
+- DAT-13 LeadAgent Capability Router：数据集路由改为只消费 `CapabilityManifestSummary`，低置信/close-score 只返回候选确认，并在用户确认后写入 `conversation_state.facts` 的 `confirmed_dataset_id` 与 retry checkpoint。
 
 ## 高价值判断
 
@@ -140,13 +141,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 19:18 · DAT-13 LeadAgent Capability Router 对齐能力清单
-
-- 涉及文件：`datalogue-api/app/services/dataset_router.py`、`datalogue-api/app/services/capability_manifest.py`、`datalogue-api/app/services/conversation_store.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/lead_agent_routing.py`、`datalogue-api/tests/test_lead_agent_capability_router.py`、`datalogue-api/tests/test_chat.py`、`.omx/plans/DAT-13-leadagent-capability-router.md`、`.codex/project-memory.md`
-- 关键改动：将数据集自动路由候选来源改为 `list_capability_manifest_summaries()`，只用业务能力、典型问题、指标/维度名称摘要和路由提示打分，Manifest 表仅用于 current 资格和版本三元组；低置信和 close-score 路径只返回候选数据集，不派发 DatasetAgent；候选输出保持 `dataset_id/dataset_name/reason/confidence/requires_confirmation` 五个业务级字段；Chat 状态写回增加 dataset 确认事实，用户提交 `candidate_id/checkpoint_ref` 后写入 `conversation_state.facts` 的 `confirmed_dataset_id` 和 `retry_checkpoint`，不新增旧会话迁移。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_lead_agent_capability_router.py tests/test_lead_agent_routing.py tests/test_chat.py -q`，138 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/dataset_router.py app/services/capability_manifest.py app/services/conversation_store.py app/api/chat.py app/services/lead_agent_routing.py` 通过；执行 `git diff --check` 通过。
-- 残留风险：前端候选确认卡和 event envelope 中的标准化 candidate confirmation 事件仍属于 DAT-16；当前后端状态兼容写在 `facts` JSON 中，后续若要强查询能力可再引入显式列或结构化 state schema。
 
 ### 2026-06-26 19:22 · DAT-9 QueryGraph Compiler 方言边界收窄
 
@@ -210,3 +204,10 @@
 - 关键改动：final payload 统一补齐 `task_id`、`trace_id`、`primary_ref`、`related_refs` 和 `artifact_card`，event envelope 透传同一 task/trace；ArtifactCard 只暴露 `artifact:/trace:/checkpoint://` 引用句柄和禁用态动作，不携带 raw SQL/raw result；assistant message metadata 写回新 refs，`query_artifact` 只按 `artifact:<uuid>` 反连 message_id；`conversation_state.facts` 写入 `artifact_refs` fact，旧会话不迁移、不回填；前端历史回放只渲染真实 `response_metadata.artifact_card`，不会根据旧 `result_ref/report_ref` 伪造卡片；补充 `/chat/:id` 正向线程同步，直接打开历史会话时显式切到路由会话，避免停留在本地草稿导致 ArtifactCard 不回放。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_artifact_card_contract.py tests/test_legacy_conversation_replay.py tests/test_conversation.py tests/test_artifact_api.py -q`，15 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_event_envelope.py tests/test_retry_checkpoint.py tests/test_chat.py -q`，129 条用例通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx tests/unit/assistant/artifact-custom.test.js src/assistant/chat-adapter.test.js`，3 个测试文件 14 条用例通过；执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/components/artifact-card.test.jsx tests/unit/assistant/artifact-custom.test.js src/assistant/chat-adapter.test.js`，4 个测试文件 18 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
 - 残留风险：DAT-17 只完成协议与持久化闭环；真实页面、SSE、后端日志、Langfuse、`query_artifact/conversation_state` 五件套一致性仍需 DAT-18 用本地服务和真实问题记录验收。
+
+### 2026-06-26 21:15 · DAT-14 主链路自动化验收框架
+
+- 涉及文件：`.omx/plans/2026-06-26-dat-14-main-chain-acceptance.md`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_bi_main_chain_acceptance.py`、`datalogue-api/tests/test_chat.py`、`datalogue-web/src/assistant/chat-adapter.test.js`、`docs/main-chain-acceptance-record-template.md`、`.codex/project-memory.md`
+- 关键改动：合入主链路自动化验收框架，新增成功问数、低置信候选确认、无法回答拒答、受控失败 retry 和旧历史不伪造 ArtifactCard 的验收用例；扩展 `chat.stream` 摘要字段，记录 `result_ref/report_ref/langfuse_trace_id/langfuse_session_id`；前端 adapter 测试覆盖 final SSE 中 observability 和 artifact refs 写入页面 metadata；新增五件套验收记录模板，为 DAT-18 真实链路记录提供结构。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，122 条用例通过；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js`，1 个测试文件 5 条用例通过。
+- 残留风险：DAT-14 仍是自动化验收框架，Langfuse observation、页面 ArtifactCard、后端日志和数据库状态的一次真实问题五件套记录仍需 DAT-18 补齐。
