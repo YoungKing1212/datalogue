@@ -250,3 +250,10 @@
 - 关键改动：新增 DAT-14 验收计划和真实链路记录模板；补充主链路验收测试，核对成功问数的 SSE/message metadata/trace index/query_artifact/conversation_state，覆盖低置信候选确认、无法回答拒答和受控失败 retry；扩展 `/chat/stream` 日志摘要，加入 result/report artifact ref 与 Langfuse trace/session；新增前端 adapter 测试，确认 final SSE metadata 映射并保护旧历史缺 ArtifactCard 不伪造。
 - 验证方式：先执行 `cd datalogue-api && pytest tests/test_chat.py::TestChatAPI::test_chat_stream_log_summary_extracts_debug_fields tests/test_bi_main_chain_acceptance.py -q` 确认 RED（日志摘要缺 result/report/trace 字段，验收 fixture 调整后复现），修复后该命令 4 passed；执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，121 passed；执行 `cd datalogue-api && python3 -m pytest tests/test_observability.py tests/test_artifact_api.py -q`，20 passed；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js`，1 个文件 6 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过。
 - 残留风险：本轮未连接真实 Langfuse 控制台做外部 observation 截图；自动化使用 no-op trace 与本地 `observability_trace_index` 验证主链路不阻塞。Vite build 仍有既有大 chunk warning，lint 仍有 15 个既有 warning。
+
+### 2026-06-26 21:25 · DAT-18 五件套验收记录落档
+
+- 涉及文件：`docs/main-chain-acceptance-records/2026-06-26-b-first-c-core-chain.md`、`.codex/project-memory.md`
+- 关键改动：新增 B-first C-ready 主链路五件套验收记录，明确自动化代表问题 `最近30日GMV趋势如何` 已覆盖 SSE、后端 checkpoint、trace index、query_artifact 和 conversation_state 交叉核对；同时单列真实业务问题 `查询杨凯 2024 年工作日志` 的页面 Chat、Langfuse UI 和手工截图/录屏补录项，避免把测试替身误记为真实运行证据。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py tests/test_observability.py tests/test_artifact_api.py -q`，142 条用例通过；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js`，1 个测试文件 5 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
+- 残留风险：真实浏览器页面、Langfuse UI 和本地服务手工链路尚未在本轮启动验证；发布前必须补录同一 `task_id / trace_id / artifact_ref` 在页面、SSE、后端日志、Langfuse、数据库五处一致的证据。
