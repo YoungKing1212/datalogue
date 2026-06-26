@@ -31,6 +31,11 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app import schemas, models
 from app.graph.workflow import build_workflow
+from app.schemas.bi_workbench import (
+    DatalogueEventType,
+    DatalogueEventVisibility,
+    build_datalogue_event_envelope,
+)
 from app.services.answer_explanation import (
     build_answer_explanation,
 )
@@ -244,6 +249,103 @@ TERM_CLARIFICATION_TTL_MINUTES = 30
 def _sse_data(payload: dict) -> dict:
     """将 SSE payload 转成 JSON 字符串，兼容 datetime/date/Decimal 等对象。"""
     return {"data": json.dumps(jsonable_encoder(payload), ensure_ascii=False)}
+
+
+def _event_metadata_from_payload(payload: dict) -> dict[str, Any]:
+    """从旧 SSE payload 提取稳定索引字段，避免 envelope 复制大 payload。"""
+
+    metadata: dict[str, Any] = {}
+    for key in (
+        "conversation_id",
+        "message_id",
+        "entry_route",
+        "entry_reason",
+        "langfuse_trace_id",
+        "langfuse_session_id",
+    ):
+        if payload.get(key) is not None:
+            metadata[key] = payload[key]
+    route_decision = payload.get("route_decision")
+    if isinstance(route_decision, dict):
+        dataset_id = route_decision.get("dataset_id")
+        if dataset_id is not None:
+            metadata["dataset_id"] = dataset_id
+        metadata["route_decision"] = {
+            key: route_decision[key]
+            for key in ("decision", "dataset_id", "dataset_name", "reason")
+            if route_decision.get(key) is not None
+        }
+    elif payload.get("dataset_id") is not None:
+        metadata["dataset_id"] = payload["dataset_id"]
+    return metadata
+
+
+def _with_event_envelope(
+    payload: dict,
+    *,
+    event_type: DatalogueEventType,
+    visibility: DatalogueEventVisibility,
+    payload_fields: tuple[str, ...] = (),
+    event_payload: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    """给旧 SSE payload 追加统一 envelope；旧字段原样保留给现有前端消费。"""
+
+    envelope_payload = (
+        dict(event_payload)
+        if event_payload is not None
+        else {key: payload.get(key) for key in payload_fields if payload.get(key) is not None}
+    )
+    envelope_metadata = _event_metadata_from_payload(payload)
+    if metadata:
+        envelope_metadata.update({key: value for key, value in metadata.items() if value is not None})
+    envelope = build_datalogue_event_envelope(
+        event_type=event_type,
+        visibility=visibility,
+        payload=envelope_payload,
+        metadata=envelope_metadata,
+    )
+    enriched = dict(payload)
+    # event_envelope 是新增兼容字段，不能覆盖旧 type；未来 AgentScope 可直接消费这里。
+    enriched["event_envelope"] = envelope.model_dump(mode="json")
+    return enriched
+
+
+def _route_decision_event_type(route_decision: dict) -> DatalogueEventType:
+    """把 LeadAgent 路由决策归一到业务事件类型。"""
+
+    decision = route_decision.get("decision")
+    if decision in {"selected", "locked"}:
+        return "dataset.selected"
+    if decision == "ambiguous":
+        return "clarification.required"
+    return "error.blocked"
+
+
+def _final_event_type(final_payload: dict) -> DatalogueEventType:
+    """根据 final payload 选择用户可见业务事件，供 SSE 和未来 AgentScope 复用。"""
+
+    entry_route = final_payload.get("entry_route")
+    route_payload = final_payload.get("route_payload") if isinstance(final_payload, dict) else {}
+    if final_payload.get("error") or entry_route in {"reject", "no_match", "turn_pending"}:
+        return "error.blocked"
+    if entry_route == "clarify" or (isinstance(route_payload, dict) and "clarification" in str(route_payload.get("kind") or "")):
+        return "clarification.required"
+    return "answer.completed"
+
+
+def _step_event_type(step_payload: dict) -> DatalogueEventType:
+    """将技术 step 粗粒度映射到查询生命周期事件。"""
+
+    node = step_payload.get("node")
+    status = step_payload.get("status")
+    if status == "running":
+        return "dataset.query.started"
+    if node in {"sql_execute", "subagent_fanout"} and status == "done":
+        return "dataset.query.completed"
+    if node == "lead_agent_report_generator" and status == "done":
+        return "answer.completed"
+    return "route.started"
 
 
 def _chat_stream_log_summary(payload: dict | None) -> dict[str, Any]:
@@ -1527,8 +1629,24 @@ async def _stream_chat_singleturn(
     )
     lead_event = _lead_agent_event(lead_agent_context)
     route_event = _route_decision_event(route_decision)
-    yield _sse_data(lead_event)
-    yield _sse_data(route_event)
+    yield _sse_data(
+        _with_event_envelope(
+            lead_event,
+            event_type="route.started",
+            visibility="trace_only",
+            payload_fields=("route_decision", "schema_status", "selected_skills"),
+            metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+        )
+    )
+    yield _sse_data(
+        _with_event_envelope(
+            route_event,
+            event_type=_route_decision_event_type(route_decision),
+            visibility="user_visible",
+            payload_fields=("decision", "dataset_id", "dataset_name", "reason", "candidates"),
+            metadata={"conversation_id": conv_id},
+        )
+    )
 
     if lead_agent_context.get("should_continue"):
         selected_dataset_id = lead_agent_context.get("effective_dataset_id")
@@ -1583,8 +1701,7 @@ async def _stream_chat_singleturn(
             tracer.close_trace(trace_context)
         obs_context_manager.__exit__(None, None, None)
         response_metadata = assistant_message.response_metadata or {}
-        yield _sse_data(
-            {
+        final_payload = {
                 "type": "final",
                 "sql": None,
                 "sql_list": [],
@@ -1609,6 +1726,13 @@ async def _stream_chat_singleturn(
                 "message_id": assistant_message.id,
                 "title": conv.title,
             }
+        yield _sse_data(
+            _with_event_envelope(
+                final_payload,
+                event_type="error.blocked",
+                visibility="user_visible",
+                payload_fields=("answer", "entry_route", "entry_reason", "route_decision"),
+            )
         )
         _log_chat_stream_checkpoint(
             "lead_route_blocked",
@@ -1703,7 +1827,15 @@ async def _stream_chat_singleturn(
         },
     }
     step_traces.append(gateway_step_payload)
-    yield _sse_data(gateway_step_payload)
+    yield _sse_data(
+        _with_event_envelope(
+            gateway_step_payload,
+            event_type="route.started",
+            visibility="trace_only",
+            payload_fields=("node", "status", "turn_event"),
+            metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+        )
+    )
 
     # Phase 2: 在 LangGraph 之外完成多轮合并决策
     # - interpret 路径早退，不进 LangGraph
@@ -2006,7 +2138,15 @@ async def _stream_chat_singleturn(
             "status": "running",
             "dataset_ids": [item.dataset_id for item in fanout_invocations],
         }
-        yield _sse_data(fanout_step)
+        yield _sse_data(
+            _with_event_envelope(
+                fanout_step,
+                event_type="dataset.query.started",
+                visibility="trace_only",
+                payload_fields=("node", "status", "dataset_ids"),
+                metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+            )
+        )
         app_graph = build_workflow(db)
 
         async def _invoke_fanout(invocation: SubAgentFanOutInvocation) -> dict[str, Any]:
@@ -2088,7 +2228,15 @@ async def _stream_chat_singleturn(
             "statuses": [item.llm_visible.status.value for item in fanout_result.results],
         }
         step_traces.append(fanout_done_step)
-        yield _sse_data(fanout_done_step)
+        yield _sse_data(
+            _with_event_envelope(
+                fanout_done_step,
+                event_type="dataset.query.completed",
+                visibility="user_visible",
+                payload_fields=("node", "status", "elapsed_ms", "dataset_ids", "statuses"),
+                metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+            )
+        )
 
         trace_metadata = {
             "status": "success",
@@ -2188,7 +2336,14 @@ async def _stream_chat_singleturn(
         }
         # fanout final 也走同一摘要格式，便于和普通 final_payload_ready 横向对比。
         _log_chat_stream_checkpoint("fanout_final_payload_ready", **_chat_stream_log_summary(final_payload))
-        yield _sse_data(final_payload)
+        yield _sse_data(
+            _with_event_envelope(
+                final_payload,
+                event_type="answer.completed",
+                visibility="user_visible",
+                payload_fields=("answer", "entry_route", "entry_reason", "subagent_tool_results"),
+            )
+        )
         if not defer_trace_close:
             tracer.close_trace(trace_context)
         obs_context_manager.__exit__(None, None, None)
@@ -2290,6 +2445,15 @@ async def _stream_chat_singleturn(
                             decision_factor_count=len(query_plan.get("decision_factors") or []),
                             warning_count=len(query_plan.get("planner_warnings") or []),
                         )
+                    sse_payload = _with_event_envelope(
+                        sse_payload,
+                        event_type="dataset.query.started"
+                        if sub_event_type == "query_plan"
+                        else "route.started",
+                        visibility="trace_only",
+                        payload_fields=("type", "node", "query_plan", "candidate_assets"),
+                        metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+                    )
                     step_traces.append(sse_payload)
                     yield _sse_data(sse_payload)
                     continue
@@ -2338,6 +2502,13 @@ async def _stream_chat_singleturn(
                     )
                     sse_payload["type"] = "step"
                     sse_payload.setdefault("status", "done")
+                    sse_payload = _with_event_envelope(
+                        sse_payload,
+                        event_type="dataset.query.completed",
+                        visibility="trace_only",
+                        payload_fields=("node", "status"),
+                        metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+                    )
                     step_traces.append(sse_payload)
                     yield _sse_data(sse_payload)
                     continue
@@ -2377,7 +2548,18 @@ async def _stream_chat_singleturn(
                             "prior_capsule_status": prior_capsule_status,
                         },
                     )
-                    yield _sse_data(sse_payload)
+                    yield _sse_data(
+                        _with_event_envelope(
+                            sse_payload,
+                            event_type=_step_event_type(sse_payload),
+                            visibility="trace_only",
+                            payload_fields=("node", "status"),
+                            metadata={
+                                "conversation_id": conv_id,
+                                "dataset_id": effective_dataset_id,
+                            },
+                        )
+                    )
 
                 # ── 节点完成（每节点只报一次）────────────────────
                 elif kind == "on_chain_end" and lg_node in _NODE_DISPLAY_NAMES:
@@ -2442,7 +2624,26 @@ async def _stream_chat_singleturn(
                         elapsed_ms=elapsed_ms,
                         error=final_state.get("error") if lg_node == "sql_audit" else None,
                     )
-                    yield _sse_data(sse_payload)
+                    step_visibility: DatalogueEventVisibility = (
+                        "user_visible" if lg_node == "sql_execute" else "trace_only"
+                    )
+                    step_payload_fields = (
+                        ("node", "status", "elapsed_ms", "rows", "columns", "column_labels")
+                        if lg_node == "sql_execute"
+                        else ("node", "status", "elapsed_ms")
+                    )
+                    yield _sse_data(
+                        _with_event_envelope(
+                            sse_payload,
+                            event_type=_step_event_type(sse_payload),
+                            visibility=step_visibility,
+                            payload_fields=step_payload_fields,
+                            metadata={
+                                "conversation_id": conv_id,
+                                "dataset_id": effective_dataset_id,
+                            },
+                        )
+                    )
 
                 # ── 图级结束事件：兜底合并完整最终状态 ───────────────
                 elif kind == "on_chain_end" and not lg_node:
@@ -2498,10 +2699,26 @@ async def _stream_chat_singleturn(
         )
         tracer.close_trace(trace_context)
         obs_context_manager.__exit__(None, None, None)
+        error_step = {"type": "step", "node": "error", "display_name": "error", "status": "done"}
         yield _sse_data(
-            {"type": "step", "node": "error", "display_name": "error", "status": "done"}
+            _with_event_envelope(
+                error_step,
+                event_type="error.blocked",
+                visibility="trace_only",
+                payload_fields=("node", "status"),
+                metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+            )
         )
-        yield _sse_data({"type": "final", "sql": None, "sql_list": [], "answer": f"处理出错：{e}"})
+        error_final = {"type": "final", "sql": None, "sql_list": [], "answer": f"处理出错：{e}"}
+        yield _sse_data(
+            _with_event_envelope(
+                error_final,
+                event_type="error.blocked",
+                visibility="user_visible",
+                payload_fields=("answer",),
+                metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+            )
+        )
         return
 
     # ── 保存助手消息并发送 final 事件 ────────────────
@@ -2547,7 +2764,15 @@ async def _stream_chat_singleturn(
             },
             trace_tags=["lead"],
         )
-        yield _sse_data(running_payload)
+        yield _sse_data(
+            _with_event_envelope(
+                running_payload,
+                event_type="dataset.query.started",
+                visibility="trace_only",
+                payload_fields=("node", "status", "report_owner"),
+                metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+            )
+        )
         lead_report_result: dict | None = None
         async for report_event in stream_sql_result_report(
             final_state,
@@ -2585,7 +2810,21 @@ async def _stream_chat_singleturn(
             output_payload=done_payload,
             elapsed_ms=report_elapsed_ms,
         )
-        yield _sse_data(done_payload)
+        yield _sse_data(
+            _with_event_envelope(
+                done_payload,
+                event_type="answer.completed",
+                visibility="user_visible",
+                payload_fields=(
+                    "node",
+                    "status",
+                    "elapsed_ms",
+                    "report_owner",
+                    "lead_agent_report",
+                ),
+                metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+            )
+        )
 
     # 智能兜底：根据失败原因给出具体提示，而非生硬的"抱歉"
     raw_answer = final_state.get("answer")
@@ -2929,7 +3168,21 @@ async def _stream_chat_singleturn(
         "multiturn_observability_metrics": multiturn_observability_metrics,
     }
     _log_chat_stream_checkpoint("final_payload_ready", **_chat_stream_log_summary(final_payload))  # 对齐 DevTools final。
-    yield _sse_data(final_payload)  # final 发出后客户端可能立即断开。
+    yield _sse_data(
+        _with_event_envelope(
+            final_payload,
+            event_type=_final_event_type(final_payload),
+            visibility="user_visible",
+            payload_fields=(
+                "answer",
+                "entry_route",
+                "entry_reason",
+                "result_ref",
+                "report_ref",
+                "query_profile",
+            ),
+        )
+    )  # final 发出后客户端可能立即断开。
     if not defer_trace_close:
         tracer.close_trace(trace_context)
     obs_context_manager.__exit__(None, None, None)
@@ -3228,16 +3481,22 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             lock_owner=lock_owner,
             ttl_seconds=settings.MULTITURN_LOCK_TTL_SECONDS,
         )
+        lock_payload = {
+            "type": "final",
+            "sql": None,
+            "sql_list": [],
+            "answer": "同一会话已有一轮问数正在处理中，请稍后再试。",
+            "entry_intent": "multiturn_lock",
+            "entry_route": "turn_pending",
+            "conversation_id": payload.conversation_id,
+        }
         yield _sse_data(
-            {
-                "type": "final",
-                "sql": None,
-                "sql_list": [],
-                "answer": "同一会话已有一轮问数正在处理中，请稍后再试。",
-                "entry_intent": "multiturn_lock",
-                "entry_route": "turn_pending",
-                "conversation_id": payload.conversation_id,
-            }
+            _with_event_envelope(
+                lock_payload,
+                event_type="error.blocked",
+                visibility="user_visible",
+                payload_fields=("answer", "entry_route"),
+            )
         )
         return
     # 锁获取成功后才解析 pending clarification，保证同一 session 只有一轮在改状态。
@@ -3590,13 +3849,20 @@ async def _interpret_early_return(
     )
     obs_context_manager.__exit__(None, None, None)
 
+    interpret_step = {
+        "type": "step",
+        "node": "interpret_result",
+        "display_name": "interpret_result",
+        "status": "done",
+    }
     yield _sse_data(
-        {
-            "type": "step",
-            "node": "interpret_result",
-            "display_name": "interpret_result",
-            "status": "done",
-        }
+        _with_event_envelope(
+            interpret_step,
+            event_type="answer.completed",
+            visibility="trace_only",
+            payload_fields=("node", "status"),
+            metadata={"conversation_id": conv.id, "dataset_id": effective_dataset_id},
+        )
     )
     # interpret early return 直接构造 final，需在 yield 前打点，否则客户端断开后可能看不到收尾。
     final_payload = {
@@ -3631,7 +3897,14 @@ async def _interpret_early_return(
         "out_capsule": interpret_payload.get("out_capsule"),
     }
     _log_chat_stream_checkpoint("interpret_final_payload_ready", **_chat_stream_log_summary(final_payload))
-    yield _sse_data(final_payload)
+    yield _sse_data(
+        _with_event_envelope(
+            final_payload,
+            event_type="answer.completed",
+            visibility="user_visible",
+            payload_fields=("answer", "entry_route", "entry_reason", "out_capsule"),
+        )
+    )
 
 
 async def _early_route_return(
@@ -3751,4 +4024,11 @@ async def _early_route_return(
         "trace_metadata": trace_metadata,
     }
     _log_chat_stream_checkpoint("early_final_payload_ready", **_chat_stream_log_summary(final_payload))
-    yield _sse_data(final_payload)
+    yield _sse_data(
+        _with_event_envelope(
+            final_payload,
+            event_type=_final_event_type(final_payload),
+            visibility="user_visible",
+            payload_fields=("answer", "entry_route", "entry_reason", "route_payload"),
+        )
+    )
