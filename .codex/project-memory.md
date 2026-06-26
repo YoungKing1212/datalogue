@@ -120,6 +120,10 @@
 - 项目文档多目录治理：将 `docs/` 根目录混放材料迁移到 product/architecture/observability/deliverables/assets/archive 等目录，保留 `docs/上下文入口.md` 和 `docs/README.md` 作为导航，并通过图片/链接和 `git diff --check` 验证。
 - Obsidian 智能问数长期知识沉淀：新增受约束 Agent 架构、语义治理与执行安全、真实链路验收方法三篇知识库方法论，沉淀 Capability Manifest、Manifest fail-closed、QueryArtifact/result_ref 和五件套验收原则。
 
+### 2026-06-26
+
+- Multica Datalogue 员工智能体创建与技能绑定：创建 datalogue skill、上传 SOUL/capabilities/API assets，并配置数据问数分析师、后端、前端、QA、文档等员工智能体及 CEO skill。
+
 ## 高价值判断
 
 - Datalogue 当前业务链路不依赖 Redis 保存多轮业务状态；`last_success_task`、`conversation_state.subagent_capsules` 和 query artifacts 的真相在数据库或应用 ArtifactStore 路径，Langfuse/BullMQ Redis key 不能当成业务状态依据。
@@ -129,13 +133,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 12:10 · Multica Datalogue 员工智能体创建与技能绑定
-
-- 涉及文件：`.codex/project-memory.md`、`hermes-skills/datalogue/SKILL.md`、`hermes-skills/datalogue/SOUL.md`、`hermes-skills/datalogue/references/capabilities.md`、`hermes-skills/datalogue/scripts/api_assets.py`、`.codex/config.toml`
-- 关键改动：在 Multica workspace 创建 `datalogue` skill，并上传 SOUL、capabilities 和 API assets 脚本支持文件；创建 5 个员工智能体：`Datalogue-数据问数分析师`、`Datalogue-后端工程师`、`Datalogue-前端体验工程师`、`Datalogue-QA观测工程师`、`Datalogue-文档交付专员`；为新员工配置中文职责 Prompt、workspace 可见性、项目 MCP 配置（dbhub/playwright，平台红acted 回显）和对应 skills；同时为现有 `CEO` 智能体补充规划、分析、问询、wiki、互联网调研和 Datalogue skill。
-- 验证方式：执行 `multica agent get` 抽查 5 个新员工，确认 agent 存在、`mcp_config_redacted=true`、skills 已绑定；执行 `multica skill files list 84c3f7db-9aad-4b1e-95f5-8fb6d16818b8 --output json` 确认 `SOUL.md`、`references/capabilities.md`、`scripts/api_assets.py` 已上传；执行 `multica agent skills list 75b45fd3-2dbb-49b2-86b0-f8074822da91 --output json` 确认 CEO 已绑定新 skill；按项目记忆规则将最早一条最新详细记录压缩进历史区，保持最新详细记录不超过 10 条。
-- 残留风险：本次只创建和配置 Multica agent/skill，没有创建 squad、自动分派规则或真实 issue 流转演练；MCP 配置来自项目现有 `.codex/config.toml`，后续若本地 PostgreSQL、Playwright 或 npx 环境不可用，相关 MCP 需要单独排查。
 
 ### 2026-06-26 12:13 · Multica 数语智能问数小队创建
 
@@ -206,3 +203,10 @@
 - 关键改动：合入 SubAgent ToolAdapter 三层输出改造，区分 `llm_visible`、`control_plane` 和 `external_artifact`，将大结果、raw SQL、trace 主体等敏感或重载内容限制在控制面/产物面，面向 LLM 的工具输出保持摘要化和低泄露风险。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_subagent_tool_adapter.py -q`，10 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/subagent_tool_adapter.py` 通过。
 - 残留风险：当前验证覆盖 ToolAdapter 契约本身；后续 #7 event envelope、#8 ask_bi、Artifact refs 和前端承接还需要继续确保三层输出不会被重新混入用户可见 SSE。
+
+### 2026-06-26 19:25 · DAT-5 SSE Event Envelope 标准化
+
+- 涉及文件：`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_event_envelope.py`、`datalogue-api/tests/test_chat.py`、`.omx/plans/DAT-5-event-envelope-plan.md`、`.codex/project-memory.md`
+- 关键改动：合入 `DatalogueEventEnvelope`，为 SSE 输出补统一 envelope 结构，保留 legacy 顶层字段兼容；Chat 流式事件可以同时携带 `event_envelope` 和既有 payload，给后续 AgentScope event adapter 与前端 C-ready timeline 留出口。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_event_envelope.py tests/test_chat.py -q`，121 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/schemas/__init__.py app/api/chat.py` 通过。
+- 残留风险：当前只是标准化 envelope，不替换 SSE 主协议；前端 `chat-adapter.js` 解析 envelope、AgentScope event stream adapter 和五件套真实链路验收仍需后续 DAT-16/DAT-18 收口。
