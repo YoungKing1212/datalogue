@@ -68,6 +68,7 @@ from .dataset import (
     BlueprintRollbackPayload,
     BlueprintUsageLogOut,
 )
+from .capability_manifest import CapabilityManifest, CapabilityManifestSummary
 from .conversation import (
     ConversationOut,
     ConversationDetailOut,
@@ -139,6 +140,8 @@ __all__ = [
     "BlueprintVersionOut",
     "BlueprintRollbackPayload",
     "BlueprintUsageLogOut",
+    "CapabilityManifest",
+    "CapabilityManifestSummary",
     "ConversationOut",
     "ConversationDetailOut",
     "ConversationCreate",

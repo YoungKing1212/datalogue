@@ -115,6 +115,7 @@
 ### 2026-06-25
 
 - AgentScope 2.0 ReAct MVP 真实请求验证：新增独立真实集成测试目录，用 AgentScope 2.0 Agent/Toolkit/ToolBase 封装数语最小工具面，真实调用数据集资产和 guarded SQL preview，不进入 `/api/chat/stream`，并通过 live API、默认跳过测试、真实开关测试、py_compile 和 `git diff --check` 验证。
+- AgentScope 真实测试过程日志增强：补充 LLM 配置、工具 HTTP 请求、Plan/Execute 摘要、SQL preview、最终回答和动态数据集选择日志，支持 `pytest -s` 查看完整执行过程。
 
 ## 高价值判断
 
@@ -125,13 +126,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-25 11:39 · AgentScope 真实测试增加过程日志
-
-- 涉及文件：`datalogue-api/tests/agentscope_react_mvp/mvp.py`、`datalogue-api/tests/agentscope_react_mvp/test_live_react_agent.py`、`datalogue-api/tests/agentscope_react_mvp/README.md`、`.codex/project-memory.md`
-- 关键改动：为 AgentScope ReAct MVP 增加控制台日志，输出测试入口、LLM 配置、tool-call 请求、每个真实 HTTP GET/POST 路径、Plan 工具返回的数据集/表/字段规模、Execute 工具生成的 SQL、SQL preview 的 guard/columns/row_count/rows 摘要、最终中文回答和 preview 结果；测试断言改为动态验证 selected tables、selected columns 和 sql preview 路径，不再绑定固定 dataset 11，适配用户将用例改成“查询杨凯2024年的工作日志”后的 Agent 自主选 dataset 行为；README 补充 `-s` 查看日志和 `AGENTSCOPE_MVP_LOG_FULL_RESULT=1` 打印完整结果。
-- 验证方式：执行 `.venv/bin/python -m py_compile tests/agentscope_react_mvp/mvp.py tests/agentscope_react_mvp/test_live_react_agent.py` 通过；执行 `.venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q` 默认跳过真实请求；执行 `git diff --check` 通过；执行 `RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s`，1 条真实集成测试通过，日志显示 Agent 自主查看 dataset 12 后补调 dataset 10，执行 3 次 SQL preview，最终返回 100 行杨凯 2024 年工作日志和中文汇总。
-- 残留风险：日志输出依赖 `pytest -s`；完整 preview 结果可能较长，默认只打印前 5 行，必要时用 `AGENTSCOPE_MVP_LOG_FULL_RESULT=1` 查看全量。
 
 ### 2026-06-25 13:38 · AgentScope Hermes-style DatasetAgent MVP
 
@@ -202,3 +196,10 @@
 - 关键改动：新增 BI 不可越界内部 source of truth，明确 LeadAgent 不看字段级 schema 明细、外层 Agent 只能调用 `ask_bi`、LLM 不直接生成可执行 SQL、raw SQL/raw result/capsule/trace 主体属于 `control_plane`；新增同步服务抽取并规范化 `BI_SOUL_SYNC` 块，校验 Hermes SOUL 与内部契约一致，并为未来 AgentScopeShellAdapter 渲染只允许 `ask_bi` 的 policy；Hermes SOUL 嵌入同一同步块。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/soul_contract_sync.py` 通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过、仅有既有依赖弃用告警。
 - 残留风险：当前阶段只提供可注入的 policy 文本和同步校验；`ask_bi`、AgentScopeShellAdapter runtime 和公开 API 由后续 PR 继续接入。
+
+### 2026-06-26 19:11 · DAT-15 数据集能力清单
+
+- 涉及文件：`datalogue-api/app/schemas/capability_manifest.py`、`datalogue-api/app/services/capability_manifest.py`、`datalogue-api/app/api/dataset.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/tests/test_capability_manifest.py`、`datalogue-api/tests/test_dataset.py`、`.codex/project-memory.md`
+- 关键改动：新增 `CapabilityManifest` 和 `CapabilityManifestSummary`，从数据集名称、指标/维度名称、当前 Manifest 的人工业务描述、典型问题、不可回答范围和权限摘要构建业务级能力清单；新增输出前泄露扫描，命中 SQL、表、字段、schema、blueprint、raw result 等内部键时 fail closed；新增只读调试接口 `GET /api/dataset/{dataset_id}/capability-manifest`，返回同样经过安全扫描的业务摘要，为后续 LeadAgent Capability Router 提供真实 manifest 依赖。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_capability_manifest.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_dataset.py::TestDatasetAPI::test_dataset_capability_manifest_endpoint -q`，1 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/capability_manifest.py app/services/capability_manifest.py app/api/dataset.py` 通过。
+- 残留风险：当前能力清单仍是后端服务和调试接口，`dataset_router.py` 与 LeadAgent 路由闭环要在 #4 rebase 到 DAT-15 后继续改为只消费 `CapabilityManifestSummary`。
