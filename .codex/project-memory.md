@@ -195,3 +195,10 @@
 - 关键改动：在现有 `数语智能问数小队` 基础上新增 6 个并行员工智能体：`Datalogue-后端工程师-LeadAgent链路`、`Datalogue-后端工程师-数据治理SQL`、`Datalogue-前端工程师-工作台`、`Datalogue-测试工程师-后端回归`、`Datalogue-测试工程师-前端E2E`、`Datalogue-测试工程师-观测链路`；为新增员工配置中文职责 Prompt、workspace 可见性、项目 MCP 配置（dbhub/playwright，平台 redacted 回显）和对应 skills；将 6 个员工加入 squad `2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1`，并更新 leader instructions，明确 stage 1 分析拆分、stage 2 并行开发、stage 3 并行测试、stage 4 文档总结的分派方式。
 - 验证方式：执行 `multica squad get 2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1 --output json | jq '{id,name,member_count,leader_id,updated_at}'` 确认 `member_count=12`；执行 `multica squad member list 2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1 --output json` 确认新增 6 个角色已在 roster；执行 `multica agent list --output json` 过滤新增 agent，确认 skills 已绑定且 `mcp_config_redacted=true`；执行 `test ! -e .multica/datalogue-mcp-config.json` 确认创建用临时 MCP 文件已删除。
 - 残留风险：Multica squad 仍然只路由到 leader，不会自动 fan-out；后续真正并行工作仍需要 CEO 作为 leader 通过子 issue 和 stage 主动分派，且本次没有启动真实开发/测试任务。
+
+### 2026-06-26 16:44 · BI_SOUL 内部契约与外部入口同步校验
+
+- 涉及文件：`datalogue-api/app/contracts/BI_SOUL.md`、`datalogue-api/app/services/soul_contract_sync.py`、`datalogue-api/tests/test_bi_soul_contract.py`、`hermes-skills/datalogue/SOUL.md`、`.omx/plans/DAT-6-BI_SOUL-内部契约同步计划.md`、`.codex/project-memory.md`
+- 关键改动：新增 BI 不可越界内部 source of truth，明确 LeadAgent 不看字段级 schema 明细、外层 Agent 只能调用 `ask_bi`、LLM 不直接生成可执行 SQL、raw SQL/raw result/capsule/trace 主体属于 `control_plane`；新增同步服务抽取并规范化 `BI_SOUL_SYNC` 块，校验 Hermes SOUL 与内部契约一致，并为未来 AgentScopeShellAdapter 渲染只允许 `ask_bi` 的 policy；Hermes SOUL 嵌入同一同步块。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/soul_contract_sync.py` 通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过、仅有既有依赖弃用告警。
+- 残留风险：当前阶段只提供可注入的 policy 文本和同步校验；`ask_bi`、AgentScopeShellAdapter runtime 和公开 API 由后续 PR 继续接入。
