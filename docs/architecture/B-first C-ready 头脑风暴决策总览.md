@@ -488,6 +488,135 @@ P0 主链路：
 
 P0 主链路至少覆盖用户提问、能力路由、候选数据集确认、受控查询执行、最终 answer、`artifact_card`、`primary_ref` / `related_refs`、事件 envelope、状态写入和历史回放。`export`、`continue_edit`、ReportAgent、完整工作台、多产物编辑等预留能力第一阶段只验协议、禁用态和不触发增强链路。
 
+### 4.14 DSL / QueryGraph 与 SQL 生成边界
+
+C 产品形态下继续保留 `DSL / QueryGraph / query_plan` 作为 DatasetAgent 内部语义计划层：
+
+```text
+LLM 负责理解问题和辅助生成语义计划
+Tools 负责 DSL / QueryGraph 校验、SQL 编译、方言适配、SQL Guard 和执行
+```
+
+LLM 可以在 DatasetAgent 内部辅助生成或补全：
+
+- 指标。
+- 维度。
+- 过滤条件。
+- 时间范围。
+- 分组、排序和聚合意图。
+
+但 LLM 不能直接输出最终 SQL 作为执行依据。即便调试、失败修复或复杂问题需要模型辅助，也只能输出候选语义计划或修复建议，再由工具链完成 schema 校验、语义资产映射、数据源方言适配、SQL 生成、SQL Guard、preview / execute 和 artifact 持久化。
+
+最终 SQL 属于 `control_plane`，不能进入 LeadAgent、Agentic Shell、ReportAgent、PythonAgent、AuditAgent、`ArtifactCard`、`preview_payload` 或 user-visible event。不同数据库的 SQL 方言适配也不交给 LLM 猜测，而由工具层基于数据源类型和受控模板处理。
+
+### 4.15 QueryGraph Compiler 第一阶段落地方式
+
+`QueryGraph Compiler` 第一阶段采用：
+
+```text
+独立 compiler / dialect adapter 外壳
++ 内部复用现有 QueryGraph / SQL 生成 / Guard / preview 链路
+```
+
+具体边界：
+
+- `query_plan_compiler.py` 作为语义计划到 SQL 的稳定入口。
+- `sql_dialect_adapter.py` 作为数据源方言适配的稳定入口。
+- 现有 QueryGraph、SQL context、SQL 生成、SQL Guard 和 preview 能力先作为内部实现复用。
+- 上层只依赖 compiler 外壳契约，不依赖内部实现细节。
+- 后续可以逐步替换内部 compiler，不影响 LeadAgent、BIWorkbenchTool、ArtifactCard、event envelope 和 AgentScope adapter。
+
+这个决定排除了第一阶段直接重写完整 compiler，也避免继续让编译、方言适配和执行边界散落在旧链路里。
+
+### 4.16 AgentScope 2.0 第一阶段技术落点
+
+当前计划需要显式补入 AgentScope 2.0，但接入层级要受控：
+
+```text
+AgentScope 2.0 = 外层 Shell Adapter / 编排验证层
+Datalogue BI Core = 问数主链真相源和执行内核
+```
+
+第一阶段新增 `AgentScopeShellAdapter`：
+
+- 用 AgentScope 2.0 验证外层 Agentic Shell 的最小编排。
+- 只能调用 `BIWorkbenchTool` / `ask_bi`。
+- 只能消费 `llm_visible`、`ArtifactCard`、event envelope 和引用句柄。
+- 不直接访问 schema、SQL、raw result、capsule、数据库或 `control_plane`。
+- 不替换现有 `/chat/stream` SSE。
+- 不用 AgentScope session / memory 替代 Datalogue 的 conversation_state、query_artifact、Manifest、SQL Guard 和业务审计真相源。
+
+这样第一阶段能看到 AgentScope 2.0 技术路线，但不会把 BI 主链 runtime、状态写入、artifact、Guard、trace 和历史回放一起重写。P6 仍保留为 AgentScope 主链 runtime 接入预备，用于后续评估是否让 AgentScope 更深进入主链。
+
+### 4.17 AgentScopeShellAdapter 放置位置
+
+`AgentScopeShellAdapter` 第一阶段放在后端正式 service：
+
+```text
+datalogue-api/app/services/agentscope_shell_adapter.py
+datalogue-api/app/services/agentscope_event_adapter.py
+```
+
+但第一阶段只做内部调用与 contract test 验证：
+
+- 不新增公开 API route。
+- 不接前端入口。
+- 不替换 `/chat/stream`。
+- 不做独立 runner 进程。
+- 不注册 schema、SQL、preview、database、artifact body 或 `control_plane` 工具。
+
+这个选择让 AgentScope 2.0 接入层成为正式工程模块，而不是继续停留在 `tests/agentscope_*` 实验目录；同时避免第一阶段扩大用户入口、部署面和权限面。后续是否开放 API、独立 runner 或主链 runtime，由 P6 的接入闸门再决定。
+
+### 4.18 SOUL.md 归属
+
+`SOUL.md` 抽成 Datalogue 内部契约，再同步到 Hermes skill、AgentScopeShellAdapter 或未来外部 Agent 入口。
+
+第一阶段主版本建议放在：
+
+```text
+datalogue-api/app/contracts/BI_SOUL.md
+```
+
+同步目标包括：
+
+```text
+hermes-skills/datalogue/SOUL.md
+AgentScopeShellAdapter system prompt / policy injection
+```
+
+规则：
+
+- Datalogue 内部契约是 source of truth。
+- 外部 skill 包不再作为唯一主版本。
+- 同步目标必须通过测试或同步脚本校验一致性。
+- AgentScopeShellAdapter 不直接依赖 Hermes skill 目录，而是引用 Datalogue 内部契约。
+
+### 4.19 SQL 方言适配范围
+
+`sql_dialect_adapter.py` 第一阶段只覆盖当前真实数据源。
+
+```text
+接口：按方言注册表设计
+启用范围：当前真实数据源
+未知方言：fail closed
+```
+
+不在 P0 同时实现 PostgreSQL / MySQL / SQLite 等多方言完整兼容。后续接入新数据源时，再补对应 dialect adapter、contract test 和真实链路验收。
+
+### 4.20 旧会话兼容边界
+
+旧会话不支持新 `artifact_card`、C-ready event envelope、`primary_ref` / `related_refs` 和新 conversation_state 的历史回放。
+
+第一阶段规则：
+
+- 不迁移旧 conversation_state。
+- 不为旧消息生成伪造 ArtifactCard。
+- 不为旧 query artifact 回填新 refs。
+- 旧会话保留原始回答和历史消息展示。
+- 新协议从上线后的新会话开始生效。
+
+这条边界避免为了历史数据兼容而伪造执行证据，也避免 P0 被历史迁移拖慢。
+
 ---
 
 ## 五、第一阶段不做的事
@@ -495,13 +624,19 @@ P0 主链路至少覆盖用户提问、能力路由、候选数据集确认、�
 - 不把 LeadAgent 直接改成自由 ReActAgent。
 - 不让 LeadAgent 自己写 SQL。
 - 不让 LeadAgent 自己修 SQL。
+- 不让 LLM 输出的 SQL 直接作为执行依据。
+- 不把 SQL 方言适配交给 LLM 猜测。
 - 不把完整 `/chat/stream` 包成一个外部工具给 Hermes 或 AgentScope。
 - 不按数据集复制多套 Agent Prompt。
 - 不用 AgentScope memory/session 替代 Datalogue 的 conversation_state、query_artifact、Manifest 和 trace 真相源。
+- 不让 AgentScope 第一阶段直接接管 BI 主链 runtime。
 - 不让第一阶段的 Agentic Shell 绕过 BIWorkbenchTool 直接访问 BI 内部能力。
 - 不在第一阶段实现导出文件生成、下载链接、Excel/CSV/Markdown 生成或完整数据导出。
 - 不在第一阶段启动 ReportAgent，不实现报告继续编辑、版本管理、保存、回滚或编辑审计链路。
 - 不在第一阶段重写完整 BI 工作台运行时，不实现完整任务编排、多产物编辑状态或跨 Agent 协作 runtime。
+- 不在第一阶段为 AgentScopeShellAdapter 开放公开 API、前端入口或独立 runner 进程。
+- 不在第一阶段支持多数据库方言完整适配，只支持当前真实数据源。
+- 不在第一阶段为旧会话迁移或回填 ArtifactCard、event envelope、refs 或新 conversation_state。
 - 不在第一阶段实现完整任务 DAG、任意子任务重试或不受控内部状态重放。
 
 ---
@@ -545,8 +680,16 @@ decisions/019-continue_edit 第一阶段只作为详情面板预留动作.md
 decisions/020-ask_bi 采用最小稳定契约并复用现有主链.md
 decisions/021-retry 第一阶段从最后安全检查点重试.md
 decisions/022-主链路验收采用分层验收.md
+decisions/023-DSL QueryGraph 保留为内部语义计划并由工具编译 SQL.md
+decisions/024-QueryGraph Compiler 第一阶段采用外壳封装并复用现有链路.md
+decisions/025-AgentScope 第一阶段作为 Shell Adapter 显式接入但不接管 BI 主链.md
+decisions/026-AgentScopeShellAdapter 放入后端正式 service 但第一阶段不开放 API.md
+decisions/027-SOUL.md 抽成 Datalogue 内部契约并同步到外部 Skill.md
+decisions/028-方言适配第一阶段只覆盖当前真实数据源.md
+decisions/029-旧会话不支持 artifact_card 历史回放.md
 03-B-first C-ready 后续改造记录.md
 04-B-first C-ready 正式开发计划.md
+05-AgentScope 2.0 集成系统设计方案.md
 05-capability_manifest 字段设计.md
 06-DatasetAgentToolAdapter 出参协议.md
 07-AgentScope Runtime 接入边界.md

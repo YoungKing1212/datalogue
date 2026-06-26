@@ -7,7 +7,7 @@
 ```text
 产品形态直接 C：Agentic Shell + BIWorkbenchTool + ReportAgent / PythonAgent / AuditAgent
 BI 查询内核按 B-governed 管控：Capability Router + Shared DatasetAgent Runtime
-AgentScope 保留验证线：event adapter / remote runner / runtime gate
+AgentScope 显式接入外层 Shell Adapter：第一阶段验证编排和事件适配，但不接管 BI 主链 runtime
 ```
 
 当前不把 LeadAgent 直接改成自由 ReActAgent。更稳的目标是：产品上直接朝 Agentic Shell 工作台演进，但所有 BI 查询都必须经由 `BIWorkbenchTool` / `ask_bi` 进入受控内核，外层 Agent 只面对能力、摘要和引用，不面对数据集内部执行细节。
@@ -19,11 +19,14 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 - [ ] 将 LeadAgent 从“混合规划器 / 编排器”收窄为 Hermes-style Capability Router。
 - [ ] 定义 Agentic Shell 产品入口，让用户可以在同一工作流里问数、生成报告、做二次分析和查看审计解释。
 - [ ] 定义 `BIWorkbenchTool` / `ask_bi`，作为 Agentic Shell、ReportAgent、PythonAgent、AuditAgent 使用 BI 能力的唯一入口。
+- [ ] 定义 `AgentScopeShellAdapter`，让 AgentScope 2.0 第一阶段显式验证外层 Shell 编排，但只能调用 `ask_bi`。
+- [ ] 将 `SOUL.md` 抽成 Datalogue 内部 BI 契约，再同步到 Hermes skill 和 AgentScopeShellAdapter。
 - [ ] 建立数据集能力清单 `capability_manifest`，让 LeadAgent 基于能力而不是 schema 明细做路由。
 - [ ] 将 DatasetAgent 固化为一个共享 Runtime，每次调用绑定 `dataset_id + manifest + capability_manifest`。
 - [ ] 统一 `SKILL.md` / `SOUL.md` 协议，不按数据集复制 Agent Prompt。
 - [ ] 将 DatasetAgent 输出拆成 `llm_visible` 与 `control_plane`，为未来外层 Agentic Shell 调用留安全边界。
 - [ ] 保持 Manifest、SQL Guard、QueryArtifact、conversation_state、Langfuse trace 仍由 Datalogue 业务内核掌握。
+- [ ] 保留 `DSL / QueryGraph / query_plan` 作为 DatasetAgent 内部语义计划层，并由 Tools 编译 SQL、完成方言适配和 SQL Guard。
 - [ ] 明确 ReportAgent、PythonAgent、AuditAgent 只能消费 `llm_visible`、`result_ref`、`report_ref` 和脱敏后的事件，不得直接访问 schema、SQL、数据库或 `control_plane` 主体。
 
 ---
@@ -45,6 +48,7 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 - [ ] 不直接读取候选资产详情。
 - [ ] 不直接生成 SQL。
 - [ ] 不直接修复 SQL。
+- [ ] 不把 LLM 输出的 SQL 当作最终执行依据。
 - [ ] 不直接执行 SQL。
 - [ ] 不把完整结果集放入 LLM context。
 - [ ] 不把 DatasetAgent capsule 主体放入 LLM context。
@@ -139,6 +143,11 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 - [ ] 将共用 `SOUL.md` 作为不可越界协议层。
 - [ ] 明确 DatasetAgent 内部可以使用更细资产，但这些资产不回流到 LeadAgent context。
 - [ ] 复用现有 QueryGraph、Manifest guard、SQL preview、ArtifactStore 和 conversation_state 能力。
+- [ ] 将 `DSL / QueryGraph / query_plan` 明确为内部语义计划，不回流到 LeadAgent、Agentic Shell 或用户可见产物。
+- [ ] 由工具链负责 DSL schema 校验、指标/维度/过滤归一化、语义资产映射、SQL 编译、数据源方言适配和 SQL Guard。
+- [ ] 第一阶段采用 `query_plan_compiler.py` / `sql_dialect_adapter.py` 外壳封装方案，内部先复用现有 QueryGraph、SQL 生成、Guard 和 preview 链路。
+- [ ] `sql_dialect_adapter.py` 第一阶段只启用当前真实数据源方言，未知方言 fail closed。
+- [ ] 禁止把 LLM 直接生成的 SQL 作为执行依据；失败修复也优先修语义计划，再由工具重新编译 SQL。
 - [ ] 建立 DatasetAgent Runtime 的最小 contract test。
 
 验收关注点：
@@ -146,6 +155,7 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 - [ ] 不按数据集复制 Agent Prompt。
 - [ ] 数据集差异只来自 manifest、capability_manifest 和语义资产。
 - [ ] DatasetAgent 内部失败时能返回澄清、拒答、修复失败或安全阻断摘要。
+- [ ] QueryGraph 编译和方言适配能通过工具层审计，最终 SQL 只进入 `control_plane`、artifact 和 trace。
 
 ---
 
@@ -216,6 +226,7 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 - [ ] 对齐后端 checkpoint 日志字段。
 - [ ] 保持最终 SSE payload 与数据库落库状态一致。
 - [ ] 增加事件泄露扫描，阻止 raw SQL、完整结果集、capsule 主体进入 user-visible event。
+- [ ] SQL 编译、方言适配和 Guard 事件默认标记为 `trace_only` 或 `control_plane`，不得进入 user-visible event payload。
 
 验收关注点：
 
@@ -390,9 +401,12 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 
 ## 九、P6：AgentScope 后续验证线
 
-目标：第一阶段主链暂不接 AgentScope runtime，但保留 AgentScope MVP / runner / adapter 验证线，等 B-governed BI 内核和 C 产品入口边界稳定后再接主链。
+目标：第一阶段显式补入 AgentScope 2.0 技术落点，但只作为外层 Shell Adapter 和 adapter 验证线；BI 主链 runtime 仍由 Datalogue 管控。等 B-governed BI 内核、C 产品入口和 P1.5 Shell Adapter 验证稳定后，再评估 AgentScope 是否更深进入主链。
 
 - [ ] 保留并强化 AgentScope MVP 验证线，继续验证 tool calling、LiteLLM 适配、Hermes-style 最小能力暴露和 react_trace。
+- [ ] 新增 `AgentScopeShellAdapter` 第一阶段验证线，AgentScope 只能调用 `BIWorkbenchTool` / `ask_bi`，不能访问 schema、SQL、数据库或 `control_plane`。
+- [ ] 将 `AgentScopeShellAdapter` 放入后端正式 service，但第一阶段只通过内部调用和 contract test 验证，不开放公开 API 或前端入口。
+- [ ] 定义 AgentScope 可见工具白名单：第一阶段只包含 `ask_bi`，后续再评估 `explain`、`retry` 等受控动作。
 - [ ] 等 `DatalogueEventEnvelope` 稳定后，设计 `AgentScopeEventAdapter`，验证事件如何映射到 AgentScope event stream。
 - [ ] 等 `DatasetAgentToolAdapter` v1 稳定后，设计 Remote Runner Adapter，验证 DatasetAgent 远程调用协议。
 - [ ] 等 `BIWorkbenchTool` / `ask_bi` 稳定后，验证 AgentScope 外层 Agentic Shell 如何调用 BI 能力。
@@ -404,6 +418,7 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 
 - [ ] AgentScope 验证线能复用主链协议，而不是另起一套能力暴露规则。
 - [ ] AgentScope adapter 只接标准化事件和工具结果，不读取 raw SQL、完整结果集或 capsule 主体。
+- [ ] AgentScope Shell Adapter 能跑通 `ask_bi` 最小调用，并证明最终 answer、event envelope、ArtifactCard 和引用句柄仍来自 Datalogue 主链。
 - [ ] 主链接入前必须能证明页面、SSE、日志、Langfuse、artifact 和 final payload 仍可交叉核对。
 
 ---
@@ -412,10 +427,15 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 
 - [ ] 不把 LeadAgent 直接改成自由 ReActAgent。
 - [ ] 不让 LeadAgent 直接生成或修复 SQL。
+- [ ] 不让 LLM 输出的 SQL 直接作为执行依据。
+- [ ] 不把 SQL 方言适配交给 LLM 猜测。
 - [ ] 不把完整 `/chat/stream` 直接包装成一个外部 Hermes/AgentScope 工具。
+- [ ] 不把外部 Hermes skill 包内的 `SOUL.md` 当成唯一主版本；Datalogue 内部契约才是 source of truth。
 - [ ] 不按数据集复制多套 Agent。
 - [ ] 不让 AgentScope session/memory 替代 Datalogue 的 conversation_state、query_artifact 和 Manifest 真相源。
-- [ ] 不让 AgentScope 第一阶段接管 `/chat/stream` 主链 runtime。
+- [ ] 不让 AgentScope 第一阶段接管 `/chat/stream` 或 BI 主链 runtime；第一阶段只允许 Shell Adapter 验证。
+- [ ] 不为 AgentScopeShellAdapter 第一阶段新增公开 API route、前端入口或独立 runner 进程。
+- [ ] 不为旧会话迁移或回填 ArtifactCard、event envelope、refs 或新 conversation_state。
 - [ ] 不让第一阶段的 Agentic Shell 绕过 BIWorkbenchTool 访问 schema、SQL、数据库或 `control_plane` 主体。
 - [ ] 不让 ReportAgent、PythonAgent、AuditAgent 获得比 BIWorkbenchTool 更高的数据权限。
 
@@ -447,8 +467,11 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 
 - [ ] 固化 C-shaped product, B-governed BI core 架构图。
 - [ ] 固化 Tool / Skill / Artifact / Control Plane 边界。
+- [ ] 固化 `BI_SOUL.md` 内部契约和同步策略。
 - [ ] 固化 `capability_manifest` 初版 schema。
 - [ ] 固化 `DatasetAgentToolAdapter` 出参协议。
+- [ ] 固化 `DSL / QueryGraph` 到 SQL 的工具编译边界和方言适配策略。
+- [ ] 固化 QueryGraph Compiler 第一阶段外壳封装策略，明确内部实现后续可替换。
 - [ ] 固化 `ask_bi` / `BIWorkbenchTool` 最小入参、出参和边界约束。
 - [ ] 固化 Agentic Shell、BIWorkbenchTool、ReportAgent、PythonAgent、AuditAgent 的边界图。
 
@@ -457,11 +480,15 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 - [ ] 生成真实数据集能力清单。
 - [ ] LeadAgent 基于能力清单选择数据集。
 - [ ] `query_dataset` 打通现有 DatasetAgent。
+- [ ] `DSL / QueryGraph` 由工具层编译 SQL，并完成当前主数据源方言适配。
+- [ ] `query_plan_compiler.py` 和 `sql_dialect_adapter.py` 外壳完成最小接入，内部复用现有执行链。
+- [ ] `sql_dialect_adapter.py` 只启用当前真实数据源方言，未知方言 fail closed。
 - [ ] 保证现有单数据集问数链路不退化。
 
 ### M2：出参与观测治理
 
 - [ ] 完成 `llm_visible/control_plane/trace_metadata` 分层。
+- [ ] 完成 QueryGraph Compiler / Dialect Adapter 的防泄露和 trace-only 事件验收。
 - [ ] 完成 artifact/result_ref/report_ref 回传协议。
 - [ ] 完成事件协议和 Langfuse trace 对齐。
 - [ ] 补齐 P0 主链路五件套验收用例，覆盖真实页面、SSE event envelope、后端日志、Langfuse trace、query_artifact / conversation_state。
@@ -470,6 +497,7 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 ### M3：C 产品入口最小闭环
 
 - [ ] 定义 `ask_bi` / `BIWorkbenchTool` 外部调用入口，内部第一阶段复用现有 Chat / LeadAgent / DatasetAgent 主链。
+- [ ] 定义 `AgentScopeShellAdapter` 最小入口，用 AgentScope 2.0 调用 `ask_bi` 并消费标准 event envelope、ArtifactCard 和引用句柄。
 - [ ] 将现有 SSE 输出映射成统一 `event_envelope`，作为 `ask_bi` 出参的一部分。
 - [ ] 将最终 answer、候选数据集、产物卡、主引用和辅助引用整理成 `ask_bi` 标准出参。
 - [ ] 在现有 Chat 中落地 Agentic Shell 第一版任务模型和事件模型。
@@ -486,6 +514,8 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 - [ ] 定义最小安全检查点结构，并接入现有 conversation_state / query_artifact / artifact ref。
 - [ ] 完成外部 Agent 只能拿轻量摘要和引用句柄的安全验证。
 - [ ] 验证 Chat 入口、`ask_bi`、`ArtifactCard`、`retry`、事件 envelope 和引用写入在 P0 主链路中五件套一致。
+- [ ] 验证旧会话不回填 ArtifactCard，新会话完整写入 ArtifactCard 和引用。
+- [ ] 验证 AgentScope Shell Adapter 不绕过 `ask_bi`，不访问 schema、SQL、数据库、raw result、capsule 或 `control_plane`。
 - [ ] 验证 `export`、`continue_edit`、ReportAgent 预留入口只表现为协议和禁用态，不触发增强链路。
 - [ ] 打通“问数后生成报告草稿”的最小产品链路。
 - [ ] 打通“基于 result_ref 做受控二次分析”的最小产品链路。
@@ -508,7 +538,7 @@ AgentScope 保留验证线：event adapter / remote runner / runtime gate
 
 ### M5：AgentScope 主链接入预备
 
-- [ ] 完成 AgentScope MVP / runner / adapter 验证线和主链协议对齐。
+- [ ] 完成 AgentScope MVP / Shell Adapter / runner / adapter 验证线和主链协议对齐。
 - [ ] 完成 `AgentScopeEventAdapter` 原型验证。
 - [ ] 完成 Remote Runner Adapter 原型验证。
 - [ ] 基于真实链路验收结果决定 AgentScope runtime 是否进入主链。

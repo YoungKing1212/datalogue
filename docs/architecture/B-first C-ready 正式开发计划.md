@@ -4,7 +4,7 @@
 
 **Goal:** 先跑通智能问数核心链路，把 LeadAgent 收敛为 Hermes-style Capability Router，并用 C-ready 协议承接 Chat、`ask_bi`、event envelope、ArtifactCard、候选数据集确认和五件套验收。
 
-**Architecture:** 第一阶段采用 “C-shaped product, B-governed BI core”：产品入口保留 Chat，但协议按未来 BI 工作台设计；BI 查询仍由 LeadAgent、DatasetAgent、Manifest、SQL Guard、QueryArtifact 和 conversation_state 受控执行。ReportAgent、PythonAgent、AuditAgent、完整工作台和 AgentScope 主链 runtime 都作为后续增强，不阻塞主链路。
+**Architecture:** 第一阶段采用 “C-shaped product, B-governed BI core”：产品入口保留 Chat，但协议按未来 BI 工作台设计；BI 查询仍由 LeadAgent、DatasetAgent、Manifest、SQL Guard、QueryArtifact 和 conversation_state 受控执行。AgentScope 2.0 第一阶段作为 Shell Adapter 显式验证外层编排，只能调用 `ask_bi`；ReportAgent、PythonAgent、AuditAgent、完整工作台和 AgentScope 主链 runtime 都作为后续增强，不阻塞主链路。
 
 **Tech Stack:** FastAPI、SQLAlchemy、Pydantic、Langfuse、assistant-ui React、Vitest / Testing Library、pytest。
 
@@ -16,11 +16,18 @@
 
 - `datalogue-api/app/services/capability_manifest.py`：新增。生成和校验数据集能力清单，只输出业务能力、典型问题、指标/维度摘要、路由提示和不可回答范围。
 - `datalogue-api/app/schemas/capability_manifest.py`：新增。定义 `CapabilityManifest`、`CapabilityManifestSummary`、审核状态和 API 出参 schema。
+- `datalogue-api/app/contracts/BI_SOUL.md`：新增。作为 Datalogue BI 能力不可越界契约的内部 source of truth，再同步到 Hermes skill 和 AgentScopeShellAdapter。
+- `datalogue-api/app/services/soul_contract_sync.py`：新增或改造。校验 Datalogue 内部 SOUL 契约与外部 skill / adapter 同步目标一致。
 - `datalogue-api/app/api/dataset.py`：修改。增加能力清单读取接口或在现有数据集接口中附带能力摘要。
 - `datalogue-api/app/services/dataset_router.py`：修改。让路由优先消费 `capability_manifest`，不再依赖 LeadAgent 直接读取 schema 明细。
 - `datalogue-api/app/services/lead_agent_routing.py`：修改。收窄 LeadAgent 可见工具面，保留候选数据集确认和保守 fan-out。
+- `datalogue-api/app/services/query_plan_compiler.py`：新增或改造为第一阶段 compiler 外壳。把 `DSL / QueryGraph / query_plan` 编译为受控 SQL，内部先复用现有 QueryGraph / SQL 生成 / Guard / preview 链路，并确保 LLM 输出的 SQL 不能直接作为执行依据。
+- `datalogue-api/app/services/sql_dialect_adapter.py`：新增或改造为第一阶段 dialect adapter 外壳。根据数据源类型完成 SQL 方言适配，第一阶段只启用当前真实数据源方言，未知方言 fail closed，避免让 LLM 猜测不同数据库方言。
+- `datalogue-api/app/services/subagent_planning/contracts.py`、`datalogue-api/app/services/subagent_planning/planner.py`、`datalogue-api/app/services/subagent_planning/sql_context.py`、`datalogue-api/app/services/subagent_planning/execution.py`：修改。对齐语义计划、编译、执行和失败修复边界。
 - `datalogue-api/app/services/subagent_tool_adapter.py`：修改。固化 `llm_visible`、`control_plane`、`trace_metadata` 分层，并为 `ArtifactCard` 提供标准引用。
 - `datalogue-api/app/services/bi_workbench_tool.py`：新增。实现 `ask_bi` / `BIWorkbenchTool` 最小稳定契约，内部第一阶段复用现有 Chat 主链。
+- `datalogue-api/app/services/agentscope_shell_adapter.py`：新增。作为正式后端 service 实现 AgentScope 2.0 外层 Shell Adapter 最小验证，只允许调用 `ask_bi` 并消费标准 event envelope、ArtifactCard 和引用句柄；第一阶段不开放公开 API。
+- `datalogue-api/app/services/agentscope_event_adapter.py`：新增或改造。作为正式后端 service 将 `DatalogueEventEnvelope` 映射为 AgentScope event stream 验证事件，不替换现有 `/chat/stream` SSE。
 - `datalogue-api/app/schemas/bi_workbench.py`：新增。定义 `AskBIRequest`、`AskBIResponse`、`ArtifactCard`、`ArtifactAction`、`ArtifactRef`、`DatalogueEventEnvelope`。
 - `datalogue-api/app/api/chat.py`：修改。把现有 SSE 映射成统一 event envelope，输出 ArtifactCard、candidate datasets、checkpoint 和 final payload。
 - `datalogue-api/app/services/conversation_store.py`：修改。保存候选数据集确认、最小安全检查点和 retry 状态。
@@ -30,12 +37,18 @@
 ### 后端测试文件
 
 - `datalogue-api/tests/test_capability_manifest.py`：新增。覆盖能力清单字段边界、不可回答范围、审核状态和泄露扫描。
+- `datalogue-api/tests/test_bi_soul_contract.py`：新增。覆盖 Datalogue 内部 SOUL 契约存在、禁止项完整、同步目标一致。
 - `datalogue-api/tests/test_lead_agent_capability_router.py`：新增。覆盖单数据集、候选确认、无法回答和保守 fan-out。
+- `datalogue-api/tests/test_query_plan_compiler.py`：新增。覆盖 DSL / QueryGraph 到 SQL 的工具编译、LLM SQL 禁止直执行和 control plane 边界。
+- `datalogue-api/tests/test_sql_dialect_adapter.py`：新增。覆盖当前主数据源方言适配、非法方言降级和防泄露。
 - `datalogue-api/tests/test_bi_workbench_tool.py`：新增。覆盖 `ask_bi` 入参、出参、内部转接和安全边界。
+- `datalogue-api/tests/test_agentscope_shell_adapter.py`：新增。覆盖 AgentScope 只通过 `ask_bi` 调用 BI 能力、不暴露 schema / SQL / control_plane。
+- `datalogue-api/tests/test_agentscope_event_adapter.py`：新增。覆盖 event envelope 到 AgentScope event stream 的只读映射和 visibility 边界。
 - `datalogue-api/tests/test_event_envelope.py`：新增。覆盖 SSE 到 event envelope 的映射和 visibility 约束。
 - `datalogue-api/tests/test_artifact_card_contract.py`：新增。覆盖 ArtifactCard、preview_payload、actions、refs 和禁用态。
 - `datalogue-api/tests/test_retry_checkpoint.py`：新增。覆盖 checkpoint 校验、恢复和降级整任务重试。
 - `datalogue-api/tests/test_chat.py`、`datalogue-api/tests/test_conversation.py`、`datalogue-api/tests/test_subagent_tool_adapter.py`：修改。补现有主链回归。
+- `datalogue-api/tests/test_legacy_conversation_replay.py`：新增或修改。覆盖旧会话缺少 ArtifactCard / refs / event envelope 时不报错、不伪造新产物卡。
 
 ### 前端文件
 
@@ -59,21 +72,27 @@
 
 ```text
 P0.1 capability_manifest schema
+  -> P0.1b BI_SOUL internal contract
   -> P0.2 Capability Router
-  -> P0.3 ToolAdapter 分层
-  -> P0.4 event envelope
-  -> P0.5 ask_bi 最小契约
+  -> P0.3 QueryGraph Compiler / Dialect Adapter
+  -> P0.4 ToolAdapter 分层
+  -> P0.5 event envelope
+  -> P0.6 ask_bi 最小契约
   -> P1.1 ArtifactCard
   -> P1.2 Chat 任务时间线
   -> P1.3 候选数据集确认
   -> P1.4 retry checkpoint
+  -> P1.5 AgentScope Shell Adapter
   -> P2.1 五件套验收
 ```
 
 不能跳过的硬依赖：
 
 - `ArtifactCard` 依赖 `ArtifactRef`、Action Registry 和 `preview_payload` schema。
+- SOUL 内部契约是 LeadAgent、DatasetAgent、Hermes skill 和 AgentScopeShellAdapter 的共同边界，必须先固化再同步到外部入口。
 - `ask_bi` 依赖 event envelope 和 `ArtifactCard` schema。
+- AgentScope Shell Adapter 依赖 `ask_bi`、event envelope、ArtifactCard 和引用句柄，不依赖 AgentScope 接管 `/chat/stream`。
+- ToolAdapter 分层依赖 QueryGraph Compiler / Dialect Adapter 明确 SQL 只进入 `control_plane`。
 - `retry` 依赖最小安全检查点和 conversation_state / query_artifact 引用。
 - 五件套验收依赖页面、SSE、日志、Langfuse 和 query_artifact 都能输出同一个 `task_id` / `trace_id` / `artifact_ref`。
 
@@ -172,6 +191,68 @@ cd datalogue-api
 
 Expected: PASS。
 
+### Task P0.1b：定义 BI_SOUL 内部契约并同步到外部入口
+
+**Files:**
+- Create: `datalogue-api/app/contracts/BI_SOUL.md`
+- Create or modify: `datalogue-api/app/services/soul_contract_sync.py`
+- Modify: `hermes-skills/datalogue/SOUL.md`
+- Create: `datalogue-api/tests/test_bi_soul_contract.py`
+
+- [ ] **Step 1：编写契约一致性测试**
+
+测试内容：
+
+```python
+def test_internal_bi_soul_is_source_of_truth():
+    internal = load_internal_bi_soul()
+    hermes = load_hermes_skill_soul()
+
+    assert "不得直接访问 SQL" in internal
+    assert "control_plane" in internal
+    assert normalize_contract(internal) == normalize_contract(hermes)
+```
+
+Run:
+
+```bash
+cd datalogue-api
+.venv/bin/python -m pytest tests/test_bi_soul_contract.py -q
+```
+
+Expected: FAIL，因为内部契约和同步校验还不存在。
+
+- [ ] **Step 2：新增内部 SOUL 契约**
+
+`BI_SOUL.md` 至少覆盖：
+
+```text
+LeadAgent 不看 schema 明细
+外层 Agent 只能调用 ask_bi
+LLM 不直接生成可执行 SQL
+raw SQL / raw result / capsule / trace 主体属于 control_plane
+ArtifactCard / event envelope / refs 只能承载 llm_visible 摘要和引用
+AgentScopeShellAdapter 不替代 Datalogue 真相源
+```
+
+- [ ] **Step 3：同步到 Hermes skill 和 AgentScopeShellAdapter**
+
+第一阶段可以用同步函数或测试校验完成：
+
+```text
+BI_SOUL.md -> hermes-skills/datalogue/SOUL.md
+BI_SOUL.md -> AgentScopeShellAdapter system prompt / policy injection
+```
+
+- [ ] **Step 4：运行测试**
+
+```bash
+cd datalogue-api
+.venv/bin/python -m pytest tests/test_bi_soul_contract.py -q
+```
+
+Expected: PASS。
+
 ### Task P0.2：让 LeadAgent 基于能力清单路由
 
 **Files:**
@@ -235,7 +316,94 @@ cd datalogue-api
 
 Expected: PASS。
 
-### Task P0.3：固化 ToolAdapter 分层出参
+### Task P0.3：定义 QueryGraph Compiler / Dialect Adapter
+
+**Files:**
+- Create or modify: `datalogue-api/app/services/query_plan_compiler.py`（第一阶段 compiler 外壳，内部复用现有链路）
+- Create or modify: `datalogue-api/app/services/sql_dialect_adapter.py`（第一阶段 dialect adapter 外壳，内部先覆盖当前真实数据源）
+- Modify: `datalogue-api/app/services/subagent_planning/contracts.py`
+- Modify: `datalogue-api/app/services/subagent_planning/planner.py`
+- Modify: `datalogue-api/app/services/subagent_planning/sql_context.py`
+- Modify: `datalogue-api/app/services/subagent_planning/execution.py`
+- Create: `datalogue-api/tests/test_query_plan_compiler.py`
+- Create: `datalogue-api/tests/test_sql_dialect_adapter.py`
+
+- [ ] **Step 1：编写语义计划编译测试**
+
+断言 LLM 只能提供语义计划，不能把 SQL 直接作为执行依据：
+
+```python
+def test_query_plan_compiler_rejects_llm_sql_as_execution_source():
+    plan = QueryPlan(
+        metrics=["日志数量"],
+        dimensions=["人员", "日期"],
+        filters=[{"field": "人员", "op": "=", "value": "杨凯"}],
+        llm_generated_sql="select * from worklog",
+    )
+
+    compiled = compile_query_plan(plan, dialect="postgresql")
+
+    assert compiled.sql
+    assert compiled.execution_source == "tool_compiler"
+    assert "llm_generated_sql" not in compiled.user_visible_json()
+```
+
+Run:
+
+```bash
+cd datalogue-api
+.venv/bin/python -m pytest tests/test_query_plan_compiler.py -q
+```
+
+Expected: FAIL，因为 compiler 外壳和禁止直执行规则还未固化。
+
+- [ ] **Step 2：实现 QueryGraph Compiler 外壳**
+
+Compiler 负责：
+
+```text
+DSL / QueryGraph schema 校验
+指标、维度、过滤、时间范围归一化
+语义资产到物理字段 / 表的受控映射
+SQL 生成
+SQL Guard 前置上下文组装
+```
+
+LLM 失败修复时只能修语义计划，不能把 SQL 文本直接提升为执行 SQL。
+
+第一阶段不重写完整 compiler；外壳内部先调用现有 QueryGraph、SQL context、SQL 生成、Guard 和 preview 能力，先把上层依赖的稳定契约、trace、泄露扫描和 fail-closed 行为固化。
+
+- [ ] **Step 3：实现 SQL Dialect Adapter**
+
+Adapter 负责：
+
+```text
+按 datasource type 选择方言
+处理 limit / date / identifier quoting / aggregate 等方言差异
+非法或未知方言 fail closed
+输出 trace-only 编译摘要
+```
+
+第一阶段只启用当前真实数据源方言；其他方言只保留注册表接口，未实现时必须 fail closed。
+
+- [ ] **Step 4：接入现有执行链**
+
+将 DatasetAgent 内部 `plan_query -> compile_query_plan -> adapt_dialect -> guard_sql -> preview_sql -> persist_artifact` 串起来；最终 SQL 只进入 `control_plane`、query_artifact、trace 和执行层，不进入 `llm_visible`、ArtifactCard 或 user-visible event。
+
+- [ ] **Step 5：预留内部替换边界**
+
+为 compiler 输出增加 `schema_version`、`compiler_version`、`dialect`、`execution_source`、`trace_metadata`，确保后续替换内部 QueryGraph / SQL 生成实现时，上层 `BIWorkbenchTool`、event envelope、ArtifactCard 和 AgentScope adapter 不需要改协议。
+
+- [ ] **Step 6：运行测试**
+
+```bash
+cd datalogue-api
+.venv/bin/python -m pytest tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_subagent_run.py -q
+```
+
+Expected: PASS。
+
+### Task P0.4：固化 ToolAdapter 分层出参
 
 **Files:**
 - Modify: `datalogue-api/app/services/subagent_tool_adapter.py`
@@ -291,7 +459,7 @@ cd datalogue-api
 
 Expected: PASS。
 
-### Task P0.4：定义 event envelope 并映射 SSE
+### Task P0.5：定义 event envelope 并映射 SSE
 
 **Files:**
 - Create: `datalogue-api/app/schemas/bi_workbench.py`
@@ -371,7 +539,7 @@ cd datalogue-api
 
 Expected: PASS。
 
-### Task P0.5：实现 ask_bi / BIWorkbenchTool 最小契约
+### Task P0.6：实现 ask_bi / BIWorkbenchTool 最小契约
 
 **Files:**
 - Create: `datalogue-api/app/services/bi_workbench_tool.py`
@@ -696,6 +864,75 @@ npm run test -- artifact-card
 
 Expected: PASS。
 
+### Task P1.5：AgentScope Shell Adapter 最小验证
+
+**Files:**
+- Create: `datalogue-api/app/services/agentscope_shell_adapter.py`（正式 service，第一阶段不开放公开 API）
+- Create or modify: `datalogue-api/app/services/agentscope_event_adapter.py`（正式 service，第一阶段只供内部验证和测试）
+- Create: `datalogue-api/tests/test_agentscope_shell_adapter.py`
+- Create: `datalogue-api/tests/test_agentscope_event_adapter.py`
+
+- [ ] **Step 1：编写 Shell Adapter 边界测试**
+
+断言 AgentScope 只能通过 `ask_bi` 使用 BI 能力：
+
+```python
+def test_agentscope_shell_adapter_only_calls_ask_bi():
+    adapter = AgentScopeShellAdapter(allowed_tools=["ask_bi"])
+
+    response = adapter.run("查询杨凯 2024 年工作日志")
+
+    assert response.used_tools == ["ask_bi"]
+    assert response.artifact_card.primary_ref
+    assert "raw_sql" not in response.model_dump_json()
+    assert "control_plane" not in response.model_dump_json()
+```
+
+Run:
+
+```bash
+cd datalogue-api
+.venv/bin/python -m pytest tests/test_agentscope_shell_adapter.py -q
+```
+
+Expected: FAIL，因为 adapter 外壳还不存在。
+
+- [ ] **Step 2：实现 AgentScopeShellAdapter 外壳**
+
+第一阶段只做最小验证：
+
+```text
+AgentScope 2.0 Agent / runner
+  -> ask_bi / BIWorkbenchTool
+  -> DatalogueEventEnvelope
+  -> ArtifactCard / refs
+```
+
+AgentScope 可见工具白名单第一阶段只包含 `ask_bi`；不得注册 schema、SQL、preview、database、artifact body 或 control plane 工具。
+
+第一阶段不得新增公开 API route，不接前端入口，不做独立 runner 进程；只通过 service 内部调用和 contract test 验证 AgentScope 2.0 接入边界。
+
+- [ ] **Step 3：实现 AgentScopeEventAdapter 验证映射**
+
+将 `DatalogueEventEnvelope` 映射为 AgentScope event stream 验证事件：
+
+```text
+user_visible -> AgentScope shell visible event
+trace_only -> AgentScope trace event
+control_plane -> 不进入 AgentScope 可见事件
+```
+
+第一阶段不替换 `/chat/stream` SSE，只验证映射边界。
+
+- [ ] **Step 4：运行测试**
+
+```bash
+cd datalogue-api
+.venv/bin/python -m pytest tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q
+```
+
+Expected: PASS。
+
 ---
 
 ## 五、P2 验收与防泄露
@@ -719,6 +956,8 @@ Expected: PASS。
 历史回放展示 ArtifactCard
 ```
 
+历史回放口径调整为：旧会话缺少 ArtifactCard 时不回填、不伪造、不报错；ArtifactCard 回放只要求新协议上线后的新会话。
+
 - [ ] **Step 2：每个 P0 用例核对五件套**
 
 核对项：
@@ -741,6 +980,13 @@ assert final_payload["artifact_card"]["primary_ref"]
 assert "raw_sql" not in json.dumps(final_payload["artifact_card"], ensure_ascii=False)
 assert query_artifact is not None
 assert conversation_state is not None
+```
+
+旧会话回归断言：
+
+```python
+assert legacy_message.get("artifact_card") is None
+assert "raw_sql" not in json.dumps(legacy_message, ensure_ascii=False)
 ```
 
 - [ ] **Step 4：人工验收记录模板**
@@ -808,7 +1054,7 @@ Expected: PASS。
 
 ```bash
 cd datalogue-api
-.venv/bin/python -m pytest tests/test_capability_manifest.py tests/test_lead_agent_capability_router.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py tests/test_artifact_card_contract.py tests/test_retry_checkpoint.py tests/test_chat.py -q
+.venv/bin/python -m pytest tests/test_capability_manifest.py tests/test_bi_soul_contract.py tests/test_lead_agent_capability_router.py tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_artifact_card_contract.py tests/test_retry_checkpoint.py tests/test_legacy_conversation_replay.py tests/test_chat.py -q
 ```
 
 Expected: PASS。
@@ -853,8 +1099,11 @@ query_artifact / conversation_state 可回放
 ### P0 必须完成
 
 - `capability_manifest` schema 和生成逻辑。
+- `BI_SOUL.md` 内部契约和同步校验。
 - LeadAgent 基于能力清单路由。
 - 候选数据集确认。
+- QueryGraph Compiler / Dialect Adapter 外壳。
+- SQL 方言适配第一阶段只覆盖当前真实数据源，未知方言 fail closed。
 - ToolAdapter 分层。
 - event envelope。
 - `ask_bi` 最小契约。
@@ -868,6 +1117,9 @@ query_artifact / conversation_state 可回放
 - `export` / `continue_edit` 禁用态。
 - `retry` 最后安全检查点。
 - 历史回放可展示引用和产物卡。
+- 旧会话缺少 ArtifactCard 时不回填、不伪造；新 ArtifactCard 回放只对新协议会话生效。
+- AgentScope Shell Adapter 最小验证，只能调用 `ask_bi`，不接管 BI 主链 runtime。
+- AgentScopeShellAdapter 位于正式后端 service，但第一阶段无公开 API、无前端入口、无独立 runner。
 
 ### P2 必须完成
 
@@ -884,6 +1136,11 @@ query_artifact / conversation_state 可回放
 - 不开放 PythonAgent 数据切片分析。
 - 不实现完整 AuditAgent 分层视图。
 - 不实现完整 BI 工作台 runtime。
+- 不迁移旧 conversation_state，不为旧会话回填 ArtifactCard、event envelope 或 refs。
+- 不让 AgentScope Shell Adapter 访问 schema、SQL、数据库、raw result、capsule 或 `control_plane`。
+- 不为 AgentScopeShellAdapter 开放公开 API route、前端入口或独立 runner 进程。
+- 不让 LLM 生成的 SQL 直接作为执行依据。
+- 不把 SQL 方言适配交给 LLM 猜测；第一阶段不实现多数据库完整方言矩阵。
 - 不让 AgentScope 接管 `/chat/stream` 主链。
 - 不实现完整 DAG 级子任务 retry。
 - 不开放导出文件生成或完整数据导出。

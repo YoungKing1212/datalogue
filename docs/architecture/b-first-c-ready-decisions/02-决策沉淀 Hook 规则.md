@@ -116,9 +116,16 @@ decisions/001-capability_manifest 定位为轻量能力广告.md
 - `020`：`ask_bi` / `BIWorkbenchTool` 采用最小稳定契约，内部第一阶段复用现有主链。
 - `021`：`retry` 第一阶段从最后安全检查点重试，不可恢复时降级整任务重试。
 - `022`：主链路验收采用分层验收，P0 主链路强制五件套一致，预留项轻量验收。
+- `023`：`DSL / QueryGraph` 保留为 DatasetAgent 内部语义计划，SQL 编译和方言适配由 Tools 完成。
+- `024`：`QueryGraph Compiler` 第一阶段采用外壳封装方案，内部先复用现有 QueryGraph / SQL 生成 / Guard / preview 链路。
+- `025`：AgentScope 第一阶段作为 Shell Adapter 显式接入，但不接管 BI 主链 runtime。
+- `026`：`AgentScopeShellAdapter` 放入后端正式 service，但第一阶段不开放公开 API、前端入口或独立 runner。
+- `027`：`SOUL.md` 抽成 Datalogue 内部契约，再同步到 Hermes skill、AgentScopeShellAdapter 等外部入口。
+- `028`：SQL 方言适配第一阶段只覆盖当前真实数据源，接口预留多方言注册表。
+- `029`：旧会话不支持新 ArtifactCard、event envelope、refs 和新 conversation_state 的历史回放。
 
 下一个决策编号：
 
 ```text
-023
+030
 ```

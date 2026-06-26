@@ -83,13 +83,64 @@ error
 
 ### 2.3 DatalogueEventEnvelope
 
-第一阶段先标准化现有 SSE，形成统一 event envelope；AgentScope event stream 只预留 adapter，不直接替换主链 SSE。
+第一阶段先标准化现有 SSE，形成统一 event envelope；AgentScope event stream 通过 `AgentScopeEventAdapter` 做验证映射，但不直接替换主链 SSE。
 
 后续改造方向：
 
 - `AgentScopeEventAdapter` 将 event envelope 映射到 AgentScope event stream。
 - 独立 BI 工作台复用同一套事件，不重新定义前端私有事件。
 - Langfuse observation、后端 checkpoint 日志和最终 payload 使用同一批事件字段。
+
+### 2.3.1 AgentScopeShellAdapter
+
+第一阶段需要显式保留 AgentScope 2.0 技术落点，但只放在外层 Shell Adapter：
+
+```text
+AgentScopeShellAdapter
+  -> ask_bi / BIWorkbenchTool
+  -> DatalogueEventEnvelope
+  -> ArtifactCard / refs
+```
+
+第一阶段边界：
+
+- AgentScope 只能调用 `ask_bi`。
+- `AgentScopeShellAdapter` 放在 `datalogue-api/app/services/agentscope_shell_adapter.py`，作为正式后端 service，而不是继续停留在实验测试目录。
+- AgentScope 只能消费标准 event envelope、`llm_visible`、ArtifactCard 和引用句柄。
+- AgentScope 不访问 schema、SQL、raw result、capsule、数据库或 `control_plane`。
+- 第一阶段不新增公开 API route、不接前端入口、不做独立 runner 进程。
+- AgentScope session / memory 不替代 Datalogue 的 conversation_state、query_artifact、Manifest、SQL Guard 和审计真相源。
+- `/chat/stream` 仍由现有 Datalogue 主链提供，AgentScope event stream 只做 adapter 验证。
+
+### 2.3.2 BI_SOUL 内部契约
+
+`SOUL.md` 不再只属于 Hermes skill 包。Datalogue 内部需要维护一份 BI 不可越界契约作为 source of truth：
+
+```text
+datalogue-api/app/contracts/BI_SOUL.md
+```
+
+同步目标：
+
+- `hermes-skills/datalogue/SOUL.md`
+- `AgentScopeShellAdapter` 的 system prompt / policy injection
+- 后续外部 Agent 或 skill 包
+
+后续改造方向：
+
+- 将契约同步纳入测试或发布流程。
+- 契约变更需要经过审核，避免外部入口和内部主链规则漂移。
+
+### 2.3.3 旧会话兼容边界
+
+旧会话不支持新 ArtifactCard、event envelope、refs 和新 conversation_state 回放。
+
+第一阶段只保证：
+
+- 旧会话能继续展示原始历史消息。
+- 缺少 ArtifactCard 时不报错。
+- 不为旧会话伪造 ArtifactCard 或引用。
+- 新协议上线后的新会话才具备完整 C-ready 回放能力。
 
 ### 2.4 ArtifactCard
 
@@ -197,10 +248,11 @@ C-ready 预留边界：
 
 ### 3.6 AgentScope Runtime
 
-第一阶段保留验证线，不进入主链 runtime。
+第一阶段 AgentScope 有显式技术落点，但只作为 Shell Adapter / event adapter 验证线，不进入 BI 主链 runtime。
 
 后续接入条件：
 
+- `AgentScopeShellAdapter` 已证明只能通过 `ask_bi` 使用 BI 能力。
 - `capability_manifest`、Capability Router、ToolAdapter、EventEnvelope 和真实链路验收全部稳定。
 - `AgentScopeEventAdapter` 能证明不改变现有业务真相源。
 - AgentScope 不替代 Datalogue 的 conversation_state、query_artifact、Manifest、SQL Guard 和业务审计。
@@ -215,7 +267,8 @@ C-ready 预留边界：
 2. `capability_manifest` 可以稳定支撑 LeadAgent 不看 schema 明细完成路由。
 3. `ask_bi` 出参能稳定返回 answer、event envelope、artifact card、主引用和辅助引用。
 4. `ArtifactCard`、Action Registry、引用句柄和事件协议在 Chat 中完成最小闭环。
-5. 预留动作没有触发未实现增强链路，也没有暴露 `control_plane` 主体。
+5. `AgentScopeShellAdapter` 已证明只能调用 `ask_bi`，不能绕过 BI 工具面。
+6. 预留动作没有触发未实现增强链路，也没有暴露 `control_plane` 主体。
 
 ---
 
@@ -234,3 +287,7 @@ C-ready 预留边界：
 - `020`：`ask_bi` 采用最小稳定契约并复用现有主链。
 - `021`：`retry` 第一阶段从最后安全检查点重试。
 - `022`：主链路验收采用分层验收。
+- `025`：AgentScope 第一阶段作为 Shell Adapter 显式接入，但不接管 BI 主链。
+- `027`：`SOUL.md` 抽成 Datalogue 内部契约，再同步到外部入口。
+- `028`：SQL 方言适配第一阶段只覆盖当前真实数据源。
+- `029`：旧会话不支持 ArtifactCard 等新协议历史回放。
