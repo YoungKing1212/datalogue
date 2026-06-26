@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -37,6 +38,38 @@ logger = logging.getLogger(__name__)
 
 DATALOGUE_COMPACTION_PROMPT_NAME = "datalogue-compaction"
 THREAD_STATE_KEY = "_thread"
+RETRY_CHECKPOINTS_KEY = "retry_checkpoints"
+SAFE_RETRY_CHECKPOINT_KINDS = {
+    "dataset_confirmed",
+    "query_context_ready",
+    "artifact_generation_failed",
+}
+RETRY_CHECKPOINT_TTL_MINUTES = 30
+_RETRY_CONTEXT_KEYS = {
+    "question",
+    "dataset_id",
+    "route_decision",
+    "time_context",
+    "query_plan",
+    "result_ref",
+    "report_ref",
+}
+_RETRY_ROUTE_DECISION_KEYS = {
+    "decision",
+    "dataset_id",
+    "dataset_name",
+    "manifest_version",
+    "bound_schema_version",
+    "score",
+    "reason",
+}
+_RETRY_QUERY_PLAN_KEYS = {
+    "query_type",
+    "execution_strategy",
+    "planner_warnings",
+    "decision_factors",
+    "explanation",
+}
 DATALOGUE_COMPACTION_FALLBACK_PROMPT = """你是 Datalogue 多轮问数会话压缩器。
 
 请把旧对话压缩为简洁中文摘要，只保留：
@@ -77,6 +110,21 @@ _ORDINAL_WORDS = {
     "第五": 5,
     "5": 5,
 }
+
+
+@dataclass(frozen=True)
+class RetryCheckpointRestore:
+    """retry checkpoint 恢复结果，区分安全恢复和整任务降级。"""
+
+    retry_scope: str
+    checkpoint_ref: str | None = None
+    checkpoint_kind: str | None = None
+    dataset_id: int | None = None
+    question: str | None = None
+    context: dict[str, Any] | None = None
+    task_id: str | None = None
+    permission_scope: str | None = None
+    fallback_reason: str | None = None
 
 
 def session_key(payload_session_id: str | None, conversation_id: int | None) -> str:
@@ -159,6 +207,121 @@ class ConversationStore:
         self.db.commit()
         self.db.refresh(state)
         return thread_state
+
+    def register_retry_checkpoint(
+        self,
+        *,
+        session_id: str,
+        checkpoint_kind: str,
+        user_id: str,
+        conversation_id: int | None,
+        task_id: str,
+        permission_scope: str,
+        context: dict[str, Any],
+        expires_at: datetime | None = None,
+    ) -> str:
+        """登记用户可见 retry checkpoint，只保存可安全恢复的业务上下文。"""
+
+        if checkpoint_kind not in SAFE_RETRY_CHECKPOINT_KINDS:
+            raise ValueError(f"unsafe retry checkpoint kind: {checkpoint_kind}")
+        if not task_id or "/" in str(task_id):
+            raise ValueError("retry checkpoint task_id invalid")
+        if not permission_scope:
+            raise ValueError("retry checkpoint permission_scope required")
+        state = self.load_or_create(session_id=session_id, user_id=user_id)
+        checkpoint_ref = f"checkpoint://{task_id}/{checkpoint_kind}"
+        expires_at = expires_at or (
+            datetime.now(timezone.utc) + timedelta(minutes=RETRY_CHECKPOINT_TTL_MINUTES)
+        )
+        capsules = dict(state.subagent_capsules or {})
+        thread_state = dict(capsules.get(THREAD_STATE_KEY) or {})
+        checkpoints = dict(thread_state.get(RETRY_CHECKPOINTS_KEY) or {})
+        safe_context = _sanitize_retry_checkpoint_context(context)
+        record = {
+            "checkpoint_ref": checkpoint_ref,
+            "checkpoint_kind": checkpoint_kind,
+            "user_id": str(user_id),
+            "conversation_id": conversation_id,
+            "task_id": str(task_id),
+            "permission_scope": str(permission_scope),
+            "context": safe_context,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }
+        checkpoints[checkpoint_ref] = jsonable_encoder(record)
+        if len(checkpoints) > 20:
+            checkpoints = dict(list(checkpoints.items())[-20:])  # 只保留最近 checkpoint，避免线程状态无限增长。
+        thread_state[RETRY_CHECKPOINTS_KEY] = checkpoints
+        capsules[THREAD_STATE_KEY] = thread_state
+        state.subagent_capsules = jsonable_encoder(capsules)
+        state.updated_at = datetime.now(timezone.utc)
+        self.db.add(state)
+        self.db.commit()
+        self.db.refresh(state)
+        return checkpoint_ref
+
+    def restore_retry_checkpoint(
+        self,
+        checkpoint_ref: str | None,
+        *,
+        user_id: str,
+        conversation_id: int | None,
+    ) -> RetryCheckpointRestore:
+        """按 checkpoint_ref 恢复安全上下文；任一校验失败都降级整任务重试。"""
+
+        if not checkpoint_ref:
+            return _retry_fallback(checkpoint_ref, "checkpoint_ref_missing")
+        parsed = _parse_retry_checkpoint_ref(checkpoint_ref)
+        if parsed is None:
+            return _retry_fallback(checkpoint_ref, "checkpoint_ref_invalid")
+        task_id, checkpoint_kind = parsed
+        if checkpoint_kind not in SAFE_RETRY_CHECKPOINT_KINDS:
+            return _retry_fallback(checkpoint_ref, "checkpoint_kind_unsafe")
+        record = self._find_retry_checkpoint_record(checkpoint_ref)
+        if record is None:
+            return _retry_fallback(checkpoint_ref, "checkpoint_not_found")
+        if str(record.get("task_id") or "") != task_id or record.get("checkpoint_kind") != checkpoint_kind:
+            return _retry_fallback(checkpoint_ref, "checkpoint_ref_mismatch")
+        if str(record.get("user_id") or "") != str(user_id):
+            return _retry_fallback(checkpoint_ref, "user_mismatch")
+        if record.get("conversation_id") is not None and conversation_id is not None:
+            if int(record["conversation_id"]) != int(conversation_id):
+                return _retry_fallback(checkpoint_ref, "conversation_mismatch")
+        permission_scope = str(record.get("permission_scope") or "")
+        context = dict(record.get("context") or {})
+        dataset_id = _coerce_int_local(context.get("dataset_id"))
+        if not permission_scope or (dataset_id is not None and permission_scope != f"dataset:{dataset_id}"):
+            return _retry_fallback(checkpoint_ref, "permission_scope_mismatch")
+        if _checkpoint_is_expired(record.get("expires_at")):
+            return _retry_fallback(checkpoint_ref, "checkpoint_expired")
+        question = str(context.get("question") or "").strip() or None
+        return RetryCheckpointRestore(
+            retry_scope="last_safe_checkpoint",
+            checkpoint_ref=checkpoint_ref,
+            checkpoint_kind=checkpoint_kind,
+            dataset_id=dataset_id,
+            question=question,
+            context=context,
+            task_id=task_id,
+            permission_scope=permission_scope,
+        )
+
+    def _find_retry_checkpoint_record(self, checkpoint_ref: str) -> dict[str, Any] | None:
+        """在 ConversationState 的线程桶中查找 checkpoint，避免暴露底层存储结构。"""
+
+        rows = self.db.query(models.ConversationState).all()
+        for state in rows:
+            capsules = dict(state.subagent_capsules or {})
+            thread_state = capsules.get(THREAD_STATE_KEY)
+            if not isinstance(thread_state, dict):
+                continue
+            checkpoints = thread_state.get(RETRY_CHECKPOINTS_KEY)
+            if not isinstance(checkpoints, dict):
+                continue
+            record = checkpoints.get(checkpoint_ref)
+            if isinstance(record, dict):
+                return dict(record)
+        return None
 
     def lead_multiturn_context(self, state: models.ConversationState | None) -> dict[str, Any]:
         """组装 LeadAgent 可消费的控制面多轮上下文。"""
@@ -661,6 +824,76 @@ def _fallback_compaction_summary(
     if not snippets:
         return existing_summary or ""
     return "\n".join(snippets)[-4000:]
+
+
+def _retry_fallback(checkpoint_ref: str | None, reason: str) -> RetryCheckpointRestore:
+    return RetryCheckpointRestore(
+        retry_scope="whole_task",
+        checkpoint_ref=checkpoint_ref,
+        fallback_reason=reason,
+    )
+
+
+def _parse_retry_checkpoint_ref(checkpoint_ref: str) -> tuple[str, str] | None:
+    prefix = "checkpoint://"
+    if not isinstance(checkpoint_ref, str) or not checkpoint_ref.startswith(prefix):
+        return None
+    rest = checkpoint_ref[len(prefix) :]
+    parts = rest.split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return None
+    return parts[0], parts[1]
+
+
+def _checkpoint_is_expired(value: Any) -> bool:
+    if not value:
+        return True
+    try:
+        if isinstance(value, datetime):
+            expires_at = value
+        else:
+            expires_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= datetime.now(timezone.utc)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _sanitize_retry_checkpoint_context(context: dict[str, Any]) -> dict[str, Any]:
+    """清洗 checkpoint 恢复上下文，只保留业务层可恢复字段。"""
+
+    raw = context if isinstance(context, dict) else {}
+    safe: dict[str, Any] = {}
+    for key in _RETRY_CONTEXT_KEYS:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if key == "route_decision":
+            safe[key] = _pick_retry_dict(value, _RETRY_ROUTE_DECISION_KEYS)
+        elif key == "query_plan":
+            safe[key] = _pick_retry_dict(value, _RETRY_QUERY_PLAN_KEYS)
+        else:
+            safe[key] = value
+    if "dataset_id" in safe:
+        safe["dataset_id"] = _coerce_int_local(safe.get("dataset_id"))
+    return jsonable_encoder(safe)
+
+
+def _pick_retry_dict(value: Any, allowed_keys: set[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    picked = {key: value.get(key) for key in allowed_keys if key in value}
+    return {key: val for key, val in picked.items() if val is not None}
+
+
+def _coerce_int_local(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _clarification_response_dict(payload: Any) -> dict[str, Any]:

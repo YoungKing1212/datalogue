@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[int] = None
     dataset_id: Optional[int] = None
     clarification_response: Optional[ClarificationResponse | dict[str, Any]] = None
+    retry_checkpoint_ref: Optional[str] = None
 
 
 class ChatFeedback(BaseModel):
