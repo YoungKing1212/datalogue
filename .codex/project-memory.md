@@ -86,6 +86,8 @@
 
 - 补齐数据库字典字段、后续新增表和 LangGraph checkpoint 相关表/字段中文注释迁移，真实 PostgreSQL 抽查确认表注释和字段注释缺失数为 0。
 - 替换前端侧栏品牌 Logo 与浏览器 favicon，完成桌面和移动视口可见性检查。
+- 修正数据集页面“数据表”能力卡计数口径为已选表数量，并用组件测试、lint、build 验证。
+- 压缩 LeadAgent 两阶段 Planner Prompt 重复规则并同步 Langfuse production v4，保持 JSON 契约不变。
 
 ## 高价值判断
 
@@ -96,20 +98,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-22 12:06 · 数据集页面数据表计数显示已选表
-
-- 涉及文件：`datalogue-web/src/components/datasets.jsx`、`datalogue-web/tests/unit/components/datasets-selected-table-count.test.jsx`、`.codex/project-memory.md`
-- 关键改动：将数据集语义能力工作区顶部“数据表”能力卡计数从 `allSourceTables.length` 改为 `selectedTableIds.size`，避免显示当前连接 schema 的全量表数量；新增组件回归测试，模拟 schema 3 张表但数据集只选 1 张表，固定顶部能力卡显示 1。
-- 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/components/datasets-selected-table-count.test.jsx` 确认测试红灯，失败输出显示“数据表”按钮 count 为 3；修复后再次执行该命令通过；执行 `cd datalogue-web && npm test`，3 个测试文件 14 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过。
-- 残留风险：本次只修正顶部能力卡计数；左侧“已选择/未选择”分组仍按当前搜索过滤结果计数，保持原有交互语义。
-
-### 2026-06-22 12:57 · LeadAgent 两阶段 Planner Prompt 去重并同步 Langfuse
-
-- 涉及文件：`datalogue-api/app/prompts/lead_agent.py`、`.codex/project-memory.md`
-- 关键改动：压缩 `lead_agent_skill_selector` 和 `lead_agent_tool_planner` 的重复说明；第一阶段聚焦 Skill 选择边界，第二阶段保留工具规划、candidate_assets 使用和多轮追问约束；两个 prompt 输出 JSON 契约保持不变；通过 Langfuse Prompt Management 将 `lead_agent_skill_selector`、`lead_agent_tool_planner` 的 `production` label 同步为 v4。
-- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_observability.py tests/test_lead_agent_tools.py -q`，47 条用例通过；执行 Langfuse 同步后重新拉取两个 prompt，确认远端 v4 内容与本地注册表完全一致；对比本地 prompt 长度从 3799 字符降至 3053 字符。
-- 残留风险：本次只优化系统提示词文本，未新增真实 `/chat` 回放样例；后续若观察到 Skill 选择或 dispatch 倾向变化，需要结合 Langfuse trace 再微调规则顺序。
 
 ### 2026-06-22 13:04 · 新建对话固定进入最近对话顶部
 
@@ -173,3 +161,10 @@
 - 关键改动：新对话按钮不再调用 `createConversation`，改为只执行 `aui.threads().switchToNewThread()` 并导航回 `/chat`；新增 `DraftThreadListItem`，当 assistant-ui 存在 `newThreadId` 时在“最近对话”顶部显示本地“新对话”草稿并按 `mainThreadId` 高亮；首条消息发送时仍由 `thread-list-adapter.initialize()` 创建后端 conversation；按钮保留创建中禁用保护，避免连续点击造成 runtime 状态抖动。
 - 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/assistant/thread-list-new-conversation.test.jsx` 确认组件层用例红灯，失败表现为找不到 `thread-list-draft-item`；实现后再次执行该命令，4 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过；调用 `GET /api/conversation?archived=false` 记录点击前数量为 4，使用 in-app Browser 打开 `http://localhost:5173/chat/4` 后点击 `.thread-list-new` 且不发送消息，URL 回到 `/chat`，左栏第 0 项为 active draft“新对话”，再次请求后端列表数量仍为 4。
 - 残留风险：本次只验证“未发送不新增数据库会话”和本地草稿可见；未实际发送一条新消息走 LLM 全链路验证创建后的标题刷新和列表排序。
+
+### 2026-06-26 17:10 · QueryGraph Compiler 与 SQL 方言适配外壳
+
+- 涉及文件：`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/app/services/sql_dialect_adapter.py`、`datalogue-api/app/services/dataset_subagent.py`、`datalogue-api/app/services/subagent_planning/contracts.py`、`datalogue-api/app/services/subagent_planning/sql_context.py`、`datalogue-api/app/services/subagent_planning/__init__.py`、`datalogue-api/app/graph/nodes.py`、`datalogue-api/app/graph/state.py`、`datalogue-api/tests/test_query_plan_compiler.py`、`datalogue-api/tests/test_sql_dialect_adapter.py`、`datalogue-api/tests/test_subagent_run.py`
+- 关键改动：新增 QueryPlan 工具编译器与方言适配外壳，编译产物统一输出 `execution_source=tool_compiler`；当前阶段只允许 `sqlite/mysql` 真实方言，未知方言 fail closed；compiler context 显式剔除 `llm_sql/direct_sql/raw_sql/sql` 等 SQL 文本字段；SubAgent 初始态写入 `query_plan_compilation`、`control_plane`、`query_artifact`，Graph 在编译产物可用时跳过 DSL LLM SQL 生成，执行层只透传工具编译 SQL。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_subagent_run.py -q`，21 条用例通过；执行 `cd datalogue-api && pytest tests/test_subagent_planning_contracts.py tests/test_dataset_prompt_instructions.py -q`，37 条用例通过。
+- 残留风险：第一阶段编译器只覆盖明细字段/表资产到 SELECT 的保守编译，不覆盖复杂指标表达式、JOIN 拓扑和全部数据源方言；后续需要按真实资产口径扩展 metric/dimension 编译能力。

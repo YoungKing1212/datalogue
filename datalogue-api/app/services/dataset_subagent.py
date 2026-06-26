@@ -37,6 +37,7 @@ from app.services.analysis_blueprint import (
 )
 from app.services.dataset_manifest import evaluate_manifest_runtime_guard
 from app.services.observability.tracer import get_observability_tracer
+from app.services.query_plan_compiler import compile_query_plan_to_sql
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
 from app.services.subagent_planning import (
     AssetDetailService,
@@ -45,6 +46,7 @@ from app.services.subagent_planning import (
     SubAgentEvent,
     build_blueprint_reference_context,
     build_clarify_result,
+    build_query_plan_compiler_context,
     build_reject_result,
     plan_query,
     plan_query_with_detail_context,
@@ -818,6 +820,9 @@ _DSA_STATE_OUTPUT_KEYS = {
     "candidate_assets",
     "query_plan",
     "query_plan_debug",
+    "query_plan_compilation",
+    "control_plane",
+    "query_artifact",
     "dataset_prompt_instructions",
     "dsl",
     "dsl_valid",
@@ -832,6 +837,7 @@ _DSA_STATE_OUTPUT_KEYS = {
     "sql_list",
     "error",
     "generation_mode",
+    "execution_source",
     "should_retry",
     "token_usage",
 }
@@ -1024,10 +1030,12 @@ def _dsa_build_query_graph_state(
     candidate_assets: dict[str, Any],
     public_candidate_assets: dict[str, Any],
     query_plan: QueryPlan,
+    sql_generation_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把候选资产上下文与查询计划注入 QueryGraph 初始状态。"""
     context = candidate_assets.get("context") if isinstance(candidate_assets, dict) else {}
     context = context if isinstance(context, dict) else {}
+    datasource_context = context.get("datasource_context") or {}
     task_capsule = _dsa_state_task_capsule(state) or _dsa_request_task_capsule(request)
     turn_event = state.get("turn_event")
     if turn_event is None:
@@ -1057,7 +1065,7 @@ def _dsa_build_query_graph_state(
             "ddl_context": context.get("ddl_context"),
             "query_constraints": context.get("query_constraints"),
             "dataset_context_debug": context.get("dataset_context_debug"),
-            "datasource_context": context.get("datasource_context"),
+            "datasource_context": datasource_context,
             "dataset_prompt_instructions": context.get("dataset_prompt_instructions"),
             "candidate_assets": public_candidate_assets,
             "query_plan": query_plan.to_dict(),
@@ -1074,6 +1082,25 @@ def _dsa_build_query_graph_state(
             },
         }
     )
+    if sql_generation_context is not None:
+        query_graph_state["sql_generation_context"] = sql_generation_context
+    compiler_context = build_query_plan_compiler_context(sql_generation_context)
+    query_plan_compilation = compile_query_plan_to_sql(
+        query_plan=query_plan,
+        sql_generation_context=compiler_context,
+        dialect=datasource_context.get("dialect") or datasource_context.get("db_type"),
+        query_constraints=context.get("query_constraints"),
+        allowed_tables=datasource_context.get("allowed_tables") or [],
+    )
+    query_graph_state["query_plan_compilation"] = query_plan_compilation
+    query_graph_state["query_plan_debug"]["query_plan_compilation"] = query_plan_compilation.get("trace")
+    if query_plan_compilation.get("ok"):
+        # 编译 SQL 只写入控制面 / 查询产物 / trace 形态，避免回流到 planner prompt。
+        query_graph_state["control_plane"] = {
+            **(query_graph_state.get("control_plane") or {}),
+            "query_plan_compilation": query_plan_compilation["control_plane"],
+        }
+        query_graph_state["query_artifact"] = query_plan_compilation["query_artifact"]
     if query_plan.execution_strategy == "blueprint_as_reference":
         reference_context = build_blueprint_reference_context(query_plan)
         query_graph_state["blueprint_context"] = _dsa_append_text(
@@ -1346,9 +1373,8 @@ class DatasetSubAgent:
             candidate_assets=candidate_assets,
             public_candidate_assets=public_candidate_assets,
             query_plan=query_plan,
+            sql_generation_context=sql_generation_context,
         )
-        if sql_generation_context is not None:
-            query_graph_state["sql_generation_context"] = sql_generation_context
         final_state = dict(query_graph_state)
         runner = InProcessDatasetSubAgentRunner(graph, self.db)
         async for event in runner.run(

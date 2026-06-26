@@ -1575,6 +1575,31 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
     retry_count = state.get("retry_count", 0)
     error = state.get("error")
     query_constraints = normalize_query_constraints(state.get("query_constraints"))
+    query_plan_compilation = state.get("query_plan_compilation")
+    if isinstance(query_plan_compilation, dict) and query_plan_compilation.get("ok"):
+        sql = query_plan_compilation.get("sql")
+        logger.info("DSL生成命中 QueryPlan 工具编译旁路: sql_len=%s", len(sql or ""))
+        return {
+            "dsl": {
+                "compiled_query_plan": True,
+                "execution_source": "tool_compiler",
+            },
+            "sql": sql,
+            "sql_list": [sql] if sql else [],
+            "dsl_valid": True,
+            "generation_mode": "tool_compiler",
+            "execution_source": "tool_compiler",
+            "sql_guard": query_plan_compilation.get("sql_guard"),
+            "control_plane": {
+                **(state.get("control_plane") or {}),
+                "query_plan_compilation": query_plan_compilation.get("control_plane"),
+            },
+            "query_artifact": query_plan_compilation.get("query_artifact"),
+            "error": None,
+            "should_retry": False,
+            "llm_skipped_reason": "query_plan_tool_compiler",
+            "token_usage": state.get("token_usage"),
+        }
     query_constraints_text = _query_constraints_text(state)
     multiturn_prompt = _format_query_context_for_prompt(state.get("multiturn_context"))
     query_plan_prompt = _format_query_plan_for_prompt(state.get("query_plan"))
@@ -1969,6 +1994,10 @@ def dsl_validate_node(state: AgentState) -> Dict[str, Any]:
     schema = state.get("schema_context") or ""
     structured = state.get("schema_structured")
 
+    if dsl.get("compiled_query_plan") is True:
+        # 工具编译产物已经经过 compiler + SQL Guard，DSL 校验只承认该引用标记。
+        return {"dsl": dsl, "dsl_valid": True, "error": None, "should_retry": False}
+
     # direct_sql 模式（真实 Schema 或无 Schema 路径）
     if "direct_sql" in dsl:
         sql = dsl.get("direct_sql", "")
@@ -2106,6 +2135,31 @@ def dsl_compiler_node(db: Session):
         dataset_id = state.get("dataset_id")
         dialect = datasource_context.get("dialect") or _resolve_dialect(db, dataset_id)
         logger.info(f"DSL编译方言: {dialect} (dataset_id={dataset_id})")
+
+        if dsl.get("compiled_query_plan") is True:
+            compilation = state.get("query_plan_compilation") if isinstance(state.get("query_plan_compilation"), dict) else {}
+            if not compilation.get("ok") or not compilation.get("sql"):
+                logger.error("compiled_query_plan 模式缺少有效工具编译产物")
+                return _attach_sql_retry_failure(
+                    state,
+                    {"sql": None, "error": "QueryPlan 工具编译产物不可执行", "should_retry": False},
+                    result="工具编译产物不可执行",
+                )
+            # 只透传工具编译 SQL；不从 dsl/direct_sql 读取 SQL，防止 LLM SQL 逃逸。
+            sql = compilation["sql"]
+            return {
+                "sql": sql,
+                "sql_list": [sql],
+                "error": None,
+                "sql_guard": compilation.get("sql_guard"),
+                "generation_mode": "tool_compiler",
+                "execution_source": "tool_compiler",
+                "control_plane": {
+                    **(state.get("control_plane") or {}),
+                    "query_plan_compilation": compilation.get("control_plane"),
+                },
+                "query_artifact": compilation.get("query_artifact"),
+            }
 
         # direct_sql 模式
         if "direct_sql" in dsl:

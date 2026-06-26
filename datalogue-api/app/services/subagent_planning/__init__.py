@@ -14,8 +14,10 @@
 from app.services.subagent_planning.contracts import (
     CANDIDATE_ASSET_TYPES,
     EXECUTION_STRATEGIES,
+    EXECUTION_SOURCES,
     QUERY_TYPES,
     CandidateAsset,
+    ExecutionSource,
     QueryPlan,
     QueryPlanValidationError,
     SubAgentEvent,
@@ -48,7 +50,10 @@ from app.services.subagent_planning.planner import (
     plan_query,
     plan_query_with_detail_context,
 )
-from app.services.subagent_planning.sql_context import build_sql_generation_context
+from app.services.subagent_planning.sql_context import (
+    build_query_plan_compiler_context,
+    build_sql_generation_context,
+)
 
 __all__ = [
     "ALLOWED_CATALOG_ASSET_TYPES",
@@ -57,6 +62,8 @@ __all__ = [
     "AssetDetailService",
     "CANDIDATE_ASSET_TYPES",
     "EXECUTION_STRATEGIES",
+    "EXECUTION_SOURCES",
+    "ExecutionSource",
     "PlannerDetailLoop",
     "PlannerLoopResult",
     "QUERY_TYPES",
@@ -71,6 +78,7 @@ __all__ = [
     "build_clarify_result",
     "build_rule_based_query_plan",
     "build_reject_result",
+    "build_query_plan_compiler_context",
     "build_sql_generation_context",
     "normalize_query_plan",
     "plan_query",
