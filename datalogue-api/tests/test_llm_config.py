@@ -129,7 +129,7 @@ def test_resolve_llm_config_role_and_default_fallback(db_session):
 def test_get_llm_uses_database_role_config(db_session):
     """get_llm 应使用角色绑定的数据库配置创建 LiteLLM SDK 客户端。"""
     from app.core.security import encrypt_password
-    from app.graph.llm import LiteLLMChatClient, get_llm
+    from app.graph.llm import LiteLLMChatClient, ROLE_CALL_POLICIES, get_llm
 
     model = LLMModelConfig(
         name="Intent DB",
@@ -155,7 +155,7 @@ def test_get_llm_uses_database_role_config(db_session):
     assert llm.temperature == 0.2
     assert llm.timeout == 12
     assert llm.model_kwargs == {"extra_body": {"enable_thinking": False}}
-    assert llm.max_tokens == 256
+    assert llm.max_tokens == ROLE_CALL_POLICIES["intent"]["max_tokens"]
     assert llm.response_format == {"type": "json_object"}
     assert llm.datalogue_call_policy["structured_output"] is True
     assert llm.datalogue_thinking_enabled is False
