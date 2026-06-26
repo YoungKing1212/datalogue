@@ -90,6 +90,7 @@ def _manifest_business_summary(manifest: models.DatasetSubAgentManifest | None) 
     else:
         permission_scope = _compact_text(permission) or "dataset"
     return {
+        "name": auto_fields.get("name") or manual.get("name"),
         "description": manual.get("description"),
         "business_domain": manual.get("business_domain") or [],
         "sample_questions": manual.get("sample_questions") or [],
@@ -137,6 +138,7 @@ def build_dataset_capability_manifest(db: Session, dataset_id: int) -> Capabilit
         raise ValueError(f"dataset not found: {dataset_id}")
 
     manifest_summary = _manifest_business_summary(_manifest_for_dataset(db, dataset_id))
+    business_name = _compact_text(manifest_summary.get("name")) or dataset.name
     metrics = db.query(models.SemanticMetric).filter(models.SemanticMetric.dataset_id == dataset_id).all()
     dimensions = (
         db.query(models.SemanticDimension)
@@ -151,18 +153,18 @@ def build_dataset_capability_manifest(db: Session, dataset_id: int) -> Capabilit
     can_answer = _unique_texts(
         [
             manifest_summary["description"],
-            f"围绕{dataset.name}分析" if dataset.name else None,
+            f"围绕{business_name}分析" if business_name else None,
             *(f"查询{item}" for item in metric_names[:4]),
             *(f"按{item}分析" for item in dimension_names[:4]),
         ],
         limit=8,
     )
     cannot_answer = negative_examples or ["超出该数据集业务范围的问题"]
-    route_hints = _unique_texts([dataset.name, *(domain_hints or []), *metric_names, *dimension_names], limit=12)
+    route_hints = _unique_texts([business_name, dataset.name, *(domain_hints or []), *metric_names, *dimension_names], limit=12)
 
     result = CapabilityManifest(
         dataset_id=dataset.id,
-        business_name=dataset.name,
+        business_name=business_name,
         can_answer=can_answer,
         cannot_answer=cannot_answer,
         metrics=metric_names,

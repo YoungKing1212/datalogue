@@ -206,10 +206,19 @@ class ConversationStore:
         if kind in {"manifest_route", "dataset_missing", "dataset_choice"}:
             selected_dataset_id = _resolve_dataset_candidate(pending, response, question)  # 恢复 dataset 澄清选择。
             if selected_dataset_id is not None:
+                retry_checkpoint = {
+                    "kind": "dataset_choice",
+                    "checkpoint_ref": response.get("checkpoint_ref") or pending.get("checkpoint_ref"),
+                    "original_question": pending.get("original_question"),
+                    "candidate_id": response.get("candidate_id") or response.get("selected_dataset_id"),
+                    "confirmed_dataset_id": selected_dataset_id,
+                }
                 return {
                     "status": "resolved",
                     "type": "dataset",
                     "dataset_id": selected_dataset_id,
+                    "confirmed_dataset_id": selected_dataset_id,
+                    "retry_checkpoint": retry_checkpoint,
                     "original_question": pending.get("original_question"),
                     "clear_pending": True,
                     "reason": "dataset_candidate_selected",
@@ -709,7 +718,11 @@ def _resolve_dataset_candidate(
     response: dict[str, Any],
     question: str,
 ) -> int | None:
-    selected_dataset_id = response.get("selected_dataset_id") or pending.get("selected_dataset_id")
+    selected_dataset_id = (
+        response.get("selected_dataset_id")
+        or response.get("candidate_id")
+        or pending.get("selected_dataset_id")
+    )
     if selected_dataset_id is not None:
         try:
             return int(selected_dataset_id)

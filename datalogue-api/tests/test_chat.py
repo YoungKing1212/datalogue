@@ -430,7 +430,12 @@ class TestLangGraphNodes:
 
             assert result["intent"] == "query"
             assert result["entities"]["metrics"] == ["gmv"]
-            assert result.get("answer") is None
+            assert result["entry_route"] == "clarify"
+            assert result["route_payload"] == {
+                "kind": "clarification",
+                "missing": ["dataset"],
+            }
+            assert "确认要使用的数据集" in result.get("answer", "")
 
     def test_entry_intent_metric_query(self, db_session, sample_dataset):
         """入口分类：指标查询继续 QueryGraph。"""
@@ -1481,6 +1486,35 @@ class TestLangGraphNodes:
         )
         assert "多轮提示" in human_text
         assert "dataset_choice" in human_text
+
+    def test_dataset_confirmation_fact_persists_checkpoint(self, db_session, sample_dataset):
+        """用户确认候选数据集后，conversation_state 要记录 confirmed_dataset_id 和 retry_checkpoint。"""
+        from app.api.chat import _persist_dataset_confirmation_fact
+        from app.services.conversation_store import ConversationStore
+
+        store = ConversationStore(db_session)
+        state = store.load_or_create(session_id="test-dataset-confirmation", user_id="1")
+        _persist_dataset_confirmation_fact(
+            store=store,
+            state=state,
+            pending_resolution={
+                "status": "resolved",
+                "type": "dataset",
+                "dataset_id": sample_dataset.id,
+                "confirmed_dataset_id": sample_dataset.id,
+                "retry_checkpoint": {
+                    "kind": "dataset_choice",
+                    "checkpoint_ref": "checkpoint:test",
+                    "candidate_id": sample_dataset.id,
+                },
+            },
+        )
+
+        refreshed = store.load("test-dataset-confirmation")
+        fact = (refreshed.facts or [])[0]
+        assert fact["kind"] == "dataset_confirmation"
+        assert fact["confirmed_dataset_id"] == sample_dataset.id
+        assert fact["retry_checkpoint"]["checkpoint_ref"] == "checkpoint:test"
 
     def test_dsl_validate_semantic_valid(self):
         """DSL 校验：语义层路径，合法 DSL"""

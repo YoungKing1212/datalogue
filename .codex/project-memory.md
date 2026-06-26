@@ -116,6 +116,7 @@
 
 - AgentScope 2.0 ReAct MVP 真实请求验证：新增独立真实集成测试目录，用 AgentScope 2.0 Agent/Toolkit/ToolBase 封装数语最小工具面，真实调用数据集资产和 guarded SQL preview，不进入 `/api/chat/stream`，并通过 live API、默认跳过测试、真实开关测试、py_compile 和 `git diff --check` 验证。
 - AgentScope 真实测试过程日志增强：补充 LLM 配置、工具 HTTP 请求、Plan/Execute 摘要、SQL preview、最终回答和动态数据集选择日志，支持 `pytest -s` 查看完整执行过程。
+- AgentScope Hermes-style DatasetAgent MVP：加载 Hermes SOUL/SKILL/capabilities 生成 AgentScope system prompt，用最小工具面验证 DatasetAgent 可通过 guarded SQL preview 自主查数，保留正式 artifact store、trace 和 `/chat/stream` 产品化为后续工作。
 
 ## 高价值判断
 
@@ -126,13 +127,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-25 13:38 · AgentScope Hermes-style DatasetAgent MVP
-
-- 涉及文件：`datalogue-api/tests/agentscope_react_mvp/mvp.py`、`datalogue-api/tests/agentscope_react_mvp/test_live_react_agent.py`、`datalogue-api/tests/agentscope_react_mvp/README.md`、`.codex/project-memory.md`
-- 关键改动：将原本的自由 ReAct 测试升级为 Hermes-style DatasetAgent MVP；加载 `hermes-skills/datalogue/SOUL.md`、`SKILL.md` 和 `references/capabilities.md` 生成 AgentScope system prompt；新增 `CapabilityManifest` 控制 DatasetAgent 内部工具注册，LeadAgent 只作为窄工具面边界写入 prompt；工具面改为 `recall_assets`、`plan_query`、`guard_sql`、`preview_sql`、`execute_query`、`persist_artifact`、`summarize_result`，其中真正执行仍只走 Datalogue guarded SQL preview；工具结果改为返回 `result_ref`、`artifact`、`summary`、`sql_guard` 和 `tool_trace`，保留 `conversation_state/query_artifact/Manifest/SQL audit/Langfuse trace` 是业务真相源的边界；新增 `react_trace`，记录每轮 LLM request/response、assistant 可见文本、tool_call、工具 observation 和 HTTP 执行结果，便于在控制台查看 AgentScope 可观测 ReAct 链路。
-- 验证方式：执行 `.venv/bin/python -m py_compile tests/agentscope_react_mvp/mvp.py tests/agentscope_react_mvp/test_live_react_agent.py` 通过；执行 `curl -sS -m 5 http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`；执行 `RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s`，2 条测试通过；真实日志显示 AgentScope 仅看到 manifest 暴露工具，先查 dataset 12 后自主切到 dataset 10，调用 `guard_sql`、`preview_sql`、`summarize_result`，第一次 preview 返回 0 行后根据 observation 修正 SQL，第二次 preview 返回 100 行杨凯 2024 年工作日志，`result_ref=mvp://query_artifact/10/a9df15689cc39b42`；`react_trace` 中可见 `llm_request`、`llm_response`、`assistant_visible_text`、`tool_call` 和 `tool_observation`；执行 `git diff --check` 通过。
-- 残留风险：当前仍是测试目录内的实验性 MVP，`artifact.persisted=false`，没有真实写入 `query_artifact` 或接入 `/chat/stream` 事件流；`execute_query` 在 MVP 中复用 SQL preview；`react_trace` 打印的是 AgentScope 可观测执行事件，不暴露模型内部隐藏思维；后续产品化需要接入正式 artifact store、权限策略、trace observation、失败重试和 SQL 修复。
 
 ### 2026-06-25 17:25 · 项目文档多目录治理
 
@@ -203,3 +197,10 @@
 - 关键改动：新增 `CapabilityManifest` 和 `CapabilityManifestSummary`，从数据集名称、指标/维度名称、当前 Manifest 的人工业务描述、典型问题、不可回答范围和权限摘要构建业务级能力清单；新增输出前泄露扫描，命中 SQL、表、字段、schema、blueprint、raw result 等内部键时 fail closed；新增只读调试接口 `GET /api/dataset/{dataset_id}/capability-manifest`，返回同样经过安全扫描的业务摘要，为后续 LeadAgent Capability Router 提供真实 manifest 依赖。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_capability_manifest.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_dataset.py::TestDatasetAPI::test_dataset_capability_manifest_endpoint -q`，1 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/capability_manifest.py app/services/capability_manifest.py app/api/dataset.py` 通过。
 - 残留风险：当前能力清单仍是后端服务和调试接口，`dataset_router.py` 与 LeadAgent 路由闭环要在 #4 rebase 到 DAT-15 后继续改为只消费 `CapabilityManifestSummary`。
+
+### 2026-06-26 19:18 · DAT-13 LeadAgent Capability Router 对齐能力清单
+
+- 涉及文件：`datalogue-api/app/services/dataset_router.py`、`datalogue-api/app/services/capability_manifest.py`、`datalogue-api/app/services/conversation_store.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/lead_agent_routing.py`、`datalogue-api/tests/test_lead_agent_capability_router.py`、`datalogue-api/tests/test_chat.py`、`.omx/plans/DAT-13-leadagent-capability-router.md`、`.codex/project-memory.md`
+- 关键改动：将数据集自动路由候选来源改为 `list_capability_manifest_summaries()`，只用业务能力、典型问题、指标/维度名称摘要和路由提示打分，Manifest 表仅用于 current 资格和版本三元组；低置信和 close-score 路径只返回候选数据集，不派发 DatasetAgent；候选输出保持 `dataset_id/dataset_name/reason/confidence/requires_confirmation` 五个业务级字段；Chat 状态写回增加 dataset 确认事实，用户提交 `candidate_id/checkpoint_ref` 后写入 `conversation_state.facts` 的 `confirmed_dataset_id` 和 `retry_checkpoint`，不新增旧会话迁移。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_lead_agent_capability_router.py tests/test_lead_agent_routing.py tests/test_chat.py -q`，138 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/dataset_router.py app/services/capability_manifest.py app/services/conversation_store.py app/api/chat.py app/services/lead_agent_routing.py` 通过；执行 `git diff --check` 通过。
+- 残留风险：前端候选确认卡和 event envelope 中的标准化 candidate confirmation 事件仍属于 DAT-16；当前后端状态兼容写在 `facts` JSON 中，后续若要强查询能力可再引入显式列或结构化 state schema。

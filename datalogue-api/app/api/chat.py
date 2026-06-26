@@ -886,9 +886,11 @@ def _route_block_answer(route_decision: dict) -> str:
         lines = ["我找到了多个可能的数据集，需要你先确认使用哪一个："]
         for index, item in enumerate(candidates[:3], start=1):
             name = item.get("dataset_name") or f"数据集 {item.get('dataset_id')}"
-            score = item.get("score", 0)
-            reason = "；".join((item.get("reasons") or [])[:2])
-            lines.append(f"{index}. {name}（得分 {score}）{('：' + reason) if reason else ''}")
+            confidence = item.get("confidence", 0)
+            reason = item.get("reason")  # Capability Router 候选已瘦身，只展示可暴露摘要。
+            lines.append(
+                f"{index}. {name}（置信度 {confidence}）{('：' + reason) if reason else ''}"
+            )
         lines.append("请选择数据集后再继续提问。")
         return "\n".join(lines)
 
@@ -897,7 +899,7 @@ def _route_block_answer(route_decision: dict) -> str:
         name = top.get("dataset_name") or f"数据集 {top.get('dataset_id')}"
         return (
             "当前问题没有命中足够明确的 SubAgent Manifest，暂时不自动选择数据集。"
-            f"最接近的是 {name}（得分 {top.get('score', 0)}），但未达到自动路由阈值。"
+            f"最接近的是 {name}（置信度 {top.get('confidence', 0)}），但未达到自动路由阈值。"
             "你可以手动选择数据集，或补充更具体的指标、维度、时间范围。"
         )
     return "当前没有可用于自动路由的 current SubAgent Manifest，请先选择数据集或发布 Manifest 后再提问。"
@@ -2933,6 +2935,43 @@ async def _stream_chat_singleturn(
     obs_context_manager.__exit__(None, None, None)
 
 
+def _persist_dataset_confirmation_fact(
+    *,
+    store: ConversationStore,
+    state: models.ConversationState,
+    pending_resolution: dict,
+) -> None:
+    """把用户确认的数据集写入 conversation_state.facts，供后续同一 task 继续执行。"""
+
+    if not (
+        isinstance(pending_resolution, dict)
+        and pending_resolution.get("status") == "resolved"
+        and pending_resolution.get("type") == "dataset"
+    ):
+        return
+    confirmed_dataset_id = _coerce_int(
+        pending_resolution.get("confirmed_dataset_id") or pending_resolution.get("dataset_id")
+    )
+    if confirmed_dataset_id is None:
+        return
+    facts = [
+        item
+        for item in (state.facts or [])
+        if not (isinstance(item, dict) and item.get("kind") == "dataset_confirmation")
+    ]
+    facts.append(
+        {
+            "kind": "dataset_confirmation",
+            "confirmed_dataset_id": confirmed_dataset_id,
+            "retry_checkpoint": pending_resolution.get("retry_checkpoint") or {},
+        }
+    )
+    state.facts = facts
+    store.db.add(state)
+    store.db.commit()
+    store.db.refresh(state)
+
+
 def _persist_completed_turn(
     *,
     store: ConversationStore,
@@ -3018,7 +3057,7 @@ def _persist_completed_turn(
         bool(final_payload.get("sql")),
         len(control_planes),
     )
-    store.append_completed_turn(  # SSE final 前同步写入完成轮，保证下一轮读到状态。
+    persisted_state = store.append_completed_turn(  # SSE final 前同步写入完成轮，保证下一轮读到状态。
         session_id=final_session_id,
         question=payload_question,
         answer=final_payload.get("answer"),
@@ -3035,6 +3074,11 @@ def _persist_completed_turn(
         ),
         subagent_capsules=updated_capsules,
         trace_context=trace_context_sink[0] if trace_context_sink else None,
+    )
+    _persist_dataset_confirmation_fact(  # 用户选择候选数据集后，记录确认结果和 checkpoint 供同一任务重试。
+        store=store,
+        state=persisted_state,
+        pending_resolution=pending_resolution,
     )
     last_success_task = None
     last_success_task_write_status: dict[str, Any] = {"status": "not_built"}
