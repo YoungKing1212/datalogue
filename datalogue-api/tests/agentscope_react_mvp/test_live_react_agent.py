@@ -95,8 +95,8 @@ def test_capability_manifest_filters_dataset_agent_tools() -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_agentscope_agent_autonomously_calls_live_datalogue_tools() -> None:
-    # if os.getenv("RUN_AGENTSCOPE_REACT_MVP") != "1":
-    #     pytest.skip("设置 RUN_AGENTSCOPE_REACT_MVP=1 后才请求真实服务和真实 LLM")
+    if os.getenv("RUN_AGENTSCOPE_REACT_MVP") != "1":
+        pytest.skip("设置 RUN_AGENTSCOPE_REACT_MVP=1 后才请求真实服务和真实 LLM")
 
     _configure_console_logging()
     base_url = os.getenv("DATALOGUE_BASE_URL", "http://127.0.0.1:8000")

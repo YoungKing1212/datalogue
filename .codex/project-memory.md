@@ -19,6 +19,7 @@
 - 仓库存在 `.codegraph/` 时，代码探索优先用 CodeGraph。
 - 不主动回滚用户或其他工具已有改动；脏工作区只处理当前任务相关文件。
 - Datalogue 复杂问题优先做真实链路验证：页面/前端回放、Langfuse trace、后端日志、prompt/token、final payload、历史回放交叉取证。
+- Datalogue 架构头脑风暴若存在多个候选方案，先列出各方案的大体概括，再给出 Codex 的建议和理由，最后让用户选择或确认。
 - Playwright、浏览器或 E2E 截图放 `/private/tmp` 或系统临时目录，不写入仓库。
 - 新增数据库表时，Alembic 迁移必须同步添加中文表注释，并为表内每个字段添加中文字段注释；后续新增字段也必须添加中文字段注释；状态、类型、角色等字典字段要写清 `字典：code=中文含义`。
 
@@ -100,6 +101,16 @@
 - SubAgent Planner LLM 原始响应诊断：新增 `_planner_response_debug()`，在普通规划和 detail loop 的 LLM 返回后记录截断后的响应类型、content 类型、metadata、usage 和 additional kwargs，便于排查空响应、非法 JSON 与服务端 token/finish reason 的真实关系；通过 planner targeted tests 和 py_compile 验证。
 - 新对话本地草稿体验修正：新建对话未发送时只保留 assistant-ui 本地草稿，不新增数据库 conversation；首条消息发送时再由 thread-list adapter 创建后端会话，并通过组件测试、lint/build 和真实会话数量检查验证。
 - 生成面向业务用户和项目负责人的数语项目整体介绍手册，弱化内部代码细节，说明已具备功能、业务问题、典型场景、使用流程、边界和可交付内容，并通过 DOCX 渲染抽查验证版式。
+- Hermes Skill 直连数语只读问数预览：新增 `POST /api/dataset/{ds_id}/sql/preview` 和 `api_assets.py plan-query/execute-sql`，按 dataset datasource、已选表、只读 SQL Guard 和查询约束执行 preview，不进入 `/api/chat/stream`，并用 dataset 12 live SQL 与 DELETE 拦截验证。
+
+### 2026-06-24
+
+- 生成当前项目工作总结与下步计划文档，面向项目负责人、业务使用方和产品/研发协作人员说明整体建设思路、已完成任务、成果截图、当前成熟度判断、下步计划和真实链路验收口径；复用既有用户手册截图和执行链路图，并通过图片存在性检查和 `git diff --check` 验证。
+- 工作总结文档从功能点表格改为逐项展开说明，补充每项能力解决的问题、设计思路、当前效果和验收关注点，提升非研发读者可读性。
+- 补齐工作总结文档中 27 个已完成功能点对应截图，将截图从集中展示改为跟随功能点展示，并通过图片引用存在性和 `git diff --check` 验证。
+- 生成工作总结 Word 增强版，补充数语智能问数执行链路说明图、功能点截图和 ECharts 报表生成、多租户、权限管理体系等后续计划，并通过 DOCX 图片数量与 LibreOffice 渲染抽查验证。
+- 将工作总结 Word 截图替换为 2026-06-24 本地运行态截图，重新截取工作台、问数中心、查询审计、数据集治理、数据源 Schema、API 管理、系统设置等页面，生成最新截图版并通过 DOCX 图片数量和 LibreOffice 渲染抽查验证。
+- 将工作总结 Word 的执行链路图拆分为总体图、LeadAgent、Dataset SubAgent、QueryGraph/SubGraph、Trace 观测等独立链路图，避免多个功能点复用同一张大图；新版 DOCX 渲染为 36 页并抽查关键页无明显裁剪、重叠或错图。
 
 ## 高价值判断
 
@@ -110,55 +121,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-23 17:35 · Hermes Skill 直连数语只读问数预览
-
-- 涉及文件：`datalogue-api/app/api/dataset.py`、`datalogue-api/app/services/sql_preview.py`、`datalogue-api/app/schemas/dataset.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/tests/test_dataset.py`、`hermes-skills/datalogue/scripts/api_assets.py`、`hermes-skills/datalogue/SKILL.md`、`hermes-skills/datalogue/SOUL.md`、`hermes-skills/datalogue/references/capabilities.md`、`.codex/project-memory.md`
-- 关键改动：新增 `POST /api/dataset/{ds_id}/sql/preview`，按 dataset 绑定 datasource、已选 source tables、`guard_readonly_sql` 和 `query_constraints` 执行只读 SQL 预览，不写 conversation/message/trace，也不进入 LeadAgent/LangGraph；Hermes Skill 新增 `plan-query` 和 `execute-sql`，前者组装数据集候选、选中数据集资产和 schema，后者只调用后端 preview 接口；同步更新 Skill/SOUL/capabilities 的轻量问数流程和 SQL 生成边界。
-- 验证方式：先执行 `pytest datalogue-api/tests/test_dataset.py -k "sql_preview"` 确认新增用例红灯，失败表现为 `app.services.sql_preview` 不存在和路由 404；实现后该组 5 条用例通过；执行 `pytest datalogue-api/tests/test_dataset.py`，32 条通过；执行 `python3 -m py_compile hermes-skills/datalogue/scripts/api_assets.py datalogue-api/app/services/sql_preview.py`；执行 `python3 hermes-skills/datalogue/scripts/api_assets.py capabilities`；执行 live `health`、`list-datasets`、`plan-query "双周会议部门项目进展" --limit 3 --schema-limit 10`；执行 live `execute-sql 12 --sql "SELECT deptcode, COUNT(*) AS cnt FROM xm_zbjgbp GROUP BY deptcode LIMIT 5"` 返回 3 行；执行 live `execute-sql 12 --sql "DELETE FROM xm_zbjgbp WHERE 1 = 0"` 被 Guard 以 `FORBIDDEN_KEYWORD` 拦截。
-- 残留风险：第一版 SQL 由 Hermes 模型生成，后端只做安全校验和执行，不做 SQL 自动修复；`plan-query` 默认返回选中数据集的部分 schema，复杂问题可能需要 Hermes 继续调用 `describe-dataset` 获取更完整字段上下文。
-
-### 2026-06-24 00:08 · 生成当前项目工作总结与下步计划文档
-
-- 涉及文件：`docs/当前项目工作总结与下步计划.md`、`.codex/project-memory.md`
-- 关键改动：新增面向项目负责人、业务使用方和产品/研发协作人员的阶段总结文档，说明整体建设思路、已完成任务、成果截图、当前成熟度判断、P0/P1/P2 下步计划和真实链路验收口径；复用 `docs/user-manual-screenshots/` 和 `docs/datalogue_full_execution_flow.png` 的现有成果截图。
-- 验证方式：确认文档引用的 7 张图片均存在；执行 `git diff --check -- docs/当前项目工作总结与下步计划.md` 通过；按项目记忆规则将最早一条最新详细记录压缩进历史区，保持最新详细记录不超过 10 条。
-- 残留风险：本文使用现有截图和当前代码/记忆/文档梳理生成，未重新启动本地页面截取最新运行态截图；若用于正式外部汇报，可继续导出为 PPT/Word 并补充客户场景案例。
-
-### 2026-06-24 00:17 · 工作总结文档改为功能点逐项展开
-
-- 涉及文件：`docs/当前项目工作总结与下步计划.md`、`.codex/project-memory.md`
-- 关键改动：按用户反馈移除“已完成工作任务”和“下步工作计划”里的功能点表格，改为一个功能点一个功能点展开说明；每个已落地功能补充“解决的问题、设计思路、当前效果”，下步计划补充任务目标、推进逻辑和验收关注点，让非研发读者能理解为什么要这么做。
-- 验证方式：执行 `rg -n "\\| 模块|\\| 任务|建议任务|已完成内容：" docs/当前项目工作总结与下步计划.md` 未发现旧表格标记；执行 `git diff --check -- docs/当前项目工作总结与下步计划.md` 通过；按项目记忆规则将当前最早一条详细记录压缩进历史区，保持最新详细记录不超过 10 条。
-- 残留风险：本次仍基于现有截图和文字材料改写，未重新导出 Word/PPT 版；若用于汇报，可继续做版式化交付。
-
-### 2026-06-24 00:25 · 工作总结文档补齐功能点对应截图
-
-- 涉及文件：`docs/当前项目工作总结与下步计划.md`、`.codex/project-memory.md`
-- 关键改动：按用户反馈把截图从集中展示改为跟随具体功能点展示；27 个已完成功能点均补充对应截图说明和图片引用，前端/治理功能使用页面截图，后端链路/工程治理能力使用完整执行链路图、查询审计页或 Schema 页面承接。
-- 验证方式：脚本检查“已完成工作任务”区 27 个功能点全部包含图片引用；脚本检查全篇 37 个图片引用文件均存在；执行 `git diff --check -- docs/当前项目工作总结与下步计划.md` 通过；按项目记忆规则将当前最早一条详细记录压缩进历史区，保持最新详细记录不超过 10 条。
-- 残留风险：后端链路类功能没有独立产品页，当前用链路图/审计页对应其可见承接面；若后续要做正式汇报，可再补真实 Langfuse 页面或日志截图。
-
-### 2026-06-24 00:47 · 工作总结 Word 增强版补齐截图与执行链路图
-
-- 涉及文件：`/Users/yangkai/Downloads/数语智能问数平台-项目介绍与工作总结-增强版.docx`、`/Users/yangkai/Downloads/datalogue_execution_chain_explained.png`、`.codex/project-memory.md`
-- 关键改动：在用户提供的 Word 文档基础上生成增强版，保留原始文档不覆盖；为能力详解部分新增“数语智能问数执行链路说明图”，用图解释从用户提问、LeadAgent 编排、Manifest 门禁、Dataset SubAgent、QueryGraph、SQL 执行到答案解释的执行链路；为每个具体功能点插入对应截图或组合截图；在后续工作计划中新增 ECharts 报表生成、多租户能力和权限管理体系三项企业级治理计划。
-- 验证方式：使用 bundled Python 检查增强版 DOCX 包含 28 个内嵌图片，且 `ECharts 报表生成`、`多租户能力`、`权限管理体系` 三个计划标题均存在；通过 bundled LibreOffice 将增强版 DOCX 渲染为 34 页 PNG/PDF；抽查执行链路图页、功能截图页、计划页和结论页，确认图片和文字无明显裁剪、重叠或断裂。
-- 残留风险：截图复用当前项目已有用户手册截图和生成的链路说明图；后续若页面样式或功能命名调整，应重新截取最新运行态页面并同步替换文档图片。
-
-### 2026-06-24 01:04 · 工作总结 Word 截图替换为当前运行态
-
-- 涉及文件：`/Users/yangkai/Downloads/数语智能问数平台-项目介绍与工作总结-增强版-最新截图.docx`、`/Users/yangkai/Downloads/datalogue_latest_screenshots_20260624/`、`/Users/yangkai/Downloads/datalogue_docx_assets_latest/`、`.codex/project-memory.md`
-- 关键改动：启动当前前端页面并复用本地后端健康服务，重新截取工作台、问数中心、查询审计、数据集治理各 Tab、数据源 Schema、API 管理、系统设置等当前运行态截图；按原 Word 图片位尺寸生成单图和组合图，替换增强版 DOCX 中除执行链路图外的所有页面截图，生成“最新截图”版本。
-- 验证方式：使用 Chrome headless 批量截取 37 张当前页面截图并生成总览拼图；处理为 21 张 Word 图像资产后替换 DOCX 内嵌媒体；使用 bundled Python 检查最新截图版仍包含 28 个内嵌图片且 ECharts、多租户、权限管理三项计划标题保留；通过 bundled LibreOffice 渲染为 34 页 PNG/PDF；抽查工作台、数据集、执行链路、历史/审计、LLM、数据源/API 等关键页，确认无白屏、错误遮罩、明显裁剪或重叠。
-- 残留风险：截图反映 2026-06-24 01:04 本地运行态；数据源 Schema 截图过程中前端控制台曾出现一次 Schema fetch warning，但最终截图页有可见 Schema/数据源状态，后续若后端数据或页面样式变化仍需重新截取。
-
-### 2026-06-24 10:11 · 工作总结 Word 分拆执行链路图
-
-- 涉及文件：`/Users/yangkai/Downloads/数语智能问数平台-项目介绍与工作总结-增强版-分链路图.docx`、`/Users/yangkai/Downloads/datalogue_chain_diagrams_split/`、`.codex/project-memory.md`
-- 关键改动：基于用户已修改的“增强版-最新截图”Word 文档继续生成新版，不覆盖原文件；保留总体介绍处的总体链路图，并为 LeadAgent、Dataset SubAgent、QueryGraph/SubGraph、Trace 观测分别生成独立执行链路图，替换原先多个功能点复用同一张总体图的问题；同步更新功能点的“界面 / 链路承载”和图片说明文字，强调总体图与具体能力链路图的边界。
-- 验证方式：使用 bundled Python 检查新版 DOCX 包含 29 个内嵌图片，且 `总体版`、`LeadAgent 控制链路图`、`Dataset SubAgent 执行链路图`、`QueryGraph / SubGraph 执行链路图`、`Trace 观测链路图` 等说明均存在；确认四个功能链路段落分别引用 4 个不同媒体文件；通过 bundled LibreOffice 渲染为 36 页 PNG/PDF，并抽查总体图、LeadAgent、Dataset SubAgent、QueryGraph/SubGraph、Trace 观测关键页无明显裁剪、重叠或错图。
-- 残留风险：本次新增链路图是解释型架构图，不是实时页面截图；后续如果 Agent 职责、Trace 字段或 QueryGraph 节点命名调整，需要同步更新对应链路图与文档说明。
 
 ### 2026-06-25 11:24 · AgentScope 2.0 ReAct MVP 真实请求验证
 
@@ -180,3 +142,52 @@
 - 关键改动：将原本的自由 ReAct 测试升级为 Hermes-style DatasetAgent MVP；加载 `hermes-skills/datalogue/SOUL.md`、`SKILL.md` 和 `references/capabilities.md` 生成 AgentScope system prompt；新增 `CapabilityManifest` 控制 DatasetAgent 内部工具注册，LeadAgent 只作为窄工具面边界写入 prompt；工具面改为 `recall_assets`、`plan_query`、`guard_sql`、`preview_sql`、`execute_query`、`persist_artifact`、`summarize_result`，其中真正执行仍只走 Datalogue guarded SQL preview；工具结果改为返回 `result_ref`、`artifact`、`summary`、`sql_guard` 和 `tool_trace`，保留 `conversation_state/query_artifact/Manifest/SQL audit/Langfuse trace` 是业务真相源的边界；新增 `react_trace`，记录每轮 LLM request/response、assistant 可见文本、tool_call、工具 observation 和 HTTP 执行结果，便于在控制台查看 AgentScope 可观测 ReAct 链路。
 - 验证方式：执行 `.venv/bin/python -m py_compile tests/agentscope_react_mvp/mvp.py tests/agentscope_react_mvp/test_live_react_agent.py` 通过；执行 `curl -sS -m 5 http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`；执行 `RUN_AGENTSCOPE_REACT_MVP=1 DATALOGUE_BASE_URL=http://127.0.0.1:8000 .venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q -s`，2 条测试通过；真实日志显示 AgentScope 仅看到 manifest 暴露工具，先查 dataset 12 后自主切到 dataset 10，调用 `guard_sql`、`preview_sql`、`summarize_result`，第一次 preview 返回 0 行后根据 observation 修正 SQL，第二次 preview 返回 100 行杨凯 2024 年工作日志，`result_ref=mvp://query_artifact/10/a9df15689cc39b42`；`react_trace` 中可见 `llm_request`、`llm_response`、`assistant_visible_text`、`tool_call` 和 `tool_observation`；执行 `git diff --check` 通过。
 - 残留风险：当前仍是测试目录内的实验性 MVP，`artifact.persisted=false`，没有真实写入 `query_artifact` 或接入 `/chat/stream` 事件流；`execute_query` 在 MVP 中复用 SQL preview；`react_trace` 打印的是 AgentScope 可观测执行事件，不暴露模型内部隐藏思维；后续产品化需要接入正式 artifact store、权限策略、trace observation、失败重试和 SQL 修复。
+
+### 2026-06-25 17:25 · 项目文档多目录治理
+
+- 涉及文件：`docs/README.md`、`docs/上下文入口.md`、`docs/product/`、`docs/architecture/`、`docs/observability/`、`docs/agent-planning/`、`docs/deliverables/`、`docs/assets/`、`docs/archive/2026-06-legacy-docx/`、`.codex/project-memory.md`
+- 关键改动：将 `docs/` 根目录混放的项目介绍、阶段总结、系统设计、Langfuse 可观测、渐进式资产注入设计、DOCX 交付物、链路图和用户手册截图按内容迁移到多目录结构；保留 `docs/上下文入口.md` 作为 Agent 固定入口；新增 `docs/README.md` 说明目录用途、当前入口、归档内容和整理规则；把旧版合并 `Langfuse可观测能力需求与开发文档.docx` 归档到 `archive/`，不直接删除。
+- 验证方式：执行 Markdown 图片/链接检查确认 `docs/product/当前项目工作总结与下步计划.md` 中 37 个图片引用均存在；执行 `rg` 扫描当前入口文档无旧路径；执行 `git diff --check -- docs .codex/project-memory.md` 通过；检查最新详细记录数量保持 10 条。
+- 残留风险：`.codex/project-memory.md` 中早期历史记录保留当时的旧路径，用于追溯原始完成记录；后续如果有新的 DOCX 或截图交付物，需要继续按 `docs/README.md` 目录规则放置。
+
+### 2026-06-25 20:24 · Obsidian 智能问数长期知识沉淀
+
+- 涉及文件：`/Users/yangkai/KenYang/文档库/develop-doc-repositry/项目知识库/智能问数/企业级智能问数受约束 Agent 架构.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/项目知识库/智能问数/智能问数语义治理与执行安全.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/项目知识库/智能问数/智能问数真实链路验收方法.md`、`.codex/project-memory.md`
+- 关键改动：将当前 Datalogue 实践从工作记录抽象为 Obsidian 项目知识库长期沉淀，新增三篇方法论文档，分别沉淀受约束 Agent 架构、语义治理与执行安全、真实链路验收方法；内容强调 LeadAgent/DatasetAgent 边界、Capability Manifest、Manifest fail-closed、QueryArtifact/result_ref、多轮状态真相源、SQL Guard、Trace/日志/payload/页面交叉取证等可复用原则。
+- 验证方式：执行 `wc -l` 确认三篇文档已写入且总计 889 行；执行占位词扫描确认三篇文档未残留占位内容；按项目记忆规则将最早一条最新详细记录压缩进历史区，保持最新详细记录不超过 10 条。
+- 残留风险：本次是长期知识库文字沉淀，没有重新运行 Datalogue 真实问数链路；后续如果 AgentScope 产品化方案、Manifest 字段或 Trace 事件名继续演进，需要同步更新这些方法论文档。
+
+### 2026-06-26 12:10 · Multica Datalogue 员工智能体创建与技能绑定
+
+- 涉及文件：`.codex/project-memory.md`、`hermes-skills/datalogue/SKILL.md`、`hermes-skills/datalogue/SOUL.md`、`hermes-skills/datalogue/references/capabilities.md`、`hermes-skills/datalogue/scripts/api_assets.py`、`.codex/config.toml`
+- 关键改动：在 Multica workspace 创建 `datalogue` skill，并上传 SOUL、capabilities 和 API assets 脚本支持文件；创建 5 个员工智能体：`Datalogue-数据问数分析师`、`Datalogue-后端工程师`、`Datalogue-前端体验工程师`、`Datalogue-QA观测工程师`、`Datalogue-文档交付专员`；为新员工配置中文职责 Prompt、workspace 可见性、项目 MCP 配置（dbhub/playwright，平台红acted 回显）和对应 skills；同时为现有 `CEO` 智能体补充规划、分析、问询、wiki、互联网调研和 Datalogue skill。
+- 验证方式：执行 `multica agent get` 抽查 5 个新员工，确认 agent 存在、`mcp_config_redacted=true`、skills 已绑定；执行 `multica skill files list 84c3f7db-9aad-4b1e-95f5-8fb6d16818b8 --output json` 确认 `SOUL.md`、`references/capabilities.md`、`scripts/api_assets.py` 已上传；执行 `multica agent skills list 75b45fd3-2dbb-49b2-86b0-f8074822da91 --output json` 确认 CEO 已绑定新 skill；按项目记忆规则将最早一条最新详细记录压缩进历史区，保持最新详细记录不超过 10 条。
+- 残留风险：本次只创建和配置 Multica agent/skill，没有创建 squad、自动分派规则或真实 issue 流转演练；MCP 配置来自项目现有 `.codex/config.toml`，后续若本地 PostgreSQL、Playwright 或 npx 环境不可用，相关 MCP 需要单独排查。
+
+### 2026-06-26 12:13 · Multica 数语智能问数小队创建
+
+- 涉及文件：`.codex/project-memory.md`
+- 关键改动：创建 Multica squad `数语智能问数小队`（`2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1`），leader 设为 `CEO`；将 `Datalogue-数据问数分析师`、`Datalogue-后端工程师`、`Datalogue-前端体验工程师`、`Datalogue-QA观测工程师`、`Datalogue-文档交付专员` 加入小队，并分别设置 roster role；补充 squad leader instructions，明确小队不会自动 fan-out，任务先路由到 CEO，由 CEO 按目标、约束、风险和成员能力创建子 issue 或直接处理。
+- 验证方式：执行 `multica squad get 2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1 --output json` 确认 `member_count=6`、leader 为 CEO、instructions 已写入；执行 `multica squad member list 2f19d9dd-97ac-42bf-a7ac-2bacfb1151c1 --output json` 确认 leader 和 5 个员工成员均存在且 role 正确；按项目记忆规则将最早一条最新详细记录压缩进历史区，保持最新详细记录不超过 10 条。
+- 残留风险：Multica squad 当前产品行为是路由到 leader，不会自动把任务分发给所有成员；后续如果要实现阶段化自动协作，还需要基于 issue stage、子 issue 或 autopilot 单独设计流程。
+
+### 2026-06-26 12:33 · C 产品形态优先且 BI 内核 B-governed 工作规划
+
+- 涉及文件：`docs/architecture/B-first C-ready 头脑风暴决策总览.md`、`docs/architecture/B-first C-ready 智能问数能力路由改造任务清单.md`、`docs/architecture/b-first-c-ready-decisions/02-决策沉淀 Hook 规则.md`、`docs/architecture/b-first-c-ready-decisions/decisions/001-capability_manifest 定位为轻量能力广告.md`、`docs/architecture/b-first-c-ready-decisions/decisions/010-C 产品形态优先且 BI 内核保持 B-governed.md`、`docs/architecture/b-first-c-ready-decisions/decisions/011-Agentic Shell 第一阶段采用 Chat 入口加工作台协议.md`、`docs/architecture/b-first-c-ready-decisions/decisions/012-Chat 内任务展示采用业务级时间线并预留双层展开.md`、`docs/architecture/b-first-c-ready-decisions/decisions/013-产物详情采用 Chat 轻量卡并预留详情面板.md`、`docs/architecture/b-first-c-ready-decisions/decisions/014-轻量产物卡采用统一壳加类型化 preview_payload.md`、`docs/architecture/b-first-c-ready-decisions/decisions/015-preview_payload 采用半强 schema.md`、`docs/architecture/b-first-c-ready-decisions/decisions/016-actions 采用固定注册表加受控动作实例.md`、`docs/architecture/b-first-c-ready-decisions/decisions/017-refs 拆分为 primary_ref 与 related_refs 并预留 role.md`、`docs/architecture/b-first-c-ready-decisions/decisions/018-export 第一阶段进入 Action Registry 但默认禁用.md`、`docs/architecture/b-first-c-ready-decisions/decisions/019-continue_edit 第一阶段只作为详情面板预留动作.md`、`docs/architecture/b-first-c-ready-decisions/decisions/020-ask_bi 采用最小稳定契约并复用现有主链.md`、`docs/architecture/b-first-c-ready-decisions/decisions/021-retry 第一阶段从最后安全检查点重试.md`、`docs/architecture/b-first-c-ready-decisions/decisions/022-主链路验收采用分层验收.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/2026-06-26 B-first C-ready 能力路由头脑风暴/`、`.codex/project-memory.md`
+- 关键改动：将总路线从 `B-first, C-ready` 升级为 `C-shaped product, B-governed BI core`，明确产品形态直接采用 C，但 BI 查询内核保持 B-governed；新增第十个已敲定决策，规定 Agentic Shell、ReportAgent、PythonAgent、AuditAgent 都必须通过 `BIWorkbenchTool` / `ask_bi` 使用 BI 能力，不得绕过 BI 工具访问 schema、SQL、数据库或 `control_plane` 主体；新增第十一个已敲定决策，规定 Agentic Shell 第一阶段采用现有 Chat 入口，同时按未来 BI 工作台协议设计任务模型、事件流、产物引用和状态结构；新增第十二个已敲定决策，规定 Chat 内第一版任务展示采用业务级任务时间线，并把方案 3 双层可展开时间线记录为后续必须改造项；新增第十三个已敲定决策，规定报告、图表、审计解释等产物详情第一阶段采用 Chat 轻量产物卡，并预留 `detail_view_ref` / `artifact_panel_ref` 给后续详情面板或独立 BI 工作台承载完整产物；新增第十四个已敲定决策，规定轻量产物卡采用统一 `ArtifactCard` 壳，并用类型化 `preview_payload` 表达 report/chart/audit/analysis 的差异；新增第十五个已敲定决策，规定 `ArtifactCard` 外层采用强 schema，`preview_payload` 采用半强 schema，并通过最小必填字段、`optional_details`、`schema_version`、size guard、敏感字段扫描和 `visibility` 约束控制扩展边界；新增第十六个已敲定决策，规定 `actions` 采用固定 Action Registry 加后端受控动作实例，后端只能返回白名单 `action_type` 和白名单 payload，前端按 registry 渲染并安全忽略未知动作；新增第十七个已敲定决策，规定 `refs` 拆分为 `primary_ref` 与 `related_refs`，`actions` 默认绑定 `primary_ref`，并预留 `role` 字段给后续引用角色体系；新增第十八个已敲定决策，规定 `export` 第一阶段进入 Action Registry，但默认作为预留禁用态，不生成导出文件、不开放完整数据导出、不导出 raw result；新增第十九个已敲定决策，规定 `continue_edit` 第一阶段只作为详情面板或未来工作台预留动作，不启动 ReportAgent，不实现编辑、版本、保存、回滚和编辑审计链路；新增第二十个已敲定决策，规定 `ask_bi` / `BIWorkbenchTool` 采用最小稳定契约，内部第一阶段复用现有 Chat、LeadAgent、DatasetAgent 和 `/chat/stream` 主链，后续再升级为 BI 工作台原生能力入口；新增第二十一个已敲定决策，规定 `retry` 第一阶段从最后安全检查点重试，不可恢复时降级整任务重试，不实现完整任务 DAG 或任意子任务重试；新增第二十二个已敲定决策，规定真实链路验收采用分层验收，P0 主链路强制真实页面、SSE event envelope、后端日志、Langfuse trace 和 query_artifact / conversation_state 五件套一致，预留项只做轻量协议验收；任务清单继续保留 P0-P4 作为能力清单、Capability Router、共享 DatasetAgent Runtime、DatasetAgentToolAdapter、事件观测协议等 BI 内核治理工作包，并把 P5 升级为 C 产品形态入口与 C-ready 工作规划，拆出 Agentic Shell、BIWorkbenchTool、ReportAgent、PythonAgent、AuditAgent、产物引用和任务事件协议；P6 继续保留 AgentScope MVP / runner / adapter 验证线，不让 AgentScope 第一阶段直接接管主链 runtime。
+- 验证方式：执行 Markdown 占位扫描，确认文档未残留占位内容；执行 `wc -l` 检查仓库副本与 Obsidian 副本行数一致；执行 `git diff --check -- docs/architecture .codex/project-memory.md` 通过。
+- 残留风险：本次仍是头脑风暴后的任务清单，不是已批准的正式开发计划；后续需要继续收敛 capability manifest schema、接口协议和里程碑后再进入实施计划。
+
+### 2026-06-26 12:43 · 默认测试套件稳定性修复
+
+- 涉及文件：`datalogue-api/tests/agentscope_react_mvp/test_live_react_agent.py`、`datalogue-api/tests/test_llm_config.py`、`.codex/project-memory.md`
+- 关键改动：恢复 AgentScope ReAct MVP live integration 测试的 `RUN_AGENTSCOPE_REACT_MVP=1` 显式开关，避免默认后端 pytest 在本地 Datalogue API 未启动时调用真实服务和真实 LLM；同步将 `intent` 角色 LLM 策略测试中的 `max_tokens` 断言更新为当前 `ROLE_CALL_POLICIES` 的 `20480`，对齐 2026-06-23 的策略调整。
+- 验证方式：执行 `.venv/bin/python -m pytest tests/test_llm_config.py::test_get_llm_uses_database_role_config -q` 通过；执行 `.venv/bin/python -m pytest tests/agentscope_react_mvp/test_live_react_agent.py -q` 得到 `1 passed, 1 skipped`；执行 `.venv/bin/python -m pytest` 得到 `726 passed, 5 skipped, 327 warnings`；前端已执行 `npm run lint`、`npm run test`、`npm run build`，其中 lint/build 仅有 warning。
+- 残留风险：`ruff check .` 仍报告 64 个既有静态问题，其中 `app/services/lead_agent_routing.py:914` 存在 `json` 未定义风险；后端 `.venv` 未安装 ruff，本次使用系统 ruff 只做发现，不顺手清理历史 lint。
+
+### 2026-06-26 13:00 · B-first C-ready 后续改造记录与正式开发计划
+
+- 涉及文件：`docs/architecture/B-first C-ready 后续改造记录.md`、`docs/architecture/B-first C-ready 正式开发计划.md`、`docs/architecture/B-first C-ready 头脑风暴决策总览.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/2026-06-26 B-first C-ready 能力路由头脑风暴/`、`.codex/project-memory.md`
+- 关键改动：将今天头脑风暴中所有 B-first 但 C-ready 的出口单独整理成后续改造记录，明确 Chat as Shell Entry、`ask_bi`、event envelope、ArtifactCard、Action Registry、ReportAgent、PythonAgent、AuditAgent、双层时间线、完整 BI 工作台和 AgentScope runtime 的预留边界与接入条件；新增正式开发计划，按 P0/P1/P2 拆出 `capability_manifest`、Capability Router、ToolAdapter 分层、event envelope、`ask_bi`、ArtifactCard、候选数据集确认、retry checkpoint 和五件套验收任务，并标注依赖、涉及文件、测试文件和验收用例；同步把两个新文档纳入总览的文档拆分建议。
+- 验证方式：执行 Markdown 占位扫描，确认新增文档和更新文档未残留占位内容；执行 `wc -l` 检查仓库副本与 Obsidian 副本行数一致；执行 `git diff --check -- docs/architecture .codex/project-memory.md` 通过。
+- 残留风险：本次产物是正式开发计划文档，不包含代码实现；计划中的新增文件和测试需要后续按任务分批实施并进行真实链路五件套验收。

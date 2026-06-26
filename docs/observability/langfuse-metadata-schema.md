@@ -352,7 +352,7 @@ metadata={
 
 | 文档 | 关联点 |
 |------|--------|
-| `docs/progressive-asset-integration-draft.md` | 渐进式资产注入流程设计（本文 Schema 基于该流程定义） |
-| `docs/Langfuse可观测能力需求设计文档.md` | Langfuse 整体可观测能力规划（本文是其中 generation metadata 的细化） |
+| `docs/agent-planning/progressive-asset-integration-draft.md` | 渐进式资产注入流程设计（本文 Schema 基于该流程定义） |
+| `docs/observability/Langfuse可观测能力需求设计文档.md` | Langfuse 整体可观测能力规划（本文是其中 generation metadata 的细化） |
 | `datalogue-api/app/services/lead_agent.py` | 实际写入 metadata 的代码位置 |
 | `datalogue-api/app/services/lead_agent_planner_projection.py` | M1 projection 指标计算（本文追加字段与其共存） |
