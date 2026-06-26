@@ -167,3 +167,10 @@
 - 关键改动：新增 BI 不可越界内部 source of truth，明确 LeadAgent 不看字段级 schema 明细、外层 Agent 只能调用 `ask_bi`、LLM 不直接生成可执行 SQL、raw SQL/raw result/capsule/trace 主体属于 `control_plane`；新增同步服务抽取并规范化 `BI_SOUL_SYNC` 块，校验 Hermes SOUL 与内部契约一致，并为未来 AgentScopeShellAdapter 渲染只允许 `ask_bi` 的 policy；Hermes SOUL 嵌入同一同步块。
 - 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q` 确认红灯，失败为 `ModuleNotFoundError: app.services.soul_contract_sync`；实现后执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/soul_contract_sync.py` 通过；创建被 `.gitignore` 忽略的本地 `.venv` 链接后执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过、仅有既有依赖弃用告警。
 - 残留风险：当前仓库尚无 `AgentScopeShellAdapter` 实现，本次只提供可注入的 policy 文本和同步校验；未实现 `ask_bi`、未新增公开 API、未接管 BI 主链 runtime。
+
+### 2026-06-26 17:02 · LeadAgent Capability Router 路由收窄
+
+- 涉及文件：`datalogue-api/app/services/dataset_router.py`、`datalogue-api/app/services/lead_agent_routing.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_lead_agent_capability_router.py`、`.omx/plans/DAT-13-leadagent-capability-router.md`、`.codex/project-memory.md`
+- 关键改动：新增 DAT-13 计划文件；`dataset_router` 内部改用 Manifest capability 摘要打分，但对外候选只暴露 `dataset_id/dataset_name/reason/confidence/requires_confirmation`；低置信和多数据集近分均标记需确认且不 dispatch；`lead_agent_routing` 在未确认数据集时阻断指标/明细问法直接进入 `query_graph`；`chat` 阻断提示改读 `confidence/reason`。
+- 验证方式：先执行 `python3 -m pytest tests/test_lead_agent_capability_router.py -q` 确认旧候选字段导致 3 条红灯，再实现后通过；最终执行 `python3 -m pytest tests/test_lead_agent_capability_router.py tests/test_lead_agent_routing.py tests/test_lead_agent_tools.py -q`，52 条通过；执行 `python3 -m ruff check app/services/dataset_router.py app/services/lead_agent_routing.py app/api/chat.py tests/test_lead_agent_capability_router.py` 通过；执行 `python3 -m py_compile app/services/dataset_router.py app/services/lead_agent_routing.py app/api/chat.py` 通过。
+- 残留风险：本次覆盖后端路由与阻断提示，未启动真实 `/chat/stream` SSE 回放；pytest 仍输出 starlette/pydantic/pytest-asyncio 既有弃用 warning。
