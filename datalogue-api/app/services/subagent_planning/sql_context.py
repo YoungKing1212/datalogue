@@ -20,6 +20,21 @@ from typing import Any
 from app.services.subagent_planning.asset_detail import AssetDetailResult
 from app.services.subagent_planning.contracts import QueryPlan
 
+COMPILER_CONTEXT_KEYS = {
+    "selected_assets",
+    "reference_assets",
+    "table_schemas",
+    "field_search_results",
+    "metric_definitions",
+    "dimension_definitions",
+    "blueprint_references",
+    "coverage",
+    "risk_flags",
+    "schema_version",
+    "manifest_version",
+}
+SQL_LIKE_CONTEXT_KEYS = {"sql", "raw_sql", "direct_sql", "llm_sql", "sql_template"}
+
 
 def build_sql_generation_context(
     *,
@@ -56,6 +71,19 @@ def build_sql_generation_context(
 
     context["risk_flags"] = sorted(risk_flags)
     return context
+
+
+def build_query_plan_compiler_context(sql_generation_context: dict[str, Any] | None) -> dict[str, Any]:
+    """裁剪给工具编译器的上下文，显式排除任何 SQL 文本逃逸字段。"""
+
+    source = sql_generation_context if isinstance(sql_generation_context, dict) else {}
+    compiler_context: dict[str, Any] = {}
+    for key, value in source.items():
+        if key in SQL_LIKE_CONTEXT_KEYS:
+            continue  # 编译器只能读取语义资产和 schema，不能读取模型或蓝图 SQL 文本。
+        if key in COMPILER_CONTEXT_KEYS:
+            compiler_context[key] = deepcopy(value)
+    return compiler_context
 
 
 def _detail_bucket(detail: AssetDetailResult) -> str | None:

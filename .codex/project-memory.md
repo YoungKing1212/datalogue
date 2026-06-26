@@ -117,6 +117,7 @@
 - AgentScope 2.0 ReAct MVP 真实请求验证：新增独立真实集成测试目录，用 AgentScope 2.0 Agent/Toolkit/ToolBase 封装数语最小工具面，真实调用数据集资产和 guarded SQL preview，不进入 `/api/chat/stream`，并通过 live API、默认跳过测试、真实开关测试、py_compile 和 `git diff --check` 验证。
 - AgentScope 真实测试过程日志增强：补充 LLM 配置、工具 HTTP 请求、Plan/Execute 摘要、SQL preview、最终回答和动态数据集选择日志，支持 `pytest -s` 查看完整执行过程。
 - AgentScope Hermes-style DatasetAgent MVP：加载 Hermes SOUL/SKILL/capabilities 生成 AgentScope system prompt，用最小工具面验证 DatasetAgent 可通过 guarded SQL preview 自主查数，保留正式 artifact store、trace 和 `/chat/stream` 产品化为后续工作。
+- 项目文档多目录治理：将 `docs/` 根目录混放材料迁移到 product/architecture/observability/deliverables/assets/archive 等目录，保留 `docs/上下文入口.md` 和 `docs/README.md` 作为导航，并通过图片/链接和 `git diff --check` 验证。
 
 ## 高价值判断
 
@@ -127,13 +128,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-25 17:25 · 项目文档多目录治理
-
-- 涉及文件：`docs/README.md`、`docs/上下文入口.md`、`docs/product/`、`docs/architecture/`、`docs/observability/`、`docs/agent-planning/`、`docs/deliverables/`、`docs/assets/`、`docs/archive/2026-06-legacy-docx/`、`.codex/project-memory.md`
-- 关键改动：将 `docs/` 根目录混放的项目介绍、阶段总结、系统设计、Langfuse 可观测、渐进式资产注入设计、DOCX 交付物、链路图和用户手册截图按内容迁移到多目录结构；保留 `docs/上下文入口.md` 作为 Agent 固定入口；新增 `docs/README.md` 说明目录用途、当前入口、归档内容和整理规则；把旧版合并 `Langfuse可观测能力需求与开发文档.docx` 归档到 `archive/`，不直接删除。
-- 验证方式：执行 Markdown 图片/链接检查确认 `docs/product/当前项目工作总结与下步计划.md` 中 37 个图片引用均存在；执行 `rg` 扫描当前入口文档无旧路径；执行 `git diff --check -- docs .codex/project-memory.md` 通过；检查最新详细记录数量保持 10 条。
-- 残留风险：`.codex/project-memory.md` 中早期历史记录保留当时的旧路径，用于追溯原始完成记录；后续如果有新的 DOCX 或截图交付物，需要继续按 `docs/README.md` 目录规则放置。
 
 ### 2026-06-25 20:24 · Obsidian 智能问数长期知识沉淀
 
@@ -204,3 +198,10 @@
 - 关键改动：将数据集自动路由候选来源改为 `list_capability_manifest_summaries()`，只用业务能力、典型问题、指标/维度名称摘要和路由提示打分，Manifest 表仅用于 current 资格和版本三元组；低置信和 close-score 路径只返回候选数据集，不派发 DatasetAgent；候选输出保持 `dataset_id/dataset_name/reason/confidence/requires_confirmation` 五个业务级字段；Chat 状态写回增加 dataset 确认事实，用户提交 `candidate_id/checkpoint_ref` 后写入 `conversation_state.facts` 的 `confirmed_dataset_id` 和 `retry_checkpoint`，不新增旧会话迁移。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_lead_agent_capability_router.py tests/test_lead_agent_routing.py tests/test_chat.py -q`，138 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/dataset_router.py app/services/capability_manifest.py app/services/conversation_store.py app/api/chat.py app/services/lead_agent_routing.py` 通过；执行 `git diff --check` 通过。
 - 残留风险：前端候选确认卡和 event envelope 中的标准化 candidate confirmation 事件仍属于 DAT-16；当前后端状态兼容写在 `facts` JSON 中，后续若要强查询能力可再引入显式列或结构化 state schema。
+
+### 2026-06-26 19:22 · DAT-9 QueryGraph Compiler 方言边界收窄
+
+- 涉及文件：`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/app/services/sql_dialect_adapter.py`、`datalogue-api/app/services/dataset_subagent.py`、`datalogue-api/app/graph/nodes.py`、`datalogue-api/app/graph/state.py`、`datalogue-api/app/services/subagent_planning/`、`datalogue-api/tests/test_query_plan_compiler.py`、`datalogue-api/tests/test_sql_dialect_adapter.py`、`datalogue-api/tests/test_subagent_run.py`、`.codex/project-memory.md`
+- 关键改动：合入 QueryPlan Compiler 外壳，将 DatasetAgent 内部 `QueryPlan` 编译为 `tool_compiler` 来源 SQL，并把 SQL 只写入 control_plane / query_artifact / trace；保留 `llm_sql/direct_sql/raw_sql/sql` 执行来源检测，命中即 fail closed；将 SQL Dialect Adapter 从静态多方言允许改为当前真实数据源 dialect 单值门禁，QueryPlan 目标方言和当前数据源不一致时返回 `DIALECT_UNSUPPORTED_FOR_CURRENT_DATASOURCE`；DatasetSubAgent 调用处显式传入 `datasource_context.dialect/db_type` 作为当前数据源方言。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_subagent_run.py -q`，23 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/query_plan_compiler.py app/services/sql_dialect_adapter.py app/services/dataset_subagent.py app/graph/nodes.py app/graph/state.py` 通过。
+- 残留风险：当前 compiler 仍是外壳实现，内部 SELECT 生成能力只覆盖已水合字段资产和少量 schema fallback；完整 QueryGraph/DSL 语义编译替换、更多真实数据源方言支持和多方言矩阵测试属于后续阶段。

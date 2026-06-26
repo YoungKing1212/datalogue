@@ -39,6 +39,7 @@ ExecutionStrategy = Literal[
 ]
 AssetUsage = Literal["selected", "reference", "rejected", "candidate"]
 PlannerSource = Literal["deterministic", "template", "llm", "fallback"]
+ExecutionSource = Literal["tool_compiler"]
 
 CANDIDATE_ASSET_TYPES = {"blueprint", "metric", "dimension", "term", "field", "table"}
 QUERY_TYPES = {
@@ -58,6 +59,7 @@ EXECUTION_STRATEGIES = {
 }
 ASSET_USAGES = {"selected", "reference", "rejected", "candidate"}
 PLANNER_SOURCES = {"deterministic", "template", "llm", "fallback"}
+EXECUTION_SOURCES = {"tool_compiler"}
 
 
 class QueryPlanValidationError(ValueError):
@@ -136,6 +138,7 @@ class QueryPlan:
     clarification: dict[str, Any] | None = None
     fallback_reason: str | None = None
     planner_source: str = "deterministic"
+    execution_source: str | None = None
     explanation: dict[str, Any] = field(default_factory=dict)
     decision_factors: list[dict[str, Any]] = field(default_factory=list)
     planner_warnings: list[dict[str, Any]] = field(default_factory=list)
@@ -155,6 +158,8 @@ class QueryPlan:
             raise QueryPlanValidationError(f"execution_strategy invalid: {self.execution_strategy}")
         if self.planner_source not in PLANNER_SOURCES:
             raise QueryPlanValidationError(f"planner_source invalid: {self.planner_source}")
+        if self.execution_source is not None and self.execution_source not in EXECUTION_SOURCES:
+            raise QueryPlanValidationError(f"execution_source invalid: {self.execution_source}")
 
     def to_dict(self) -> dict[str, Any]:
         return jsonable_encoder(
@@ -169,6 +174,7 @@ class QueryPlan:
                 "clarification": self.clarification,
                 "fallback_reason": self.fallback_reason,
                 "planner_source": self.planner_source,
+                "execution_source": self.execution_source,
                 "explanation": self.explanation,
                 "decision_factors": self.decision_factors,
                 "planner_warnings": self.planner_warnings,
@@ -331,12 +337,15 @@ def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
     query_type = str(payload.get("query_type") or "")  # LLM JSON 先校验顶层枚举，再逐字段归一化。
     execution_strategy = str(payload.get("execution_strategy") or "")
     planner_source = str(payload.get("planner_source") or "deterministic")
+    execution_source = payload.get("execution_source")
     if query_type not in QUERY_TYPES:
         raise QueryPlanValidationError(f"query_type invalid: {query_type}")
     if execution_strategy not in EXECUTION_STRATEGIES:
         raise QueryPlanValidationError(f"execution_strategy invalid: {execution_strategy}")
     if planner_source not in PLANNER_SOURCES:
         raise QueryPlanValidationError(f"planner_source invalid: {planner_source}")
+    if execution_source is not None and execution_source not in EXECUTION_SOURCES:
+        raise QueryPlanValidationError(f"execution_source invalid: {execution_source}")
 
     def _field(field_name: str, fn, *args):
         """包装字段提取，在校验失败时附加上下文字段名，方便排查。"""
@@ -370,6 +379,7 @@ def normalize_query_plan(payload: dict[str, Any]) -> QueryPlan:
         clarification=payload.get("clarification") if isinstance(payload.get("clarification"), dict) else None,
         fallback_reason=payload.get("fallback_reason"),
         planner_source=planner_source,
+        execution_source=execution_source,
         explanation=dict(payload.get("explanation") or {}),
         decision_factors=_field(
             "decision_factors",
