@@ -76,6 +76,13 @@ from .conversation import (
 )
 from .chat import ChatRequest, ChatFeedback, ClarificationResponse
 from .capsule import CapsuleMeta, QueryContext, ResultDigest, SubAgentCapsule
+from .bi_workbench import (
+    DatalogueEventEnvelope,
+    DatalogueEventType,
+    DatalogueEventVisibility,
+    build_datalogue_event_envelope,
+    sanitize_event_payload,
+)
 from .llm import (
     LLMModelConfigCreate,
     LLMModelConfigUpdate,
@@ -150,6 +157,11 @@ __all__ = [
     "QueryContext",
     "ResultDigest",
     "SubAgentCapsule",
+    "DatalogueEventEnvelope",
+    "DatalogueEventType",
+    "DatalogueEventVisibility",
+    "build_datalogue_event_envelope",
+    "sanitize_event_payload",
     "LLMModelConfigCreate",
     "LLMModelConfigUpdate",
     "LLMModelConfigOut",
