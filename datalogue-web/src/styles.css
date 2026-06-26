@@ -7460,6 +7460,7 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   padding: 14px;
   background: var(--panel);
   color: var(--text);
+  margin-top: 12px;
 }
 
 .artifact-card-head {
@@ -7521,7 +7522,8 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   overflow-wrap: anywhere;
 }
 
-.artifact-card-refs {
+.artifact-card-refs,
+.artifact-ref-list {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -7580,4 +7582,181 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 .artifact-card-disabled-reason {
   color: var(--muted);
   font-size: 12px;
+}
+
+.task-timeline {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.task-timeline-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--surface);
+}
+
+.task-timeline-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.task-timeline-icon .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.task-timeline-body {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.task-timeline-body strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.task-timeline-body span,
+.task-timeline-item em {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.task-timeline-item em {
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.task-timeline-done .task-timeline-icon {
+  color: var(--pos);
+}
+
+.task-timeline-active .task-timeline-icon {
+  color: var(--accent);
+}
+
+.task-timeline-blocked .task-timeline-icon {
+  color: var(--warn);
+}
+
+.candidate-dataset-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 12px 0;
+  background: var(--panel);
+}
+
+.candidate-dataset-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.candidate-dataset-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.candidate-dataset-icon .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.candidate-dataset-head strong {
+  display: block;
+  font-size: 14px;
+}
+
+.candidate-dataset-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.candidate-dataset-options {
+  display: grid;
+  gap: 8px;
+}
+
+.candidate-dataset-option {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.candidate-dataset-option:hover {
+  border-color: var(--hairline-strong);
+}
+
+.candidate-dataset-index {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.candidate-dataset-body {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.candidate-dataset-body strong {
+  font-size: 13px;
+}
+
+.candidate-dataset-body small,
+.candidate-dataset-option em {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.candidate-dataset-body small {
+  overflow-wrap: anywhere;
+}
+
+.candidate-dataset-option em {
+  font-style: normal;
+}
+
+@media (max-width: 760px) {
+  .task-timeline {
+    grid-template-columns: 1fr;
+  }
 }

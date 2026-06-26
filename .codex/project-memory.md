@@ -128,6 +128,7 @@
 - 默认测试套件稳定性修复：恢复 AgentScope live 集成测试显式开关，更新 intent 角色 LLM `max_tokens` 断言，默认后端全量 pytest 和前端 lint/test/build 通过，仅保留既有 warning 与 ruff 历史问题。
 - B-first C-ready 计划细化与 Obsidian 同步：拆分后续改造记录、正式开发计划、决策总览和 AgentScope 2.0 集成系统设计，明确 P0/P1/P2 与五件套验收口径。
 - Multica 开发测试并行员工扩编：为数语小队新增 LeadAgent、数据治理 SQL、前端工作台、后端回归、前端 E2E、观测链路等 6 个并行员工角色，并验证 squad roster。
+- BI_SOUL 内部契约与 Hermes SOUL 同步校验：新增 BI 不可越界 source of truth、同步服务和测试，明确外层 Agent 只能调用 `ask_bi`，raw SQL/raw result/capsule 属于控制面。
 
 ## 高价值判断
 
@@ -138,13 +139,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 16:44 · BI_SOUL 内部契约与外部入口同步校验
-
-- 涉及文件：`datalogue-api/app/contracts/BI_SOUL.md`、`datalogue-api/app/services/soul_contract_sync.py`、`datalogue-api/tests/test_bi_soul_contract.py`、`hermes-skills/datalogue/SOUL.md`、`.omx/plans/DAT-6-BI_SOUL-内部契约同步计划.md`、`.codex/project-memory.md`
-- 关键改动：新增 BI 不可越界内部 source of truth，明确 LeadAgent 不看字段级 schema 明细、外层 Agent 只能调用 `ask_bi`、LLM 不直接生成可执行 SQL、raw SQL/raw result/capsule/trace 主体属于 `control_plane`；新增同步服务抽取并规范化 `BI_SOUL_SYNC` 块，校验 Hermes SOUL 与内部契约一致，并为未来 AgentScopeShellAdapter 渲染只允许 `ask_bi` 的 policy；Hermes SOUL 嵌入同一同步块。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/soul_contract_sync.py` 通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过、仅有既有依赖弃用告警。
-- 残留风险：当前阶段只提供可注入的 policy 文本和同步校验；`ask_bi`、AgentScopeShellAdapter runtime 和公开 API 由后续 PR 继续接入。
 
 ### 2026-06-26 19:11 · DAT-15 数据集能力清单
 
@@ -208,3 +202,10 @@
 - 关键改动：合入 AgentScope Shell Adapter 最小验证线，固定第一阶段只允许 `ask_bi`，不开放公开 API、不启动 AgentScope runner、不替换 `/chat/stream`；`AgentScopeEventAdapter` 只把 `DatalogueEventEnvelope` 映射为 Shell 可见事件或 trace 事件，并丢弃 `control_plane`；解决 #9 与 #7/#8 的 add/add 冲突，保留真实异步 `ask_bi` 主链转接，同时兼容 `ref/ref_id`、`summary/summary_for_chat` 等前后端历史字段。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q`，16 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/services/bi_workbench_tool.py app/services/agentscope_shell_adapter.py app/services/agentscope_event_adapter.py` 通过。
 - 残留风险：当前仍是 contract-first Shell Adapter，不接真实 AgentScope runtime、不接公开 API；后续若要完整 AgentScope 2.0 集成，需要在 event stream adapter、runner adapter 和多 Agent 产品链路成熟后再打开。
+
+### 2026-06-26 19:50 · DAT-16 前端 C-ready Chat Shell
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/components/task-timeline.jsx`、`datalogue-web/src/components/task-timeline.test.jsx`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：在现有 Chat 入口内解析 `event_envelope` 并兼容旧 SSE 顶层字段，将 final payload 收敛为 `taskTimeline`、`candidateConfirmation`、`artifactCard`、`primaryRef/relatedRefs` 等 C-ready metadata；新增业务阶段任务时间线组件；新增候选数据集确认卡，点击后只提交 `candidate_id/checkpoint_ref/selected_dataset_id/selected_text`，不提交 schema/字段/资产细节；ArtifactCard 支持 `ref/ref_id`、`refs`、`summary`、`action_id/payload_ref` 兼容，`export/continue_edit` 继续禁用。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，4 个测试文件 11 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning。
+- 残留风险：当前仍承接在现有 Chat 页面，未新建独立 BI 工作台；真实页面点击候选后继续同一任务、retry 自定义事件接 composer 的端到端验收需要 DAT-18 五件套记录继续覆盖。

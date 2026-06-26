@@ -13,6 +13,8 @@ import {
 import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
 import MessageContent from '../components/message-content';
+import { ArtifactCard } from '../components/artifact-card.jsx';
+import { TaskTimeline } from '../components/task-timeline.jsx';
 import { getArtifact, submitMessageFeedback } from '../api/client';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
@@ -714,6 +716,47 @@ function TermClarificationCard({ clarification, routePayload, onSelect }) {
   );
 }
 
+export function CandidateDatasetConfirmationCard({ confirmation, onSelect }) {
+  const candidates = confirmation?.candidates || [];
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  return (
+    <div className="candidate-dataset-card">
+      <div className="candidate-dataset-head">
+        <span className="candidate-dataset-icon">
+          <Icon name="database" />
+        </span>
+        <div>
+          <strong>确认数据集</strong>
+          <span>先确认候选数据集，再继续同一任务</span>
+        </div>
+      </div>
+      <div className="candidate-dataset-options">
+        {candidates.map((candidate, index) => {
+          const candidateId = candidate.candidate_id || candidate.candidateId || candidate.dataset_id || candidate.datasetId || candidate.id;
+          const label = candidate.dataset_name || candidate.datasetName || candidate.name || `候选 ${index + 1}`;
+          const reason = candidate.reason || '';
+          const confidence = candidate.confidence ?? candidate.score ?? null;
+          return (
+            <button
+              type="button"
+              className="candidate-dataset-option"
+              key={`${candidateId || index}-${label}`}
+              onClick={() => onSelect?.(candidate, index + 1, label)}
+            >
+              <span className="candidate-dataset-index">{index + 1}</span>
+              <span className="candidate-dataset-body">
+                <strong>{label}</strong>
+                {reason && <small>{reason}</small>}
+              </span>
+              {confidence != null && <em>{Number(confidence).toFixed(2)}</em>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function TraceLinkCard({ traceId, sessionId, observability, stepTrace = [] }) {
   if (!traceId && !sessionId) return null;
 
@@ -976,6 +1019,9 @@ export function AIMessage({ showSql = true }) {
   const answerExplanation = custom.answerExplanation || null;
   const routePayload = custom.routePayload || null;
   const clarification = custom.clarification || null;
+  const taskTimeline = custom.taskTimeline || [];
+  const candidateConfirmation = custom.candidateConfirmation || null;
+  const artifactCard = custom.artifactCard || null;
   const messageId = custom.messageId || null;
   const langfuseTraceId = custom.langfuseTraceId || null;
   const langfuseSessionId = custom.langfuseSessionId || null;
@@ -1002,6 +1048,22 @@ export function AIMessage({ showSql = true }) {
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = clarificationResponse;
     window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
       detail: { text: `选择：${label}` },
+    }));
+  };
+
+  const handleSelectCandidateDataset = (candidate, optionIndex, label) => {
+    const candidateId = candidate?.candidate_id || candidate?.candidateId || candidate?.dataset_id || candidate?.datasetId || candidate?.id || null;
+    const checkpointRef = candidate?.checkpoint_ref || candidate?.checkpointRef || candidateConfirmation?.checkpointRef || null;
+    window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
+      candidate_id: candidateId,
+      checkpoint_ref: checkpointRef,
+      selected_index: optionIndex,
+      selected_text: label,
+      selected_dataset_id: candidate?.dataset_id || candidate?.datasetId || candidateId,
+      clarification_id: candidateConfirmation?.clarificationId || null,
+    };
+    window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
+      detail: { text: `选择数据集：${label}` },
     }));
   };
 
@@ -1079,6 +1141,13 @@ export function AIMessage({ showSql = true }) {
 
       <AnswerExplanation explanation={answerExplanation} />
 
+      <TaskTimeline items={taskTimeline} />
+
+      <CandidateDatasetConfirmationCard
+        confirmation={candidateConfirmation}
+        onSelect={handleSelectCandidateDataset}
+      />
+
       <TermClarificationCard
         clarification={clarification}
         routePayload={routePayload}
@@ -1097,6 +1166,8 @@ export function AIMessage({ showSql = true }) {
         reportRef={reportRef}
         subagentToolResults={subagentToolResults}
       />
+
+      <ArtifactCard artifact={artifactCard} />
 
       {/* SQL 执行结果表格 */}
       {sqlResult && sqlResult.rows && sqlResult.rows.length > 0 && (

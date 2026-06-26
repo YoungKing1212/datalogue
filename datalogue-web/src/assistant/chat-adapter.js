@@ -52,8 +52,192 @@ const EXECUTION_STRATEGY_LABELS = {
   reject: '无法处理',
 };
 
+const TIMELINE_PHASES = [
+  { id: 'understand', label: '任务理解' },
+  { id: 'match_dataset', label: '数据集匹配' },
+  { id: 'confirm_user', label: '用户确认' },
+  { id: 'execute_bi', label: 'BI 执行' },
+  { id: 'artifact', label: '结果产物' },
+  { id: 'next_action', label: '下一步动作' },
+];
+
+const EVENT_PHASE = {
+  'route.started': 'understand',
+  'dataset.selected': 'match_dataset',
+  'clarification.required': 'confirm_user',
+  'dataset.query.started': 'execute_bi',
+  'dataset.query.completed': 'execute_bi',
+  'artifact.created': 'artifact',
+  'answer.completed': 'artifact',
+  'error.blocked': 'next_action',
+};
+
 function enumLabel(labels, value) {
   return value ? labels[value] || value : null;
+}
+
+function asObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+export function normalizeEventEnvelope(ev) {
+  const envelope = asObject(ev?.event_envelope || ev?.eventEnvelope);
+  if (envelope) {
+    return {
+      eventId: envelope.event_id || envelope.eventId || null,
+      eventType: envelope.event_type || envelope.eventType || null,
+      visibility: envelope.visibility || 'user_visible',
+      payload: asObject(envelope.payload) || {},
+      metadata: asObject(envelope.metadata) || {},
+      taskId: envelope.task_id || envelope.taskId || null,
+      traceId: envelope.trace_id || envelope.traceId || null,
+      conversationId: envelope.conversation_id || envelope.conversationId || null,
+      createdAt: envelope.created_at || envelope.createdAt || null,
+    };
+  }
+  if (ev?.event_type || ev?.eventType) {
+    return {
+      eventId: ev.event_id || ev.eventId || null,
+      eventType: ev.event_type || ev.eventType || null,
+      visibility: ev.visibility || 'user_visible',
+      payload: asObject(ev.payload) || {},
+      metadata: asObject(ev.metadata) || {},
+      taskId: ev.task_id || ev.taskId || null,
+      traceId: ev.trace_id || ev.traceId || ev.langfuse_trace_id || null,
+      conversationId: ev.conversation_id || ev.conversationId || null,
+      createdAt: ev.created_at || ev.createdAt || null,
+    };
+  }
+  return null;
+}
+
+function phaseStatus(phaseId, activePhaseId, completedPhaseIds, finalPayload) {
+  if (completedPhaseIds.has(phaseId)) return 'done';
+  if (phaseId === activePhaseId) return finalPayload?.error ? 'blocked' : 'active';
+  return 'pending';
+}
+
+function phaseDetail(phaseId, finalPayload, candidateDatasets, artifactCard) {
+  if (phaseId === 'understand') return '已接收并解析问题';
+  if (phaseId === 'match_dataset') {
+    const route = finalPayload?.route_decision || {};
+    if (route.dataset_name) return route.dataset_name;
+    if (candidateDatasets.length) return `${candidateDatasets.length} 个候选数据集`;
+    return '等待路由结果';
+  }
+  if (phaseId === 'confirm_user') {
+    if (candidateDatasets.length) return '等待用户确认候选数据集';
+    return '无需用户确认';
+  }
+  if (phaseId === 'execute_bi') {
+    const queryPlan = finalPayload?.query_plan || finalPayload?.queryPlan || {};
+    return enumLabel(EXECUTION_STRATEGY_LABELS, queryPlan.execution_strategy) || '执行问数主链';
+  }
+  if (phaseId === 'artifact') {
+    const ref = normalizeRef(finalPayload?.primary_ref || finalPayload?.primaryRef || finalPayload?.result_ref);
+    return artifactCard?.title || ref || '生成结果摘要';
+  }
+  if (phaseId === 'next_action') return artifactCard?.actions?.length ? '查看可用动作' : '可继续追问';
+  return '';
+}
+
+export function extractCandidateDatasets(payload) {
+  const source =
+    payload?.candidate_datasets ||
+    payload?.candidateDatasets ||
+    payload?.event_envelope?.payload?.candidate_datasets ||
+    payload?.eventEnvelope?.payload?.candidateDatasets ||
+    payload?.route_payload?.candidates ||
+    [];
+  if (!Array.isArray(source)) return [];
+  return source
+    .map((candidate) => asObject(candidate))
+    .filter(Boolean)
+    .map((candidate, index) => ({
+      candidate_id: candidate.candidate_id || candidate.candidateId || candidate.dataset_id || candidate.datasetId || candidate.id || null,
+      dataset_id: candidate.dataset_id || candidate.datasetId || candidate.id || null,
+      dataset_name: candidate.dataset_name || candidate.datasetName || candidate.business_name || candidate.display_name || candidate.name || `候选 ${index + 1}`,
+      reason: candidate.reason || (Array.isArray(candidate.reasons) ? candidate.reasons.filter(Boolean).slice(0, 2).join('；') : '') || '',
+      confidence: candidate.confidence ?? candidate.score ?? null,
+      checkpoint_ref: candidate.checkpoint_ref || candidate.checkpointRef || payload?.retry_checkpoint?.checkpoint_ref || payload?.retryCheckpoint?.checkpointRef || null,
+    }));
+}
+
+export function buildCandidateConfirmation(payload) {
+  const candidates = extractCandidateDatasets(payload);
+  if (!candidates.length) return null;
+  const checkpointRef =
+    payload?.checkpoint_ref ||
+    payload?.checkpointRef ||
+    payload?.retry_checkpoint?.checkpoint_ref ||
+    payload?.retryCheckpoint?.checkpointRef ||
+    payload?.artifact_card?.retry_checkpoint ||
+    null;
+  return {
+    checkpointRef,
+    clarificationId: payload?.clarification_id || payload?.clarificationId || payload?.route_payload?.clarification_id || null,
+    candidates: candidates.map((candidate) => ({
+      ...candidate,
+      checkpoint_ref: candidate.checkpoint_ref || checkpointRef,
+    })),
+  };
+}
+
+function normalizeRef(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value !== 'object') return null;
+  return value.ref || value.ref_id || value.artifact_ref || null;
+}
+
+function appendUniqueEnvelope(envelopes, envelope) {
+  if (!envelope) return envelopes;
+  const key = `${envelope.eventId || ''}:${envelope.eventType || ''}:${envelope.taskId || ''}`;
+  const exists = envelopes.some((item) => `${item.eventId || ''}:${item.eventType || ''}:${item.taskId || ''}` === key);
+  return exists ? envelopes : [...envelopes, envelope];
+}
+
+export function extractArtifactCard(payload) {
+  const artifact = asObject(payload?.artifact_card || payload?.artifactCard);
+  const primaryRef = payload?.primary_ref || payload?.primaryRef || payload?.result_ref || null;
+  const relatedRefs = payload?.related_refs || payload?.relatedRefs || [];
+  if (!artifact && !primaryRef && !relatedRefs?.length) return null;
+  const normalized = artifact ? { ...artifact } : { title: 'BI 查询结果', status: 'ready' };
+  if (!normalized.primary_ref && !normalized.primaryRef && primaryRef) {
+    normalized.primary_ref = typeof primaryRef === 'string' ? { ref: primaryRef, ref_type: 'result' } : primaryRef;
+  }
+  if (!normalized.related_refs && !normalized.relatedRefs && Array.isArray(relatedRefs)) {
+    normalized.related_refs = relatedRefs;
+  }
+  if (!normalized.summary_for_chat && normalized.summary) {
+    normalized.summary_for_chat = normalized.summary;
+  }
+  return normalized;
+}
+
+export function buildTaskTimeline({ eventEnvelopes = [], finalPayload = null, stepTrace = [] } = {}) {
+  const completedPhaseIds = new Set();
+  let activePhaseId = 'understand';
+  for (const envelope of eventEnvelopes) {
+    const phaseId = EVENT_PHASE[envelope?.eventType];
+    if (!phaseId) continue;
+    completedPhaseIds.add(phaseId);
+    activePhaseId = phaseId;
+  }
+  if (stepTrace.some((step) => step?.node === 'query_plan')) completedPhaseIds.add('understand');
+  if (stepTrace.some((step) => step?.node === 'sql_execute')) completedPhaseIds.add('execute_bi');
+  const candidateDatasets = extractCandidateDatasets(finalPayload || {});
+  const artifactCard = extractArtifactCard(finalPayload || {});
+  if (candidateDatasets.length) activePhaseId = 'confirm_user';
+  if (artifactCard || finalPayload?.answer) {
+    completedPhaseIds.add('artifact');
+    activePhaseId = 'next_action';
+  }
+  return TIMELINE_PHASES.map((phase) => ({
+    ...phase,
+    status: phaseStatus(phase.id, activePhaseId, completedPhaseIds, finalPayload),
+    detail: phaseDetail(phase.id, finalPayload || {}, candidateDatasets, artifactCard),
+  }));
 }
 
 function summarizeCandidateAssets(candidateAssets) {
@@ -337,6 +521,7 @@ export function makeChatAdapter({ datasetIdRef }) {
       const stepTrace = [];
       let accText = '';      // 已累积的 text
       let finalPayload = null;
+      const eventEnvelopes = [];
 
       // 工具：构造当前 message content
       const buildContent = () => [
@@ -346,6 +531,8 @@ export function makeChatAdapter({ datasetIdRef }) {
 
       for await (const ev of stream) {
         if (abortSignal.aborted) break;
+        const envelope = normalizeEventEnvelope(ev);
+        if (envelope) eventEnvelopes.push(envelope); // 标准 envelope 只写入 metadata，旧 SSE 顶层字段继续保持兼容。
 
         if (ev.type === 'token') {
           accText += ev.content || '';
@@ -396,6 +583,15 @@ export function makeChatAdapter({ datasetIdRef }) {
       if (finalPayload) {
         emitTrace(finalPayload);
         emitResolvedConversation(unstable_threadId, finalPayload.conversation_id);
+        const finalEnvelope = normalizeEventEnvelope(finalPayload);
+        const allEventEnvelopes = appendUniqueEnvelope(eventEnvelopes, finalEnvelope);
+        const artifactCard = extractArtifactCard(finalPayload);
+        const candidateConfirmation = buildCandidateConfirmation(finalPayload);
+        const taskTimeline = buildTaskTimeline({
+          eventEnvelopes: allEventEnvelopes,
+          finalPayload,
+          stepTrace,
+        });
 
         // 收敛：text 用 final.answer 兜底（report_generator token 可能没全到）
         const finalText = finalPayload.answer || accText;
@@ -435,6 +631,14 @@ export function makeChatAdapter({ datasetIdRef }) {
               query_plan_debug: finalPayload.query_plan_debug || null,
               queryProfile: finalPayload.query_profile || finalPayload.explainability?.query_profile || null,
               explainability: finalPayload.explainability || null,
+              eventEnvelope: finalEnvelope,
+              eventEnvelopes: allEventEnvelopes,
+              taskTimeline,
+              candidateDatasets: extractCandidateDatasets(finalPayload),
+              candidateConfirmation,
+              artifactCard,
+              primaryRef: finalPayload.primary_ref || finalPayload.primaryRef || null,
+              relatedRefs: finalPayload.related_refs || finalPayload.relatedRefs || null,
               resultRef: finalPayload.result_ref
                 || finalPayload.response_metadata?.subagent_tool_result?.result_ref
                 || null,

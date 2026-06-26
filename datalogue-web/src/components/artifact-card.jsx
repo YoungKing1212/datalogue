@@ -21,11 +21,11 @@ const RESERVED_ACTIONS = {
 };
 
 function actionType(action) {
-  return String(action?.action_type || action?.actionType || '').trim();
+  return String(action?.action_type || action?.actionType || action?.action_id || action?.actionId || '').trim();
 }
 
 function actionCheckpointRef(action) {
-  return action?.checkpoint_ref || action?.checkpointRef || null;
+  return action?.checkpoint_ref || action?.checkpointRef || action?.payload_ref || action?.payloadRef || null;
 }
 
 function normalizeActions(actions) {
@@ -154,20 +154,23 @@ function ArtifactAction({ action }) {
 export function ArtifactCard({ artifact }) {
   const visibleActions = normalizeActions(artifact?.actions);
   if (!artifact) return null;
+  const primaryRef = artifact.primary_ref || artifact.primaryRef || (Array.isArray(artifact.refs) ? artifact.refs[0] : null);
+  const relatedRefs = artifact.related_refs || artifact.relatedRefs || (Array.isArray(artifact.refs) ? artifact.refs.slice(1) : []);
+  const summary = artifact.summary_for_chat || artifact.summaryForChat || artifact.summary || '';
 
   return (
     <section className={`artifact-card artifact-card-${artifact.status || 'unknown'}`} aria-label={artifact.title || 'Artifact'}>
       <div className="artifact-card-head">
         <div>
           <strong>{artifact.title || '查询产物'}</strong>
-          {artifact.summary_for_chat && <p>{artifact.summary_for_chat}</p>}
+          {summary && <p>{summary}</p>}
         </div>
         {artifact.status && <span className="artifact-card-status">{artifact.status}</span>}
       </div>
       <ArtifactPreview previewPayload={artifact.preview_payload || artifact.previewPayload} />
       <ArtifactRefs
-        primaryRef={artifact.primary_ref || artifact.primaryRef}
-        relatedRefs={artifact.related_refs || artifact.relatedRefs}
+        primaryRef={primaryRef}
+        relatedRefs={relatedRefs}
       />
       {visibleActions.length > 0 && (
         <div className="artifact-card-actions">
