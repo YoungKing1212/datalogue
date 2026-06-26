@@ -32,6 +32,9 @@ from app.core.database import get_db
 from app import schemas, models
 from app.graph.workflow import build_workflow
 from app.schemas.bi_workbench import (
+    ArtifactAction,
+    ArtifactCard,
+    ArtifactRef,
     DatalogueEventType,
     DatalogueEventVisibility,
     build_datalogue_event_envelope,
@@ -304,11 +307,262 @@ def _with_event_envelope(
         visibility=visibility,
         payload=envelope_payload,
         metadata=envelope_metadata,
+        task_id=payload.get("task_id") or envelope_metadata.get("task_id"),
+        conversation_id=payload.get("conversation_id") or envelope_metadata.get("conversation_id"),
+        trace_id=(
+            payload.get("trace_id")
+            or payload.get("langfuse_trace_id")
+            or envelope_metadata.get("trace_id")
+        ),
     )
     enriched = dict(payload)
     # event_envelope 是新增兼容字段，不能覆盖旧 type；未来 AgentScope 可直接消费这里。
     enriched["event_envelope"] = envelope.model_dump(mode="json")
     return enriched
+
+
+def _safe_public_ref_value(value: Any) -> str | None:
+    """只接受公开引用句柄；raw SQL/raw result 等内部内容不能进入 ArtifactCard。"""
+
+    if isinstance(value, str):
+        ref = value.strip()
+    elif isinstance(value, dict):
+        ref = str(
+            value.get("ref_id")
+            or value.get("ref")
+            or value.get("artifact_ref")
+            or ""
+        ).strip()
+    else:
+        return None
+    if ref.startswith(("artifact:", "trace:", "checkpoint://")):
+        return ref
+    return None
+
+
+def _artifact_ref_dict(
+    ref_value: Any,
+    *,
+    ref_type: str = "artifact",
+    label: str | None = None,
+) -> dict | None:
+    """构造前端/Agent 可见的轻量引用，避免携带 artifact body。"""
+
+    ref_id = _safe_public_ref_value(ref_value)
+    if not ref_id:
+        return None
+    artifact_ref = ArtifactRef(ref_id=ref_id, ref_type=ref_type, label=label)
+    return artifact_ref.model_dump(mode="json", exclude_none=True)
+
+
+def _iter_result_refs_from_payload(final_payload: dict) -> list[dict]:
+    """从 final payload 中提取可公开的查询产物引用，不读取产物内容。"""
+
+    refs: list[dict] = []
+    direct_result = _artifact_ref_dict(
+        final_payload.get("result_ref"),
+        ref_type="result",
+        label="主查询结果",
+    )
+    if direct_result:
+        refs.append(direct_result)
+    direct_report = _artifact_ref_dict(
+        final_payload.get("report_ref"),
+        ref_type="report",
+        label="报告占位",
+    )
+    if direct_report:
+        refs.append(direct_report)
+    for item in final_payload.get("subagent_tool_results") or []:
+        if not isinstance(item, dict):
+            continue
+        result_ref = _artifact_ref_dict(
+            item.get("result_ref"),
+            ref_type="result",
+            label=f"数据集 {item.get('dataset_id')} 查询结果"
+            if item.get("dataset_id") is not None
+            else "查询结果",
+        )
+        if result_ref:
+            refs.append(result_ref)
+        report_ref = _artifact_ref_dict(
+            item.get("report_ref"),
+            ref_type="report",
+            label=f"数据集 {item.get('dataset_id')} 报告占位"
+            if item.get("dataset_id") is not None
+            else "报告占位",
+        )
+        if report_ref:
+            refs.append(report_ref)
+    seen: set[str] = set()
+    unique_refs: list[dict] = []
+    for ref in refs:
+        ref_id = ref.get("ref_id")
+        if ref_id and ref_id not in seen:
+            seen.add(ref_id)
+            unique_refs.append(ref)
+    return unique_refs
+
+
+def _checkpoint_ref_from_payload(final_payload: dict) -> str | None:
+    checkpoint = final_payload.get("retry_checkpoint")
+    if not isinstance(checkpoint, dict):
+        return None
+    return _safe_public_ref_value(checkpoint.get("checkpoint_ref"))
+
+
+def _build_related_artifact_refs(final_payload: dict, primary_ref: dict | None) -> list[dict]:
+    """收集 trace/report/checkpoint 等相关引用，保持 raw SQL/raw result 不出现在引用层。"""
+
+    primary_id = primary_ref.get("ref_id") if isinstance(primary_ref, dict) else None
+    related: list[dict] = [
+        ref for ref in _iter_result_refs_from_payload(final_payload) if ref.get("ref_id") != primary_id
+    ]
+    trace_id = (
+        final_payload.get("trace_id")
+        or final_payload.get("langfuse_trace_id")
+        or (final_payload.get("response_metadata") or {}).get("trace_id")
+    )
+    if trace_id:
+        trace_ref = _artifact_ref_dict(f"trace:{trace_id}", ref_type="trace", label="Langfuse Trace")
+        if trace_ref:
+            related.append(trace_ref)
+    checkpoint_ref = _checkpoint_ref_from_payload(final_payload)
+    if checkpoint_ref:
+        related.append(
+            ArtifactRef(
+                ref_id=checkpoint_ref,
+                ref_type="checkpoint",
+                label="重试 checkpoint",
+            ).model_dump(mode="json", exclude_none=True)
+        )
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for ref in related:
+        ref_id = ref.get("ref_id")
+        if ref_id and ref_id not in seen:
+            seen.add(ref_id)
+            deduped.append(ref)
+    return deduped
+
+
+def _final_payload_task_id(final_payload: dict) -> str:
+    """生成稳定 task_id，让页面、SSE、trace 和 artifact refs 可以互相对齐。"""
+
+    existing = str(final_payload.get("task_id") or "").strip()
+    if existing:
+        return existing
+    conversation_id = final_payload.get("conversation_id") or "unknown"
+    message_id = final_payload.get("message_id") or "pending"
+    return f"conv-{conversation_id}-msg-{message_id}"
+
+
+def _build_artifact_card(final_payload: dict, primary_ref: dict, related_refs: list[dict]) -> dict:
+    """构造用户可见产物卡；第一阶段只暴露摘要、引用和安全动作。"""
+
+    checkpoint_ref = _checkpoint_ref_from_payload(final_payload)
+    retry_action = ArtifactAction(
+        action_id="retry",
+        label="重试",
+        enabled=bool(checkpoint_ref),
+        disabled_reason=None if checkpoint_ref else "缺少可恢复的 checkpoint",
+        payload_ref=checkpoint_ref,
+    )
+    card = ArtifactCard(
+        artifact_type="bi_answer",
+        title="BI 查询结果",
+        status="error" if final_payload.get("error") else "ready",
+        summary="查询产物已生成，明细通过 artifact 引用按需读取。",
+        preview_payload={
+            "status_label": "ready" if not final_payload.get("error") else "error",
+        },
+        primary_ref=primary_ref,
+        related_refs=related_refs,
+        actions=[
+            retry_action,
+            ArtifactAction(
+                action_id="export",
+                label="导出",
+                enabled=False,
+                disabled_reason="第一阶段不启动 ReportAgent 导出链路。",
+            ),
+            ArtifactAction(
+                action_id="continue_edit",
+                label="继续编辑",
+                enabled=False,
+                disabled_reason="第一阶段只打开详情面板，不启动 ReportAgent。",
+            ),
+        ],
+    )
+    return card.model_dump(mode="json", exclude_none=True)
+
+
+def _attach_artifact_card_refs_to_final_payload(
+    final_payload: dict,
+    *,
+    include_card: bool = True,
+) -> None:
+    """把 final payload 补齐 C-ready refs；没有查询产物时不伪造 ArtifactCard。"""
+
+    task_id = _final_payload_task_id(final_payload)
+    trace_id = final_payload.get("trace_id") or final_payload.get("langfuse_trace_id")
+    final_payload["task_id"] = task_id
+    final_payload["trace_id"] = trace_id
+    result_refs = _iter_result_refs_from_payload(final_payload)
+    primary_ref = result_refs[0] if result_refs else None
+    related_refs = _build_related_artifact_refs(final_payload, primary_ref)
+    final_payload["primary_ref"] = primary_ref
+    final_payload["related_refs"] = related_refs
+    final_payload["artifact_card"] = (
+        _build_artifact_card(final_payload, primary_ref, related_refs)
+        if include_card and primary_ref
+        else None
+    )
+    response_metadata = final_payload.setdefault("response_metadata", {})
+    if isinstance(response_metadata, dict):
+        response_metadata["task_id"] = task_id
+        response_metadata["trace_id"] = trace_id
+        response_metadata["primary_ref"] = primary_ref
+        response_metadata["related_refs"] = related_refs
+        if final_payload.get("artifact_card") is not None:
+            response_metadata["artifact_card"] = final_payload["artifact_card"]
+
+
+def _artifact_refs_for_query_artifact(final_payload: dict) -> list[str]:
+    """query_artifact 只接受 artifact:<uuid>，trace/checkpoint 不参与回填。"""
+
+    refs: list[str] = []
+    for ref in [final_payload.get("primary_ref"), *(final_payload.get("related_refs") or [])]:
+        ref_id = _safe_public_ref_value(ref)
+        if ref_id and ref_id.startswith("artifact:"):
+            refs.append(ref_id)
+    return refs
+
+
+def _sync_artifact_metadata_to_assistant_message(
+    *,
+    db: Session,
+    assistant_message: models.Message,
+    final_payload: dict,
+) -> None:
+    """把新产物引用写回消息 metadata；旧消息不迁移、不补造 ArtifactCard。"""
+
+    metadata = dict(assistant_message.response_metadata or {})
+    for key in (
+        "task_id",
+        "trace_id",
+        "primary_ref",
+        "related_refs",
+        "artifact_card",
+        "retry_checkpoint",
+    ):
+        if key in final_payload:
+            metadata[key] = final_payload.get(key)
+    assistant_message.response_metadata = jsonable_encoder(metadata)
+    final_payload["response_metadata"] = assistant_message.response_metadata
+    db.add(assistant_message)
+    db.commit()
+    db.refresh(assistant_message)
 
 
 def _route_decision_event_type(route_decision: dict) -> DatalogueEventType:
@@ -1744,14 +1998,31 @@ async def _stream_chat_singleturn(
                 "response_metadata": response_metadata,
                 "conversation_id": conv.id,
                 "message_id": assistant_message.id,
+                "task_id": f"conv-{conv.id}-msg-{assistant_message.id}",
+                "trace_id": trace_context.trace_id,
                 "title": conv.title,
             }
+        _attach_artifact_card_refs_to_final_payload(final_payload, include_card=False)
+        _sync_artifact_metadata_to_assistant_message(
+            db=db,
+            assistant_message=assistant_message,
+            final_payload=final_payload,
+        )
         yield _sse_data(
             _with_event_envelope(
                 final_payload,
                 event_type="error.blocked",
                 visibility="user_visible",
-                payload_fields=("answer", "entry_route", "entry_reason", "route_decision"),
+                payload_fields=(
+                    "answer",
+                    "entry_route",
+                    "entry_reason",
+                    "route_decision",
+                    "primary_ref",
+                    "related_refs",
+                    "task_id",
+                    "trace_id",
+                ),
             )
         )
         _log_chat_stream_checkpoint(
@@ -2349,11 +2620,23 @@ async def _stream_chat_singleturn(
             "response_metadata": response_metadata,
             "conversation_id": conv_id,
             "message_id": assistant_message.id,
+            "task_id": f"conv-{conv_id}-msg-{assistant_message.id}",
+            "trace_id": trace_context.trace_id,
             "title": conv.title,
             "langfuse_trace_id": trace_context.trace_id,
             "langfuse_session_id": trace_context.session_id,
             "observability": trace_context.observability_payload(),
         }
+        _attach_artifact_card_refs_to_final_payload(final_payload)  # fanout 也只暴露多数据集产物引用，不携带结果 body。
+        _sync_artifact_metadata_to_assistant_message(
+            db=db,
+            assistant_message=assistant_message,
+            final_payload=final_payload,
+        )
+        query_artifact_store.attach_message_id(
+            _artifact_refs_for_query_artifact(final_payload),
+            message_id=int(assistant_message.id),
+        )
         # fanout final 也走同一摘要格式，便于和普通 final_payload_ready 横向对比。
         _log_chat_stream_checkpoint("fanout_final_payload_ready", **_chat_stream_log_summary(final_payload))
         yield _sse_data(
@@ -2361,7 +2644,17 @@ async def _stream_chat_singleturn(
                 final_payload,
                 event_type="answer.completed",
                 visibility="user_visible",
-                payload_fields=("answer", "entry_route", "entry_reason", "subagent_tool_results"),
+                payload_fields=(
+                    "answer",
+                    "entry_route",
+                    "entry_reason",
+                    "subagent_tool_results",
+                    "artifact_card",
+                    "primary_ref",
+                    "related_refs",
+                    "task_id",
+                    "trace_id",
+                ),
             )
         )
         if not defer_trace_close:
@@ -3081,11 +3374,6 @@ async def _stream_chat_singleturn(
         if isinstance(response_metadata, dict)
         else [],
     )
-    query_artifact_store.attach_message_id(  # 把 artifact ref 反连到 assistant message，便于历史追溯。
-        [final_state.get("result_ref"), final_state.get("report_ref")],
-        message_id=int(assistant_message.id),
-    )
-
     total_tokens = 0
     if isinstance(token_usage, dict):
         total_tokens = int(token_usage.get("total_tokens") or 0)
@@ -3181,13 +3469,14 @@ async def _stream_chat_singleturn(
         "schema_tokens": final_state.get("schema_tokens"),
         "conversation_id": conv_id,
         "message_id": assistant_message.id,
+        "task_id": f"conv-{conv_id}-msg-{assistant_message.id}",
+        "trace_id": trace_context.trace_id,
         "title": conv.title,
         "langfuse_trace_id": trace_context.trace_id,
         "langfuse_session_id": trace_context.session_id,
         "observability": trace_context.observability_payload(),
         "multiturn_observability_metrics": multiturn_observability_metrics,
     }
-    _log_chat_stream_checkpoint("final_payload_ready", **_chat_stream_log_summary(final_payload))  # 对齐 DevTools final。
     _attach_retry_checkpoint_to_final_payload(  # final 发出前注册安全 retry ref，前端只拿 ref 发起重试。
         final_payload,
         conversation_store=conversation_store,
@@ -3196,6 +3485,17 @@ async def _stream_chat_singleturn(
         conversation_id=conv_id,
         message_id=assistant_message.id,
     )
+    _attach_artifact_card_refs_to_final_payload(final_payload)  # 统一生成 ArtifactCard/refs，不把 raw 结果放进 final。
+    _sync_artifact_metadata_to_assistant_message(  # assistant message metadata 作为历史回放真相源。
+        db=db,
+        assistant_message=assistant_message,
+        final_payload=final_payload,
+    )
+    query_artifact_store.attach_message_id(  # 只把 artifact:<uuid> 反连到 assistant message，trace/checkpoint 不进 query_artifact。
+        _artifact_refs_for_query_artifact(final_payload),
+        message_id=int(assistant_message.id),
+    )
+    _log_chat_stream_checkpoint("final_payload_ready", **_chat_stream_log_summary(final_payload))  # 对齐 DevTools final。
     yield _sse_data(
         _with_event_envelope(
             final_payload,
@@ -3207,6 +3507,11 @@ async def _stream_chat_singleturn(
                 "entry_reason",
                 "result_ref",
                 "report_ref",
+                "artifact_card",
+                "primary_ref",
+                "related_refs",
+                "task_id",
+                "trace_id",
                 "query_profile",
             ),
         )
@@ -3253,6 +3558,43 @@ def _persist_dataset_confirmation_fact(
     store.db.refresh(state)
 
 
+def _persist_artifact_refs_fact(
+    *,
+    store: ConversationStore,
+    state: models.ConversationState,
+    final_payload: dict,
+) -> None:
+    """把本轮公开 artifact refs 写入 conversation_state；不迁移旧会话、不保存 raw 结果。"""
+
+    task_id = final_payload.get("task_id")
+    primary_ref = final_payload.get("primary_ref")
+    related_refs = final_payload.get("related_refs") or []
+    if not (task_id or primary_ref or related_refs):
+        return
+    refs_fact = {
+        "kind": "artifact_refs",
+        "task_id": task_id,
+        "message_id": final_payload.get("message_id"),
+        "trace_id": final_payload.get("trace_id") or final_payload.get("langfuse_trace_id"),
+        "primary_ref": primary_ref,
+        "related_refs": related_refs,
+    }
+    facts = [
+        item
+        for item in (state.facts or [])
+        if not (
+            isinstance(item, dict)
+            and item.get("kind") == "artifact_refs"
+            and item.get("task_id") == task_id
+        )
+    ]
+    facts.append(jsonable_encoder(refs_fact))
+    state.facts = facts
+    store.db.add(state)
+    store.db.commit()
+    store.db.refresh(state)
+
+
 def _attach_retry_checkpoint_to_final_payload(
     final_payload: dict,
     *,
@@ -3277,7 +3619,7 @@ def _attach_retry_checkpoint_to_final_payload(
         if final_payload.get("error") and final_payload.get("result_ref")
         else "query_context_ready"
     )
-    task_id = f"conv-{conversation_id}-msg-{message_id or 'pending'}"
+    task_id = _final_payload_task_id(final_payload)
     try:
         checkpoint_ref = conversation_store.register_retry_checkpoint(
             session_id=business_session_id,
@@ -3417,6 +3759,11 @@ def _persist_completed_turn(
         store=store,
         state=persisted_state,
         pending_resolution=pending_resolution,
+    )
+    _persist_artifact_refs_fact(  # 保存本轮公开 refs，后续计划/验收可按 task_id 追溯，不写 raw 结果。
+        store=store,
+        state=persisted_state,
+        final_payload=final_payload,
     )
     last_success_task = None
     last_success_task_write_status: dict[str, Any] = {"status": "not_built"}
@@ -3617,12 +3964,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             "entry_route": "turn_pending",
             "conversation_id": payload.conversation_id,
         }
+        _attach_artifact_card_refs_to_final_payload(lock_payload, include_card=False)
         yield _sse_data(
             _with_event_envelope(
                 lock_payload,
                 event_type="error.blocked",
                 visibility="user_visible",
-                payload_fields=("answer", "entry_route"),
+                payload_fields=("answer", "entry_route", "primary_ref", "related_refs", "task_id", "trace_id"),
             )
         )
         return
@@ -4084,6 +4432,8 @@ async def _interpret_early_return(
         "response_metadata": response_metadata,
         "conversation_id": conv.id,
         "message_id": assistant_message.id,
+        "task_id": f"conv-{conv.id}-msg-{assistant_message.id}",
+        "trace_id": trace_context.trace_id,
         "title": conv.title,
         "langfuse_trace_id": trace_context.trace_id,
         "langfuse_session_id": trace_context.session_id,
@@ -4091,13 +4441,28 @@ async def _interpret_early_return(
         "trace_metadata": trace_metadata,
         "out_capsule": interpret_payload.get("out_capsule"),
     }
+    _attach_artifact_card_refs_to_final_payload(final_payload, include_card=False)
+    _sync_artifact_metadata_to_assistant_message(
+        db=db,
+        assistant_message=assistant_message,
+        final_payload=final_payload,
+    )
     _log_chat_stream_checkpoint("interpret_final_payload_ready", **_chat_stream_log_summary(final_payload))
     yield _sse_data(
         _with_event_envelope(
             final_payload,
             event_type="answer.completed",
             visibility="user_visible",
-            payload_fields=("answer", "entry_route", "entry_reason", "out_capsule"),
+            payload_fields=(
+                "answer",
+                "entry_route",
+                "entry_reason",
+                "out_capsule",
+                "primary_ref",
+                "related_refs",
+                "task_id",
+                "trace_id",
+            ),
         )
     )
 
@@ -4212,18 +4577,35 @@ async def _early_route_return(
         "response_metadata": response_metadata,
         "conversation_id": conv.id,
         "message_id": assistant_message.id,
+        "task_id": f"conv-{conv.id}-msg-{assistant_message.id}",
+        "trace_id": trace_context.trace_id,
         "title": conv.title,
         "langfuse_trace_id": trace_context.trace_id,
         "langfuse_session_id": trace_context.session_id,
         "observability": trace_context.observability_payload(),
         "trace_metadata": trace_metadata,
     }
+    _attach_artifact_card_refs_to_final_payload(final_payload, include_card=False)
+    _sync_artifact_metadata_to_assistant_message(
+        db=db,
+        assistant_message=assistant_message,
+        final_payload=final_payload,
+    )
     _log_chat_stream_checkpoint("early_final_payload_ready", **_chat_stream_log_summary(final_payload))
     yield _sse_data(
         _with_event_envelope(
             final_payload,
             event_type=_final_event_type(final_payload),
             visibility="user_visible",
-            payload_fields=("answer", "entry_route", "entry_reason", "route_payload"),
+            payload_fields=(
+                "answer",
+                "entry_route",
+                "entry_reason",
+                "route_payload",
+                "primary_ref",
+                "related_refs",
+                "task_id",
+                "trace_id",
+            ),
         )
     )

@@ -129,6 +129,7 @@
 - B-first C-ready 计划细化与 Obsidian 同步：拆分后续改造记录、正式开发计划、决策总览和 AgentScope 2.0 集成系统设计，明确 P0/P1/P2 与五件套验收口径。
 - Multica 开发测试并行员工扩编：为数语小队新增 LeadAgent、数据治理 SQL、前端工作台、后端回归、前端 E2E、观测链路等 6 个并行员工角色，并验证 squad roster。
 - BI_SOUL 内部契约与 Hermes SOUL 同步校验：新增 BI 不可越界 source of truth、同步服务和测试，明确外层 Agent 只能调用 `ask_bi`，raw SQL/raw result/capsule 属于控制面。
+- DAT-15 数据集能力清单：新增 `CapabilityManifest` / `CapabilityManifestSummary`、业务级泄露扫描和 `GET /api/dataset/{dataset_id}/capability-manifest` 调试接口，为 LeadAgent Capability Router 提供真实 manifest summary 依赖。
 
 ## 高价值判断
 
@@ -139,13 +140,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-26 19:11 · DAT-15 数据集能力清单
-
-- 涉及文件：`datalogue-api/app/schemas/capability_manifest.py`、`datalogue-api/app/services/capability_manifest.py`、`datalogue-api/app/api/dataset.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/tests/test_capability_manifest.py`、`datalogue-api/tests/test_dataset.py`、`.codex/project-memory.md`
-- 关键改动：新增 `CapabilityManifest` 和 `CapabilityManifestSummary`，从数据集名称、指标/维度名称、当前 Manifest 的人工业务描述、典型问题、不可回答范围和权限摘要构建业务级能力清单；新增输出前泄露扫描，命中 SQL、表、字段、schema、blueprint、raw result 等内部键时 fail closed；新增只读调试接口 `GET /api/dataset/{dataset_id}/capability-manifest`，返回同样经过安全扫描的业务摘要，为后续 LeadAgent Capability Router 提供真实 manifest 依赖。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_capability_manifest.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_dataset.py::TestDatasetAPI::test_dataset_capability_manifest_endpoint -q`，1 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/capability_manifest.py app/services/capability_manifest.py app/api/dataset.py` 通过。
-- 残留风险：当前能力清单仍是后端服务和调试接口，`dataset_router.py` 与 LeadAgent 路由闭环要在 #4 rebase 到 DAT-15 后继续改为只消费 `CapabilityManifestSummary`。
 
 ### 2026-06-26 19:18 · DAT-13 LeadAgent Capability Router 对齐能力清单
 
@@ -209,3 +203,10 @@
 - 关键改动：在现有 Chat 入口内解析 `event_envelope` 并兼容旧 SSE 顶层字段，将 final payload 收敛为 `taskTimeline`、`candidateConfirmation`、`artifactCard`、`primaryRef/relatedRefs` 等 C-ready metadata；新增业务阶段任务时间线组件；新增候选数据集确认卡，点击后只提交 `candidate_id/checkpoint_ref/selected_dataset_id/selected_text`，不提交 schema/字段/资产细节；ArtifactCard 支持 `ref/ref_id`、`refs`、`summary`、`action_id/payload_ref` 兼容，`export/continue_edit` 继续禁用。
 - 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，4 个测试文件 11 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning。
 - 残留风险：当前仍承接在现有 Chat 页面，未新建独立 BI 工作台；真实页面点击候选后继续同一任务、retry 自定义事件接 composer 的端到端验收需要 DAT-18 五件套记录继续覆盖。
+
+### 2026-06-26 21:05 · DAT-17 Artifact refs 持久化与旧会话兼容
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_artifact_card_contract.py`、`datalogue-api/tests/test_legacy_conversation_replay.py`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/tests/unit/assistant/artifact-custom.test.js`、`.codex/project-memory.md`
+- 关键改动：final payload 统一补齐 `task_id`、`trace_id`、`primary_ref`、`related_refs` 和 `artifact_card`，event envelope 透传同一 task/trace；ArtifactCard 只暴露 `artifact:/trace:/checkpoint://` 引用句柄和禁用态动作，不携带 raw SQL/raw result；assistant message metadata 写回新 refs，`query_artifact` 只按 `artifact:<uuid>` 反连 message_id；`conversation_state.facts` 写入 `artifact_refs` fact，旧会话不迁移、不回填；前端历史回放只渲染真实 `response_metadata.artifact_card`，不会根据旧 `result_ref/report_ref` 伪造卡片。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_artifact_card_contract.py tests/test_legacy_conversation_replay.py tests/test_conversation.py tests/test_artifact_api.py -q`，15 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_event_envelope.py tests/test_retry_checkpoint.py tests/test_chat.py -q`，129 条用例通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx tests/unit/assistant/artifact-custom.test.js src/assistant/chat-adapter.test.js`，3 个测试文件 14 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
+- 残留风险：DAT-17 只完成协议与持久化闭环；真实页面、SSE、后端日志、Langfuse、`query_artifact/conversation_state` 五件套一致性仍需 DAT-18 用本地服务和真实问题记录验收。

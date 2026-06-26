@@ -102,6 +102,20 @@ describe('ArtifactCard', () => {
     expect(screen.getByText('artifact:trace:1')).toBeInTheDocument();
   });
 
+  it('renders safe key-value preview payload without table rows', () => {
+    render(
+      <ArtifactCard
+        artifact={{
+          ...artifact,
+          preview_payload: { status_label: 'ready' },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('status_label')).toBeInTheDocument();
+    expect(screen.getAllByText('ready').length).toBeGreaterThanOrEqual(2);
+  });
+
   it('accepts action_id and payload_ref aliases for retry', () => {
     const listener = vi.fn();
     window.addEventListener('datalogue:artifact-action', listener);

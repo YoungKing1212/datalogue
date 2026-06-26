@@ -107,7 +107,21 @@ function ArtifactPreview({ previewPayload }) {
   }
 
   const { rows, columns } = normalizePreview(previewPayload);
-  if (!columns.length) return null;
+  if (!columns.length) {
+    const entries = Object.entries(previewPayload || {})
+      .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value));
+    if (!entries.length) return null;
+    return (
+      <dl className="artifact-card-preview-grid">
+        {entries.map(([key, value]) => (
+          <div key={key}>
+            <dt>{key}</dt>
+            <dd>{String(value)}</dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
   return (
     <div className="artifact-preview-payload">
       <table>
