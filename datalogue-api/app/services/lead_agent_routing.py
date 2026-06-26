@@ -24,19 +24,20 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
+from datetime import datetime
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
-from app import models
 from app.graph.llm import get_llm
 from app.models import AnalysisBlueprint, BusinessTerm
+from app.models.conversation import PendingClarification
 from app.prompts.intent_router import INTENT_RECOGNITION_SYSTEM
-from app.services.observability.tracer import get_observability_tracer
 from app.utils.token import extract_token_usage
 
 logger = logging.getLogger(__name__)
@@ -527,7 +528,7 @@ def _build_human_text(
         )
     if clarification_hints:
         return (
-            f"【多轮提示】\n"
+            "【多轮提示】\n"
             + "\n".join(f"- {h}" for h in clarification_hints)
             + f"\n【当前问题】\n{question}"
         )
@@ -744,6 +745,26 @@ def _classify_entry_intent(
     is_detail_query = _contains_any(q_norm, _DETAIL_PATTERNS)
     is_short_ambiguous = len(q_norm) <= 4 and _contains_any(q_norm, _AMBIGUOUS_PATTERNS)
 
+    if dataset_id is None and (is_metric_query or is_detail_query or has_dimension_entity):
+        return {
+            "intent": intent,
+            "entities": entities,
+            "entry_intent": "clarification",
+            "entry_route": "clarify",
+            "entry_reason": "Capability Router 尚未确认数据集，禁止直接 fan-out 到 QueryGraph。",
+            "answer": (
+                "我已识别到这是数据查询问题，但还需要先确认要使用的数据集。"
+                "请从候选数据集中选择一个，或补充更明确的业务范围。"
+            ),
+            "route_payload": {
+                "kind": "clarification",
+                "missing": ["dataset"],
+            },
+            "blueprint_id": None,
+            "blueprint_match": None,
+            "knowledge_term_id": None,
+        }
+
     if is_blueprint_like and not is_metric_query and not is_detail_query:
         return {
             "intent": intent,
@@ -861,11 +882,6 @@ def _classify_entry_intent(
 # 复用 _normalized_text / _coerce_text_list / _semantic_match_text 三个本地副本，
 # 避免 services→graph 反向依赖。
 # ============================================================
-
-import re  # noqa: F401  # 保持与文件其他部分 import 风格一致
-from datetime import datetime
-
-from app.models.conversation import PendingClarification
 
 _TERM_PENDING_NODE_NAME = "term_clarification_resolution"
 _TERM_PENDING_DISPLAY_NAME = "术语澄清解析"
