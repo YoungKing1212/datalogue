@@ -192,7 +192,7 @@ describe('ArtifactCard', () => {
     );
 
     expect(screen.getByText('status_label')).toBeInTheDocument();
-    expect(screen.getAllByText('ready').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('ready')).toBeInTheDocument();
   });
 
   it('accepts action_id and payload_ref aliases for retry', () => {

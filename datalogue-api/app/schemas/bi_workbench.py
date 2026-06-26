@@ -135,7 +135,7 @@ class ArtifactRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ref_id: str
-    ref_type: Literal["result", "report", "artifact", "checkpoint", "unknown"] = "artifact"
+    ref_type: Literal["result", "report", "artifact", "trace", "checkpoint", "unknown"] = "artifact"
     label: str | None = None
 
 
@@ -148,6 +148,7 @@ class ArtifactAction(BaseModel):
     label: str
     enabled: bool = True
     disabled_reason: str | None = None
+    payload_ref: str | None = None
 
 
 class ArtifactCard(BaseModel):
@@ -157,8 +158,11 @@ class ArtifactCard(BaseModel):
 
     artifact_type: str = "bi_answer"
     title: str = "BI 查询结果"
+    status: Literal["ready", "completed", "generating", "error", "partial", "unknown"] = "ready"
     summary: str = ""
     preview_payload: dict[str, Any] = Field(default_factory=dict)
+    primary_ref: ArtifactRef | None = None
+    related_refs: list[ArtifactRef] = Field(default_factory=list)
     actions: list[ArtifactAction] = Field(default_factory=list)
     refs: list[ArtifactRef] = Field(default_factory=list)
 
