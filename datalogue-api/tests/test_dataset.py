@@ -179,6 +179,22 @@ class TestDatasetAPI:
         assert data["sql_guard"]["code"] in {"FORBIDDEN_KEYWORD", "NOT_READONLY"}
         assert data["error"]
 
+    def test_dataset_capability_manifest_endpoint(self, client, sample_dataset):
+        """能力清单调试接口只返回业务摘要，不暴露字段、表和 SQL。"""
+
+        resp = client.get(f"/api/dataset/{sample_dataset.id}/capability-manifest")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["dataset_id"] == sample_dataset.id
+        assert data["schema_version"] == "capability_manifest.v1"
+        assert "GMV" in data["metrics"]
+        assert "地区" in data["dimensions"]
+        serialized = str(data)
+        assert "expr" not in serialized
+        assert "table_name" not in serialized
+        assert "raw_sql" not in serialized
+
     def test_sql_preview_blocks_unselected_table(
         self, client, db_session, sample_dataset, sample_datasource, monkeypatch
     ):

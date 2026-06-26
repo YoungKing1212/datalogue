@@ -40,6 +40,7 @@ from app.services.dataset_manifest import (
     route_check_manifest,
     save_manifest_draft,
 )
+from app.services.capability_manifest import build_dataset_capability_manifest
 from app.services.sql_preview import preview_dataset_sql
 from app.utils.query_constraints import normalize_query_constraints
 
@@ -116,6 +117,18 @@ def get_dataset(ds_id: int, db: Session = Depends(get_db)):
         logger.warning(f"数据集不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据集不存在")
     return ds
+
+
+@router.get("/{ds_id}/capability-manifest", response_model=schemas.CapabilityManifest)
+def get_dataset_capability_manifest(ds_id: int, db: Session = Depends(get_db)):
+    """读取数据集能力清单；只返回业务摘要，不暴露字段、表、SQL 或完整语义资产。"""
+
+    logger.info("获取数据集能力清单: ds_id=%s", ds_id)
+    ds = db.get(models.SemanticDataset, ds_id)
+    if not ds:
+        logger.warning("能力清单数据集不存在: ds_id=%s", ds_id)
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    return build_dataset_capability_manifest(db, ds_id)
 
 
 @router.post("/{ds_id}/sql/preview", response_model=schemas.SqlPreviewOut)
