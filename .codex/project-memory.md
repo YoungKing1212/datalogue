@@ -226,7 +226,13 @@
 
 ### 2026-06-26 18:26 · P1 Chat Shell：ArtifactCard、任务时间线与候选确认
 
-- 涉及文件：`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/task-timeline.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/components/task-timeline.test.jsx`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
-- 关键改动：新增 C-ready ArtifactCard、TaskTimeline 和 CandidateDatasetCard；chat-adapter 将 event envelope / 旧 SSE 事件归一为 `taskTimeline`、`artifactCard` 和 `candidateDatasets`；候选确认只展示 dataset name 与 short reason，不暴露字段、表、SQL 或资产详情；ArtifactCard 复用已合入 action 协议，第一阶段 `export` / `continue_edit` 禁用，`retry` 只派发 checkpointRef。
-- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`；执行 `cd datalogue-web && npm run lint`；执行 `cd datalogue-web && npm run build`；执行 `git diff --check`。
-- 残留风险：本次仍以现有 Chat 入口承接 C-ready 结构，未新建独立 BI 工作台；真实页面、DevTools Network 和后端 SSE 的端到端回放留给 DAT-18 五件套验收。
+- 涉及文件：`datalogue-web/src/components/artifact-card.jsx`（新建）、`datalogue-web/src/components/task-timeline.jsx`（新建）、`datalogue-web/src/components/artifact-card.test.jsx`（新建）、`datalogue-web/src/components/task-timeline.test.jsx`（新建）、`datalogue-web/src/assistant/MyMessage.test.jsx`（新建）、`datalogue-web/src/assistant/chat-adapter.test.js`（新建）、`datalogue-web/src/assistant/chat-adapter.js`（修改）、`datalogue-web/src/assistant/MyMessage.jsx`（修改）、`datalogue-web/src/styles.css`（修改）、`.codex/project-memory.md`
+- 关键改动：
+  - 新增 ArtifactCard 统一产物卡片（title/status/summary/preview/refs/actions），未知 action_type 不渲染，disabled action 仅展示不交互；
+  - 新增 TaskTimeline 业务级时间线（五类节点：任务理解/数据集匹配/BI 执行/结果产物/下一步），内置 FORBIDDEN_PATTERNS 安全扫描自动截断 SQL/schema 等关键词；
+  - 新增 CandidateDatasetCard 候选确认（只展示 dataset_name + short_reason，不暴露字段/表/资产详情）；
+  - chat-adapter.js 新增 taskTimeline 累加器，从 route_decision/step/final 事件推断 C-ready 数据结构，在 metadata.custom 中输出 taskTimeline/artifactCard/candidateDatasets，补充 adapter 单测覆盖业务 session、artifact metadata、候选数据集和 clarification_response 一次性消费；
+  - MyMessage.jsx 新增 CandidateDatasetCard 组件并渲染 TaskTimeline + ArtifactCard；
+  - styles.css 新增三套 CSS 类（.artifact-card/.task-timeline/.candidate-dataset-card），遵循现有设计令牌体系。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，4 个测试文件 31 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
+- 残留风险：后端 C-ready event envelope 正式上线后，chat-adapter.js 中从 step 推断的 timeline 节点可能需要与后端新 event type 对齐调整；未做深色模式样式适配；MyMessage 测试依赖 assistant-ui mock，真实 assistant-ui 渲染路径未端到端验证。
