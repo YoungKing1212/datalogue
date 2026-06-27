@@ -223,3 +223,16 @@
 - 关键改动：按 DAT-11 要求先保存开发计划；新增 AgentScope Shell Adapter service，第一阶段固定只允许 `ask_bi`，不开放公开 API、不接前端、不启动 runner；新增 AgentScope Event Adapter，`control_plane` 事件只计入内部丢弃数，不进入 Shell 可见事件或 trace 事件输出；适配当前已合入的 async `ask_bi`、`DatalogueEventEnvelope` 和 `ArtifactRef.ref_id` 契约。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q` 通过；执行 `cd datalogue-api && python3 -m py_compile app/services/agentscope_shell_adapter.py app/services/agentscope_event_adapter.py app/schemas/bi_workbench.py app/services/bi_workbench_tool.py` 通过；执行 `git diff --check` 通过。
 - 残留风险：当前是 contract-first 最小验证线，未接真实 `/chat/stream`、未导入 AgentScope runtime、未做真实 BI 主链回放。
+
+### 2026-06-26 18:26 · P1 Chat Shell：ArtifactCard、任务时间线与候选确认
+
+- 涉及文件：`datalogue-web/src/components/artifact-card.jsx`（新建）、`datalogue-web/src/components/task-timeline.jsx`（新建）、`datalogue-web/src/components/artifact-card.test.jsx`（新建）、`datalogue-web/src/components/task-timeline.test.jsx`（新建）、`datalogue-web/src/assistant/MyMessage.test.jsx`（新建）、`datalogue-web/src/assistant/chat-adapter.test.js`（新建）、`datalogue-web/src/assistant/chat-adapter.js`（修改）、`datalogue-web/src/assistant/MyMessage.jsx`（修改）、`datalogue-web/src/styles.css`（修改）、`.codex/project-memory.md`
+- 关键改动：
+  - 新增 ArtifactCard 统一产物卡片（title/status/summary/preview/refs/actions），未知 action_type 不渲染，disabled action 仅展示不交互；
+  - 新增 TaskTimeline 业务级时间线（五类节点：任务理解/数据集匹配/BI 执行/结果产物/下一步），内置 FORBIDDEN_PATTERNS 安全扫描自动截断 SQL/schema 等关键词；
+  - 新增 CandidateDatasetCard 候选确认（只展示 dataset_name + short_reason，不暴露字段/表/资产详情）；
+  - chat-adapter.js 新增 taskTimeline 累加器，从 route_decision/step/final 事件推断 C-ready 数据结构，在 metadata.custom 中输出 taskTimeline/artifactCard/candidateDatasets，补充 adapter 单测覆盖业务 session、artifact metadata、候选数据集和 clarification_response 一次性消费；
+  - MyMessage.jsx 新增 CandidateDatasetCard 组件并渲染 TaskTimeline + ArtifactCard；
+  - styles.css 新增三套 CSS 类（.artifact-card/.task-timeline/.candidate-dataset-card），遵循现有设计令牌体系。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，4 个测试文件 31 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
+- 残留风险：后端 C-ready event envelope 正式上线后，chat-adapter.js 中从 step 推断的 timeline 节点可能需要与后端新 event type 对齐调整；未做深色模式样式适配；MyMessage 测试依赖 assistant-ui mock，真实 assistant-ui 渲染路径未端到端验证。

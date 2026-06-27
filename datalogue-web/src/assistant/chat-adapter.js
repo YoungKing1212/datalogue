@@ -338,6 +338,9 @@ export function makeChatAdapter({ datasetIdRef }) {
       let accText = '';      // 已累积的 text
       let finalPayload = null;
 
+      // C-ready 业务时间线累加器：从 SSE 事件推断五类节点
+      const taskTimeline = [];
+
       // 工具：构造当前 message content
       const buildContent = () => [
         ...reasonings,
@@ -356,6 +359,14 @@ export function makeChatAdapter({ datasetIdRef }) {
             type: 'reasoning',
             text: formatRouteDecisionAsReasoning(ev),
             parentId: 'manifest_route',
+          });
+          // 业务时间线：数据集匹配节点
+          const datasetName = ev.dataset_name || (ev.candidates || [])[0]?.dataset_name || '';
+          taskTimeline.push({
+            type: 'dataset_matching',
+            label: '数据集匹配',
+            text: datasetName ? `已匹配数据集「${datasetName}」` : '正在匹配数据集',
+            status: ev.decision === 'selected' || ev.decision === 'locked' ? 'done' : 'running',
           });
           yield { content: buildContent() };
         } else if (ev.type === 'lead_agent_tools') {
@@ -380,6 +391,21 @@ export function makeChatAdapter({ datasetIdRef }) {
             });
             yield { content: buildContent() };
           }
+          // 业务时间线：将 step 映射为业务级节点
+          if (ev.node === 'intent_recognition' && ev.status === 'done') {
+            const intentText = ev.intent ? `理解为您想查询「${ev.intent}」` : '已理解您的分析需求';
+            taskTimeline.push({ type: 'task_understood', label: '任务理解', text: intentText, status: 'done' });
+          }
+          if (ev.status === 'done' && ev.node !== 'intent_recognition') {
+            // 后续 step 归入 BI 执行阶段（多个 step 合并为一条，更新文本）
+            const existing = taskTimeline.find((t) => t.type === 'bi_execution');
+            const stepLabel = ev.display_name || NODE_DISPLAY[ev.node] || ev.node;
+            if (existing) {
+              existing.text = existing.text ? `${existing.text}、${stepLabel}` : stepLabel;
+            } else {
+              taskTimeline.push({ type: 'bi_execution', label: 'BI 执行', text: `已完成：${stepLabel}`, status: 'running' });
+            }
+          }
         } else if (ev.type === 'final') {
           finalPayload = ev;
         }
@@ -402,6 +428,69 @@ export function makeChatAdapter({ datasetIdRef }) {
 
         // 首条消息后端会自动用首句作为对话标题
         // 派发窗口事件让 ThreadList 刷新 + 局部更新缓存
+        // 业务时间线收尾：BI 执行完成、结果产物、下一步
+        const biExec = taskTimeline.find((t) => t.type === 'bi_execution');
+        if (biExec) biExec.status = 'done';
+        if (finalPayload.answer || finalPayload.sql_result || finalPayload.result_ref || finalPayload.report_ref) {
+          taskTimeline.push({
+            type: 'artifact_created',
+            label: '结果产物',
+            text: finalPayload.result_ref ? '已生成查询结果' : finalPayload.report_ref ? '已生成分析报告' : '已生成回答',
+            status: 'done',
+          });
+        }
+        taskTimeline.push({
+          type: 'next_action',
+          label: '下一步',
+          text: '您可以查看详细结果、继续追问或导出数据',
+          status: 'done',
+        });
+
+        // 构建 C-ready ArtifactCard 数据
+        let artifactCard = null;
+        if (finalPayload.artifact_card) {
+          // 后端已提供 C-ready ArtifactCard，直接使用
+          artifactCard = finalPayload.artifact_card;
+        } else {
+          // 从现有 final 字段推断生成 ArtifactCard
+          const hasResult = finalPayload.result_ref || finalPayload.sql_result;
+          const hasReport = finalPayload.report_ref;
+          if (hasResult || hasReport) {
+            artifactCard = {
+              title: hasReport ? '分析报告' : '查询结果',
+              status: 'completed',
+              summary_for_chat: finalPayload.answer
+                ? finalPayload.answer.slice(0, 120)
+                : '查询已执行完成',
+              preview_payload: finalPayload.sql_result
+                ? { rows: finalPayload.sql_result.rows || [], columns: finalPayload.sql_result.columns || [] }
+                : null,
+              primary_ref: finalPayload.result_ref || finalPayload.report_ref || null,
+              related_refs: [],
+              actions: [
+                { action_type: 'view', label: '查看详情', ref: finalPayload.result_ref || finalPayload.report_ref || '', disabled: false },
+                { action_type: 'copy', label: '复制结果', ref: '', disabled: false },
+                { action_type: 'export', label: '导出', ref: '', disabled: true },
+              ],
+            };
+          }
+        }
+
+        // 构建候选数据集确认数据（从 route_decision 提取）
+        let candidateDatasets = null;
+        if (finalPayload.route_decision) {
+          const rd = finalPayload.route_decision;
+          if (rd.decision === 'ambiguous' && Array.isArray(rd.candidates) && rd.candidates.length > 0) {
+            candidateDatasets = {
+              candidates: rd.candidates.map((c) => ({
+                dataset_name: c.dataset_name || `数据集 ${c.dataset_id || ''}`,
+                dataset_id: c.dataset_id || null,
+                short_reason: c.reason || c.match_reason || '根据您的查询匹配',
+              })),
+            };
+          }
+        }
+
         if (finalPayload.title && finalPayload.conversation_id) {
           try {
             window.dispatchEvent(
@@ -466,6 +555,10 @@ export function makeChatAdapter({ datasetIdRef }) {
               langfuseSessionId: finalPayload.langfuse_session_id || null,
               observability: finalPayload.observability || null,
               stepTrace,
+              // C-ready 数据结构
+              taskTimeline,
+              artifactCard,
+              candidateDatasets,
             },
           },
         };

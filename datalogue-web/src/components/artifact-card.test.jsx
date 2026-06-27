@@ -1,52 +1,77 @@
+// artifact-card.test.jsx
+// ArtifactCard 组件测试：同时覆盖 C-ready 产物卡片渲染和第一阶段安全 action 协议。
+
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import ArtifactCard, { ArtifactCard as NamedArtifactCard } from './artifact-card.jsx';
 
-const artifact = {
-  title: 'GMV 查询结果',
-  status: 'ready',
-  summary_for_chat: '完整结果，2 行，2 列',
+vi.mock('./icons', () => ({
+  Icon: ({ name, className, style }) => (
+    <span data-testid={`icon-${name}`} className={className} style={style} />
+  ),
+}));
+
+vi.mock('./message-content', () => ({
+  default: ({ text }) => <div data-testid="message-content">{text}</div>,
+}));
+
+const basicArtifact = {
+  title: '查询结果',
+  status: 'completed',
+  summary_for_chat: '返回 234 行数据，包含销售额、渠道等字段',
   preview_payload: {
-    columns: ['region', 'gmv'],
     rows: [
-      { region: '华东', gmv: 100 },
-      { region: '华南', gmv: 80 },
+      { channel: '线上', amount: '18000' },
+      { channel: '线下', amount: '9500' },
     ],
+    columns: ['channel', 'amount'],
   },
-  primary_ref: { ref_type: 'artifact', ref: 'artifact:sql_result:json' },
-  related_refs: [{ ref_type: 'report', ref: 'artifact:report:text' }],
+  primary_ref: 'artifact://abc123',
+  related_refs: ['artifact://def456'],
+  actions: [
+    { action_type: 'view', label: '查看详情', ref: 'artifact://abc123', disabled: false },
+    { action_type: 'copy', label: '复制结果', ref: '', disabled: false },
+    { action_type: 'export', label: '导出', ref: '', disabled: true },
+  ],
 };
 
 describe('ArtifactCard', () => {
-  it('renders disabled export without creating a download link', () => {
-    render(
-      <NamedArtifactCard
-        artifact={{
-          ...artifact,
-          actions: [
-            {
-              action_type: 'export',
-              label: '导出',
-              enabled: false,
-              disabled_reason: '导出能力将在后续版本开放',
-            },
-          ],
-        }}
-      />,
-    );
+  it('renders title, status, summary, and refs', () => {
+    render(<ArtifactCard artifact={basicArtifact} />);
 
+    expect(screen.getByText('查询结果')).toBeInTheDocument();
+    expect(screen.getByText('已完成')).toBeInTheDocument();
+    expect(screen.getByText('返回 234 行数据，包含销售额、渠道等字段')).toBeInTheDocument();
+    expect(screen.getByText('artifact://abc123')).toBeInTheDocument();
+    expect(screen.getByText('artifact://def456')).toBeInTheDocument();
+  });
+
+  it('renders preview table with rows', () => {
+    render(<ArtifactCard artifact={basicArtifact} />);
+
+    expect(screen.getByText('线上')).toBeInTheDocument();
+    expect(screen.getByText('18000')).toBeInTheDocument();
+    expect(screen.getByText('线下')).toBeInTheDocument();
+    expect(screen.getByText('9500')).toBeInTheDocument();
+  });
+
+  it('renders enabled actions and disables export action', () => {
+    render(<ArtifactCard artifact={basicArtifact} />);
+
+    expect(screen.getByRole('button', { name: /查看详情/ })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: /复制结果/ })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: /导出/ })).toBeDisabled();
     expect(screen.getByText('导出能力将在后续版本开放')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /导出/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /导出/ })).toBeDisabled();
   });
 
   it('renders continue_edit as a disabled first-phase action', () => {
     render(
-      <ArtifactCard
+      <NamedArtifactCard
         artifact={{
-          ...artifact,
+          ...basicArtifact,
           actions: [{ action_type: 'continue_edit', label: '继续编辑', enabled: true }],
         }}
       />,
@@ -62,7 +87,7 @@ describe('ArtifactCard', () => {
     render(
       <ArtifactCard
         artifact={{
-          ...artifact,
+          ...basicArtifact,
           raw_sql: 'select * from orders',
           control_plane: { raw_sql: 'select * from orders' },
           capsule: { dataset_id: 1 },
@@ -90,7 +115,7 @@ describe('ArtifactCard', () => {
       <ArtifactCard
         artifact={{
           title: 'GMV 分析结果',
-          status: 'failed',
+          status: 'error',
           summary_for_chat: '生成结果时失败',
           actions: [
             {
@@ -114,5 +139,73 @@ describe('ArtifactCard', () => {
       checkpointRef: 'checkpoint://task-1/query_context_ready',
     });
     window.removeEventListener('datalogue:artifact-action', listener);
+  });
+
+  it('renders null when artifact is null', () => {
+    const { container } = render(<ArtifactCard artifact={null} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('renders markdown preview when preview_payload has markdown', () => {
+    render(
+      <ArtifactCard
+        artifact={{
+          ...basicArtifact,
+          preview_payload: { markdown: '## 分析报告\n\n这是报告内容' },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('message-content')).toBeInTheDocument();
+  });
+
+  it('renders chart hint when preview_payload has chartType', () => {
+    render(
+      <ArtifactCard
+        artifact={{
+          ...basicArtifact,
+          preview_payload: { chartType: 'bar' },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('图表类型：bar')).toBeInTheDocument();
+  });
+
+  it('shows generating status with pulse indicator', () => {
+    render(
+      <ArtifactCard
+        artifact={{
+          ...basicArtifact,
+          status: 'generating',
+          summary_for_chat: '正在查询...',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('生成中')).toBeInTheDocument();
+  });
+
+  it('shows error status', () => {
+    render(<ArtifactCard artifact={{ ...basicArtifact, status: 'error' }} />);
+
+    expect(screen.getByText('异常')).toBeInTheDocument();
+  });
+
+  it('collapses and expands when header is clicked', () => {
+    render(<ArtifactCard artifact={basicArtifact} />);
+
+    expect(screen.getByText('线上')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /查询结果/ }));
+    expect(screen.queryByText('线上')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /查询结果/ }));
+    expect(screen.getByText('线上')).toBeInTheDocument();
+  });
+
+  it('renders card without preview payload', () => {
+    render(<ArtifactCard artifact={{ title: '空产物', status: 'ready' }} />);
+
+    expect(screen.getByText('空产物')).toBeInTheDocument();
+    expect(screen.getByText('已就绪')).toBeInTheDocument();
   });
 });
