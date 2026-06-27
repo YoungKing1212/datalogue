@@ -76,14 +76,20 @@ from .conversation import (
     ConversationRename,
 )
 from .chat import ChatRequest, ChatFeedback, ClarificationResponse
-from .capsule import CapsuleMeta, QueryContext, ResultDigest, SubAgentCapsule
 from .bi_workbench import (
+    ArtifactAction,
+    ArtifactCard,
+    ArtifactRef,
+    AskBIRequest,
+    AskBIResponse,
     DatalogueEventEnvelope,
     DatalogueEventType,
     DatalogueEventVisibility,
     build_datalogue_event_envelope,
     sanitize_event_payload,
+    validate_event_visibility,
 )
+from .capsule import CapsuleMeta, QueryContext, ResultDigest, SubAgentCapsule
 from .llm import (
     LLMModelConfigCreate,
     LLMModelConfigUpdate,
@@ -156,15 +162,21 @@ __all__ = [
     "ChatRequest",
     "ChatFeedback",
     "ClarificationResponse",
+    "ArtifactAction",
+    "ArtifactCard",
+    "ArtifactRef",
+    "AskBIRequest",
+    "AskBIResponse",
+    "DatalogueEventEnvelope",
     "CapsuleMeta",
     "QueryContext",
     "ResultDigest",
     "SubAgentCapsule",
-    "DatalogueEventEnvelope",
     "DatalogueEventType",
     "DatalogueEventVisibility",
     "build_datalogue_event_envelope",
     "sanitize_event_payload",
+    "validate_event_visibility",
     "LLMModelConfigCreate",
     "LLMModelConfigUpdate",
     "LLMModelConfigOut",
