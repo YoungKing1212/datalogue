@@ -86,6 +86,7 @@
 
 - 补齐数据库字典字段、后续新增表和 LangGraph checkpoint 相关表/字段中文注释迁移，真实 PostgreSQL 抽查确认表注释和字段注释缺失数为 0。
 - 替换前端侧栏品牌 Logo 与浏览器 favicon，完成桌面和移动视口可见性检查。
+- 修正数据集页面顶部“数据表”能力卡计数为当前数据集已选表数量，并补组件回归测试；压缩 LeadAgent 两阶段 Planner Prompt 重复说明，同步 Langfuse production v4，保持 JSON 输出契约不变。
 
 ## 高价值判断
 
@@ -96,20 +97,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-22 12:06 · 数据集页面数据表计数显示已选表
-
-- 涉及文件：`datalogue-web/src/components/datasets.jsx`、`datalogue-web/tests/unit/components/datasets-selected-table-count.test.jsx`、`.codex/project-memory.md`
-- 关键改动：将数据集语义能力工作区顶部“数据表”能力卡计数从 `allSourceTables.length` 改为 `selectedTableIds.size`，避免显示当前连接 schema 的全量表数量；新增组件回归测试，模拟 schema 3 张表但数据集只选 1 张表，固定顶部能力卡显示 1。
-- 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/components/datasets-selected-table-count.test.jsx` 确认测试红灯，失败输出显示“数据表”按钮 count 为 3；修复后再次执行该命令通过；执行 `cd datalogue-web && npm test`，3 个测试文件 14 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过。
-- 残留风险：本次只修正顶部能力卡计数；左侧“已选择/未选择”分组仍按当前搜索过滤结果计数，保持原有交互语义。
-
-### 2026-06-22 12:57 · LeadAgent 两阶段 Planner Prompt 去重并同步 Langfuse
-
-- 涉及文件：`datalogue-api/app/prompts/lead_agent.py`、`.codex/project-memory.md`
-- 关键改动：压缩 `lead_agent_skill_selector` 和 `lead_agent_tool_planner` 的重复说明；第一阶段聚焦 Skill 选择边界，第二阶段保留工具规划、candidate_assets 使用和多轮追问约束；两个 prompt 输出 JSON 契约保持不变；通过 Langfuse Prompt Management 将 `lead_agent_skill_selector`、`lead_agent_tool_planner` 的 `production` label 同步为 v4。
-- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_observability.py tests/test_lead_agent_tools.py -q`，47 条用例通过；执行 Langfuse 同步后重新拉取两个 prompt，确认远端 v4 内容与本地注册表完全一致；对比本地 prompt 长度从 3799 字符降至 3053 字符。
-- 残留风险：本次只优化系统提示词文本，未新增真实 `/chat` 回放样例；后续若观察到 Skill 选择或 dispatch 倾向变化，需要结合 Langfuse trace 再微调规则顺序。
 
 ### 2026-06-22 13:04 · 新建对话固定进入最近对话顶部
 
@@ -173,3 +160,10 @@
 - 关键改动：新对话按钮不再调用 `createConversation`，改为只执行 `aui.threads().switchToNewThread()` 并导航回 `/chat`；新增 `DraftThreadListItem`，当 assistant-ui 存在 `newThreadId` 时在“最近对话”顶部显示本地“新对话”草稿并按 `mainThreadId` 高亮；首条消息发送时仍由 `thread-list-adapter.initialize()` 创建后端 conversation；按钮保留创建中禁用保护，避免连续点击造成 runtime 状态抖动。
 - 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/assistant/thread-list-new-conversation.test.jsx` 确认组件层用例红灯，失败表现为找不到 `thread-list-draft-item`；实现后再次执行该命令，4 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过；调用 `GET /api/conversation?archived=false` 记录点击前数量为 4，使用 in-app Browser 打开 `http://localhost:5173/chat/4` 后点击 `.thread-list-new` 且不发送消息，URL 回到 `/chat`，左栏第 0 项为 active draft“新对话”，再次请求后端列表数量仍为 4。
 - 残留风险：本次只验证“未发送不新增数据库会话”和本地草稿可见；未实际发送一条新消息走 LLM 全链路验证创建后的标题刷新和列表排序。
+
+### 2026-06-26 16:44 · BI_SOUL 内部契约与外部入口同步校验
+
+- 涉及文件：`datalogue-api/app/contracts/BI_SOUL.md`、`datalogue-api/app/services/soul_contract_sync.py`、`datalogue-api/tests/test_bi_soul_contract.py`、`hermes-skills/datalogue/SOUL.md`、`.omx/plans/DAT-6-BI_SOUL-内部契约同步计划.md`、`.codex/project-memory.md`
+- 关键改动：新增 BI 不可越界内部 source of truth，明确 LeadAgent 不看字段级 schema 明细、外层 Agent 只能调用 `ask_bi`、LLM 不直接生成可执行 SQL、raw SQL/raw result/capsule/trace 主体属于 `control_plane`；新增同步服务抽取并规范化 `BI_SOUL_SYNC` 块，校验 Hermes SOUL 与内部契约一致，并为未来 AgentScopeShellAdapter 渲染只允许 `ask_bi` 的 policy；Hermes SOUL 嵌入同一同步块。
+- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q` 确认红灯，失败为 `ModuleNotFoundError: app.services.soul_contract_sync`；实现后执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/soul_contract_sync.py` 通过；创建被 `.gitignore` 忽略的本地 `.venv` 链接后执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过、仅有既有依赖弃用告警。
+- 残留风险：当前仓库尚无 `AgentScopeShellAdapter` 实现，本次只提供可注入的 policy 文本和同步校验；未实现 `ask_bi`、未新增公开 API、未接管 BI 主链 runtime。
