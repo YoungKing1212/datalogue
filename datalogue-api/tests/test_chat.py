@@ -430,7 +430,9 @@ class TestLangGraphNodes:
 
             assert result["intent"] == "query"
             assert result["entities"]["metrics"] == ["gmv"]
-            assert result.get("answer") is None
+            assert result["entry_route"] == "clarify"
+            assert result["route_payload"] == {"kind": "clarification", "missing": ["dataset"]}
+            assert "确认要使用的数据集" in result["answer"]  # DAT-13 后未确认数据集时必须先阻断 QueryGraph。
 
     def test_entry_intent_metric_query(self, db_session, sample_dataset):
         """入口分类：指标查询继续 QueryGraph。"""
