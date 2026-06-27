@@ -348,6 +348,26 @@ def _step_event_type(step_payload: dict) -> DatalogueEventType:
     return "route.started"
 
 
+def _retry_sse_event(
+    event_type: str,
+    *,
+    checkpoint_ref: str | None,
+    retry_scope: str | None = None,
+    reason: str | None = None,
+) -> dict:
+    """构造 retry 业务事件，只暴露 checkpoint_ref 与降级原因。"""
+
+    payload = {
+        "type": event_type,
+        "checkpoint_ref": checkpoint_ref,
+    }
+    if retry_scope:
+        payload["retry_scope"] = retry_scope
+    if reason:
+        payload["reason"] = reason
+    return _sse_data(payload)
+
+
 def _chat_stream_log_summary(payload: dict | None) -> dict[str, Any]:
     """提取 /chat/stream 排障日志中的稳定关键字段，避免日志被完整 payload 淹没。"""
 
@@ -3168,6 +3188,14 @@ async def _stream_chat_singleturn(
         "multiturn_observability_metrics": multiturn_observability_metrics,
     }
     _log_chat_stream_checkpoint("final_payload_ready", **_chat_stream_log_summary(final_payload))  # 对齐 DevTools final。
+    _attach_retry_checkpoint_to_final_payload(  # final 发出前注册安全 retry ref，前端只拿 ref 发起重试。
+        final_payload,
+        conversation_store=conversation_store,
+        business_session_id=observability_session_id,
+        user_id=str(conv.user_id or 1),
+        conversation_id=conv_id,
+        message_id=assistant_message.id,
+    )
     yield _sse_data(
         _with_event_envelope(
             final_payload,
@@ -3180,12 +3208,70 @@ async def _stream_chat_singleturn(
                 "result_ref",
                 "report_ref",
                 "query_profile",
+                "retry_checkpoint",
             ),
         )
     )  # final 发出后客户端可能立即断开。
     if not defer_trace_close:
         tracer.close_trace(trace_context)
     obs_context_manager.__exit__(None, None, None)
+
+
+def _attach_retry_checkpoint_to_final_payload(
+    final_payload: dict,
+    *,
+    conversation_store: ConversationStore | None,
+    business_session_id: str | None,
+    user_id: str,
+    conversation_id: int | None,
+    message_id: int | None,
+) -> None:
+    """为 final payload 挂载安全 checkpoint_ref，避免前端携带内部执行状态。"""
+
+    if conversation_store is None or not business_session_id or not conversation_id:
+        return
+    dataset_id = _coerce_int(
+        (final_payload.get("route_decision") or {}).get("dataset_id")
+        or final_payload.get("dataset_id")
+    )
+    if dataset_id is None:
+        return
+    checkpoint_kind = (
+        "artifact_generation_failed"
+        if final_payload.get("error") and final_payload.get("result_ref")
+        else "query_context_ready"
+    )
+    task_id = f"conv-{conversation_id}-msg-{message_id or 'pending'}"
+    try:
+        checkpoint_ref = conversation_store.register_retry_checkpoint(
+            session_id=business_session_id,
+            checkpoint_kind=checkpoint_kind,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            task_id=task_id,
+            permission_scope=f"dataset:{dataset_id}",
+            context={
+                "question": final_payload.get("original_question")
+                or final_payload.get("resolved_question"),
+                "dataset_id": dataset_id,
+                "route_decision": final_payload.get("route_decision"),
+                "time_context": final_payload.get("time_context"),
+                "query_plan": final_payload.get("query_plan"),
+                "result_ref": final_payload.get("result_ref"),
+                "report_ref": final_payload.get("report_ref"),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("retry checkpoint 注册失败，跳过 final 引用: %s", exc)
+        return
+    checkpoint_payload = {
+        "checkpoint_ref": checkpoint_ref,
+        "checkpoint_kind": checkpoint_kind,
+    }
+    final_payload["retry_checkpoint"] = checkpoint_payload
+    response_metadata = final_payload.setdefault("response_metadata", {})
+    if isinstance(response_metadata, dict):
+        response_metadata["retry_checkpoint"] = checkpoint_payload
 
 
 def _persist_completed_turn(
@@ -3512,11 +3598,67 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     trace_context_sink: list = []
     subagent_control_plane_sink: list = []
     effective_payload = payload
-    pending_resolution = store.resolve_pending_clarification(
-        state,
-        question=payload.question,
-        clarification_response=payload.clarification_response,
-    )
+    retry_restore = None
+    if payload.retry_checkpoint_ref:
+        yield _retry_sse_event(
+            "retry.started",
+            checkpoint_ref=payload.retry_checkpoint_ref,
+        )
+        retry_restore = store.restore_retry_checkpoint(
+            payload.retry_checkpoint_ref,
+            user_id=user_id,
+            conversation_id=payload.conversation_id,
+        )
+        if retry_restore.retry_scope == "last_safe_checkpoint":
+            restored_context = retry_restore.context or {}
+            lead_multiturn_context = dict(lead_multiturn_context or {})
+            lead_multiturn_context["retry_checkpoint"] = {
+                "checkpoint_ref": retry_restore.checkpoint_ref,
+                "checkpoint_kind": retry_restore.checkpoint_kind,
+                "task_id": retry_restore.task_id,
+                "retry_scope": retry_restore.retry_scope,
+            }
+            effective_payload = payload.model_copy(
+                update={
+                    "question": retry_restore.question or payload.question,
+                    "dataset_id": retry_restore.dataset_id or payload.dataset_id,
+                    "clarification_response": None,
+                }
+            )
+            _log_chat_stream_checkpoint(  # retry 恢复只写业务上下文，不回放 SQL/schema/control_plane。
+                "retry_checkpoint_restored",
+                business_session_id=business_session_id,
+                checkpoint_ref=retry_restore.checkpoint_ref,
+                checkpoint_kind=retry_restore.checkpoint_kind,
+                restored_dataset_id=retry_restore.dataset_id,
+                restored_context_keys=sorted(restored_context.keys()),
+            )
+            yield _retry_sse_event(
+                "retry.checkpoint_restored",
+                checkpoint_ref=payload.retry_checkpoint_ref,
+                retry_scope=retry_restore.retry_scope,
+            )
+        else:
+            _log_chat_stream_checkpoint(  # checkpoint 失效时显式降级整任务，避免客户端误以为恢复成功。
+                "retry_fallback_to_whole_task",
+                business_session_id=business_session_id,
+                checkpoint_ref=payload.retry_checkpoint_ref,
+                reason=retry_restore.fallback_reason,
+            )
+            yield _retry_sse_event(
+                "retry.fallback_to_whole_task",
+                checkpoint_ref=payload.retry_checkpoint_ref,
+                retry_scope=retry_restore.retry_scope,
+                reason=retry_restore.fallback_reason,
+            )
+    if retry_restore and retry_restore.retry_scope == "last_safe_checkpoint":
+        pending_resolution = {"status": "none", "reason": "retry_checkpoint_restored"}
+    else:
+        pending_resolution = store.resolve_pending_clarification(
+            state,
+            question=payload.question,
+            clarification_response=payload.clarification_response,
+        )
     logger.info(
         "[ConversationState] 澄清解析结果: session_id=%s, pending_resolution=%s",
         business_session_id,
@@ -3584,6 +3726,18 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                             )
                         except Exception as persist_exc:  # noqa: BLE001
                             logger.exception("[_stream_chat] 写入多轮状态失败: %s", persist_exc)
+                        if payload.retry_checkpoint_ref:
+                            if parsed.get("error"):
+                                yield _retry_sse_event(
+                                    "retry.failed",
+                                    checkpoint_ref=payload.retry_checkpoint_ref,
+                                    reason=str(parsed.get("error")),
+                                )
+                            else:
+                                yield _retry_sse_event(
+                                    "retry.completed",
+                                    checkpoint_ref=payload.retry_checkpoint_ref,
+                                )
                 except json.JSONDecodeError:
                     pass
             yield event
