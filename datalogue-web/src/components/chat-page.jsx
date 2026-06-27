@@ -33,6 +33,51 @@ function inferConversationDatasetId(detail) {
   return null;
 }
 
+export function shouldSwitchToRouteThread(routeId, mainThreadId, remoteId) {
+  if (!routeId) return false;
+  const normalizedRouteId = String(routeId);
+  if (mainThreadId && String(mainThreadId) === normalizedRouteId) return false;
+  if (remoteId && String(remoteId) === normalizedRouteId) return false;
+  return true;
+}
+
+/**
+ * 在 runtime context 内部：URL 正向同步
+ * 直接打开 /chat/:id 时，assistant-ui 的首帧本地草稿可能还没有 remoteId，
+ * 这里显式切到路由会话，保证历史消息和 ArtifactCard 从后端 fetch 后回放。
+ */
+function RouteThreadSync({ routeId }) {
+  const aui = useAui();
+  const pendingRouteRef = useRef(null);
+  const mainThreadId = useAuiState((s) => s.threads?.mainThreadId);
+  const remoteId = useAuiState((s) => {
+    const id = s.threads?.mainThreadId;
+    const item = s.threads?.threadItems?.find((t) => t.id === id);
+    return item?.remoteId;
+  });
+
+  useEffect(() => {
+    const normalizedRouteId = routeId ? String(routeId) : null;
+    if (!shouldSwitchToRouteThread(routeId, mainThreadId, remoteId)) {
+      if (
+        normalizedRouteId &&
+        (String(mainThreadId) === normalizedRouteId || String(remoteId) === normalizedRouteId)
+      ) {
+        pendingRouteRef.current = null;
+      }
+      return;
+    }
+    if (pendingRouteRef.current === normalizedRouteId) return;
+    pendingRouteRef.current = normalizedRouteId;
+    aui.threads().switchToThread(normalizedRouteId).catch((e) => {
+      pendingRouteRef.current = null; // 切换失败必须允许后续路由变化重试，不能把页面永久卡在草稿态。
+      console.error('[thread-list] route thread switch failed', e);
+    });
+  }, [aui, routeId, mainThreadId, remoteId]);
+
+  return null;
+}
+
 /**
  * 在 runtime context 内部：URL 反向同步
  * 当 mainThread 切换时，把 URL 推到 /chat/:remoteId
@@ -415,6 +460,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
 
   return (
     <>
+      <RouteThreadSync routeId={routeId} />
       <UrlSync routeId={routeId} />
       <ComposerTextSetter register={handleRegisterSetter} />
 
