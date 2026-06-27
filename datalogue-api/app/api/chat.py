@@ -886,9 +886,11 @@ def _route_block_answer(route_decision: dict) -> str:
         lines = ["我找到了多个可能的数据集，需要你先确认使用哪一个："]
         for index, item in enumerate(candidates[:3], start=1):
             name = item.get("dataset_name") or f"数据集 {item.get('dataset_id')}"
-            score = item.get("score", 0)
-            reason = "；".join((item.get("reasons") or [])[:2])
-            lines.append(f"{index}. {name}（得分 {score}）{('：' + reason) if reason else ''}")
+            confidence = item.get("confidence", 0)
+            reason = item.get("reason")  # Capability Router 候选已瘦身，只展示可暴露摘要。
+            lines.append(
+                f"{index}. {name}（置信度 {confidence}）{('：' + reason) if reason else ''}"
+            )
         lines.append("请选择数据集后再继续提问。")
         return "\n".join(lines)
 
@@ -897,7 +899,7 @@ def _route_block_answer(route_decision: dict) -> str:
         name = top.get("dataset_name") or f"数据集 {top.get('dataset_id')}"
         return (
             "当前问题没有命中足够明确的 SubAgent Manifest，暂时不自动选择数据集。"
-            f"最接近的是 {name}（得分 {top.get('score', 0)}），但未达到自动路由阈值。"
+            f"最接近的是 {name}（置信度 {top.get('confidence', 0)}），但未达到自动路由阈值。"
             "你可以手动选择数据集，或补充更具体的指标、维度、时间范围。"
         )
     return "当前没有可用于自动路由的 current SubAgent Manifest，请先选择数据集或发布 Manifest 后再提问。"

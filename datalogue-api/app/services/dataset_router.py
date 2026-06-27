@@ -26,6 +26,13 @@ from app.services.dataset_manifest import score_manifest_question
 AUTO_SELECT_THRESHOLD = 0.65
 AUTO_SELECT_MARGIN = 0.12
 MAX_CANDIDATES = 3
+CAPABILITY_CANDIDATE_KEYS = (
+    "dataset_id",
+    "dataset_name",
+    "reason",
+    "confidence",
+    "requires_confirmation",
+)
 
 
 def _settings_float(name: str, default: float) -> float:
@@ -77,8 +84,8 @@ def route_dataset_for_question(
             "reason": "当前没有可用于自动路由的 current SubAgent Manifest。",
         }
 
-    candidates = [_candidate_from_manifest(question, manifest) for manifest in manifests]
-    candidates.sort(key=lambda item: item["score"], reverse=True)
+    candidates = [_scored_candidate_from_manifest(question, manifest) for manifest in manifests]
+    candidates.sort(key=lambda item: item["score"], reverse=True)  # 内部排序用分数，候选输出不暴露打分细节字段。
     top = candidates[0]
     second = candidates[1] if len(candidates) > 1 else None
     margin = top["score"] - (second["score"] if second else 0)
@@ -98,7 +105,7 @@ def route_dataset_for_question(
             "manifest_version": top["manifest_version"],
             "bound_schema_version": top["bound_schema_version"],
             "score": top["score"],
-            "candidates": visible_candidates,
+            "candidates": _capability_candidates(visible_candidates, requires_confirmation=False),
             "reason": "Manifest 路由证据明确，自动选择得分最高的数据集。",
         }
 
@@ -109,7 +116,7 @@ def route_dataset_for_question(
             "manifest_version": None,
             "bound_schema_version": None,
             "score": top["score"],
-            "candidates": visible_candidates,
+            "candidates": _capability_candidates(visible_candidates, requires_confirmation=True),
             "reason": "多个数据集的 Manifest 得分接近，需要用户确认。",
         }
 
@@ -119,7 +126,7 @@ def route_dataset_for_question(
         "manifest_version": None,
         "bound_schema_version": None,
         "score": top["score"],
-        "candidates": visible_candidates,
+        "candidates": _capability_candidates(visible_candidates, requires_confirmation=True),
         "reason": "没有 Manifest 达到自动路由阈值。",
     }
 
@@ -135,27 +142,30 @@ def _locked_decision(db: Session, dataset_id: int) -> dict[str, Any]:
         .first()
     )
     dataset = db.get(models.SemanticDataset, dataset_id)
-    candidate = _candidate_from_manifest("", manifest) if manifest else None
+    candidate = _scored_candidate_from_manifest("", manifest) if manifest else None
     return {
         "decision": "locked",
         "dataset_id": dataset_id,
         "manifest_version": manifest.manifest_version if manifest else None,
         "bound_schema_version": manifest.bound_schema_version if manifest else None,
         "score": 1 if manifest else 0,
-        "candidates": [candidate] if candidate else [],
+        "candidates": _capability_candidates([candidate], requires_confirmation=False)
+        if candidate
+        else [],
         "reason": "用户已显式选择数据集，跳过自动改选。",
         "dataset_name": dataset.name if dataset else None,
     }
 
 
-def _candidate_from_manifest(
+def _scored_candidate_from_manifest(
     question: str,
     manifest: models.DatasetSubAgentManifest,
 ) -> dict[str, Any]:
+    """基于 Manifest capability 摘要生成内部候选，不读取 schema/SQL/资产详情。"""
+
     score, reasons, negative_hit = score_manifest_question(question, manifest)
     payload = manifest.manifest_json or {}
     auto_fields = payload.get("auto_fields") or {}
-    manual_fields = payload.get("manual_fields") or {}
     if negative_hit:
         reasons = [*reasons, "命中负例，降低自动路由优先级。"]
     return {
@@ -165,7 +175,27 @@ def _candidate_from_manifest(
         "bound_schema_version": manifest.bound_schema_version,
         "review_status": manifest.review_status,
         "score": round(score, 2),
-        "negative_hit": negative_hit,
-        "business_domain": manual_fields.get("business_domain") or [],
         "reasons": reasons,
     }
+
+
+def _capability_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    requires_confirmation: bool,
+) -> list[dict[str, Any]]:
+    """把内部打分候选瘦身成 LeadAgent 可暴露的 capability manifest 摘要。"""
+
+    visible: list[dict[str, Any]] = []
+    for item in candidates:
+        reason = "；".join((item.get("reasons") or [])[:2])
+        visible.append(
+            {
+                "dataset_id": item.get("dataset_id"),
+                "dataset_name": item.get("dataset_name"),
+                "reason": reason,
+                "confidence": item.get("score", 0),
+                "requires_confirmation": requires_confirmation,
+            }
+        )
+    return visible
