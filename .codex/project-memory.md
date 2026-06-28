@@ -288,3 +288,11 @@
 - 验证方式：执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx tests/unit/assistant/thread-list-new-conversation.test.jsx src/assistant/chat-adapter.test.js src/assistant/MyMessage.test.jsx src/components/artifact-card.test.jsx`，5 个测试文件 48 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 Vite chunk warning；执行 `git diff --check` 通过。
 - 页面 E2E：在隔离服务 `127.0.0.1:8001/5174/5180` 上验证 `/chat/25 -> 点击会话 1 -> /chat/1`，旧 25 的 `artifact:75471820c0e24c8a860b7400c48d9598` 和 `trace:78b264b6861d190567d5ed4f60fd28ff` 不残留；验证 `/chat/1 -> 精确点击会话 25 -> /chat/25`，`artifact:75471820c0e24c8a860b7400c48d9598`、`artifact:4c65834e083e43aa91904ec5132e5574` 和 trace 恢复；验证直接打开 `/chat/24` 保持 URL 和 active item 为会话 24；验证 `/chat/25 -> 新对话 -> /chat` 后草稿 active、旧 artifact/trace 清空，再切回 25 仍恢复结果；最终 Browser 控制台 error/warning 为空。
 - 残留风险：侧栏重复标题视觉上仍只显示标题，本次只通过 `aria-label` / `data-conversation-id` 提供精确访问和自动化定位；如果要提升普通用户辨识度，后续可在侧栏增加更新时间或会话号的低噪声辅助文本。
+
+### 2026-06-28 15:32 · C2 RepairPatch Engine 设计与开发计划
+
+- 涉及文件：`docs/architecture/C2-RepairPatch-字段漂移自动修复设计.md`、`docs/superpowers/specs/2026-06-28-c2-repair-patch-engine-design.md`、`docs/superpowers/plans/2026-06-28-c2-repair-patch-engine.md`、`.codex/project-memory.md`
+- 关键改动：固化 C2 阶段设计，明确 P0 聚焦字段不存在 / 字段漂移自动修复；字段候选采用语义资产优先、selected columns fallback；Patch IR 使用统一 `RepairPatch` envelope，支持 `query_graph_patch` 与 `compiler_binding_patch`，禁止直接 patch SQL；confidence 采用规则打底 + LLM 业务语义裁判 + Tool merge/clamp；高置信自动修复，中置信只保留确认协议和占位 UI，低置信阻断；真实验收用 `查询杨凯 2024 年工作日志`，通过 compiler binding 注入字段漂移，不污染真实语义资产。
+- 开发计划：C2 等 C1 合并到 `b-first-c` 后启动，拆成 3 个 stacked PR：PR1 离线 Patch Engine 内核；PR2 RepairPlan 协议与真实链路；PR3 前端 timeline、ArtifactCard 承接和页面 E2E。
+- 验证方式：执行 `rg -n "TODO|TBD|待定|placeholder|FIXME" docs/architecture/C2-RepairPatch-字段漂移自动修复设计.md docs/superpowers/specs/2026-06-28-c2-repair-patch-engine-design.md docs/superpowers/plans/2026-06-28-c2-repair-patch-engine.md`，仅命中“中置信占位 UI”等已确认范围；执行关键约束扫描，确认 `selected columns`、`compiler_binding_patch`、`repair.patch_validated`、真实问题和五件套验收已写入；执行 `git diff --check` 通过。
+- 残留风险：这是设计和开发计划落档，尚未实现 C2 代码；C2 开发需要先完成 C1 合并，再从合并后的 `b-first-c` 拉 PR1 分支。
