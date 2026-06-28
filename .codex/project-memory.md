@@ -296,3 +296,18 @@
 - 开发计划：C2 等 C1 合并到 `b-first-c` 后启动，拆成 3 个 stacked PR：PR1 离线 Patch Engine 内核；PR2 RepairPlan 协议与真实链路；PR3 前端 timeline、ArtifactCard 承接和页面 E2E。
 - 验证方式：执行 `rg -n "TODO|TBD|待定|placeholder|FIXME" docs/architecture/C2-RepairPatch-字段漂移自动修复设计.md docs/superpowers/specs/2026-06-28-c2-repair-patch-engine-design.md docs/superpowers/plans/2026-06-28-c2-repair-patch-engine.md`，仅命中“中置信占位 UI”等已确认范围；执行关键约束扫描，确认 `selected columns`、`compiler_binding_patch`、`repair.patch_validated`、真实问题和五件套验收已写入；执行 `git diff --check` 通过。
 - 残留风险：这是设计和开发计划落档，尚未实现 C2 代码；C2 开发需要先完成 C1 合并，再从合并后的 `b-first-c` 拉 PR1 分支。
+
+### 2026-06-28 16:13 · C1/C2 RepairPlan 文档边界 review 收口
+
+- 涉及文件：`docs/architecture/C1-RepairPlan-真实成功链路设计.md`、`docs/superpowers/specs/2026-06-28-c1-repair-plan-real-acceptance-design.md`、`docs/main-chain-acceptance-records/2026-06-28-c1-repair-plan-acceptance.md`、`.codex/project-memory.md`
+- 关键改动：按 review 结论修正 C1/C2 边界，明确 C1 只交付 RepairPlan 协议、`repair.*` 事件、Artifact refs、失败分类、受控 retry / fixture 验证和现有可信 template 路径下的真实业务成功链路；“真实成功链路”不等于字段漂移自动修复闭环；`FIELD_NOT_FOUND` / `FIELD_MAPPING_DRIFT` 的字段候选、RepairPatch IR、apply、重新编译和真实漂移验收统一归 C2 RepairPatch Engine。
+- 验收记录：补充 Review 收口结论和 C2 后续闸门，要求 C2 禁止直接 patch raw SQL，并用可复现字段漂移注入完成五件套验收，避免把 C1 的 template / fixture 成功误标为完整自动修复。
+- 验证方式：执行 C1/C2 边界关键词扫描，确认 C1 文档不再声称已实现真实字段级 patch / apply / recompile；执行 `git diff --check` 通过。
+- 残留风险：本次仅做文档边界收口，不实现 C2 RepairPatch Engine；后续 C2 仍需按独立设计和开发计划落地真实字段漂移修复。
+
+### 2026-06-28 16:31 · C1 review 阻断项代码收口
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_event_envelope.py`、`datalogue-api/tests/test_chat.py`、`datalogue-api/tests/test_bi_main_chain_acceptance.py`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/tests/unit/assistant/artifact-custom.test.js`、`.codex/project-memory.md`
+- 关键改动：按多智能体 review 的阻断意见补齐公开层脱敏，`/chat/stream` 的顶层兼容 payload 不再旁路输出 `sql/sql_result/query_plan/candidate_assets/dsl/query_task_capsule` 等内部执行字段，`sql_execute` step 只暴露 `row_count/column_count`；前端 live 和历史回放统一用安全 mapper 提炼业务口径、Artifact refs、候选确认和 RepairPlan 摘要，不再保存或渲染 SQL 结果表、query plan、candidate assets、DSL、diagnosis、raw rows；ArtifactCard 历史对象也经过安全清洗，preview payload 不再携带 raw rows。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_artifact_card_contract.py tests/test_artifact_api.py tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，154 条通过；执行 `cd datalogue-web && npm run test`，9 个测试文件 75 条通过；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/assistant/MyMessage.test.jsx && npm run lint && npm run build`，目标测试 19 条通过、lint 0 error 15 个既有 warning、build 通过；执行 `git diff --check` 通过。
+- 残留风险：本次只收口 C1 review 阻断项，不启动 C2 RepairPatch Engine；真实字段漂移自动修复仍需等 C1 合并后按 C2 独立 PR 落地。

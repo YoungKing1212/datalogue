@@ -70,7 +70,9 @@ describe('artifact metadata custom fields', () => {
       },
     });
 
-    expect(custom.artifactCard).toBe(artifactCard);
+    expect(custom.artifactCard.title).toBe('BI 查询结果');
+    expect(custom.artifactCard.primary_ref.ref_id).toBe('artifact:result-1');
+    expect(custom.artifactCard.related_refs[0].ref_id).toBe('trace:trace-1');
     expect(custom.primaryRef.ref_id).toBe('artifact:result-1');
     expect(custom.relatedRefs[0].ref_id).toBe('trace:trace-1');
     expect(custom.taskId).toBe('conv-1-msg-45');

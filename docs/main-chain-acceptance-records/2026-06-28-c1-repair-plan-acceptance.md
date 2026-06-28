@@ -1,6 +1,6 @@
 # 2026-06-28 C1 RepairPlan 验收记录
 
-用途：记录 C1 RepairPlan 真实成功链路加固分支的自动化证据和真实问题复验结果。本文档刻意区分“自动化可重复成功链路”和“真实业务成功链路”，避免把测试替身误记为生产可用。
+用途：记录 C1 RepairPlan 真实成功链路加固分支的自动化证据和真实问题复验结果。本文档刻意区分“自动化可重复成功链路”和“真实业务成功链路”，避免把测试替身误记为生产可用；同时明确 C1 的“真实成功链路”不是字段漂移自动修复闭环。
 
 ## 基本信息
 
@@ -9,11 +9,11 @@
 - 工作区：`.worktrees/c1-repair-plan`
 - 目标真实问题：`查询杨凯 2024 年工作日志`
 - RepairPlan ref 约定：统一使用 `artifact:<uuid>`，`ArtifactRef.ref_type="repair_plan"`，不引入 `repair_plan:<uuid>` 新前缀。
-- UI 范围：C1 不做管理员详情 UI；字段级 patch / Tool 校验详情只进入后端日志、Langfuse observation 或 trace-only metadata，Artifact API 只返回脱敏摘要。
+- UI 范围：C1 不做管理员详情 UI；RepairPlan 内部校验、后续 C2 RepairPatch 详情和 Tool 内部信息只允许进入后端日志、Langfuse observation 或 trace-only metadata，Artifact API 只返回脱敏摘要。
 
 ## 自动化验收结论
 
-自动化 fixture 已覆盖 RepairPlan 成功链路：第一次 SQL 失败后生成 RepairPlan artifact，发出 repair event envelope，重跑成功，并在 final payload、trace index、`query_artifact` 和 `conversation_state.facts` 中写入同一组引用。
+自动化 fixture 已覆盖 RepairPlan 协议成功链路：第一次 SQL 失败后生成 RepairPlan artifact，发出 repair event envelope，重跑成功，并在 final payload、trace index、`query_artifact` 和 `conversation_state.facts` 中写入同一组引用。该结论只证明 C1 协议、事件、refs、checkpoint 和受控 retry 可验，不证明 C1 已实现字段级 patch / apply / recompile。
 
 | 验收面 | 命令 | 结果 |
 | --- | --- | --- |
@@ -101,6 +101,14 @@ curl -sS -N --max-time 180 \
 - 自动化层：当前测试覆盖本地 trace index / mocked 或 no-op observation，不依赖外部 Langfuse UI。
 - 真实 UI 层：本轮没有完成 Langfuse UI 手工核对，因此不能把 C1 标为“真实 Langfuse observation 完整通过”。
 
+## Review 收口结论
+
+- C1 可以标记为 RepairPlan 协议、`repair.*` event envelope、Artifact refs、失败分类、受控 retry / fixture 和普通用户脱敏边界通过。
+- C1 的“真实成功链路”只能解释为现有 Chat Shell + 可信 template / fixture 路径完成验收；它不是 `FIELD_NOT_FOUND` / `FIELD_MAPPING_DRIFT` 的自动修复闭环。
+- 本记录中的真实请求 1 进入 `FIELD_NOT_FOUND/blocked`，且 `repair_plan_ref=None`；这不是 C1 缺少展示数据，而是字段漂移 RepairPatch Engine 尚未实现。
+- 本记录中的真实请求 2 停在蓝图参数补全，未进入 SQL repair；它不能作为 RepairPlan 成功或失败的字段级修复证据。
+- 因此，C1 不应被标为“完整自动修复已完成”。C1 完成口径应限定为协议链路和受控验收完成，字段漂移修复能力进入 C2。
+
 ## 当前结论
 
 - C1 工程契约：通过。
@@ -109,12 +117,23 @@ curl -sS -N --max-time 180 \
 - AgentScope adapter 边界：通过，仅映射 `repair.*` event，不启动 runner。
 - 真实业务问题 `查询杨凯 2024 年工作日志`：未通过成功查数。
 - 真实 Langfuse UI 五件套：未完成。
+- 字段级 RepairPatch Engine：未实现，不属于 C1 完成范围。
+
+## C2 后续闸门
+
+C2 启动或标记完成前，必须满足以下闸门，避免把 C1 的 template / fixture 成功误当成完整自动修复：
+
+1. 明确交付 `FIELD_NOT_FOUND` / `FIELD_MAPPING_DRIFT` 的 `RepairPatch Engine`，包括字段候选、Patch IR、Tool 校验、apply、重新编译、方言适配和执行。
+2. 禁止直接 patch raw SQL；字段修复必须落到 QueryGraph 或 compiler binding 等受控结构。
+3. 真实验收必须构造可复现字段漂移，例如 compiler binding drift 注入，不能用可信 template 直接成功替代。
+4. C2 验收必须核对同一 `task_id / trace_id / artifact_ref / repair_plan_ref` 在页面、SSE / event envelope、后端日志、Langfuse、`query_artifact` 和 `conversation_state` 中一致。
+5. 低置信、多候选、多 action 或涉及口径变化时，必须走确认协议或阻断，不能静默自动重跑。
 
 ## 残留问题
 
 1. 真实问题仍被语义资产挡住：当前 SQL 会引用 `eas_personofile.create_time` / `update_time` 这类不存在字段，需要修正 dataset 10 的字段资产或蓝图映射。
 2. SubAgent planner 曾输出 `reference_assets.usage="template_reference"`，但契约只允许 `candidate/reference/rejected/selected`，导致 fallback 到 QueryGraph。
 3. 第二次真实请求提前要求 `person_name` 参数，说明蓝图参数抽取没有稳定识别“杨凯”。
-4. 当前 RepairPlan 仍复用 `sql_audit -> increment_retry -> dsl_generate` 的重试链；尚未实现字段级 QueryGraph patch Tool 引擎。
+4. 当前 RepairPlan 仍复用 `sql_audit -> increment_retry -> dsl_generate` 的重试链；尚未实现字段级 QueryGraph / compiler binding RepairPatch Engine。
 5. 真实失败回答仍可能被写入 `last_success_task`，需要单独收口“失败查询不得写 last_success_task”。
 6. Langfuse UI 需要在真实成功查询后按同一 `trace_id` 手工或 Playwright 辅助核对 observation。

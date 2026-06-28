@@ -6,23 +6,23 @@ B-first C-ready 阶段已经把主链协议、`capability_manifest`、`ask_bi`�
 
 DAT-18 的验收记录显示，当前链路已经能完成页面回放、SSE / event envelope、Artifact API、`query_artifact`、`conversation_state` 和本地 trace index 的一致性核对。但真实问题 `查询杨凯 2024 年工作日志` 仍未达到完整成功验收：后端环境缺少 `langfuse` SDK，真实 Langfuse observation 未写入；真实业务 SQL 因语义层引用不存在字段 `eas_personofile.create_time` 受控失败。
 
-C1 的目标是补齐这个真实成功链路缺口，而不是直接进入完整 C 产品形态。
+C1 的目标是补齐这个真实成功链路缺口，而不是直接进入完整 C 产品形态。本文继续使用“真实成功链路”表述时，含义限定为：C1 协议链路、`repair.*` 事件、Artifact refs、失败分类、受控 retry / fixture 验证，以及现有可信 template 路径下的真实业务成功验收；它不是 `FIELD_NOT_FOUND` / `FIELD_MAPPING_DRIFT` 字段漂移自动修复闭环。
 
 ## 2. 目标
 
-C1 必须让真实问题 `查询杨凯 2024 年工作日志` 在现有 Chat Shell 中成功返回业务结果，并且同一个 `task_id`、`trace_id`、`artifact_ref`、`repair_plan_ref` 能在页面、SSE / event envelope、后端日志、Langfuse observation、`query_artifact` 和 `conversation_state` 中互相核对。
+C1 必须让真实问题 `查询杨凯 2024 年工作日志` 在现有 Chat Shell 中通过可信 template 路径成功返回业务结果，并且同一个 `task_id`、`trace_id`、`artifact_ref` 能在页面、SSE / event envelope、后端日志、Langfuse observation、`query_artifact` 和 `conversation_state` 中互相核对。只有实际触发 RepairPlan 的 fixture 或失败分支才要求核对 `repair_plan_ref`。
 
-C1 同时必须提供稳定自动化 fixture：构造一次可控 SQL 失败，触发 RepairPlan，Tool 校验后重跑成功，防止后续回归。
+C1 同时必须提供稳定自动化 fixture：构造一次可控 SQL 失败，触发 RepairPlan，完成协议校验、事件、Artifact refs、checkpoint 和受控重跑成功断言，防止后续回归。该 fixture 验证 C1 协议链路，不等同于真实字段漂移自动修复引擎。
 
 完成标准：
 
 - 真实业务问题成功查出业务结果。
 - 页面展示业务结果、ArtifactCard 和业务级修复摘要。
-- SSE / event envelope 记录完整 `repair.*` 生命周期。
-- 后端日志记录 failure classification、RepairPlan、Tool validation 和 rerun result。
+- fixture 或触发修复的分支中，SSE / event envelope 记录完整 `repair.*` 生命周期。
+- 后端日志记录 failure classification、RepairPlan 协议校验和受控 rerun result。
 - Langfuse UI 能用同一 `trace_id` 查到 observation。
 - `query_artifact` 能用 `artifact_ref` 找到产物。
-- `conversation_state` 能查到 `repair_plan_ref` 和 `checkpoint_ref`。
+- fixture 或触发修复的分支中，`conversation_state` 能查到 `repair_plan_ref` 和 `checkpoint_ref`。
 - 自动化 fixture 覆盖失败、修复、重跑、产物、trace 和状态持久化。
 
 ## 3. 非目标
@@ -37,14 +37,18 @@ C1 不做以下事项：
 - 不启动 ReportAgent、PythonAgent 或 AuditAgent。
 - 不让 LLM 直接生成可执行 SQL。
 - 不把 raw SQL、raw result、完整 schema 或完整 RepairPlan patch 主体暴露给普通用户或用户可见 SSE。
+- 不实现真实字段级 patch / apply / recompile 引擎。
+- 不把 `FIELD_NOT_FOUND` / `FIELD_MAPPING_DRIFT` 字段漂移标记为已具备自动修复闭环。
 
 这些能力作为 C2 / C3 的后续口子保留。
 
 ## 4. RepairPlan v1 协议
 
-C1 引入 `RepairPlan v1`，它不是 SQL，也不是直接 QueryGraph patch，而是受限的修复意图协议。LLM 只能提出 RepairPlan，Tool 负责校验、落到 QueryGraph patch 或执行策略 patch，再重新编译 SQL 和执行。
+C1 引入 `RepairPlan v1`，它不是 SQL，也不是直接 QueryGraph patch，而是受限的修复意图协议。LLM 只能提出 RepairPlan；C1 负责协议校验、失败分类、脱敏摘要、事件、Artifact refs、checkpoint、受控重跑上限和 fixture 验证。
 
-示例结构：
+真实字段级 patch / apply / recompile 不属于 C1。`FIELD_NOT_FOUND`、`FIELD_MAPPING_DRIFT` 的字段候选、`RepairPatch` IR、Tool 校验、应用到 QueryGraph 或 compiler binding、重新编译和真实漂移验收由 C2 的 `RepairPatch Engine` 承接。
+
+示例结构仅说明 RepairPlan 协议形状，不代表 C1 已实现字段漂移自动修复引擎：
 
 ```json
 {
@@ -66,16 +70,16 @@ C1 引入 `RepairPlan v1`，它不是 SQL，也不是直接 QueryGraph patch，�
 }
 ```
 
-初始 action 范围：
+初始 action 作为协议枚举保留：
 
-- `replace_field`：字段不存在或字段绑定失效时替换字段引用。
-- `replace_table`：表不存在或表绑定失效时替换表引用。
+- `replace_field`：字段不存在或字段绑定失效时的修复意图；C1 只保留协议、分类和受控 fixture 验证，真实字段替换引擎归 C2。
+- `replace_table`：表不存在或表绑定失效时的修复意图；真实表绑定修复引擎归 C2。
 - `replace_dialect_function`：函数或方言不兼容时替换函数表达方式。
 - `cast_type`：类型转换错误时增加受控类型转换。
 - `diagnose_only`：不可自动修复的问题只输出诊断。
 - `block_repair`：触发安全风险时 fail closed。
 
-Tool 校验职责：
+Tool 校验职责在 C1 只覆盖协议和安全边界，字段候选计算和 patch 应用留到 C2：
 
 - 校验 `schema_version` 和 `failure_class` 是否受支持。
 - 校验 candidate 存在于当前数据源真实 schema 或当前 QueryGraph 资产上下文。
@@ -87,13 +91,13 @@ Tool 校验职责：
 
 ## 5. 失败分层与重跑策略
 
-所有 SQL 执行失败都进入 repair evaluation，但不是所有失败都允许自动重跑。
+所有 SQL 执行失败都进入 repair evaluation，但不是所有失败都允许自动重跑。C1 的重跑只覆盖现有受控路径和自动化 fixture；真实字段漂移修复不在 C1 完成标准内。
 
 失败分三层：
 
 | 层级 | failure_class | 行为 |
 | --- | --- | --- |
-| 可自动修复并可重跑 | `FIELD_NOT_FOUND`、`TABLE_NOT_FOUND`、`DIALECT_FUNCTION_UNSUPPORTED`、`TYPE_CAST_ERROR` | 生成 RepairPlan，Tool 校验后按策略重跑 |
+| 可进入受控修复协议并按策略重跑 | `FIELD_NOT_FOUND`、`TABLE_NOT_FOUND`、`DIALECT_FUNCTION_UNSUPPORTED`、`TYPE_CAST_ERROR` | 生成 RepairPlan，完成协议校验；字段 / 表漂移真实 patch 到 C2，C1 只验证 fixture 或现有受控路径 |
 | 只诊断不重跑 | `PERMISSION_DENIED`、`DATASOURCE_UNREACHABLE`、`QUERY_TIMEOUT`、`RESULT_TOO_LARGE` | 输出业务级诊断和 ArtifactCard，不自动重跑 |
 | fail closed | 疑似越权、raw SQL 注入、跨数据集访问、schema 泄露风险 | 输出安全阻断，不生成可执行修复 |
 
@@ -109,7 +113,7 @@ Tool 校验职责：
 
 ## 6. 用户确认规则
 
-高置信 RepairPlan 可以自动重跑。判定条件：
+高置信 RepairPlan 可以进入受控重跑。判定条件：
 
 - `confidence >= 0.8`。
 - 只包含一个低风险 action，例如 `replace_field`、`cast_type` 或 `replace_dialect_function`。
@@ -125,7 +129,7 @@ Tool 校验职责：
 确认卡双层展示：
 
 - 普通用户只看到业务级解释，例如“系统发现时间条件引用的数据口径不可用，建议改用工作日志日期口径继续查询”。
-- C1 不做开发 / 管理员详情 UI；字段级 patch、Tool 校验结果和内部定位只进入 Langfuse observation、后端日志和 trace-only metadata。
+- C1 不做开发 / 管理员详情 UI；RepairPlan 协议校验结果、内部定位和后续 C2 RepairPatch 详情只允许进入 Langfuse observation、后端日志和 trace-only metadata。
 
 用户确认时只提交：
 
@@ -146,16 +150,16 @@ C1 主链仍走现有 `/chat/stream`。
 3. 所有 SQL 失败进入 repair evaluation。
 4. fail closed 问题输出 `repair.blocked`。
 5. 只诊断问题输出业务级诊断和 ArtifactCard。
-6. 可修复问题生成 RepairPlan。
-7. Tool 校验 RepairPlan。
-8. 高置信通过后自动重跑；低置信返回确认卡。
+6. 可进入修复协议的问题生成 RepairPlan。
+7. C1 校验 RepairPlan 协议、安全边界和 retry policy。
+8. 高置信通过后进入现有受控重跑路径或 fixture 路径；低置信返回确认卡。
 9. 重跑成功后 final payload 带上业务结果、ArtifactCard 和 repair refs。
 10. 重跑失败后停止，输出诊断，不无限循环。
 
 关键边界：
 
 - LLM 不直接生成可执行 SQL。
-- Tool 负责 RepairPlan 校验、QueryGraph patch、SQL 编译、方言适配和执行。
+- C1 负责 RepairPlan 协议校验、事件、refs、checkpoint 和受控重跑边界；QueryGraph / compiler binding 的字段级 patch、apply 和重新编译归 C2。
 - raw SQL / raw result 只允许留在 control plane、artifact store 或 trace 受控区域。
 - 普通用户可见面只看到业务级修复摘要。
 
@@ -194,7 +198,7 @@ trace / control payload 可包含：
 - raw SQL。
 - raw result。
 - 完整 schema。
-- 完整 RepairPlan patch 主体。
+- 完整 RepairPlan / RepairPatch 主体。
 - control_plane 主体。
 
 AgentScope C1 范围：
@@ -223,7 +227,7 @@ C1 只使用现有 Chat Shell。
 - schema。
 - SQL。
 - raw result。
-- RepairPlan patch 详情。
+- RepairPlan / RepairPatch 详情。
 
 开发 / 管理员详情能力 C1 不实现独立面板，只预留 trace-only / Langfuse / 后端日志数据：
 
@@ -267,7 +271,7 @@ ArtifactCard `related_refs` 增加：
 
 - 普通用户只读取业务级 repair summary。
 - `repair_plan_ref` 使用现有 `artifact:<uuid>` 句柄，`ArtifactRef.ref_type="repair_plan"`，不引入 `repair_plan:<uuid>` 新前缀。
-- Artifact API 对 `kind="repair_plan"` 只返回脱敏 RepairPlan 摘要；字段级 patch、Tool 校验详情只保存在 Langfuse observation、后端日志和 trace-only metadata。
+- Artifact API 对 `kind="repair_plan"` 只返回脱敏 RepairPlan 摘要；RepairPatch、字段映射主体和 Tool 内部详情只保存在 Langfuse observation、后端日志和 trace-only metadata。
 - `repair_plan_ref` 读取必须 fail closed。
 - 不返回 raw SQL、raw result 或完整 schema。
 
@@ -298,12 +302,14 @@ C1 必须通过两个问题。
 
 - 页面 Chat 返回真实业务结果。
 - ArtifactCard 可见。
-- SSE / event envelope 有完整 `repair.*` 生命周期。
-- 后端日志有 failure classification、RepairPlan、Tool validation 和 rerun result。
+- 真实业务成功路径至少有同一 `task_id / trace_id / artifact_ref` 的页面、SSE、后端日志、Langfuse、`query_artifact`、`conversation_state` 一致性。
+- 如果该路径没有触发 RepairPlan，不要求出现 `repair_plan_ref`，也不能把它解读成字段漂移自动修复成功。
+- fixture 或真实触发修复的分支有完整 `repair.*` 生命周期。
+- 后端日志有 failure classification、RepairPlan 协议校验和受控 rerun result。
 - Langfuse UI 能用同一 `trace_id` 找到 observation。
 - `query_artifact` 能用 `artifact_ref` 找到产物。
-- `conversation_state` 能查到 `repair_plan_ref / checkpoint_ref`。
-- 同一 `task_id / trace_id / artifact_ref / repair_plan_ref` 全链一致。
+- fixture 或触发修复的分支中，`conversation_state` 能查到 `repair_plan_ref / checkpoint_ref`。
+- fixture 或触发修复的分支中，同一 `task_id / trace_id / artifact_ref / repair_plan_ref` 全链一致。
 
 ### 12.2 稳定自动化 fixture
 
@@ -319,6 +325,7 @@ C1 必须通过两个问题。
 
 C2：
 
+- `RepairPatch Engine`：实现 `FIELD_NOT_FOUND` / `FIELD_MAPPING_DRIFT` 字段候选、Patch IR、Tool 校验、apply、重新编译和真实漂移验收。
 - Artifact 详情面板。
 - RepairPlan、trace、attempt history 的开发 / 管理员可视化。
 - 低置信修复确认卡的完整交互。
@@ -337,4 +344,5 @@ C3：
 - 所有自动修复必须保留 trace、attempt 和 blocked reason，避免不可解释重跑。
 - C1 不能为了提高成功率绕过 QueryGraph compiler、方言适配或权限边界。
 - C1 不能用 fixture 成功替代真实问题成功。
+- C1 不能用 template 路径真实成功替代 C2 字段漂移自动修复验收。
 - Langfuse observation 是 C1 硬验收项，不是可选项。

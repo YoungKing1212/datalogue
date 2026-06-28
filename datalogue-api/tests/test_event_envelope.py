@@ -91,7 +91,7 @@ def test_user_visible_event_envelope_removes_sensitive_query_material():
     encoded = json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).lower()
     assert envelope.payload["answer"] == "GMV 为 100。"
     assert envelope.payload["artifact"] == {"result_ref": "artifact://result/1"}
-    assert "select" not in encoded
+    assert "select * from orders" not in encoded
     assert "raw_sql" not in encoded
     assert "sql_result" not in encoded
     assert "rows" not in encoded
@@ -100,8 +100,8 @@ def test_user_visible_event_envelope_removes_sensitive_query_material():
     assert "control_plane" not in encoded
 
 
-def test_chat_sse_payload_keeps_legacy_fields_and_adds_event_envelope():
-    """SSE 追加 envelope 时必须保留旧前端依赖的顶层字段。"""
+def test_chat_sse_payload_sanitizes_legacy_fields_and_adds_event_envelope():
+    """SSE 追加 envelope 时，顶层兼容字段也不能泄露内部执行面。"""
 
     from app.api.chat import _with_event_envelope
 
@@ -125,7 +125,12 @@ def test_chat_sse_payload_keeps_legacy_fields_and_adds_event_envelope():
 
     assert payload["type"] == "final"
     assert payload["answer"] == "查询完成"
-    assert payload["sql"] == "SELECT * FROM orders"
+    encoded = json.dumps(payload, ensure_ascii=False).lower()
+    assert "sql" not in payload
+    assert "sql_result" not in payload
+    assert "select * from orders" not in encoded
+    assert "orders" not in encoded
+    assert "rows" not in encoded
     assert payload["event_envelope"]["event_type"] == "answer.completed"
     assert payload["event_envelope"]["visibility"] == "user_visible"
     assert payload["event_envelope"]["payload"] == {
@@ -174,3 +179,44 @@ def test_repair_event_envelope_only_exposes_business_summary_and_refs():
     assert "select" not in encoded
     assert "schema" not in encoded
     assert "raw_result" not in encoded
+
+
+def test_chat_sse_public_payload_removes_final_internal_debug_fields():
+    """final SSE 顶层只保留安全摘要；调试字段必须留在后端 trace/store。"""
+
+    from app.api.chat import _with_event_envelope
+
+    payload = _with_event_envelope(
+        {
+            "type": "final",
+            "answer": "查询完成",
+            "query_plan": {"debug": {"sql_template": "SELECT secret_col FROM hidden_table"}},
+            "candidate_assets": {"fields": [{"column_name": "secret_col"}]},
+            "dsl": {"direct_sql": "SELECT secret_col FROM hidden_table"},
+            "sql": "SELECT secret_col FROM hidden_table",
+            "sql_list": ["SELECT secret_col FROM hidden_table"],
+            "sql_result": {
+                "columns": ["secret_col"],
+                "rows": [{"secret_col": "private"}],
+            },
+            "sql_diagnosis": {"root_cause": "missing secret_col"},
+            "result_ref": "artifact:result-1",
+            "repair_plan": {"summary": "已生成业务级修复方案"},
+        },
+        event_type="answer.completed",
+        visibility="user_visible",
+        payload_fields=("answer", "result_ref", "repair_plan"),
+    )
+
+    encoded = json.dumps(payload, ensure_ascii=False).lower()
+    assert payload["answer"] == "查询完成"
+    assert payload["result_ref"] == "artifact:result-1"
+    assert payload["repair_plan"] == {"summary": "已生成业务级修复方案"}
+    assert "query_plan" not in payload
+    assert "candidate_assets" not in payload
+    assert "dsl" not in payload
+    assert "sql" not in payload
+    assert "sql_result" not in payload
+    assert "secret_col" not in encoded
+    assert "hidden_table" not in encoded
+    assert "select" not in encoded

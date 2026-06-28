@@ -434,8 +434,8 @@ def test_single_dataset_success_cross_checks_five_evidence_sets(
     )
 
     final = [event for event in events if event.get("type") == "final"][-1]
-    metadata = final["response_metadata"]
     assistant = db_session.get(models.Message, final["message_id"])
+    metadata = assistant.response_metadata
     trace_index = db_session.query(models.ObservabilityTraceIndex).one()
     artifacts = (
         db_session.query(models.QueryArtifact)
@@ -449,13 +449,15 @@ def test_single_dataset_success_cross_checks_five_evidence_sets(
     assert final["message_id"] == assistant.id == trace_index.message_id
     assert final["langfuse_trace_id"] == metadata["langfuse"]["trace_id"]
     assert trace_index.langfuse_trace_id == final["langfuse_trace_id"]
-    assert final["query_plan"] == metadata["query_plan"] == trace_index.metadata_json["query_plan"]
-    assert final["candidate_assets"] == metadata["candidate_assets"]
+    assert "query_plan" not in final
+    assert "candidate_assets" not in final
+    assert metadata["query_plan"] == trace_index.metadata_json["query_plan"]
+    assert metadata["candidate_assets"]
     assert any(event.get("node") == "query_plan" for event in events)
     assert any(event.get("node") == "sql_execute" for event in events)
-    assert final["sql_result"] is None
+    assert "sql_result" not in final
     assert {item.message_id for item in artifacts} == {final["message_id"]}
-    assert thread_state["last_success_task"]["result_ref"] == final["result_artifact"]["result_ref"]
+    assert thread_state["last_success_task"]["result_ref"] == metadata["result_artifact"]["result_ref"]
     assert thread_state["last_success_task_write_status"]["status"] == "ready"
 
 
@@ -582,7 +584,7 @@ def test_repair_plan_blocked_emits_repair_events_without_artifact_ref(
     assert repair_event_types == ["repair.evaluated", "repair.blocked"]
     assert final["repair_status"] == "blocked"
     assert final["repair_failure_class"] == "FIELD_NOT_FOUND"
-    assert final["repair_plan_ref"] is None
+    assert "repair_plan_ref" not in final
     assert not any(ref.get("ref_type") == "repair_plan" for ref in final["related_refs"])
     assert (
         db_session.query(models.QueryArtifact)
@@ -623,8 +625,8 @@ def test_low_confidence_candidate_confirmation_records_clarification_without_art
     assert final["entry_route"] == "ambiguous"
     assert final["route_payload"]["decision"] == "ambiguous"
     assert final["route_payload"]["candidates"] == candidates
-    assert final["sql"] is None
-    assert final["sql_result"] is None
+    assert "sql" not in final
+    assert "sql_result" not in final
     assert "result_ref" not in final
     trace_index = db_session.query(models.ObservabilityTraceIndex).one()
     assert trace_index.status == "blocked"
@@ -666,8 +668,8 @@ def test_unsupported_question_rejects_without_fabricating_artifacts(
     assert final["entry_route"] == "reject"
     assert final["entry_reason"] == "功能操作不应进入 QueryGraph。"
     assert final["route_payload"]["kind"] == "unsupported_function"
-    assert final["sql"] is None
-    assert final["sql_result"] is None
+    assert "sql" not in final
+    assert "sql_result" not in final
     assert "result_ref" not in final
     assert "report_ref" not in final
     assistant = db_session.get(models.Message, final["message_id"])
@@ -708,12 +710,12 @@ def test_controlled_failure_retry_keeps_diagnosis_and_does_not_fabricate_sql_res
 
     final = events[-1]
     assert final["type"] == "final"
-    assert final["sql_result"] is None
-    assert final["sql_diagnosis"]["code"] == "COLUMN_NOT_FOUND"
-    assert final["sql_retry_trace"] == [{"attempt": 1, "reason": "column_missing"}]
+    assert "sql_result" not in final
+    assert "sql_diagnosis" not in final
+    assert "sql_retry_trace" not in final
     assert any(event.get("node") == "sql_audit" for event in events)
     trace_index = db_session.query(models.ObservabilityTraceIndex).one()
     annotation = db_session.query(models.TraceAnnotationCandidate).one()
     assert trace_index.status == "failed"
     assert annotation.reason == "sql_failure"
-    assert annotation.payload["sql_retry_trace"] == final["sql_retry_trace"]
+    assert annotation.payload["sql_retry_trace"] == [{"attempt": 1, "reason": "column_missing"}]

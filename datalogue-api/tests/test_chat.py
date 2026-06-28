@@ -2624,16 +2624,22 @@ class TestChatStreamEvents:
         assert gateway_step["display_name"] == "message_gateway"
         assert gateway_step["status"] == "done"
         assert gateway_step["turn_event"]["event_type"] == "new_query"
-        assert gateway_step["query_task_capsule"]["dataset_id"] == sample_dataset.id
+        assert "query_task_capsule" not in gateway_step
         assert gateway_step["payload"]["turn_event"] == gateway_step["turn_event"]
-        assert gateway_step["payload"]["query_task_capsule"] == gateway_step["query_task_capsule"]
+        assert "query_task_capsule" not in gateway_step["payload"]
         assert final["turn_event"] == gateway_step["turn_event"]
-        assert final["query_task_capsule"] == gateway_step["query_task_capsule"]
+        assert "query_task_capsule" not in final
         assistant_message = db_session.get(models.Message, final["message_id"])
         assert assistant_message is not None
+        stored_gateway_step = next(
+            step
+            for step in assistant_message.step_trace or []
+            if step.get("node") == "message_gateway"
+        )
+        assert stored_gateway_step["query_task_capsule"]["dataset_id"] == sample_dataset.id
         assert any(
             step.get("node") == "message_gateway"
-            and step.get("query_task_capsule") == gateway_step["query_task_capsule"]
+            and step.get("query_task_capsule") == stored_gateway_step["query_task_capsule"]
             for step in (assistant_message.step_trace or [])
         )
 
@@ -2705,7 +2711,8 @@ class TestChatStreamEvents:
         final = [event for event in events if event.get("type") == "final"][-1]
         assert final["entry_route"] == "interpret_result"
         assert final["turn_event"] == gateway_step["turn_event"]
-        assert final["query_task_capsule"] == gateway_step["query_task_capsule"]
+        assert "query_task_capsule" not in gateway_step
+        assert "query_task_capsule" not in final
         assistant_message = db_session.get(models.Message, final["message_id"])
         assert assistant_message is not None
         assert any(
@@ -2864,10 +2871,14 @@ class TestChatStreamEvents:
         assert query_plan_steps
         assert candidate_steps[-1]["display_name"] == "subagent.candidate_assets"
         assert query_plan_steps[-1]["display_name"] == "subagent.query_plan"
-        assert query_plan_steps[-1]["query_plan"]["execution_strategy"] == "query_graph"
-        assert final["query_plan"]["execution_strategy"] == "query_graph"
-        assert final["candidate_assets"]["summary"]["field_count"] == 1
-        assert final["query_plan_debug"] == query_plan_debug
+        assert "query_plan" not in query_plan_steps[-1]
+        assert "query_plan" not in final
+        assert "candidate_assets" not in final
+        assert "query_plan_debug" not in final
+        assistant_message = db_session.get(models.Message, final["message_id"])
+        assert assistant_message.response_metadata["query_plan"]["execution_strategy"] == "query_graph"
+        assert assistant_message.response_metadata["candidate_assets"]["summary"]["field_count"] == 1
+        assert assistant_message.response_metadata["query_plan_debug"] == query_plan_debug
 
     @pytest.mark.asyncio
     async def test_stream_chat_dataset_fanout_returns_safe_results_and_control_sink(
@@ -3002,7 +3013,7 @@ class TestChatStreamEvents:
             sample_dataset.id,
             other_dataset.id,
         ]
-        assert final["sql_result"] is None
+        assert "sql_result" not in final
         assert "control_plane" not in final
         assert "last_success_task" not in final
         assert "raw_secret" not in dumped_final
@@ -3152,9 +3163,12 @@ class TestChatStreamEvents:
         assert called["run"] is True
         assert not [event for event in events if event.get("node") == "analysis_blueprint_execute"]
         assert final["answer"] == "蓝图执行完成"
-        assert final["query_plan"]["execution_strategy"] == "blueprint_execute"
-        assert final["candidate_assets"]["summary"]["blueprint_count"] == 1
-        assert final["query_plan_debug"] == {
+        assert "query_plan" not in final
+        assert "candidate_assets" not in final
+        assistant_message = db_session.get(models.Message, final["message_id"])
+        assert assistant_message.response_metadata["query_plan"]["execution_strategy"] == "blueprint_execute"
+        assert assistant_message.response_metadata["candidate_assets"]["summary"]["blueprint_count"] == 1
+        assert assistant_message.response_metadata["query_plan_debug"] == {
             "planner_source": "llm",
             "fallback_reason": None,
             "decision_factors": query_plan["decision_factors"],
@@ -3899,17 +3913,18 @@ class TestChatStreamEvents:
         assert any(event.get("type") == "final" for event in first_events)
         assert any(event.get("type") == "final" for event in second_events)
         first_final = [event for event in first_events if event.get("type") == "final"][-1]
-        assert first_final["result_artifact"]["result_ref"].startswith("result:")
-        assert first_final["result_artifact"]["complete"] is False
+        first_metadata = db_session.get(models.Message, first_final["message_id"]).response_metadata
+        assert first_metadata["result_artifact"]["result_ref"].startswith("result:")
+        assert first_metadata["result_artifact"]["complete"] is False
         assert (
-            first_final["result_artifact"]["completeness_reason"]
+            first_metadata["result_artifact"]["completeness_reason"]
             == "sql_limit_makes_result_incomplete"
         )
         thread_state = ConversationStore(db_session).get_thread_state("session-auto-last-success")
         assert thread_state["last_success_task"]["main_table"] == "plan_task_daily_record"
         assert (
             thread_state["last_success_task"]["result_ref"]
-            == first_final["result_artifact"]["result_ref"]
+            == first_metadata["result_artifact"]["result_ref"]
         )
 
         second_state = captured_states[-1]
@@ -3931,6 +3946,7 @@ class TestChatStreamEvents:
             if event.get("type") == "step" and event.get("node") == "message_gateway"
         )
         assert second_gateway_step["payload"]["multiturn_fast_path"]["status"] == "observe_only"
+        assert "query_task_capsule" not in second_gateway_step.get("payload", {})
         second_request = fake_subagent_class.captured_runs[-1]["request"]
         assert second_request.query_task_capsule == capsule
         assert second_request.turn_event == second_state["turn_event"]
@@ -4043,17 +4059,15 @@ class TestChatStreamEvents:
             for event in events
             if event.get("type") == "step" and event.get("node") == "message_gateway"
         )
-        assert "sql_template" not in json.dumps(
-            gateway_step["query_task_capsule"], ensure_ascii=False
-        )
+        assert "query_task_capsule" not in gateway_step
         final = [event for event in events if event.get("type") == "final"][-1]
         assert final["turn_event"] == initial_state["turn_event"]
-        assert final["query_task_capsule"]["base_query_plan"]["debug"] == {
-            "selected_main_table": "plan_task_daily_record"
-        }
-        assert "sql_template" not in json.dumps(final["query_task_capsule"], ensure_ascii=False)
+        assert "query_task_capsule" not in final
         assistant_message = db_session.get(models.Message, final["message_id"])
         assert assistant_message is not None
+        assert assistant_message.response_metadata["query_task_capsule"]["base_query_plan"]["debug"] == {
+            "selected_main_table": "plan_task_daily_record"
+        }
         assert "sql_template" not in json.dumps(assistant_message.step_trace, ensure_ascii=False)
         request = fake_subagent_class.captured_runs[-1]["request"]
         assert request.query_task_capsule == capsule
@@ -4119,27 +4133,26 @@ class TestChatStreamEvents:
             )
 
         final = [event for event in events if event.get("type") == "final"][-1]
-        metadata = final["response_metadata"]
         assistant_message = (
             db_session.query(models.Message)
             .filter(models.Message.role == "assistant")
             .order_by(models.Message.id.desc())
             .first()
         )
+        metadata = assistant_message.response_metadata
 
-        assert final["query_profile"] == metadata["query_profile"]
+        assert "sql" not in final["query_profile"]
         assert final["explainability"]["query_profile"] == final["query_profile"]
-        assert metadata["explainability"]["query_profile"] == final["query_profile"]
-        assert assistant_message.response_metadata["query_profile"] == final["query_profile"]
-        assert final["query_profile"]["sql"]["row_count"] == 1
-        assert final["query_profile"]["query_context"]["inheritance"]["inherited"] is True
+        assert metadata["explainability"]["query_profile"] == metadata["query_profile"]
+        assert metadata["query_profile"]["sql"]["row_count"] == 1
+        assert metadata["query_profile"]["query_context"]["inheritance"]["inherited"] is True
         assert final["result_artifact"]["result_ref"].startswith("result:")
-        assert final["query_profile"]["sql"]["result_artifact"] == final["result_artifact"]
-        assert metadata["result_artifact"] == final["result_artifact"]
-        assert final["query_profile"]["execution_summary"]["stages"]
+        assert metadata["result_artifact"]["result_ref"].startswith("result:")
+        assert metadata["query_profile"]["sql"]["result_artifact"] == metadata["result_artifact"]
+        assert metadata["query_profile"]["execution_summary"]["stages"]
         assert "control_plane" not in final
         assert "last_success_task" not in final
-        assert final["sql_result"] is None
+        assert "sql_result" not in final
         assert final["result_ref"].startswith("artifact:")
         assert final["report_ref"].startswith("artifact:")
         subagent_tool_result = metadata["subagent_tool_result"]
@@ -4260,7 +4273,7 @@ class TestChatStreamEvents:
         assert "tool_policy" in lead_event
         assert lead_event["planned_tool_calls"]
         assert lead_event["executed_tool_calls"]
-        assert "policy_violations" in lead_event
+        assert "policy_violations" not in lead_event
         assert "planner_fallback" in lead_event
         assert lead_event["time_context"]["detected_time_range"]["label"] == "最近30日"
         assert route_event["type"] == "route_decision"
@@ -4285,9 +4298,10 @@ class TestChatStreamEvents:
         ]
         assert {event["status"] for event in lead_report_step} == {"running", "done"}
         assert events[-1]["answer"] == "LeadAgent 汇总：GMV 为 100。"
-        assert events[-1]["report_owner"] == "lead_agent"
-        assert events[-1]["subagent_report_skipped"] is True
-        assert events[-1]["lead_agent_report"] == {
+        assistant_message = db_session.get(models.Message, events[-1]["message_id"])
+        assert assistant_message.response_metadata["report_owner"] == "lead_agent"
+        assert assistant_message.response_metadata["subagent_report_skipped"] is True
+        assert assistant_message.response_metadata["lead_agent_report"] == {
             "generated": True,
             "reason": "auto_routed_manifest",
         }
@@ -4401,7 +4415,8 @@ class TestChatStreamEvents:
         assert route_event["decision"] == "no_match"
         assert events[-1]["type"] == "final"
         assert events[-1]["entry_route"] == "no_match"
-        assert events[-1]["lead_agent_context"]["audit_trace"]["dispatched"] is False
+        assistant_message = db_session.get(models.Message, events[-1]["message_id"])
+        assert assistant_message.response_metadata["lead_agent_context"]["audit_trace"]["dispatched"] is False
         assert "current SubAgent Manifest" in events[-1]["answer"]
         trace_index = db_session.query(models.ObservabilityTraceIndex).one()
         assert trace_index.status == "blocked"
@@ -4494,20 +4509,18 @@ class TestChatStreamEvents:
         )
         assert final["type"] == "final"
         assert final["entry_route"] == "direct_answer"
-        assert gateway_step["query_task_capsule"]["dataset_id"] == sample_dataset.id
-        assert final["query_task_capsule"] == gateway_step["query_task_capsule"]
-        assert (
-            final["response_metadata"]["query_task_capsule"] == gateway_step["query_task_capsule"]
-        )
+        assert "query_task_capsule" not in gateway_step
+        assert "query_task_capsule" not in final
         assert final["langfuse_trace_id"]
-        assert final["response_metadata"]["langfuse"]["trace_id"] == final["langfuse_trace_id"]
-        assert final["response_metadata"]["observability"]
         trace_index = db_session.query(models.ObservabilityTraceIndex).one()
         assert trace_index.status == "success"
         assert trace_index.entry_route == "direct_answer"
         assert trace_index.message_id == final["message_id"]
         assistant_message = db_session.get(models.Message, final["message_id"])
         assert assistant_message is not None
+        assert assistant_message.response_metadata["query_task_capsule"]["dataset_id"] == sample_dataset.id
+        assert assistant_message.response_metadata["langfuse"]["trace_id"] == final["langfuse_trace_id"]
+        assert assistant_message.response_metadata["observability"]
         assert any(
             step.get("node") == "message_gateway" for step in assistant_message.step_trace or []
         )

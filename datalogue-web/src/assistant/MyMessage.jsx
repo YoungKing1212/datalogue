@@ -1,7 +1,7 @@
 // MyMessage — assistant-ui Message 渲染组件
 // 使用 MessagePrimitive.Parts + ChainOfThought 接管 reasoning 步骤渲染
 // 正文走 MessagePrimitive.Text（含 smooth 流式动画）
-// 查询结果/图表/复制按钮从 metadata.custom 取，由 chat-adapter.js 在 final 事件时写入。
+// 图表、产物引用和业务卡片从 metadata.custom 取，由 chat-adapter.js 在 final 事件时写入。
 // 普通 Chat 用户可见层不展示 SQL 文本，SQL 仅保留在后端 control/trace 面。
 
 import React, { useState, useMemo } from 'react';
@@ -316,174 +316,19 @@ function formatTimeRange(value) {
   );
 }
 
-function formatFilter(value) {
-  if (!value) return null;
-  if (typeof value === 'string') return value;
-  if (typeof value !== 'object') return null;
-  const field = labelFromValue(value.field || value.column || value.name || value);
-  const operator = value.operator || value.op || '';
-  const rawValue = value.value ?? value.values ?? value.label;
-  const filterValue = Array.isArray(rawValue) ? rawValue.join('、') : rawValue;
-  return [field, operator, filterValue].filter(Boolean).join(' ');
-}
-
-function labelsFromFilters(...sources) {
-  return dedupeValues(
-    sources.flatMap((source) => toArray(source).map(formatFilter).filter(Boolean)),
-  );
-}
-
-function formatParams(params) {
-  if (!params || typeof params !== 'object' || Array.isArray(params)) return [];
-  return Object.entries(params)
-    .filter(([, value]) => value != null && value !== '')
-    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join('、') : value}`);
-}
-
-function routePathLabel({ routePayload, routeDecision, profileRoute, caliber, generationMode }) {
-  const kind = routePayload?.kind || routePayload?.route || '';
-  if (
-    kind === 'analysis_blueprint' ||
-    routePayload?.blueprint_id ||
-    routePayload?.blueprint_name ||
-    profileRoute?.blueprint_id ||
-    profileRoute?.blueprint_match ||
-    (caliber?.blueprints || []).length > 0 ||
-    String(generationMode || '').startsWith('analysis_blueprint')
-  ) {
-    const profileBlueprint = profileRoute?.blueprint_match || {};
-    const name =
-      routePayload?.name ||
-      routePayload?.blueprint_name ||
-      routePayload?.blueprintName ||
-      profileBlueprint.name ||
-      profileBlueprint.display_name ||
-      (caliber?.blueprints || [])[0];
-    return name ? `蓝图路径 · ${name}` : '蓝图路径';
-  }
-  if (
-    routeDecision?.decision === 'selected' ||
-    routeDecision?.decision === 'locked' ||
-    profileRoute?.decision === 'selected' ||
-    profileRoute?.decision === 'locked' ||
-    kind === 'manifest_route' ||
-    routePayload?.decision
-  ) {
-    const name =
-      routeDecision?.dataset_name ||
-      profileRoute?.dataset_name ||
-      routePayload?.dataset_name ||
-      routePayload?.datasetName;
-    return name ? `场景路径 · ${name}` : '场景路径';
-  }
-  if (generationMode === 'inferred') return '临时查询 · 表结构推断';
-  return '临时查询';
-}
-
-function inheritedContextText(custom, routeDecision, queryProfile) {
-  const profileContext = queryProfile?.query_context || {};
-  const inheritance = profileContext.inheritance || {};
-  const prior = profileContext.prior_query_context || {};
-  const delta = profileContext.delta || {};
-  const context =
-    custom.multiturnContext ||
-    custom.multiturn_context ||
-    custom.threadContext ||
-    custom.thread_context ||
-    null;
-  const summary =
-    custom.inheritanceSummary ||
-    custom.inheritance_summary ||
-    context?.inheritance_summary ||
-    context?.summary ||
-    context?.last_answer_summary ||
-    null;
-  if (summary) return summary;
-  if (inheritance.inherited) {
-    const priorBits = [
-      prior.metrics?.length ? `指标 ${prior.metrics.join('、')}` : null,
-      prior.dimensions?.length ? `维度 ${prior.dimensions.join('、')}` : null,
-      formatTimeRange(prior.time_range) ? `时间 ${formatTimeRange(prior.time_range)}` : null,
-    ].filter(Boolean);
-    const deltaBits = [
-      delta.metrics?.length ? `指标调整为 ${delta.metrics.join('、')}` : null,
-      delta.dimensions?.length ? `维度调整为 ${delta.dimensions.join('、')}` : null,
-      delta.filters?.length ? `过滤调整为 ${labelsFromFilters(delta.filters).join('、')}` : null,
-      formatTimeRange(delta.time_range) ? `时间调整为 ${formatTimeRange(delta.time_range)}` : null,
-      delta.limit != null ? `返回条数调整为 ${delta.limit}` : null,
-    ].filter(Boolean);
-    return `延续上一轮：${priorBits.join('；') || '上一轮查询口径'}${deltaBits.length ? `；本轮变化：${deltaBits.join('；')}` : ''}`;
-  }
-  if (routeDecision?.decision === 'locked') {
-    return '沿用上一轮已锁定的数据集和场景上下文。';
-  }
-  if (context?.turn_type === 'continue' || context?.turnType === 'continue') {
-    return '本轮在上一轮问题上下文上继续追问。';
-  }
-  return '未继承上一轮口径。';
-}
-
 function buildQueryCaliber(custom) {
-  const queryProfile = custom.queryProfile || custom.explainability?.query_profile || {};
-  const profileContext = queryProfile.query_context || {};
-  const mergedContext = profileContext.merged_query_context || {};
-  const profileRoute = queryProfile.route || {};
-  const explanation = custom.answerExplanation || {};
-  const caliber = explanation.caliber || {};
-  const dsl = custom.dsl || {};
-  const metricResolution = custom.metricResolution || {};
-  const semantic = custom.semanticAssetResolution || custom.semantic_asset_resolution || {};
-  const intent = custom.intent || {};
-  const entities = intent.entities || {};
-  const routePayload = custom.routePayload || {};
-  const routeDecision = custom.routeDecision || {};
-  const generationMode = custom.generationMode || profileRoute.generation_mode || caliber.generation_mode || '';
-  const routePath = routePathLabel({ routePayload, routeDecision, profileRoute, caliber, generationMode });
+  const explicit = custom.queryCaliber || {};
+  const explanationCaliber = custom.answerExplanation?.caliber || {};
+  const source = custom.queryCaliber ? explicit : explanationCaliber;
 
-  const metrics = labelsFromValues(
-    mergedContext.metrics,
-    caliber.metrics,
-    dsl.metrics,
-    metricResolution.metrics,
-    semantic.metrics,
-  );
-  const dimensions = labelsFromValues(
-    mergedContext.dimensions,
-    caliber.dimensions,
-    dsl.dimensions,
-    metricResolution.dimensions,
-    semantic.dimensions,
-  );
-  const timeRange = formatTimeRange(
-    mergedContext.time_range ||
-    mergedContext.time_filter ||
-    caliber.time_range ||
-    dsl.time_range ||
-    entities.time_range ||
-    profileContext.time_context?.detected_time_range ||
-    custom.timeRange ||
-    custom.time_range,
-  );
-  const filters = dedupeValues([
-    ...labelsFromFilters(mergedContext.filters, caliber.filters, dsl.filters, routePayload.filters),
-    ...formatParams(caliber.blueprint_params),
-    ...formatParams(routePayload.params),
-  ]);
-  const inheritedText = inheritedContextText(custom, routeDecision, queryProfile);
-  const hasCaliberSignal = Boolean(
-    custom.queryProfile ||
-    custom.explainability ||
-    custom.answerExplanation ||
-    custom.dsl ||
-    custom.metricResolution ||
-    custom.semanticAssetResolution ||
-    custom.semantic_asset_resolution ||
-    custom.routePayload ||
-    custom.routeDecision ||
-    custom.generationMode ||
-    custom.intent ||
-    custom.sqlResult,
-  );
+  const metrics = labelsFromValues(source.metrics);
+  const dimensions = labelsFromValues(source.dimensions);
+  const timeRange = formatTimeRange(source.timeRange || source.time_range);
+  const filters = dedupeValues(toArray(source.filters).map((item) => String(item || '').trim()).filter(Boolean));
+  const routePath = source.routePath || source.route_path || '业务口径';
+  const inheritedText = source.inheritedText || source.inherited_text || '未继承上一轮口径。';
+  const generationMode = source.generationMode || source.generation_mode || '';
+  const hasCaliberSignal = Boolean(custom.queryCaliber || custom.answerExplanation);
   const hasAny = hasCaliberSignal && (metrics.length || dimensions.length || timeRange || filters.length || routePath);
 
   if (!hasAny) return null;
@@ -921,70 +766,13 @@ function artifactTitle(entry) {
   return entry.datasetId ? `数据集 ${entry.datasetId} ${label}` : `查看${label}`;
 }
 
-function normalizeArtifactRows(payload) {
-  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
-  const firstRow = rows.find((row) => row && typeof row === 'object' && !Array.isArray(row));
-  const columns = Array.isArray(payload?.columns) && payload.columns.length
-    ? payload.columns
-    : Object.keys(firstRow || {});
-  return {
-    rows,
-    columns,
-    columnLabels: payload?.column_labels || payload?.columnLabels || {},
-    rowCount: payload?.row_count ?? payload?.rowCount ?? rows.length,
-  };
-}
-
-function formatArtifactCell(value) {
-  if (value == null) return '';
-  if (typeof value === 'object') return JSON.stringify(value);
-  return String(value);
-}
-
-function ArtifactResultTable({ payload }) {
-  const { rows, columns, columnLabels, rowCount } = normalizeArtifactRows(payload);
-
-  if (!columns.length) {
-    return <div className="artifact-empty">查询结果为空或缺少列信息</div>;
-  }
-
-  return (
-    <div className="artifact-result">
-      <div className="artifact-result-summary">{rowCount} 行 · {columns.length} 列</div>
-      <div className="sql-result-table-wrap">
-        <table className="sql-result-table">
-          <thead>
-            <tr>
-              {columns.map((col, i) => {
-                const label = columnLabels[col] || col;
-                return (
-                  <th key={`${col}-${i}`} title={label !== col ? col : undefined}>
-                    {label}
-                  </th>
-                );
-              })}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={i}>
-                {columns.map((col, j) => (
-                  <td key={`${col}-${j}`}>{formatArtifactCell(row?.[col])}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 function ArtifactPreviewBody({ artifact }) {
   const json = artifact?.content_json;
   const text = artifact?.content_text;
   const isSqlResult = artifact?.kind === 'sql_result' || Array.isArray(json?.rows);
-  if (isSqlResult) return <ArtifactResultTable payload={json || {}} />;
+  if (isSqlResult) {
+    return <div className="artifact-empty">结果产物已生成，请通过受控详情页查看。</div>;
+  }
 
   const reportText = text || json?.markdown || json?.report || json?.text || json?.content;
   if (artifact?.kind === 'report' && reportText) {
@@ -1068,18 +856,16 @@ function ArtifactAccessCard({ resultRef, reportRef, subagentToolResults }) {
  * - 用 MessagePrimitive.Parts 把 reasoning / text 分开渲染
  * - ChainOfThought 默认折叠，AccordionTrigger 控制展开
  * - 正文 markdown 走 MessageContent
- * - 查询结果/图表/复制按钮从 metadata.custom 取
+ * - 图表、产物引用和业务卡片从 metadata.custom 取
  */
 export function AIMessage() {
   const api = useAui();
   const message = useAuiState((s) => s.message);
-  const [resultOpen, setResultOpen] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [feedbackState, setFeedbackState] = useState(null);
 
   const isStreaming = message?.status?.type === 'running';
   const custom = message?.metadata?.custom || {};
-  const sqlResult = custom.sqlResult || null;
   const chartType = custom.chartType || null;
   const chartTitle = custom.chartTitle || null;
   const chartSubtitle = custom.chartSubtitle || null;
@@ -1216,54 +1002,6 @@ export function AIMessage() {
 
       {/* C-ready ArtifactCard — 统一产物卡片 */}
       <ArtifactCard artifact={artifactCard} />
-
-      {/* SQL 执行结果表格 */}
-      {sqlResult && sqlResult.rows && sqlResult.rows.length > 0 && (
-        <div className={`sql-result-card ${resultOpen ? 'open' : ''}`}>
-          <button
-            type="button"
-            className="sql-result-head"
-            onClick={() => setResultOpen((v) => !v)}
-            aria-expanded={resultOpen}
-          >
-            <Icon name="table" style={{ width: 13, height: 13 }} />
-            <span>查询结果</span>
-            <span className="sql-result-count">
-              {sqlResult.rowCount ?? sqlResult.row_count ?? sqlResult.rows.length} 行
-            </span>
-            <Icon name="chev_down" className="sql-result-chev" />
-          </button>
-          {resultOpen && (
-            <div className="sql-result-table-wrap">
-              <table className="sql-result-table">
-                <thead>
-                  <tr>
-                    {(sqlResult.columns || []).map((col, i) => {
-                      const label = sqlResult.column_labels?.[col] || col;
-                      return (
-                        <th key={i} title={label !== col ? col : undefined}>
-                          {label}
-                        </th>
-                      );
-                    })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sqlResult.rows.map((row, i) => (
-                    <tr key={i}>
-                      {(sqlResult.columns || []).map((col, j) => {
-                        const val = row[col];
-                        const text = val == null ? '' : typeof val === 'object' ? JSON.stringify(val) : String(val);
-                        return <td key={j}>{text}</td>;
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* 图表 — 有 chartType 时渲染 */}
       {chartType && (

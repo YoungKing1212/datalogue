@@ -283,11 +283,39 @@ export function buildBusinessSessionId({ threadId, conversationId, fallbackSessi
 
 const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
   'sql',
+  'sql_result',
+  'sqlResult',
+  'sql_diagnosis',
+  'sqlDiagnosis',
+  'sql_audit_result',
+  'sqlAuditResult',
   'raw_sql',
   'direct_sql',
   'llm_sql',
   'compiled_sql',
   'sql_list',
+  'query_plan',
+  'queryPlan',
+  'candidate_assets',
+  'candidateAssets',
+  'query_plan_debug',
+  'queryPlanDebug',
+  'dsl',
+  'rows',
+  'columns',
+  'column_labels',
+  'columnLabels',
+  'schema',
+  'schemas',
+  'table',
+  'tables',
+  'field',
+  'fields',
+  'raw_result',
+  'rawResult',
+  'node',
+  'display_name',
+  'displayName',
 ]);
 
 function sanitizeUserVisibleTrace(value) {
@@ -299,6 +327,204 @@ function sanitizeUserVisibleTrace(value) {
     out[key] = sanitizeUserVisibleTrace(item);
   }
   return out;
+}
+
+const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|delete\s+from|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_row|schema/i;
+
+function safeDisplayText(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  if (!text || INTERNAL_TEXT_PATTERN.test(text)) return null;
+  return text.slice(0, 160);
+}
+
+function safeDisplayList(values, limit = 6) {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = safeDisplayText(value);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function safeAnswerExplanation(payload = {}) {
+  const explanation = payload.answer_explanation || payload.answerExplanation || null;
+  if (!explanation || typeof explanation !== 'object') return null;
+
+  const caliber = explanation.caliber && typeof explanation.caliber === 'object'
+    ? {
+        metrics: safeDisplayList(explanation.caliber.metrics),
+        dimensions: safeDisplayList(explanation.caliber.dimensions),
+        terms: safeDisplayList(explanation.caliber.terms),
+        blueprints: safeDisplayList(explanation.caliber.blueprints),
+      }
+    : {};
+  const risks = Array.isArray(explanation.risks)
+    ? explanation.risks
+        .map((item) => ({ message: safeDisplayText(item?.message || item) }))
+        .filter((item) => item.message)
+        .slice(0, 5)
+    : [];
+  return {
+    caliber,
+    confidence: explanation.confidence || null,
+    confirmation: explanation.confirmation || null,
+    risks,
+    // 只保留是否经过校验的业务级提示，不携带 SQL 摘要正文或数据源表字段。
+    sql_summary: explanation.sql_summary ? { preview: Boolean(explanation.sql_summary.preview) } : null,
+    data_sources: [],
+  };
+}
+
+function safeQueryCaliber(payload = {}) {
+  const source =
+    payload.query_caliber
+    || payload.queryCaliber
+    || payload.business_caliber
+    || payload.businessCaliber
+    || payload.answer_explanation?.caliber
+    || payload.answerExplanation?.caliber
+    || null;
+  if (!source || typeof source !== 'object') return null;
+
+  const caliber = {
+    metrics: safeDisplayList(source.metrics),
+    dimensions: safeDisplayList(source.dimensions),
+    timeRange: safeDisplayText(source.time_range || source.timeRange) || null,
+    filters: safeDisplayList(source.filters),
+    routePath: safeDisplayText(source.route_path || source.routePath) || null,
+    inheritedText: safeDisplayText(source.inherited_text || source.inheritedText) || null,
+    generationMode: safeDisplayText(source.generation_mode || source.generationMode) || '',
+  };
+  const hasAny =
+    caliber.metrics.length
+    || caliber.dimensions.length
+    || caliber.timeRange
+    || caliber.filters.length
+    || caliber.routePath
+    || caliber.inheritedText;
+  return hasAny ? caliber : null;
+}
+
+function safeRouteDecision(routeDecision) {
+  if (!routeDecision || typeof routeDecision !== 'object') return null;
+  const candidates = Array.isArray(routeDecision.candidates)
+    ? routeDecision.candidates.map((candidate) => ({
+        dataset_id: candidate?.dataset_id ?? candidate?.datasetId ?? null,
+        dataset_name: safeDisplayText(candidate?.dataset_name || candidate?.datasetName) || null,
+        reason: safeDisplayText(candidate?.reason || candidate?.match_reason || candidate?.short_reason) || null,
+      })).filter((candidate) => candidate.dataset_id != null || candidate.dataset_name || candidate.reason)
+    : [];
+  return {
+    decision: safeDisplayText(routeDecision.decision) || null,
+    dataset_id: routeDecision.dataset_id ?? routeDecision.datasetId ?? null,
+    dataset_name: safeDisplayText(routeDecision.dataset_name || routeDecision.datasetName) || null,
+    score: routeDecision.score ?? null,
+    candidates,
+  };
+}
+
+function safeSubagentToolResults(results) {
+  if (!Array.isArray(results)) return null;
+  const safeResults = results
+    .map((item) => ({
+      result_ref: item?.result_ref || item?.resultRef || null,
+      report_ref: item?.report_ref || item?.reportRef || null,
+      dataset_id: item?.dataset_id ?? item?.datasetId ?? null,
+    }))
+    .filter((item) => item.result_ref || item.report_ref || item.dataset_id != null);
+  return safeResults.length ? safeResults : null;
+}
+
+function safeArtifactCard(artifactCard) {
+  if (!artifactCard || typeof artifactCard !== 'object') return null;
+  return {
+    title: safeDisplayText(artifactCard.title) || '查询结果',
+    status: safeDisplayText(artifactCard.status) || null,
+    summary_for_chat: safeDisplayText(artifactCard.summary_for_chat || artifactCard.summaryForChat) || null,
+    preview_payload: null,
+    primary_ref: artifactCard.primary_ref || artifactCard.primaryRef || null,
+    related_refs: Array.isArray(artifactCard.related_refs || artifactCard.relatedRefs)
+      ? (artifactCard.related_refs || artifactCard.relatedRefs).filter(Boolean)
+      : [],
+    actions: Array.isArray(artifactCard.actions)
+      ? artifactCard.actions.map((action) => ({
+          action_type: safeDisplayText(action?.action_type || action?.actionType) || null,
+          label: safeDisplayText(action?.label) || null,
+          ref: action?.ref || '',
+          disabled: Boolean(action?.disabled),
+        }))
+      : [],
+  };
+}
+
+function safeClarificationCandidate(candidate, index) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const nested = candidate.term || candidate.business_term || candidate.businessTerm || {};
+  const label = safeDisplayText(
+    candidate.display_name
+      || candidate.displayName
+      || candidate.dataset_name
+      || candidate.datasetName
+      || candidate.label
+      || candidate.title
+      || candidate.name
+      || candidate.term_name
+      || candidate.termName
+      || nested.display_name
+      || nested.displayName
+      || nested.name
+      || nested.term_name
+      || nested.termName,
+  );
+  const definition = safeDisplayText(
+    candidate.definition
+      || candidate.description
+      || candidate.desc
+      || nested.definition
+      || nested.description
+      || nested.desc,
+  );
+  if (!label && !definition && candidate.dataset_id == null && candidate.term_id == null && candidate.id == null) {
+    return null;
+  }
+  return {
+    index: candidate.index || index + 1,
+    id: candidate.id ?? null,
+    dataset_id: candidate.dataset_id ?? candidate.datasetId ?? null,
+    term_id: candidate.term_id ?? candidate.termId ?? null,
+    display_name: label,
+    definition,
+    term_type: safeDisplayText(candidate.term_type || candidate.termType || nested.term_type || nested.termType),
+  };
+}
+
+function safeClarification(clarification, routePayload) {
+  const source = routePayload?.kind === 'term_conflict_clarification'
+    ? {
+        kind: 'term_conflict',
+        clarificationId: routePayload.clarification_id,
+        candidates: routePayload.candidates,
+        expiresAt: routePayload.expires_at,
+      }
+    : clarification;
+  if (!source || typeof source !== 'object') return null;
+  const candidates = Array.isArray(source.candidates)
+    ? source.candidates
+        .map((candidate, index) => safeClarificationCandidate(candidate, index))
+        .filter(Boolean)
+    : [];
+  return {
+    kind: safeDisplayText(source.kind) || null,
+    clarificationId: source.clarificationId || source.clarification_id || null,
+    candidates,
+    expiresAt: source.expiresAt || source.expires_at || null,
+  };
 }
 
 /**
@@ -449,11 +675,10 @@ export function makeChatAdapter({ datasetIdRef }) {
           if (ev.status === 'done' && ev.node !== 'intent_recognition') {
             // 后续 step 归入 BI 执行阶段（多个 step 合并为一条，更新文本）
             const existing = taskTimeline.find((t) => t.type === 'bi_execution');
-            const stepLabel = ev.display_name || NODE_DISPLAY[ev.node] || ev.node;
             if (existing) {
-              existing.text = existing.text ? `${existing.text}、${stepLabel}` : stepLabel;
+              existing.text = '正在完成查询处理';
             } else {
-              taskTimeline.push({ type: 'bi_execution', label: 'BI 执行', text: `已完成：${stepLabel}`, status: 'running' });
+              taskTimeline.push({ type: 'bi_execution', label: 'BI 执行', text: '正在完成查询处理', status: 'running' });
             }
           }
         } else if (ev.event_envelope?.event_type?.startsWith('repair.')) {
@@ -518,11 +743,11 @@ export function makeChatAdapter({ datasetIdRef }) {
         // 构建 C-ready ArtifactCard 数据
         let artifactCard = null;
         if (finalPayload.artifact_card) {
-          // 后端已提供 C-ready ArtifactCard，直接使用
-          artifactCard = finalPayload.artifact_card;
+          // 后端已提供 C-ready ArtifactCard 时仍需过一层清洗，避免 preview 携带 raw rows。
+          artifactCard = safeArtifactCard(finalPayload.artifact_card);
         } else {
           // 从现有 final 字段推断生成 ArtifactCard
-          const hasResult = finalPayload.result_ref || finalPayload.sql_result;
+          const hasResult = finalPayload.result_ref;
           const hasReport = finalPayload.report_ref;
           if (hasResult || hasReport) {
             artifactCard = {
@@ -531,9 +756,7 @@ export function makeChatAdapter({ datasetIdRef }) {
               summary_for_chat: finalPayload.answer
                 ? finalPayload.answer.slice(0, 120)
                 : '查询已执行完成',
-              preview_payload: finalPayload.sql_result
-                ? { rows: finalPayload.sql_result.rows || [], columns: finalPayload.sql_result.columns || [] }
-                : null,
+              preview_payload: null,
               primary_ref: finalPayload.result_ref || finalPayload.report_ref || null,
               related_refs: [],
               actions: [
@@ -547,14 +770,15 @@ export function makeChatAdapter({ datasetIdRef }) {
 
         // 构建候选数据集确认数据（从 route_decision 提取）
         let candidateDatasets = null;
-        if (finalPayload.route_decision) {
-          const rd = finalPayload.route_decision;
+        const routeDecision = safeRouteDecision(finalPayload.route_decision);
+        if (routeDecision) {
+          const rd = routeDecision;
           if (rd.decision === 'ambiguous' && Array.isArray(rd.candidates) && rd.candidates.length > 0) {
             candidateDatasets = {
               candidates: rd.candidates.map((c) => ({
                 dataset_name: c.dataset_name || `数据集 ${c.dataset_id || ''}`,
                 dataset_id: c.dataset_id || null,
-                short_reason: c.reason || c.match_reason || '根据您的查询匹配',
+                short_reason: c.reason || '根据您的查询匹配',
               })),
             };
           }
@@ -585,45 +809,21 @@ export function makeChatAdapter({ datasetIdRef }) {
           status: { type: 'complete', reason: 'stop' },
           metadata: {
             custom: {
-              sql: null,
-              sqlResult: finalPayload.sql_result || null,
-              sqlDiagnosis: finalPayload.sql_diagnosis || null,
-              sqlAuditResult: finalPayload.sql_audit_result || null,
-              answerExplanation: finalPayload.answer_explanation || null,
-              queryPlan: finalPayload.query_plan || finalPayload.queryPlan || null,
-              candidateAssets: finalPayload.candidate_assets || finalPayload.candidateAssets || null,
-              queryPlanDebug: finalPayload.query_plan_debug || finalPayload.queryPlanDebug || null,
-              query_plan: finalPayload.query_plan || null,
-              candidate_assets: finalPayload.candidate_assets || null,
-              query_plan_debug: finalPayload.query_plan_debug || null,
-              queryProfile: finalPayload.query_profile || finalPayload.explainability?.query_profile || null,
-              explainability: finalPayload.explainability || null,
+              answerExplanation: safeAnswerExplanation(finalPayload),
+              queryCaliber: safeQueryCaliber(finalPayload),
               resultRef: finalPayload.result_ref
                 || finalPayload.response_metadata?.subagent_tool_result?.result_ref
                 || null,
               reportRef: finalPayload.report_ref
                 || finalPayload.response_metadata?.subagent_tool_result?.report_ref
                 || null,
-              subagentToolResults: finalPayload.subagent_tool_results
-                || finalPayload.response_metadata?.subagent_tool_results
-                || null,
-              routeDecision: finalPayload.route_decision || null,
-              dsl: finalPayload.dsl || null,
-              routePayload: finalPayload.route_payload || null,
-              clarification: finalPayload.route_payload?.kind === 'term_conflict_clarification'
-                ? {
-                    kind: 'term_conflict',
-                    clarificationId: finalPayload.route_payload.clarification_id,
-                    candidates: finalPayload.route_payload.candidates || [],
-                    expiresAt: finalPayload.route_payload.expires_at || null,
-                  }
-                : finalPayload.clarification || null,
-              clarificationResolution: finalPayload.clarification_resolution || null,
-              termNormalization: finalPayload.term_normalization || null,
-              semanticAssetResolution: finalPayload.semantic_asset_resolution || null,
-              metricResolution: finalPayload.metric_resolution || null,
-              generationMode: finalPayload.generation_mode || null,
-              intent: finalPayload.intent || null,
+              subagentToolResults: safeSubagentToolResults(
+                finalPayload.subagent_tool_results
+                  || finalPayload.response_metadata?.subagent_tool_results,
+              ),
+              routeDecision,
+              routePayload: null,
+              clarification: safeClarification(finalPayload.clarification, finalPayload.route_payload),
               messageId: finalPayload.message_id || null,
               langfuseTraceId: finalPayload.langfuse_trace_id || null,
               langfuseSessionId: finalPayload.langfuse_session_id || null,
@@ -631,7 +831,7 @@ export function makeChatAdapter({ datasetIdRef }) {
               stepTrace,
               // C-ready 数据结构
               taskTimeline,
-              artifactCard,
+              artifactCard: safeArtifactCard(artifactCard),
               candidateDatasets,
               repairPlan,
               repairTimeline,

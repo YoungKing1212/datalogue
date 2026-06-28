@@ -2,7 +2,7 @@
 // 测试候选数据集确认和 ArtifactCard 在消息中的渲染
 
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 // Mock assistant-ui hooks — AIMessage 依赖这些
@@ -61,6 +61,7 @@ vi.mock('../api/client', () => ({
 
 // 需要在 mock 之后导入组件
 import { AIMessage } from './MyMessage';
+import { getArtifact } from '../api/client';
 
 function setMockMessage(custom = {}) {
   // 重置
@@ -207,6 +208,48 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.queryByText(/SELECT/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
     expect(screen.queryByTitle('复制 SQL')).not.toBeInTheDocument();
+  });
+
+  it('does not render raw sqlResult rows or internal column names from custom metadata', () => {
+    setMockMessage({
+      sqlResult: {
+        columns: ['secret_col'],
+        rows: [{ secret_col: 'raw_row_value', hidden_table: 'hidden_table' }],
+        rowCount: 1,
+      },
+    });
+
+    render(<AIMessage />);
+
+    expect(screen.queryByText('查询结果')).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/raw_row_value/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/hidden_table/i)).not.toBeInTheDocument();
+  });
+
+  it('does not render raw artifact rows when opening result refs', async () => {
+    getArtifact.mockResolvedValueOnce({
+      kind: 'sql_result',
+      content_mime: 'application/json',
+      content_json: {
+        columns: ['secret_col'],
+        rows: [{ secret_col: 'raw_row_value', hidden_table: 'hidden_table' }],
+      },
+    });
+    setMockMessage({
+      resultRef: 'artifact:result-raw',
+    });
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByRole('button', { name: /查看结果/ }));
+
+    await waitFor(() => {
+      expect(getArtifact).toHaveBeenCalledWith('artifact:result-raw');
+    });
+    expect(screen.getByText('结果产物已生成，请通过受控详情页查看。')).toBeInTheDocument();
+    expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/raw_row_value/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/hidden_table/i)).not.toBeInTheDocument();
   });
 
   it('submits selected candidate dataset confirmation', () => {

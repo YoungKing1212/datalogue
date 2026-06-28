@@ -123,33 +123,41 @@ function formatStepAsReasoning(step) {
   return detail ? `${label}：${detail} ${elapsed}` : `${label} ${elapsed}`.trim();
 }
 
-function lastTraceByNode(traces, node) {
-  for (let i = traces.length - 1; i >= 0; i -= 1) {
-    const step = traces[i];
-    if (step?.node === node) return step;
-  }
-  return null;
-}
-
-function sqlResultFromTrace(traces) {
-  const executeStep = lastTraceByNode(traces, 'sql_execute');
-  if (!executeStep || !Array.isArray(executeStep.rows)) return null;
-  return {
-    rows: executeStep.rows,
-    columns: executeStep.columns || [],
-    column_labels: executeStep.column_labels || {},
-    elapsed_ms: executeStep.elapsed_ms,
-    row_count: executeStep.row_count ?? executeStep.rows.length,
-  };
-}
-
 const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
   'sql',
+  'sql_result',
+  'sqlResult',
+  'sql_diagnosis',
+  'sqlDiagnosis',
+  'sql_audit_result',
+  'sqlAuditResult',
   'raw_sql',
   'direct_sql',
   'llm_sql',
   'compiled_sql',
   'sql_list',
+  'query_plan',
+  'queryPlan',
+  'candidate_assets',
+  'candidateAssets',
+  'query_plan_debug',
+  'queryPlanDebug',
+  'dsl',
+  'rows',
+  'columns',
+  'column_labels',
+  'columnLabels',
+  'schema',
+  'schemas',
+  'table',
+  'tables',
+  'field',
+  'fields',
+  'raw_result',
+  'rawResult',
+  'node',
+  'display_name',
+  'displayName',
 ]);
 
 function sanitizeUserVisibleTrace(value) {
@@ -163,48 +171,220 @@ function sanitizeUserVisibleTrace(value) {
   return out;
 }
 
+const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|delete\s+from|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_row|schema/i;
+
+function safeDisplayText(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  if (!text || INTERNAL_TEXT_PATTERN.test(text)) return null;
+  return text.slice(0, 160);
+}
+
+function safeDisplayList(values, limit = 6) {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = safeDisplayText(value);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function safeAnswerExplanation(metadata = {}) {
+  const explanation = metadata.answer_explanation || metadata.answerExplanation || null;
+  if (!explanation || typeof explanation !== 'object') return null;
+
+  const caliber = explanation.caliber && typeof explanation.caliber === 'object'
+    ? {
+        metrics: safeDisplayList(explanation.caliber.metrics),
+        dimensions: safeDisplayList(explanation.caliber.dimensions),
+        terms: safeDisplayList(explanation.caliber.terms),
+        blueprints: safeDisplayList(explanation.caliber.blueprints),
+      }
+    : {};
+  const risks = Array.isArray(explanation.risks)
+    ? explanation.risks
+        .map((item) => ({ message: safeDisplayText(item?.message || item) }))
+        .filter((item) => item.message)
+        .slice(0, 5)
+    : [];
+  return {
+    caliber,
+    confidence: explanation.confidence || null,
+    confirmation: explanation.confirmation || null,
+    risks,
+    sql_summary: explanation.sql_summary ? { preview: Boolean(explanation.sql_summary.preview) } : null,
+    data_sources: [],
+  };
+}
+
+function safeQueryCaliber(metadata = {}) {
+  const source =
+    metadata.query_caliber
+    || metadata.queryCaliber
+    || metadata.business_caliber
+    || metadata.businessCaliber
+    || metadata.answer_explanation?.caliber
+    || metadata.answerExplanation?.caliber
+    || null;
+  if (!source || typeof source !== 'object') return null;
+
+  const caliber = {
+    metrics: safeDisplayList(source.metrics),
+    dimensions: safeDisplayList(source.dimensions),
+    timeRange: safeDisplayText(source.time_range || source.timeRange) || null,
+    filters: safeDisplayList(source.filters),
+    routePath: safeDisplayText(source.route_path || source.routePath) || null,
+    inheritedText: safeDisplayText(source.inherited_text || source.inheritedText) || null,
+    generationMode: safeDisplayText(source.generation_mode || source.generationMode) || '',
+  };
+  const hasAny =
+    caliber.metrics.length
+    || caliber.dimensions.length
+    || caliber.timeRange
+    || caliber.filters.length
+    || caliber.routePath
+    || caliber.inheritedText;
+  return hasAny ? caliber : null;
+}
+
+function safeRouteDecision(routeDecision) {
+  if (!routeDecision || typeof routeDecision !== 'object') return null;
+  const candidates = Array.isArray(routeDecision.candidates)
+    ? routeDecision.candidates.map((candidate) => ({
+        dataset_id: candidate?.dataset_id ?? candidate?.datasetId ?? null,
+        dataset_name: safeDisplayText(candidate?.dataset_name || candidate?.datasetName) || null,
+        reason: safeDisplayText(candidate?.reason || candidate?.match_reason || candidate?.short_reason) || null,
+      })).filter((candidate) => candidate.dataset_id != null || candidate.dataset_name || candidate.reason)
+    : [];
+  return {
+    decision: safeDisplayText(routeDecision.decision) || null,
+    dataset_id: routeDecision.dataset_id ?? routeDecision.datasetId ?? null,
+    dataset_name: safeDisplayText(routeDecision.dataset_name || routeDecision.datasetName) || null,
+    score: routeDecision.score ?? null,
+    candidates,
+  };
+}
+
+function safeSubagentToolResults(results) {
+  if (!Array.isArray(results)) return null;
+  const safeResults = results
+    .map((item) => ({
+      result_ref: item?.result_ref || item?.resultRef || null,
+      report_ref: item?.report_ref || item?.reportRef || null,
+      dataset_id: item?.dataset_id ?? item?.datasetId ?? null,
+    }))
+    .filter((item) => item.result_ref || item.report_ref || item.dataset_id != null);
+  return safeResults.length ? safeResults : null;
+}
+
+function safeArtifactCard(artifactCard) {
+  if (!artifactCard || typeof artifactCard !== 'object') return null;
+  return {
+    title: safeDisplayText(artifactCard.title) || '查询结果',
+    status: safeDisplayText(artifactCard.status) || null,
+    summary_for_chat: safeDisplayText(artifactCard.summary_for_chat || artifactCard.summaryForChat) || null,
+    preview_payload: null,
+    primary_ref: artifactCard.primary_ref || artifactCard.primaryRef || null,
+    related_refs: Array.isArray(artifactCard.related_refs || artifactCard.relatedRefs)
+      ? (artifactCard.related_refs || artifactCard.relatedRefs).filter(Boolean)
+      : [],
+    actions: Array.isArray(artifactCard.actions)
+      ? artifactCard.actions.map((action) => ({
+          action_type: safeDisplayText(action?.action_type || action?.actionType) || null,
+          label: safeDisplayText(action?.label) || null,
+          ref: action?.ref || '',
+          disabled: Boolean(action?.disabled),
+        }))
+      : [],
+  };
+}
+
+function safeClarificationCandidate(candidate, index) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const nested = candidate.term || candidate.business_term || candidate.businessTerm || {};
+  const label = safeDisplayText(
+    candidate.display_name
+      || candidate.displayName
+      || candidate.dataset_name
+      || candidate.datasetName
+      || candidate.label
+      || candidate.title
+      || candidate.name
+      || candidate.term_name
+      || candidate.termName
+      || nested.display_name
+      || nested.displayName
+      || nested.name
+      || nested.term_name
+      || nested.termName,
+  );
+  const definition = safeDisplayText(
+    candidate.definition
+      || candidate.description
+      || candidate.desc
+      || nested.definition
+      || nested.description
+      || nested.desc,
+  );
+  if (!label && !definition && candidate.dataset_id == null && candidate.term_id == null && candidate.id == null) {
+    return null;
+  }
+  return {
+    index: candidate.index || index + 1,
+    id: candidate.id ?? null,
+    dataset_id: candidate.dataset_id ?? candidate.datasetId ?? null,
+    term_id: candidate.term_id ?? candidate.termId ?? null,
+    display_name: label,
+    definition,
+    term_type: safeDisplayText(candidate.term_type || candidate.termType || nested.term_type || nested.termType),
+  };
+}
+
+function safeClarification(clarification, routePayload) {
+  const source = routePayload?.kind === 'term_conflict_clarification'
+    ? {
+        kind: 'term_conflict',
+        clarificationId: routePayload.clarification_id,
+        candidates: routePayload.candidates,
+        expiresAt: routePayload.expires_at,
+      }
+    : clarification;
+  if (!source || typeof source !== 'object') return null;
+  const candidates = Array.isArray(source.candidates)
+    ? source.candidates
+        .map((candidate, index) => safeClarificationCandidate(candidate, index))
+        .filter(Boolean)
+    : [];
+  return {
+    kind: safeDisplayText(source.kind) || null,
+    clarificationId: source.clarificationId || source.clarification_id || null,
+    candidates,
+    expiresAt: source.expiresAt || source.expires_at || null,
+  };
+}
+
 export function buildHistoryMessageCustom(message, traces = []) {
   const metadata = message?.response_metadata || {};
   const safeTraces = sanitizeUserVisibleTrace(traces);
   return {
-    sql: null,
-    sqlResult: metadata.sql_result || metadata.sqlResult || sqlResultFromTrace(traces),
-    sqlDiagnosis: metadata.sql_diagnosis || null,
-    sqlAuditResult: metadata.sql_audit_result || null,
-    answerExplanation: metadata.answer_explanation || null,
-    queryPlan: metadata.query_plan || metadata.queryPlan || null,
-    candidateAssets: metadata.candidate_assets || metadata.candidateAssets || null,
-    queryPlanDebug: metadata.query_plan_debug || metadata.queryPlanDebug || null,
-    query_plan: metadata.query_plan || null,
-    candidate_assets: metadata.candidate_assets || null,
-    query_plan_debug: metadata.query_plan_debug || null,
-    queryProfile: metadata.query_profile || metadata.explainability?.query_profile || null,
-    explainability: metadata.explainability || null,
+    answerExplanation: safeAnswerExplanation(metadata),
+    queryCaliber: safeQueryCaliber(metadata),
     resultRef: metadata.result_ref || metadata.subagent_tool_result?.result_ref || null,
     reportRef: metadata.report_ref || metadata.subagent_tool_result?.report_ref || null,
-    artifactCard: metadata.artifact_card || null,
+    artifactCard: safeArtifactCard(metadata.artifact_card),
     primaryRef: metadata.primary_ref || null,
     relatedRefs: metadata.related_refs || null,
     taskId: metadata.task_id || null,
     traceId: metadata.trace_id || metadata.langfuse?.trace_id || null,
-    subagentToolResults: metadata.subagent_tool_results || null,
-    routeDecision: metadata.route_decision || null,
-    dsl: metadata.dsl || null,
-    routePayload: metadata.route_payload || null,
-    clarification: metadata.route_payload?.kind === 'term_conflict_clarification'
-      ? {
-          kind: 'term_conflict',
-          clarificationId: metadata.route_payload.clarification_id,
-          candidates: metadata.route_payload.candidates || [],
-          expiresAt: metadata.route_payload.expires_at || null,
-        }
-      : metadata.clarification || null,
-    clarificationResolution: metadata.clarification_resolution || null,
-    termNormalization: metadata.term_normalization || null,
-    semanticAssetResolution: metadata.semantic_asset_resolution || null,
-    metricResolution: metadata.metric_resolution || null,
-    generationMode: metadata.generation_mode || null,
-    intent: metadata.intent || null,
+    subagentToolResults: safeSubagentToolResults(metadata.subagent_tool_results),
+    routeDecision: safeRouteDecision(metadata.route_decision),
+    routePayload: null,
+    clarification: safeClarification(metadata.clarification, metadata.route_payload),
     messageId: message?.id || null,
     langfuseTraceId: metadata.langfuse?.trace_id || null,
     langfuseSessionId: metadata.langfuse?.session_id || null,

@@ -148,6 +148,47 @@ _TRACE_CAPSULE_SQL_VALUE_RE = re.compile(
     r".{0,200}\b(from|into|set|table|join|where|values)\b"
 )
 
+_PUBLIC_SSE_BLOCKED_KEYS = {
+    "candidate_assets",
+    "column",
+    "column_labels",
+    "columns",
+    "control_plane",
+    "data",
+    "dataset_context_debug",
+    "datasource_context",
+    "direct_sql",
+    "dsl",
+    "field",
+    "fields",
+    "lead_agent_context",
+    "merge_debug",
+    "out_capsule",
+    "patch",
+    "query_plan",
+    "query_plan_debug",
+    "query_task_capsule",
+    "raw",
+    "raw_result",
+    "raw_sql",
+    "records",
+    "result",
+    "result_rows",
+    "rows",
+    "sample_rows",
+    "schema",
+    "schema_context",
+    "sql",
+    "sql_audit_result",
+    "sql_diagnosis",
+    "sql_list",
+    "sql_result",
+    "sql_retry_trace",
+    "subagent_control_plane",
+    "table",
+    "tables",
+}
+
 
 def _safe_trace_capsule_value(value: Any, *, key_name: str = "") -> Any:
     key_lower = key_name.lower()
@@ -183,6 +224,56 @@ def _safe_query_task_capsule_for_trace(capsule: Any) -> dict | None:
         return None
     safe_capsule = _safe_trace_capsule_value(capsule)
     return safe_capsule if isinstance(safe_capsule, dict) and safe_capsule else None
+
+
+def _is_public_sse_blocked_key(key: str) -> bool:
+    """判断 SSE 用户可见兼容层字段是否属于内部执行面。"""
+
+    key_lower = key.lower()
+    return (
+        key_lower in _PUBLIC_SSE_BLOCKED_KEYS
+        or "sql" in key_lower
+        or key_lower.endswith("_schema")
+        or key_lower.endswith("_table")
+        or key_lower.endswith("_field")
+        or key_lower.endswith("_column")
+    )
+
+
+def _safe_public_sse_value(value: Any, *, key_name: str = "") -> Any:
+    """递归清理 SSE 顶层兼容 payload，避免旧字段旁路泄露执行细节。"""
+
+    if _is_public_sse_blocked_key(key_name):
+        return None
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or _is_public_sse_blocked_key(key):
+                continue
+            safe_item = _safe_public_sse_value(item, key_name=key)
+            if safe_item in (None, "", [], {}):
+                continue
+            sanitized[key] = safe_item
+        return sanitized
+    if isinstance(value, list):
+        return [
+            item
+            for item in (_safe_public_sse_value(item, key_name=key_name) for item in value[:8])
+            if item not in (None, "", [], {})
+        ]
+    if isinstance(value, str):
+        text = value.strip()
+        if _TRACE_CAPSULE_SQL_VALUE_RE.search(text):
+            return None
+        return text[:1000]
+    return value
+
+
+def _public_sse_payload(payload: dict) -> dict:
+    """生成浏览器可见 SSE payload；trace/store 仍使用未裁剪的内部 final_state。"""
+
+    safe_payload = _safe_public_sse_value(payload)
+    return safe_payload if isinstance(safe_payload, dict) else {}
 
 
 _STATE_OUTPUT_KEYS = {
@@ -294,7 +385,7 @@ def _with_event_envelope(
     event_payload: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict:
-    """给旧 SSE payload 追加统一 envelope；旧字段原样保留给现有前端消费。"""
+    """给 SSE payload 追加统一 envelope，并裁剪浏览器可见旧字段。"""
 
     envelope_payload = (
         dict(event_payload)
@@ -317,7 +408,7 @@ def _with_event_envelope(
             or envelope_metadata.get("trace_id")
         ),
     )
-    enriched = dict(payload)
+    enriched = _public_sse_payload(payload)  # 旧字段只保留业务摘要，内部执行面留在 trace/store。
     # event_envelope 是新增兼容字段，不能覆盖旧 type；未来 AgentScope 可直接消费这里。
     enriched["event_envelope"] = envelope.model_dump(mode="json")
     return enriched
@@ -3014,9 +3105,8 @@ async def _stream_chat_singleturn(
                         sse_payload["sql"] = final_state.get("sql") or ""
                     elif lg_node == "sql_execute":
                         result = final_state.get("sql_result") or {}
-                        sse_payload["rows"] = result.get("row_count", 0)
-                        sse_payload["columns"] = result.get("columns", [])
-                        sse_payload["column_labels"] = result.get("column_labels") or {}
+                        sse_payload["row_count"] = result.get("row_count", 0)
+                        sse_payload["column_count"] = len(result.get("columns") or [])
                         sse_payload["elapsed_ms"] = elapsed_ms
                     elif lg_node == "sql_audit":
                         diagnosis = (
@@ -3043,7 +3133,7 @@ async def _stream_chat_singleturn(
                         "user_visible" if lg_node == "sql_execute" else "trace_only"
                     )
                     step_payload_fields = (
-                        ("node", "status", "elapsed_ms", "rows", "columns", "column_labels")
+                        ("node", "status", "elapsed_ms", "row_count", "column_count")
                         if lg_node == "sql_execute"
                         else ("node", "status", "elapsed_ms")
                     )

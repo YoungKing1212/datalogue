@@ -99,8 +99,8 @@ describe('chat-adapter C-ready metadata', () => {
         message_id: 99,
         result_ref: 'artifact:result:42',
         sql_result: {
-          columns: ['date', 'gmv'],
-          rows: [{ date: '2026-01-01', gmv: 100 }],
+          columns: ['secret_col', 'gmv'],
+          rows: [{ secret_col: 'hidden_table_row', gmv: 100 }],
         },
       },
     ]));
@@ -131,11 +131,12 @@ describe('chat-adapter C-ready metadata', () => {
       title: '查询结果',
       primary_ref: 'artifact:result:42',
     });
+    expect(finalChunk.metadata.custom.artifactCard.preview_payload).toBeNull();
     expect(finalChunk.metadata.custom.stepTrace).toHaveLength(3);
     expect(JSON.stringify(finalChunk.content)).not.toMatch(/SELECT|secret_col|hidden_table/i);
   });
 
-  it('maps final SSE observability and artifact refs into page metadata', async () => {
+  it('maps final SSE observability and artifact refs without internal planning or raw result metadata', async () => {
     streamChatEvents.mockReturnValue(events([
       {
         type: 'step',
@@ -147,9 +148,27 @@ describe('chat-adapter C-ready metadata', () => {
         type: 'final',
         answer: '最近30日 GMV 为 100。',
         sql: 'SELECT 100 AS gmv',
-        sql_result: null,
-        query_plan: { query_type: 'metric_query' },
-        candidate_assets: { summary: { metrics: 1 } },
+        sql_result: {
+          columns: ['secret_col'],
+          rows: [{ secret_col: 'raw_row_value', hidden_table: 'hidden_table' }],
+        },
+        sql_diagnosis: { root_cause: 'hidden_table.secret_col 缺失' },
+        sql_audit_result: { rewritten_sql: 'SELECT secret_col FROM hidden_table' },
+        query_plan: { query_type: 'metric_query', internal_field: 'secret_col' },
+        candidate_assets: { tables: ['hidden_table'], fields: ['secret_col'] },
+        query_plan_debug: { prompt: 'SELECT secret_col FROM hidden_table' },
+        dsl: { metrics: ['gmv'], dimensions: ['secret_col'] },
+        route_payload: {
+          kind: 'term_conflict_clarification',
+          clarification_id: 'clarify-raw',
+          candidates: [
+            {
+              name: 'secret_col',
+              definition: 'SELECT secret_col FROM hidden_table',
+              fields: ['secret_col'],
+            },
+          ],
+        },
         result_ref: 'artifact:result-1',
         report_ref: 'artifact:report-1',
         message_id: 42,
@@ -173,8 +192,9 @@ describe('chat-adapter C-ready metadata', () => {
     expect(final.metadata.custom.langfuseTraceId).toBe('trace-1');
     expect(final.metadata.custom.observability).toEqual({ trace_id: 'trace-1', session_id: 'session-1' });
     expect(final.metadata.custom.stepTrace).toHaveLength(1);
-    expect(final.metadata.custom.sql).toBeNull();
-    expect(final.metadata.custom.sqlResult).toBeNull();
+    expect(JSON.stringify(final.metadata.custom)).not.toMatch(
+      /SELECT|secret_col|hidden_table|raw_row_value|query_plan|queryPlan|candidate_assets|candidateAssets|query_plan_debug|queryPlanDebug|dsl|sqlResult|sqlDiagnosis|sqlAuditResult/i,
+    );
   });
 
   it('exposes only business-level candidate dataset confirmation metadata', async () => {
@@ -250,22 +270,51 @@ describe('chat-adapter C-ready metadata', () => {
     expect(custom.langfuseTraceId).toBe('trace-old');
   });
 
-  it('does not restore raw SQL into history message custom metadata', () => {
+  it('does not restore internal SQL, planning, DSL or raw rows into history message custom metadata', () => {
     const custom = buildHistoryMessageCustom({
       id: 100,
       response_metadata: {
         sql: 'SELECT secret_col FROM hidden_table',
+        sql_result: {
+          columns: ['secret_col'],
+          rows: [{ secret_col: 'raw_row_value' }],
+        },
+        sql_diagnosis: { root_cause: 'hidden_table.secret_col 缺失' },
+        sql_audit_result: { rewritten_sql: 'SELECT secret_col FROM hidden_table' },
+        query_plan: { query_type: 'metric_query', internal_field: 'secret_col' },
+        candidate_assets: { tables: ['hidden_table'], fields: ['secret_col'] },
+        query_plan_debug: { prompt: 'SELECT secret_col FROM hidden_table' },
+        dsl: { metrics: ['gmv'], dimensions: ['secret_col'] },
+        route_payload: {
+          kind: 'term_conflict_clarification',
+          clarification_id: 'clarify-raw',
+          candidates: [
+            {
+              name: 'secret_col',
+              definition: 'SELECT secret_col FROM hidden_table',
+              fields: ['secret_col'],
+            },
+          ],
+        },
       },
     }, [
       {
         node: 'dsl_compiler',
         status: 'done',
         sql: 'SELECT other_secret FROM other_hidden_table',
+        dsl: { dimensions: ['secret_col'] },
+      },
+      {
+        node: 'sql_execute',
+        status: 'done',
+        columns: ['secret_col'],
+        rows: [{ secret_col: 'trace_raw_row' }],
       },
     ]);
 
-    expect(custom.sql).toBeNull();
-    expect(JSON.stringify(custom)).not.toMatch(/SELECT|secret_col|hidden_table|other_secret/i);
+    expect(JSON.stringify(custom)).not.toMatch(
+      /SELECT|secret_col|hidden_table|other_secret|raw_row_value|trace_raw_row|query_plan|queryPlan|candidate_assets|candidateAssets|query_plan_debug|queryPlanDebug|dsl|sqlResult|sqlDiagnosis|sqlAuditResult/i,
+    );
   });
 
   it('maps repair event envelopes into business-level metadata without leaking patch details', async () => {
