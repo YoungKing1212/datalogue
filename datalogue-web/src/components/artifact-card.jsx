@@ -3,7 +3,7 @@
 // preview_payload、primary_ref、related_refs 和 actions。第一阶段 export /
 // continue_edit 只展示禁用态；retry 只派发 checkpointRef。
 
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { Icon } from './icons';
 import MessageContent from './message-content';
 
@@ -105,52 +105,17 @@ function isSafePreviewKey(key) {
   const value = String(key || '').toLowerCase();
   return !(
     value === 'patch'
+    || value === 'rows'
+    || value === 'columns'
+    || value === 'column_labels'
+    || value === 'data'
+    || value === 'records'
+    || value === 'result'
     || value === 'schema'
     || value === 'control_plane'
     || value === 'raw_result'
     || value === 'raw_sql'
     || value.includes('sql')
-  );
-}
-
-function PreviewTable({ columns, rows, maxRows = 5 }) {
-  const trimmedRows = useMemo(() => rows.slice(0, maxRows), [rows, maxRows]);
-  const colKeys = useMemo(() => {
-    if (Array.isArray(columns) && columns.length) return columns;
-    const firstRow = rows.find((row) => row && typeof row === 'object' && !Array.isArray(row));
-    return firstRow ? Object.keys(firstRow) : [];
-  }, [columns, rows]);
-
-  if (!colKeys.length) {
-    return <div className="artifact-card-empty">暂无可预览的数据</div>;
-  }
-
-  return (
-    <div className="artifact-card-table-wrap">
-      <table className="artifact-card-table">
-        <thead>
-          <tr>
-            {colKeys.map((col, index) => (
-              <th key={`${col}-${index}`}>{col}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {trimmedRows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              {colKeys.map((col, colIndex) => {
-                const val = row?.[col];
-                const text = val == null ? '' : typeof val === 'object' ? JSON.stringify(val) : String(val);
-                return <td key={`${col}-${colIndex}`}>{text}</td>;
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {rows.length > maxRows && (
-        <div className="artifact-card-table-more">… 共 {rows.length} 行，仅预览前 {maxRows} 行</div>
-      )}
-    </div>
   );
 }
 
@@ -161,20 +126,10 @@ function PreviewBody({ previewPayload }) {
     return <p className="artifact-card-preview-text">{previewPayload}</p>;
   }
 
-  if (Array.isArray(previewPayload)) {
-    return (
-      <ul className="artifact-card-preview-list">
-        {previewPayload.slice(0, 5).map((item, index) => (
-          <li key={`${index}-${String(item).slice(0, 20)}`}>{String(item)}</li>
-        ))}
-      </ul>
-    );
-  }
+  if (Array.isArray(previewPayload)) return null;
 
   const { rows, columns, markdown, text, content, chartType } = previewPayload || {};
-  if (Array.isArray(rows) && rows.length > 0) {
-    return <PreviewTable columns={columns} rows={rows} />;
-  }
+  if (Array.isArray(rows) || Array.isArray(columns)) return null;
 
   const mdText = markdown || text || content;
   if (mdText) {

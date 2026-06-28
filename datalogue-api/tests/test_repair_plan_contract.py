@@ -23,7 +23,6 @@ from app.schemas.repair_plan import (
     RepairAction,
     RepairFailureClass,
     RepairPlan,
-    RepairStatus,
 )
 from app.services.repair_plan import (
     RepairPlanValidationError,

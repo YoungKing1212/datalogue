@@ -48,13 +48,15 @@ describe('ArtifactCard', () => {
     expect(screen.getByText('artifact://def456')).toBeInTheDocument();
   });
 
-  it('renders preview table with rows', () => {
+  it('does not render raw preview rows or columns', () => {
     render(<ArtifactCard artifact={basicArtifact} />);
 
-    expect(screen.getByText('线上')).toBeInTheDocument();
-    expect(screen.getByText('18000')).toBeInTheDocument();
-    expect(screen.getByText('线下')).toBeInTheDocument();
-    expect(screen.getByText('9500')).toBeInTheDocument();
+    expect(screen.queryByText('线上')).not.toBeInTheDocument();
+    expect(screen.queryByText('18000')).not.toBeInTheDocument();
+    expect(screen.queryByText('线下')).not.toBeInTheDocument();
+    expect(screen.queryByText('9500')).not.toBeInTheDocument();
+    expect(screen.queryByText('channel')).not.toBeInTheDocument();
+    expect(screen.queryByText('amount')).not.toBeInTheDocument();
   });
 
   it('renders enabled actions and disables export action', () => {
@@ -288,11 +290,14 @@ describe('ArtifactCard', () => {
   it('collapses and expands when header is clicked', () => {
     render(<ArtifactCard artifact={basicArtifact} />);
 
-    expect(screen.getByText('线上')).toBeInTheDocument();
+    expect(screen.getByText('artifact://abc123')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /查看详情/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /查询结果/ }));
-    expect(screen.queryByText('线上')).not.toBeInTheDocument();
+    expect(screen.queryByText('artifact://abc123')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /查看详情/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /查询结果/ }));
-    expect(screen.getByText('线上')).toBeInTheDocument();
+    expect(screen.getByText('artifact://abc123')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /查看详情/ })).toBeInTheDocument();
   });
 
   it('renders card without preview payload', () => {

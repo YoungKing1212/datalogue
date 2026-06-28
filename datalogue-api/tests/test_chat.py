@@ -3023,8 +3023,18 @@ class TestChatStreamEvents:
             sample_dataset.id,
             other_dataset.id,
         }
-        metadata = final["response_metadata"]
-        assert metadata["subagent_tool_results"] == final["subagent_tool_results"]
+        assistant_message = db_session.get(models.Message, final["message_id"])
+        metadata = assistant_message.response_metadata
+        assert "response_metadata" not in final
+        for public_result, stored_result in zip(
+            final["subagent_tool_results"],
+            metadata["subagent_tool_results"],
+            strict=True,
+        ):
+            assert public_result == {
+                key: stored_result[key]
+                for key in ("status", "dataset_id", "display_summary", "result_ref", "report_ref")
+            }
         assert "control_plane" not in metadata
 
     @pytest.mark.asyncio
@@ -4073,10 +4083,10 @@ class TestChatStreamEvents:
         assert request.query_task_capsule == capsule
         assert request.turn_event == initial_state["turn_event"]
 
-    def test_chat_stream_final_and_message_metadata_include_query_profile(
+    def test_chat_stream_message_metadata_keeps_query_profile_but_final_hides_it(
         self, db_session, sample_dataset
     ):
-        """final payload 与落库消息都应包含稳定的 explainability/query_profile。"""
+        """内部 metadata 保留 query_profile；浏览器 final SSE 只返回公共摘要和 refs。"""
         publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
 
         async def fake_astream_events(state, version):
@@ -4141,12 +4151,13 @@ class TestChatStreamEvents:
         )
         metadata = assistant_message.response_metadata
 
-        assert "sql" not in final["query_profile"]
-        assert final["explainability"]["query_profile"] == final["query_profile"]
+        assert "query_profile" not in final
+        assert "explainability" not in final
+        assert "response_metadata" not in final
+        assert "result_artifact" not in final
         assert metadata["explainability"]["query_profile"] == metadata["query_profile"]
         assert metadata["query_profile"]["sql"]["row_count"] == 1
         assert metadata["query_profile"]["query_context"]["inheritance"]["inherited"] is True
-        assert final["result_artifact"]["result_ref"].startswith("result:")
         assert metadata["result_artifact"]["result_ref"].startswith("result:")
         assert metadata["query_profile"]["sql"]["result_artifact"] == metadata["result_artifact"]
         assert metadata["query_profile"]["execution_summary"]["stages"]

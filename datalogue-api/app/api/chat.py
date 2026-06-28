@@ -159,6 +159,7 @@ _PUBLIC_SSE_BLOCKED_KEYS = {
     "datasource_context",
     "direct_sql",
     "dsl",
+    "explainability",
     "field",
     "fields",
     "lead_agent_context",
@@ -167,17 +168,21 @@ _PUBLIC_SSE_BLOCKED_KEYS = {
     "patch",
     "query_plan",
     "query_plan_debug",
+    "query_profile",
     "query_task_capsule",
     "raw",
     "raw_result",
     "raw_sql",
     "records",
     "result",
+    "result_artifact",
     "result_rows",
+    "response_metadata",
     "rows",
     "sample_rows",
     "schema",
     "schema_context",
+    "schema_summary",
     "sql",
     "sql_audit_result",
     "sql_diagnosis",
@@ -392,13 +397,16 @@ def _with_event_envelope(
         if event_payload is not None
         else {key: payload.get(key) for key in payload_fields if payload.get(key) is not None}
     )
+    safe_envelope_payload = _public_sse_payload(envelope_payload)
+    for internal_step_key in ("node", "display_name"):
+        safe_envelope_payload.pop(internal_step_key, None)
     envelope_metadata = _event_metadata_from_payload(payload)
     if metadata:
         envelope_metadata.update({key: value for key, value in metadata.items() if value is not None})
     envelope = build_datalogue_event_envelope(
         event_type=event_type,
         visibility=visibility,
-        payload=envelope_payload,
+        payload=safe_envelope_payload,
         metadata=envelope_metadata,
         task_id=payload.get("task_id") or envelope_metadata.get("task_id"),
         conversation_id=payload.get("conversation_id") or envelope_metadata.get("conversation_id"),
@@ -3832,7 +3840,6 @@ async def _stream_chat_singleturn(
                 "related_refs",
                 "task_id",
                 "trace_id",
-                "query_profile",
                 "retry_checkpoint",
                 "repair_plan_ref",
                 "repair_failure_class",

@@ -15,6 +15,8 @@
 对话管理 API 测试
 """
 
+import json
+
 import pytest
 
 
@@ -108,10 +110,39 @@ class TestConversationAPI:
             conversation_id=conv.id,
             role="assistant",
             content="你好！",
+            step_trace=[
+                {
+                    "node": "query_plan",
+                    "status": "done",
+                    "elapsed_ms": 12,
+                    "query_plan": {"debug": {"sql_template": "SELECT secret_col FROM hidden_table"}},
+                    "candidate_assets": {"fields": [{"column_name": "secret_col"}]},
+                }
+            ],
+            sql_list=["SELECT secret_col FROM hidden_table"],
             response_metadata={
                 "answer_explanation": {
                     "confidence": {"level": "high", "score": 0.92},
                 },
+                "query_plan": {"debug": {"sql_template": "SELECT secret_col FROM hidden_table"}},
+                "candidate_assets": {"fields": [{"table_name": "hidden_table"}]},
+                "dsl": {"direct_sql": "SELECT secret_col FROM hidden_table"},
+                "query_profile": {"sql": {"statement": "SELECT secret_col FROM hidden_table"}},
+                "explainability": {"query_profile": {"sql": {"row_count": 1}}},
+                "result_artifact": {"rows": [{"secret_col": "private"}]},
+                "artifact_card": {
+                    "title": "BI 查询结果",
+                    "summary_for_chat": "查询完成",
+                    "preview_payload": {
+                        "rows": [{"secret_col": "private"}],
+                        "columns": ["secret_col"],
+                    },
+                    "primary_ref": "artifact:result-1",
+                    "related_refs": ["artifact:report-1", "trace:trace-test"],
+                    "actions": [{"action_type": "view", "label": "查看详情", "ref": "artifact:result-1"}],
+                },
+                "primary_ref": "artifact:result-1",
+                "related_refs": ["artifact:report-1", "trace:trace-test"],
                 "langfuse": {"trace_id": "trace-test", "session_id": "session-test"},
             },
         )
@@ -129,6 +160,24 @@ class TestConversationAPI:
         assert len(data["messages"]) == 2
         assert data["messages"][0]["role"] == "user"
         assert data["messages"][1]["role"] == "assistant"
+        assistant = data["messages"][1]
+        encoded_assistant = json.dumps(assistant, ensure_ascii=False).lower()
+        assert assistant["sql_list"] is None
+        assert assistant["step_trace"][0]["node"] == "business_step"
+        assert assistant["step_trace"][0]["display_name"] == "查询规划"
+        assert assistant["response_metadata"]["artifact_card"]["preview_payload"] is None
+        assert assistant["response_metadata"]["artifact_card"]["primary_ref"] == "artifact:result-1"
+        assert assistant["response_metadata"]["primary_ref"] == "artifact:result-1"
+        assert "query_plan" not in assistant["response_metadata"]
+        assert "candidate_assets" not in assistant["response_metadata"]
+        assert "dsl" not in assistant["response_metadata"]
+        assert "query_profile" not in assistant["response_metadata"]
+        assert "explainability" not in assistant["response_metadata"]
+        assert "result_artifact" not in assistant["response_metadata"]
+        assert "select" not in encoded_assistant
+        assert "secret_col" not in encoded_assistant
+        assert "hidden_table" not in encoded_assistant
+        assert "private" not in encoded_assistant
         assert data["messages"][1]["response_metadata"]["answer_explanation"]["confidence"][
             "level"
         ] == "high"

@@ -16,11 +16,11 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, cast
 
 from fastapi.encoders import jsonable_encoder
 
-from app.schemas.repair_plan import RepairFailureClass, RepairPlan
+from app.schemas.repair_plan import RepairAction, RepairFailureClass, RepairPlan
 
 
 class RepairPlanValidationError(ValueError):
@@ -83,7 +83,7 @@ def classify_sql_failure(error: Any) -> RepairFailureClass:
 def repair_attempt_limit(failure_class: RepairFailureClass | str) -> int:
     """返回 C1 固定动态重跑次数，避免 LLM 决定重跑预算。"""
 
-    return _ATTEMPT_LIMITS.get(str(failure_class), 0)
+    return _ATTEMPT_LIMITS.get(cast(RepairFailureClass, failure_class), 0)
 
 
 def _contains_forbidden_action_payload(value: Any, *, key_name: str = "") -> bool:
@@ -166,13 +166,13 @@ def build_repair_plan_from_diagnosis(
         status="plan_created",
         business_summary="查询执行失败已完成自动修复评估，准备按业务口径重新执行。",
         actions=[
-            {
-                "action_type": action_type,
-                "business_summary": "按已发布的数据集口径生成安全修复动作。",
-                "target": target,
-                "replacement": replacement,
-                "confidence": 0.8,
-            }
+            RepairAction(
+                action_type=action_type,
+                business_summary="按已发布的数据集口径生成安全修复动作。",
+                target=target,
+                replacement=replacement,
+                confidence=0.8,
+            )
         ],
         requires_user_confirmation=False,
         confidence=0.8,
@@ -204,7 +204,8 @@ def sanitize_repair_plan_for_artifact(
         safe["checkpoint_ref"] = checkpoint_ref
     if trace_id:
         safe["trace_ref"] = f"trace:{trace_id}" if not str(trace_id).startswith("trace:") else trace_id
-    return jsonable_encoder(safe)
+    encoded = jsonable_encoder(safe)
+    return cast(dict[str, Any], encoded if isinstance(encoded, dict) else {})
 
 
 def sanitize_repair_plan_artifact_payload(payload: Any) -> dict[str, Any]:
@@ -222,4 +223,5 @@ def sanitize_repair_plan_artifact_payload(payload: Any) -> dict[str, Any]:
         "checkpoint_ref",
         "trace_ref",
     }
-    return jsonable_encoder({key: source[key] for key in allowed if key in source})
+    encoded = jsonable_encoder({key: source[key] for key in allowed if key in source})
+    return cast(dict[str, Any], encoded if isinstance(encoded, dict) else {})

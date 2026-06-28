@@ -200,6 +200,10 @@ def test_chat_sse_public_payload_removes_final_internal_debug_fields():
                 "rows": [{"secret_col": "private"}],
             },
             "sql_diagnosis": {"root_cause": "missing secret_col"},
+            "query_profile": {"sql": {"statement": "SELECT secret_col FROM hidden_table"}},
+            "explainability": {"query_profile": {"sql": {"statement": "SELECT secret_col"}}},
+            "response_metadata": {"query_plan": {"debug": "hidden_table.secret_col"}},
+            "result_artifact": {"result_ref": "result:1", "rows": [{"secret_col": "private"}]},
             "result_ref": "artifact:result-1",
             "repair_plan": {"summary": "已生成业务级修复方案"},
         },
@@ -215,8 +219,44 @@ def test_chat_sse_public_payload_removes_final_internal_debug_fields():
     assert "query_plan" not in payload
     assert "candidate_assets" not in payload
     assert "dsl" not in payload
+    assert "query_profile" not in payload
+    assert "explainability" not in payload
+    assert "response_metadata" not in payload
+    assert "result_artifact" not in payload
     assert "sql" not in payload
     assert "sql_result" not in payload
+    assert "secret_col" not in encoded
+    assert "hidden_table" not in encoded
+    assert "select" not in encoded
+
+
+def test_chat_sse_trace_only_event_envelope_payload_removes_internal_details():
+    """trace_only envelope 只要随 SSE 下发给浏览器，也不能携带内部执行面。"""
+
+    from app.api.chat import _with_event_envelope
+
+    payload = _with_event_envelope(
+        {
+            "type": "step",
+            "node": "query_plan",
+            "query_plan": {"debug": {"sql_template": "SELECT secret_col FROM hidden_table"}},
+            "candidate_assets": {
+                "fields": [{"table_name": "hidden_table", "column_name": "secret_col"}],
+            },
+            "schema_summary": ["hidden_table.secret_col"],
+        },
+        event_type="dataset.query.started",
+        visibility="trace_only",
+        payload_fields=("type", "node", "query_plan", "candidate_assets", "schema_summary"),
+    )
+
+    encoded = json.dumps(payload, ensure_ascii=False).lower()
+    assert payload["event_envelope"]["visibility"] == "trace_only"
+    assert payload["event_envelope"]["payload"] == {"type": "step"}
+    assert "query_plan" not in payload
+    assert "candidate_assets" not in payload
+    assert "schema_summary" not in payload
+    assert "query_plan" not in json.dumps(payload["event_envelope"], ensure_ascii=False).lower()
     assert "secret_col" not in encoded
     assert "hidden_table" not in encoded
     assert "select" not in encoded

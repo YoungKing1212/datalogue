@@ -89,11 +89,17 @@ const NODE_DISPLAY = {
 
 function formatStepAsReasoning(step) {
   // 历史 step_trace 保留内部 display_name；回放时必须映射成业务文案。
-  const label = NODE_DISPLAY[step.node] || NODE_DISPLAY[step.display_name] || '任务处理';
+  const label = NODE_DISPLAY[step.node]
+    || NODE_DISPLAY[step.display_name]
+    || safeDisplayText(step.display_name)
+    || safeDisplayText(step.label)
+    || '任务处理';
   const elapsed = step.elapsed_ms != null ? `（${step.elapsed_ms}ms）` : '';
   let detail = '';
 
-  if (step.node === 'intent_recognition') {
+  if (step.detail) {
+    detail = safeDisplayText(step.detail) || '';
+  } else if (step.node === 'intent_recognition') {
     const intent = step.intent || '';
     const entities = step.entities || {};
     const entKeys = Object.keys(entities).filter((k) => entities[k]);
@@ -410,12 +416,12 @@ export function messagesFromBackend(detail) {
     const parts = [];
     // 先从 step_trace 构建 reasoning parts
     const traces = m.step_trace || [];
-    for (const step of traces) {
+    for (const [stepIndex, step] of traces.entries()) {
       if (step.status === 'done' && step.node !== 'error') {
         parts.push({
           type: 'reasoning',
           text: formatStepAsReasoning(step),
-          parentId: step.node,
+          parentId: step.node || step.display_name || `step-${stepIndex}`,
         });
       }
     }
