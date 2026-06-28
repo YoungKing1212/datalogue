@@ -11,6 +11,7 @@
 # Created On  : 2026-06-15
 # ============================================================
 
+from app.services.dataset_subagent import _dsa_build_blueprint_execute_input_params
 from app.services.subagent_planning import (
     CandidateAsset,
     QueryPlan,
@@ -157,6 +158,36 @@ def test_build_reject_result_uses_explanation_summary():
     assert result.final_state["route_payload"]["kind"] == "query_plan_reject"
     assert "assets" in result.candidate_assets
     assert "summary" in result.candidate_assets
+
+
+def test_blueprint_execute_params_recover_person_name_from_plan_summary():
+    """真实链路中 LLM 可能把参数写进解释摘要，执行前必须回填到蓝图参数。"""
+    plan = QueryPlan(
+        query_type="detail_query",
+        execution_strategy="blueprint_execute",
+        confidence=0.99,
+        explanation={
+            "summary": "使用个人计划任务日报查询蓝图，参数 person_name='杨凯'，start_date='2024-01-01'，end_date='2024-12-31'。"
+        },
+    )
+
+    params = _dsa_build_blueprint_execute_input_params(
+        {
+            "route_payload": {
+                "params": {
+                    "person_name": None,
+                    "start_date": "2024-01-01",
+                    "end_date": "2024-12-31",
+                }
+            },
+            "resolved_question": "查询杨凯 2024 年工作日志",
+        },
+        query_plan=plan,
+    )
+
+    assert params["person_name"] == "杨凯"
+    assert params["start_date"] == "2024-01-01"
+    assert params["end_date"] == "2024-12-31"
 
 
 def test_build_results_candidate_assets_use_recall_contract_shape():

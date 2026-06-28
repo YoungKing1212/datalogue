@@ -58,6 +58,10 @@ EXECUTION_STRATEGIES = {
     "reject",
 }
 ASSET_USAGES = {"selected", "reference", "rejected", "candidate"}
+ASSET_USAGE_ALIASES = {
+    "template_reference": "reference",
+    "reference_only": "reference",
+}
 PLANNER_SOURCES = {"deterministic", "template", "llm", "fallback"}
 EXECUTION_SOURCES = {"tool_compiler"}
 
@@ -100,7 +104,8 @@ class CandidateAsset:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "CandidateAsset":
         asset_type = str(payload.get("asset_type") or "")  # 资产来自召回/LLM，错误需保留定位信息。
-        usage = str(payload.get("usage") or "candidate")
+        raw_usage = str(payload.get("usage") or "candidate")
+        usage = ASSET_USAGE_ALIASES.get(raw_usage, raw_usage)  # 兼容 LLM 常见别名，仍收敛到公开枚举。
         if asset_type not in CANDIDATE_ASSET_TYPES:
             raise QueryPlanValidationError(
                 f"asset_type invalid: '{asset_type}' (valid: {sorted(CANDIDATE_ASSET_TYPES)}), "

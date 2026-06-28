@@ -61,6 +61,8 @@ from app.services.multiturn_context import MergeDecision
 from app.services.report_generation import stream_sql_result_report
 from app.services.runner import DatasetSubAgentRequest, RemoteDatasetSubAgentRunner
 from app.services.artifact_store import ArtifactStore
+from app.schemas.repair_plan import RepairPlan
+from app.services.repair_plan import sanitize_repair_plan_for_artifact
 from app.services.subagent_tool_adapter import (
     SubAgentInvocation,
     SubAgentToolAdapter,
@@ -436,6 +438,13 @@ def _build_related_artifact_refs(final_payload: dict, primary_ref: dict | None) 
                 label="重试 checkpoint",
             ).model_dump(mode="json", exclude_none=True)
         )
+    repair_plan_ref = _artifact_ref_dict(
+        final_payload.get("repair_plan_ref"),
+        ref_type="repair_plan",
+        label="RepairPlan",
+    )
+    if repair_plan_ref:
+        related.append(repair_plan_ref)  # RepairPlan 只作为 artifact:<uuid> 引用暴露，不泄露 patch 主体。
     seen: set[str] = set()
     deduped: list[dict] = []
     for ref in related:
@@ -497,6 +506,89 @@ def _build_artifact_card(final_payload: dict, primary_ref: dict, related_refs: l
     return card.model_dump(mode="json", exclude_none=True)
 
 
+def _repair_plan_summary(final_state: dict) -> dict | None:
+    """提取 RepairPlan 用户可见摘要；字段级 action 只留在 artifact 内部和 trace-only 面。"""
+
+    summary = final_state.get("repair_plan_summary")
+    return summary if isinstance(summary, dict) else None
+
+
+def _ensure_repair_plan_artifact(
+    *,
+    final_state: dict,
+    artifact_store: ArtifactStore,
+    dataset_id: int | None,
+    conversation_id: int | None,
+    trace_id: str | None,
+    checkpoint_ref: str | None = None,
+) -> dict | None:
+    """把 RepairPlan 内部主体保存为 artifact，并把用户可见面收敛为安全摘要/ref。"""
+
+    if final_state.get("repair_plan_ref") and _repair_plan_summary(final_state):
+        return _repair_plan_summary(final_state)
+    raw_plan = final_state.get("repair_plan")
+    if not isinstance(raw_plan, dict):
+        return None
+    try:
+        plan = RepairPlan(**raw_plan)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RepairPlan 解析失败，跳过 artifact 持久化: %s", exc)
+        return None
+
+    artifact_payload = plan.model_dump(mode="json")
+    # 先保存内部主体，拿到 artifact:<uuid> 后再回填 ref；读取 API 会脱敏 action 主体。
+    repair_plan_ref = artifact_store.put_json(
+        kind="repair_plan",
+        payload=artifact_payload,
+        dataset_id=dataset_id,
+        conversation_id=conversation_id,
+        trace_id=trace_id,
+    )
+    safe_summary = sanitize_repair_plan_for_artifact(
+        plan,
+        repair_plan_ref=repair_plan_ref,
+        checkpoint_ref=checkpoint_ref,
+        trace_id=trace_id,
+        attempts=int(final_state.get("repair_attempts") or plan.attempts or 0),
+    )
+    artifact = artifact_store.get(repair_plan_ref)
+    if artifact is not None and isinstance(artifact.content_json, dict):
+        artifact.content_json.update(safe_summary)  # 回填 ref 和脱敏摘要，便于 Artifact API 直接读取。
+        artifact_store.db.add(artifact)
+        artifact_store.db.flush()
+    final_state["repair_plan_ref"] = repair_plan_ref
+    final_state["repair_plan_summary"] = safe_summary
+    final_state["repair_failure_class"] = safe_summary.get("failure_class")
+    final_state["repair_status"] = final_state.get("repair_status") or safe_summary.get("status")
+    final_state["repair_attempts"] = safe_summary.get("attempts")
+    final_state["repair_requires_user_confirmation"] = safe_summary.get(
+        "requires_user_confirmation"
+    )
+    return safe_summary
+
+
+def _repair_event_payload(
+    *,
+    final_state: dict,
+    status: str,
+    summary: dict | None = None,
+) -> dict:
+    """构造 repair.* 用户可见事件 payload，只包含业务摘要、状态和引用。"""
+
+    safe = dict(summary or _repair_plan_summary(final_state) or {})
+    return {
+        "summary": safe.get("business_summary")
+        or "已评估查询失败原因，正在尝试自动修复。",
+        "status": status,
+        "requires_user_confirmation": bool(
+            safe.get("requires_user_confirmation")
+            or final_state.get("repair_requires_user_confirmation")
+        ),
+        "repair_plan_ref": final_state.get("repair_plan_ref") or safe.get("repair_plan_ref"),
+        "checkpoint_ref": safe.get("checkpoint_ref"),
+    }
+
+
 def _attach_artifact_card_refs_to_final_payload(
     final_payload: dict,
     *,
@@ -555,6 +647,12 @@ def _sync_artifact_metadata_to_assistant_message(
         "related_refs",
         "artifact_card",
         "retry_checkpoint",
+        "repair_plan_ref",
+        "repair_failure_class",
+        "repair_status",
+        "repair_attempts",
+        "repair_requires_user_confirmation",
+        "repair_plan",
     ):
         if key in final_payload:
             metadata[key] = final_payload.get(key)
@@ -2961,6 +3059,124 @@ async def _stream_chat_singleturn(
                             },
                         )
                     )
+                    if lg_node == "sql_audit":
+                        repair_summary = _ensure_repair_plan_artifact(
+                            final_state=final_state,
+                            artifact_store=query_artifact_store,
+                            dataset_id=effective_dataset_id,
+                            conversation_id=conv_id,
+                            trace_id=trace_context.trace_id,
+                        )
+                        if repair_summary:
+                            _log_chat_stream_checkpoint(  # RepairPlan 已落为 artifact ref，后续 final/状态只传 ref。
+                                "repair_plan_created",
+                                conversation_id=conv_id,
+                                effective_dataset_id=effective_dataset_id,
+                                repair_plan_ref=final_state.get("repair_plan_ref"),
+                                failure_class=final_state.get("repair_failure_class"),
+                                attempts=final_state.get("repair_attempts"),
+                            )
+                            tracer.start_span(
+                                trace_context,
+                                node="repair_plan",
+                                display_name="repair.plan_created",
+                                input_payload=repair_summary,
+                                trace_tags=["repair_plan"],
+                            )
+                            tracer.end_span(
+                                trace_context,
+                                node="repair_plan",
+                                output_payload=repair_summary,
+                            )
+                            for repair_event_type, repair_status in (
+                                ("repair.evaluated", "evaluated"),
+                                ("repair.plan_created", "plan_created"),
+                                ("repair.rerun_started", "rerun_started"),
+                            ):
+                                yield _sse_data(
+                                    _with_event_envelope(
+                                        {
+                                            "type": "repair",
+                                            "status": repair_status,
+                                            "repair_plan_ref": final_state.get("repair_plan_ref"),
+                                        },
+                                        event_type=repair_event_type,
+                                        visibility="user_visible",
+                                        event_payload=_repair_event_payload(
+                                            final_state=final_state,
+                                            status=repair_status,
+                                            summary=repair_summary,
+                                        ),
+                                        metadata={
+                                            "conversation_id": conv_id,
+                                            "dataset_id": effective_dataset_id,
+                                        },
+                                    )
+                                )
+                        elif final_state.get("repair_status") in {"blocked", "failed"}:
+                            blocked_status = str(final_state.get("repair_status") or "blocked")
+                            _log_chat_stream_checkpoint(  # 不可修复类也必须进入 repair envelope，便于前端/审计对齐。
+                                "repair_plan_blocked",
+                                conversation_id=conv_id,
+                                effective_dataset_id=effective_dataset_id,
+                                failure_class=final_state.get("repair_failure_class"),
+                                repair_status=blocked_status,
+                            )
+                            for repair_event_type, repair_status in (
+                                ("repair.evaluated", "evaluated"),
+                                (f"repair.{blocked_status}", blocked_status),
+                            ):
+                                yield _sse_data(
+                                    _with_event_envelope(
+                                        {
+                                            "type": "repair",
+                                            "status": repair_status,
+                                        },
+                                        event_type=repair_event_type,
+                                        visibility="user_visible",
+                                        event_payload=_repair_event_payload(
+                                            final_state=final_state,
+                                            status=repair_status,
+                                        ),
+                                        metadata={
+                                            "conversation_id": conv_id,
+                                            "dataset_id": effective_dataset_id,
+                                        },
+                                    )
+                                )
+                    elif (
+                        lg_node == "sql_execute"
+                        and final_state.get("repair_plan_ref")
+                        and final_state.get("sql_result")
+                        and not final_state.get("error")
+                    ):
+                        final_state["repair_status"] = "rerun_completed"
+                        _log_chat_stream_checkpoint(  # 自动修复重跑成功，和后续 answer.completed 使用同一 trace/task。
+                            "repair_rerun_completed",
+                            conversation_id=conv_id,
+                            effective_dataset_id=effective_dataset_id,
+                            repair_plan_ref=final_state.get("repair_plan_ref"),
+                            row_count=(final_state.get("sql_result") or {}).get("row_count"),
+                        )
+                        yield _sse_data(
+                            _with_event_envelope(
+                                {
+                                    "type": "repair",
+                                    "status": "rerun_completed",
+                                    "repair_plan_ref": final_state.get("repair_plan_ref"),
+                                },
+                                event_type="repair.rerun_completed",
+                                visibility="user_visible",
+                                event_payload=_repair_event_payload(
+                                    final_state=final_state,
+                                    status="rerun_completed",
+                                ),
+                                metadata={
+                                    "conversation_id": conv_id,
+                                    "dataset_id": effective_dataset_id,
+                                },
+                            )
+                        )
 
                 # ── 图级结束事件：兜底合并完整最终状态 ───────────────
                 elif kind == "on_chain_end" and not lg_node:
@@ -3302,6 +3518,7 @@ async def _stream_chat_singleturn(
         "query_plan_debug": final_state.get("query_plan_debug"),
         "subagent_tool_result": subagent_tool_visible,
         "subagent_tool_trace": subagent_tool_trace,
+        "repair_plan": _repair_plan_summary(final_state),
         "multiturn_metrics": multiturn_observability_metrics,
         "query_profile": query_profile,
         "explainability": explainability,
@@ -3336,6 +3553,7 @@ async def _stream_chat_singleturn(
             "query_plan": final_state.get("query_plan"),
             "query_plan_debug": final_state.get("query_plan_debug"),
             "subagent_tool_result": subagent_tool_visible,
+            "repair_plan": _repair_plan_summary(final_state),
             "route_payload": final_state.get("route_payload"),
             "clarification_resolution": final_state.get("clarification_resolution_result"),
             "query_profile": query_profile,
@@ -3463,6 +3681,14 @@ async def _stream_chat_singleturn(
         "sql_result": None,
         "result_ref": final_state.get("result_ref"),
         "report_ref": final_state.get("report_ref"),
+        "repair_plan_ref": final_state.get("repair_plan_ref"),
+        "repair_failure_class": final_state.get("repair_failure_class"),
+        "repair_status": final_state.get("repair_status"),
+        "repair_attempts": final_state.get("repair_attempts"),
+        "repair_requires_user_confirmation": final_state.get(
+            "repair_requires_user_confirmation"
+        ),
+        "repair_plan": _repair_plan_summary(final_state),
         "sql_diagnosis": sql_diagnosis,
         "sql_audit_result": final_state.get("sql_audit_result"),
         "sql_retry_trace": sql_retry_trace,
@@ -3518,6 +3744,12 @@ async def _stream_chat_singleturn(
                 "trace_id",
                 "query_profile",
                 "retry_checkpoint",
+                "repair_plan_ref",
+                "repair_failure_class",
+                "repair_status",
+                "repair_attempts",
+                "repair_requires_user_confirmation",
+                "repair_plan",
             ),
         )
     )  # final 发出后客户端可能立即断开。
@@ -3600,6 +3832,48 @@ def _persist_artifact_refs_fact(
     store.db.refresh(state)
 
 
+def _persist_repair_plan_fact(
+    *,
+    store: ConversationStore,
+    state: models.ConversationState,
+    final_payload: dict,
+) -> None:
+    """把 RepairPlan 公开 ref 写入 conversation_state；不保存字段级 patch 或 SQL。"""
+
+    repair_plan_ref = final_payload.get("repair_plan_ref")
+    if not repair_plan_ref:
+        return
+    task_id = final_payload.get("task_id")
+    repair_fact = {
+        "kind": "repair_plan",
+        "task_id": task_id,
+        "message_id": final_payload.get("message_id"),
+        "trace_id": final_payload.get("trace_id") or final_payload.get("langfuse_trace_id"),
+        "repair_plan_ref": repair_plan_ref,
+        "failure_class": final_payload.get("repair_failure_class"),
+        "repair_status": final_payload.get("repair_status"),
+        "attempts": final_payload.get("repair_attempts") or 0,
+        "requires_user_confirmation": bool(
+            final_payload.get("repair_requires_user_confirmation")
+        ),
+        "checkpoint_ref": _checkpoint_ref_from_payload(final_payload),
+    }
+    facts = [
+        item
+        for item in (state.facts or [])
+        if not (
+            isinstance(item, dict)
+            and item.get("kind") == "repair_plan"
+            and item.get("task_id") == task_id
+        )
+    ]
+    facts.append(jsonable_encoder(repair_fact))
+    state.facts = facts
+    store.db.add(state)
+    store.db.commit()
+    store.db.refresh(state)
+
+
 def _attach_retry_checkpoint_to_final_payload(
     final_payload: dict,
     *,
@@ -3655,6 +3929,47 @@ def _attach_retry_checkpoint_to_final_payload(
     response_metadata = final_payload.setdefault("response_metadata", {})
     if isinstance(response_metadata, dict):
         response_metadata["retry_checkpoint"] = checkpoint_payload
+
+
+def _final_payload_last_success_gate(final_payload: dict) -> tuple[bool, str | None]:
+    """判断 final 是否可写 last_success_task；只有真实成功查询才进入多轮承接。"""
+    if final_payload.get("error"):
+        return False, "unsuccessful_final"
+    route_payload = (
+        final_payload.get("route_payload")
+        if isinstance(final_payload.get("route_payload"), dict)
+        else {}
+    )
+    route_kind = str(route_payload.get("kind") or "")
+    if route_kind in {
+        "clarification",
+        "query_plan_clarification",
+        "query_plan_reject",
+        "analysis_blueprint_error",
+        "not_found",
+        "not_applicable",
+    }:
+        return False, "unsuccessful_final"
+    if route_payload.get("missing"):
+        return False, "unsuccessful_final"
+    if final_payload.get("sql_diagnosis"):
+        return False, "unsuccessful_final"
+    repair_status = str(final_payload.get("repair_status") or "").lower()
+    if repair_status in {"failed", "blocked"}:
+        return False, "unsuccessful_final"
+    blueprint_status = str(final_payload.get("blueprint_outcome_status") or "").lower()
+    if blueprint_status in {"clarification", "error", "not_found", "not_applicable"}:
+        return False, "unsuccessful_final"
+    query_plan = (
+        final_payload.get("query_plan")
+        if isinstance(final_payload.get("query_plan"), dict)
+        else {}
+    )
+    if query_plan.get("execution_strategy") in {"clarify", "reject"}:
+        return False, "unsuccessful_final"
+    if final_payload.get("entry_route") in {"clarify", "reject"}:
+        return False, "unsuccessful_final"
+    return True, None
 
 
 def _persist_completed_turn(
@@ -3770,8 +4085,14 @@ def _persist_completed_turn(
         state=persisted_state,
         final_payload=final_payload,
     )
+    _persist_repair_plan_fact(  # RepairPlan 只记录脱敏 ref 和状态，字段级 patch 不进入 conversation_state。
+        store=store,
+        state=persisted_state,
+        final_payload=final_payload,
+    )
     last_success_task = None
     last_success_task_write_status: dict[str, Any] = {"status": "not_built"}
+    last_success_allowed, last_success_block_reason = _final_payload_last_success_gate(final_payload)
     route_decision = final_payload.get("route_decision") or {}
     control_plane_task = next(
         (
@@ -3781,7 +4102,12 @@ def _persist_completed_turn(
         ),
         None,
     )
-    if isinstance(control_plane_task, dict):
+    if not last_success_allowed:
+        last_success_task_write_status = {
+            "status": "skipped",
+            "reason": last_success_block_reason or "unsuccessful_final",
+        }
+    elif isinstance(control_plane_task, dict):
         last_success_task = control_plane_task
         last_success_task_write_status = {"status": "ready", "source": "subagent_control_plane"}
     else:
@@ -3841,7 +4167,7 @@ def _persist_completed_turn(
         ),
     )
     has_last_success_query_target = has_query_target(last_success_task)
-    if final_payload.get("error") is None and has_last_success_query_target:
+    if last_success_allowed and has_last_success_query_target:
         thread_state = store.update_thread_state(
             final_session_id,
             {
@@ -3867,7 +4193,7 @@ def _persist_completed_turn(
                 default=str,
             ),
         )
-    elif final_payload.get("error") is None:
+    else:
         if last_success_task_write_status.get("status") == "ready":
             last_success_task_write_status = {
                 "status": "skipped",

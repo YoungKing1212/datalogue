@@ -9,12 +9,10 @@ import { AIMessage, UserMessage } from './MyMessage';
 /**
  * TraceContext — 桥接 ChatPage 监听到的 SSE trace 步骤到 AIMessage
  * - traceSteps: 当前流式中的节点步骤数组
- * - showSql: 是否展示生成的 SQL 折叠块
  * - agentVerbosity: 'minimal' | 'standard' | 'full' — 控制 step 详细度
  */
 const TraceContext = createContext({
   traceSteps: [],
-  showSql: true,
   agentVerbosity: 'standard',
 });
 
@@ -23,9 +21,9 @@ export function TraceProvider({ value, children }) {
 }
 
 function AssistantMessageWithTrace() {
-  const { traceSteps, showSql, agentVerbosity } = useContext(TraceContext);
+  const { traceSteps, agentVerbosity } = useContext(TraceContext);
   return (
-    <AIMessage traceSteps={traceSteps} showSql={showSql} agentVerbosity={agentVerbosity} />
+    <AIMessage traceSteps={traceSteps} agentVerbosity={agentVerbosity} />
   );
 }
 

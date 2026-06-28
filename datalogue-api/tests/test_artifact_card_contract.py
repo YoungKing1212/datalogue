@@ -78,3 +78,23 @@ def test_query_artifact_refs_only_include_artifact_handles():
     refs = _artifact_refs_for_query_artifact(payload)
 
     assert refs == ["artifact:result-1", "artifact:report-1"]
+
+
+def test_artifact_card_related_refs_accept_repair_plan_ref_without_new_prefix():
+    payload = {
+        "type": "final",
+        "answer": "已自动修复字段口径并完成查询。",
+        "conversation_id": 7,
+        "message_id": 9,
+        "result_ref": "artifact:result-1",
+        "repair_plan_ref": "artifact:repair-1",
+        "langfuse_trace_id": "trace-123",
+        "retry_checkpoint": {"checkpoint_ref": "checkpoint://conv-7-msg-9/query_context_ready"},
+    }
+
+    _attach_artifact_card_refs_to_final_payload(payload)
+
+    related_refs = payload["related_refs"]
+    assert {"ref_id": "artifact:repair-1", "ref_type": "repair_plan", "label": "RepairPlan"} in related_refs
+    assert all(not item["ref_id"].startswith("repair_plan:") for item in related_refs)
+    assert "artifact:repair-1" in _artifact_refs_for_query_artifact(payload)

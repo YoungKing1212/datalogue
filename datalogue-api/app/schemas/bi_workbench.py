@@ -28,6 +28,13 @@ DatalogueEventType = Literal[
     "clarification.required",
     "dataset.query.started",
     "dataset.query.completed",
+    "repair.evaluated",
+    "repair.plan_created",
+    "repair.confirmation_required",
+    "repair.rerun_started",
+    "repair.rerun_completed",
+    "repair.failed",
+    "repair.blocked",
     "artifact.created",
     "answer.completed",
     "error.blocked",
@@ -44,6 +51,7 @@ FORBIDDEN_VISIBLE_KEYS = {
     "direct_sql",
     "dsl",
     "out_capsule",
+    "patch",
     "query_task_capsule",
     "raw",
     "raw_result",
@@ -135,7 +143,7 @@ class ArtifactRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ref_id: str
-    ref_type: Literal["result", "report", "artifact", "trace", "checkpoint", "unknown"] = "artifact"
+    ref_type: Literal["result", "report", "artifact", "trace", "checkpoint", "repair_plan", "unknown"] = "artifact"
     label: str | None = None
 
 

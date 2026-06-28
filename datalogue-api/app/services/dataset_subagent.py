@@ -1004,10 +1004,58 @@ def _dsa_route_payload_blueprint_input_params(route_payload: Any) -> dict[str, A
     return params
 
 
-def _dsa_build_blueprint_execute_input_params(routing: dict[str, Any]) -> dict[str, Any]:
-    """合并蓝图执行参数：routing.entities 优先于 route_payload，time_context 在解析层兜底。"""
+def _dsa_query_plan_blueprint_input_params(query_plan: QueryPlan | None) -> dict[str, Any]:
+    """从 QueryPlan.required_inputs 中提取已解析参数值，缺值项仍交给蓝图执行器澄清。"""
+    if query_plan is None:
+        return {}
+    params: dict[str, Any] = {}
+    for item in query_plan.required_inputs or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        for field in ("value", "input_value", "selected_value", "default", "default_value"):
+            value = item.get(field)
+            if value not in (None, "", [], {}):
+                params[name] = value  # planner 已解析出的业务参数只作为蓝图输入，不进入用户可见 schema。
+                break
+    return _dsa_clean_blueprint_input_params(params)
+
+
+def _dsa_infer_person_name_from_text(*values: Any) -> str | None:
+    """兜底提取中文姓名，覆盖 LLM 把 person_name 写进解释摘要而非结构化参数的情况。"""
+    text = " ".join(str(value or "") for value in values if value)
+    if not text:
+        return None
+    explicit = re.search(r"person_name\s*[:=]\s*['\"]?([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z·]{1,15})", text)
+    if explicit:
+        return explicit.group(1).strip("，,。；; '\"")
+    natural = re.search(r"查询\s*([\u4e00-\u9fff]{2,4})\s*(?:\d{4}\s*年)?(?:工作日志|日志|日报)", text)
+    if natural:
+        return natural.group(1).strip()
+    return None
+
+
+def _dsa_build_blueprint_execute_input_params(
+    routing: dict[str, Any],
+    *,
+    query_plan: QueryPlan | None = None,
+) -> dict[str, Any]:
+    """合并蓝图执行参数：route_payload、QueryPlan 和 entities 分层补齐，time_context 在解析层兜底。"""
     params = _dsa_route_payload_blueprint_input_params(routing.get("route_payload"))
+    params.update(_dsa_query_plan_blueprint_input_params(query_plan))
     params.update(_dsa_clean_blueprint_input_params(routing.get("entities")))
+    if "person_name" not in params:
+        explanation = query_plan.explanation if query_plan is not None else {}
+        params_from_text = _dsa_infer_person_name_from_text(
+            explanation.get("summary") if isinstance(explanation, dict) else None,
+            routing.get("resolved_question"),
+            routing.get("original_question"),
+            routing.get("question"),
+        )
+        if params_from_text:
+            params["person_name"] = params_from_text  # 真实问题里人员名来自自然语言，避免误判缺参。
     return params
 
 
@@ -1411,7 +1459,10 @@ class DatasetSubAgent:
             original_question=routing.get("original_question") or question,
             resolved_question=routing.get("resolved_question") or question,
             time_context=routing.get("time_context"),
-            input_params=_dsa_build_blueprint_execute_input_params(routing),
+            input_params=_dsa_build_blueprint_execute_input_params(  # planner 参数兜底补齐后再进入蓝图执行器。
+                routing,
+                query_plan=query_plan,
+            ),
             trace_context=trace_context,
         )
         return {

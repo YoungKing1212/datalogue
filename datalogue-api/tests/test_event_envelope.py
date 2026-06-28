@@ -30,6 +30,13 @@ def test_datalogue_event_envelope_supports_required_event_types_and_visibility()
         "clarification.required",
         "dataset.query.started",
         "dataset.query.completed",
+        "repair.evaluated",
+        "repair.plan_created",
+        "repair.confirmation_required",
+        "repair.rerun_started",
+        "repair.rerun_completed",
+        "repair.failed",
+        "repair.blocked",
         "artifact.created",
         "answer.completed",
         "error.blocked",
@@ -131,3 +138,39 @@ def test_chat_sse_payload_keeps_legacy_fields_and_adds_event_envelope():
         "dataset_id": 1,
         "route_decision": {"decision": "selected", "dataset_id": 1},
     }
+
+
+def test_repair_event_envelope_only_exposes_business_summary_and_refs():
+    """RepairPlan 用户可见事件只暴露业务摘要、状态和 ref，不暴露 patch/SQL/schema。"""
+
+    from app.schemas.bi_workbench import build_datalogue_event_envelope
+
+    envelope = build_datalogue_event_envelope(
+        event_type="repair.plan_created",
+        visibility="user_visible",
+        payload={
+            "summary": "已识别字段口径不匹配，准备按业务口径自动修复。",
+            "status": "plan_created",
+            "requires_user_confirmation": False,
+            "repair_plan_ref": "artifact:repair-1",
+            "checkpoint_ref": "checkpoint://conv-1-msg-2/repair",
+            "patch": {"target_field": "work_log.bad_col", "replacement_field": "work_date"},
+            "raw_sql": "select bad_col from work_log",
+            "schema": {"tables": ["work_log"]},
+            "raw_result": {"rows": []},
+        },
+    )
+
+    encoded = json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).lower()
+    assert envelope.payload == {
+        "summary": "已识别字段口径不匹配，准备按业务口径自动修复。",
+        "status": "plan_created",
+        "requires_user_confirmation": False,
+        "repair_plan_ref": "artifact:repair-1",
+        "checkpoint_ref": "checkpoint://conv-1-msg-2/repair",
+    }
+    assert "bad_col" not in encoded
+    assert "work_log" not in encoded
+    assert "select" not in encoded
+    assert "schema" not in encoded
+    assert "raw_result" not in encoded

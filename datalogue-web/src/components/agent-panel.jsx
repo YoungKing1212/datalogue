@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Icon } from './icons';
 
 // AgentPanel — 右侧 Agent 执行状态面板
@@ -11,9 +11,9 @@ import { Icon } from './icons';
 //   intent           {intent, entities}  意图识别结果（null = 未就绪）
 //   metricResolution {metrics, dimensions, all_matched, unresolved} 指标解析结果
 //   generationMode   'semantic'|'inferred'|null  DSL 生成模式
-//   sql              string              生成的 SQL（null = 未就绪）
 //   sqlResult        {rows, columns, elapsed_ms}  执行摘要（null = 未就绪）
 //   traceMeta        {traceId, sessionId, messageId, observability} Langfuse 观测元数据
+// 普通 Chat 用户可见面板只展示业务级执行摘要，不展示 SQL 文本或复制入口。
 
 const BUSINESS_STEP_NAMES = {
   message_gateway: 'message_gateway',
@@ -441,43 +441,6 @@ function IntentCard({ intent, metricResolution, generationMode }) {
   );
 }
 
-// ── SQL 预览 ──────────────────────────────────────────────
-function SqlPreview({ sql }) {
-  const [open, setOpen] = useState(false);
-  if (!sql) return null;
-  const copy = (event) => {
-    event.stopPropagation();
-    navigator.clipboard.writeText(sql).catch(console.error);
-  };
-  return (
-    <div>
-      <div className="agent-section-label">生成的 SQL</div>
-      <div className={`sql-preview ${open ? 'open' : ''}`}>
-        <div
-          role="button"
-          tabIndex={0}
-          className="sql-preview-head"
-          onClick={() => setOpen((v) => !v)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              setOpen((v) => !v);
-            }
-          }}
-          aria-expanded={open}
-        >
-          <span><Icon name="sql" /> SQL 已生成</span>
-          <button className="btn ghost" style={{ fontSize: 11, padding: '2px 8px' }} onClick={copy}>
-            复制
-          </button>
-          <Icon name="chev_down" className="sql-preview-chev" />
-        </div>
-        {open && <pre>{sql}</pre>}
-      </div>
-    </div>
-  );
-}
-
 // ── 执行摘要 ──────────────────────────────────────────────
 function ResultSummary({ sqlResult }) {
   if (!sqlResult) return null;
@@ -495,11 +458,6 @@ function ResultSummary({ sqlResult }) {
           <div className="lbl">执行耗时</div>
         </div>
       </div>
-      {sqlResult.columns && sqlResult.columns.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
-          字段：{(sqlResult.columns || []).map(c => sqlResult.column_labels?.[c] || c).join(' · ')}
-        </div>
-      )}
     </div>
   );
 }
@@ -512,7 +470,6 @@ function AgentPanel({
   intent = null,
   metricResolution = null,
   generationMode = null,
-  sql = null,
   sqlResult = null,
   traceMeta = null,
 }) {
@@ -533,9 +490,8 @@ function AgentPanel({
         <StepList steps={steps} compact={executionSettled} sqlResult={sqlResult} />
         {executionSettled && <GatewayContext steps={steps} />}
         <IntentCard intent={intent} metricResolution={metricResolution} generationMode={generationMode} />
-        <SqlPreview sql={sql} />
         <ResultSummary sqlResult={sqlResult} />
-        {steps.length === 0 && !intent && !sql && !sqlResult && !traceMeta && (
+        {steps.length === 0 && !intent && !sqlResult && !traceMeta && (
           <div style={{ color: 'var(--text-3)', fontSize: 12, textAlign: 'center', paddingTop: 32 }}>
             发问后此处显示 Agent 执行详情
           </div>

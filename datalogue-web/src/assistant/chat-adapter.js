@@ -7,9 +7,10 @@
 //   token 事件          → 累积到 accText（TextMessagePart）
 //   step done 事件      → 累积为一条 ReasoningMessagePart（text 是该节点的小结）
 //                        同时 window 派发 'datalogue:trace' 给 AgentPanel
-//   final 事件          → 收敛 text + metadata.custom（sql/sql_result/...）
+//   final 事件          → 收敛 text + metadata.custom（result refs / sql_result 摘要等）
 //
 // 每次 yield content 数组是完整覆盖，所以本地累加器维护 reasonings + accText。
+// 普通 Chat 用户可见层不透出 SQL 文本；SQL 只留在后端 control/trace 面。
 
 import { streamChatEvents } from '../api/client';
 import { resolveRecentInitializedRemoteId, resolveRemoteId } from './thread-list-adapter';
@@ -54,6 +55,33 @@ const EXECUTION_STRATEGY_LABELS = {
 
 function enumLabel(labels, value) {
   return value ? labels[value] || value : null;
+}
+
+function safeRepairPlanFromPayload(payload = {}, finalPayload = {}) {
+  const summary =
+    payload.summary
+    || payload.business_summary
+    || finalPayload.repair_plan?.business_summary
+    || finalPayload.repair_plan?.summary
+    || null;
+  const repairPlanRef =
+    payload.repair_plan_ref
+    || finalPayload.repair_plan_ref
+    || finalPayload.repair_plan?.repair_plan_ref
+    || null;
+  if (!summary && !repairPlanRef) return null;
+  return {
+    summary,
+    status: payload.status || finalPayload.repair_status || finalPayload.repair_plan?.status || null,
+    failureClass: finalPayload.repair_failure_class || finalPayload.repair_plan?.failure_class || null,
+    repairPlanRef,
+    checkpointRef: payload.checkpoint_ref || finalPayload.repair_plan?.checkpoint_ref || null,
+    requiresUserConfirmation: Boolean(
+      payload.requires_user_confirmation
+      || finalPayload.repair_requires_user_confirmation
+      || finalPayload.repair_plan?.requires_user_confirmation,
+    ),
+  };
 }
 
 function summarizeCandidateAssets(candidateAssets) {
@@ -149,7 +177,7 @@ function formatStepAsReasoning(ev) {
   } else if (ev.node === 'dsl_validate') {
     detail = 'DSL 校验通过';
   } else if (ev.node === 'dsl_compiler') {
-    detail = ev.sql ? `已生成：${ev.sql.slice(0, 60)}${ev.sql.length > 60 ? '…' : ''}` : '编译完成';
+    detail = '查询语句已生成并进入执行校验';
   } else if (ev.node === 'sql_execute') {
     const rows = ev.rows ?? 0;
     detail = `返回 ${rows} 行${ev.columns?.length ? ' · ' + ev.columns.length + ' 列' : ''}`;
@@ -253,13 +281,33 @@ export function buildBusinessSessionId({ threadId, conversationId, fallbackSessi
   return fallbackSessionId;
 }
 
+const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
+  'sql',
+  'raw_sql',
+  'direct_sql',
+  'llm_sql',
+  'compiled_sql',
+  'sql_list',
+]);
+
+function sanitizeUserVisibleTrace(value) {
+  if (Array.isArray(value)) return value.map(sanitizeUserVisibleTrace);
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (USER_VISIBLE_TRACE_FORBIDDEN_KEYS.has(key)) continue;
+    out[key] = sanitizeUserVisibleTrace(item);
+  }
+  return out;
+}
+
 /**
  * 在 SSE 事件来时 dispatch window 自定义事件给 AgentPanel
  * 不走 assistant-ui runtime，保持面板的低耦合
  */
 function emitTrace(ev) {
   try {
-    window.dispatchEvent(new CustomEvent('datalogue:trace', { detail: ev }));
+    window.dispatchEvent(new CustomEvent('datalogue:trace', { detail: sanitizeUserVisibleTrace(ev) }));
   } catch (_e) {
     /* SSR 保护 */
   }
@@ -337,6 +385,8 @@ export function makeChatAdapter({ datasetIdRef }) {
       const stepTrace = [];
       let accText = '';      // 已累积的 text
       let finalPayload = null;
+      const repairTimeline = [];
+      let repairPlan = null;
 
       // C-ready 业务时间线累加器：从 SSE 事件推断五类节点
       const taskTimeline = [];
@@ -381,7 +431,7 @@ export function makeChatAdapter({ datasetIdRef }) {
         } else if (ev.type === 'step') {
           // 通知 AgentPanel（保持现有行为）
           emitTrace(ev);
-          stepTrace.push(ev);
+          stepTrace.push(sanitizeUserVisibleTrace(ev));
           // 只把"完成"的节点累积为 reasoning（running 状态等完成时再算）
           if (ev.status === 'done' && ev.node !== 'error') {
             reasonings.push({
@@ -405,6 +455,25 @@ export function makeChatAdapter({ datasetIdRef }) {
             } else {
               taskTimeline.push({ type: 'bi_execution', label: 'BI 执行', text: `已完成：${stepLabel}`, status: 'running' });
             }
+          }
+        } else if (ev.event_envelope?.event_type?.startsWith('repair.')) {
+          emitTrace(ev);
+          const repairPayload = ev.event_envelope.payload || {};
+          const safeRepair = safeRepairPlanFromPayload(repairPayload);
+          if (safeRepair) {
+            repairPlan = { ...(repairPlan || {}), ...safeRepair };
+            repairTimeline.push({
+              eventType: ev.event_envelope.event_type,
+              status: safeRepair.status,
+              summary: safeRepair.summary,
+              repairPlanRef: safeRepair.repairPlanRef,
+            });
+            taskTimeline.push({
+              type: 'repair',
+              label: '自动修复',
+              text: safeRepair.summary || '已更新自动修复状态',
+              status: ev.event_envelope.event_type === 'repair.rerun_completed' ? 'done' : 'running',
+            });
           }
         } else if (ev.type === 'final') {
           finalPayload = ev;
@@ -491,6 +560,11 @@ export function makeChatAdapter({ datasetIdRef }) {
           }
         }
 
+        const finalRepairPlan = safeRepairPlanFromPayload({}, finalPayload);
+        if (finalRepairPlan) {
+          repairPlan = { ...(repairPlan || {}), ...finalRepairPlan };
+        }
+
         if (finalPayload.title && finalPayload.conversation_id) {
           try {
             window.dispatchEvent(
@@ -511,7 +585,7 @@ export function makeChatAdapter({ datasetIdRef }) {
           status: { type: 'complete', reason: 'stop' },
           metadata: {
             custom: {
-              sql: finalPayload.sql || null,
+              sql: null,
               sqlResult: finalPayload.sql_result || null,
               sqlDiagnosis: finalPayload.sql_diagnosis || null,
               sqlAuditResult: finalPayload.sql_audit_result || null,
@@ -559,6 +633,8 @@ export function makeChatAdapter({ datasetIdRef }) {
               taskTimeline,
               artifactCard,
               candidateDatasets,
+              repairPlan,
+              repairTimeline,
             },
           },
         };

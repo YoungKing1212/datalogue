@@ -141,6 +141,33 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.queryByText('候选数据集确认')).not.toBeInTheDocument();
   });
 
+  it('renders business-level repair summary and confirmation without patch details', () => {
+    setMockMessage({
+      repairPlan: {
+        summary: '字段口径不匹配，已生成自动修复方案。',
+        status: 'confirmation_required',
+        repairPlanRef: 'artifact:repair-1',
+        checkpointRef: 'checkpoint://conv-1-msg-2/repair',
+        requiresUserConfirmation: true,
+        patch: { field: 'bad_col' },
+      },
+    });
+
+    render(<AIMessage />);
+
+    expect(screen.getByText('查询修复')).toBeInTheDocument();
+    expect(screen.getByText('字段口径不匹配，已生成自动修复方案。')).toBeInTheDocument();
+    expect(screen.getByText('确认修复')).toBeInTheDocument();
+    expect(screen.queryByText('bad_col')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('确认修复'));
+    expect(window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__).toEqual({
+      repair_plan_ref: 'artifact:repair-1',
+      checkpoint_ref: 'checkpoint://conv-1-msg-2/repair',
+      selected_action: 'confirm',
+    });
+  });
+
   it('candidate dataset card shows only dataset_name and short_reason, no schema details', () => {
     setMockMessage({
       candidateDatasets: {
@@ -168,6 +195,18 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.queryByText(/sales_table/)).not.toBeInTheDocument();
     expect(screen.queryByText(/public/)).not.toBeInTheDocument();
     expect(screen.queryByText(/SELECT/)).not.toBeInTheDocument();
+  });
+
+  it('does not render raw SQL from message custom metadata', () => {
+    setMockMessage({
+      sql: 'SELECT secret_col FROM hidden_table',
+    });
+
+    render(<AIMessage />);
+
+    expect(screen.queryByText(/SELECT/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
+    expect(screen.queryByTitle('复制 SQL')).not.toBeInTheDocument();
   });
 
   it('submits selected candidate dataset confirmation', () => {

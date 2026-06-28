@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.services.artifact_store import ArtifactStore
+from app.services.repair_plan import sanitize_repair_plan_artifact_payload
 
 router = APIRouter()
 
@@ -42,6 +43,12 @@ def get_artifact(artifact_ref: str, db: Session = Depends(get_db)):
     artifact = ArtifactStore(db).get(artifact_ref)
     if artifact is None or _is_expired(artifact.expires_at):
         raise HTTPException(status_code=404, detail="artifact not found")
+    content_json = artifact.content_json
+    content_text = artifact.content_text
+    if artifact.kind == "repair_plan":
+        # RepairPlan 内部 action 可能含字段级 patch；读取口只返回业务级摘要和 ref。
+        content_json = sanitize_repair_plan_artifact_payload(artifact.content_json)
+        content_text = None
     return jsonable_encoder(
         {
             "artifact_ref": artifact.artifact_id,
@@ -50,8 +57,8 @@ def get_artifact(artifact_ref: str, db: Session = Depends(get_db)):
             "conversation_id": artifact.conversation_id,
             "message_id": artifact.message_id,
             "content_mime": artifact.content_mime,
-            "content_json": artifact.content_json,
-            "content_text": artifact.content_text,
+            "content_json": content_json,
+            "content_text": content_text,
             "expires_at": artifact.expires_at,
         }
     )

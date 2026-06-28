@@ -266,6 +266,39 @@ class TestChatAPI:
         assert result["llm_skipped_reason"] == "query_plan_template_sql"
         assert result["sql"] == sql
 
+    def test_dsl_generate_template_plan_overrides_tool_compiler(self, monkeypatch):
+        """可信模板 SQL 优先级高于 QueryPlan 工具编译，避免宽字段编译覆盖模板。"""
+        from app.graph.nodes import dsl_generate_node
+
+        def fail_get_llm(*_args, **_kwargs):
+            raise AssertionError("template path should not create llm")
+
+        monkeypatch.setattr("app.graph.nodes.get_llm", fail_get_llm)
+        template_sql = "SELECT p.rzrq, ep.person_name FROM plan_task_daily_record p LEFT JOIN eas_personofile ep ON p.account = ep.person_card WHERE ep.person_name = '杨凯'"
+        compiled_sql = "SELECT `eas_personofile`.`create_time` FROM `plan_task_daily_record`"
+
+        result = dsl_generate_node(
+            {
+                "question": "查询杨凯 2024 年工作日志",
+                "query_plan": {
+                    "planner_source": "template",
+                    "debug": {
+                        "template_name": "dataset10_log_detail",
+                        "sql_template": template_sql,
+                    },
+                },
+                "query_plan_compilation": {
+                    "ok": True,
+                    "sql": compiled_sql,
+                },
+            }
+        )
+
+        assert result["generation_mode"] == "template"
+        assert result["llm_skipped_reason"] == "query_plan_template_sql"
+        assert result["sql"] == template_sql
+        assert result["sql"] != compiled_sql
+
     def test_dsl_generate_fallback_template_plan_skips_llm(self, monkeypatch):
         """LLM planner 失败后的可信模板 fallback 也应直接产出 SQL。"""
         from app.graph.nodes import dsl_generate_node
@@ -3650,6 +3683,145 @@ class TestChatStreamEvents:
         assert captured["thread_state"]["updates"]["last_success_task"]["main_table"] == (
             "plan_task_daily_record"
         )
+
+    def test_persist_completed_turn_skips_last_success_task_for_clarification(
+        self,
+        monkeypatch,
+    ):
+        """缺参澄清不是成功查询，不能污染下一轮 last_success_task。"""
+        from app.api.chat import _persist_completed_turn
+
+        captured = {}
+
+        class FakeStore:
+            def with_updated_capsule(self, state, *, dataset_id, capsule):
+                return None
+
+            def append_completed_turn(self, **kwargs):
+                captured["append_completed_turn"] = kwargs
+                return SimpleNamespace(turn_index=3, subagent_capsules=None, facts=[])
+
+            def update_thread_state(self, session_id, updates, *, user_id=None):
+                captured["thread_state"] = {
+                    "session_id": session_id,
+                    "updates": updates,
+                    "user_id": user_id,
+                }
+                return updates
+
+        monkeypatch.setattr(
+            "app.api.chat.build_success_task_state",
+            lambda **kwargs: {
+                "capsule_version": "last_success_task.v1",
+                "dataset_id": 10,
+                "query_type": "detail_query",
+                "main_table": "plan_task_daily_record",
+            },
+        )
+
+        completed = _persist_completed_turn(
+            store=FakeStore(),
+            state=SimpleNamespace(turn_index=2, subagent_capsules=None, facts=[]),
+            user_id="1",
+            business_session_id="session-clarification",
+            effective_payload=ChatRequest(
+                question="查询杨凯 2024 年工作日志",
+                dataset_id=10,
+                session_id="session-clarification",
+            ),
+            final_payload={
+                "answer": "运行分析蓝图前还需要补充参数：person_name",
+                "route_payload": {
+                    "kind": "clarification",
+                    "missing": ["person_name"],
+                    "params": {"person_name": None},
+                },
+                "query_plan": {
+                    "query_type": "detail_query",
+                    "execution_strategy": "blueprint_execute",
+                },
+                "sql": "SELECT * FROM plan_task_daily_record WHERE person_name = NULL",
+                "conversation_id": 307,
+            },
+            pending_resolution={},
+            payload_question="查询杨凯 2024 年工作日志",
+            trace_context_sink=[],
+        )
+
+        assert completed is True
+        updates = captured["thread_state"]["updates"]
+        assert "last_success_task" not in updates
+        assert updates["last_success_task_write_status"] == {
+            "status": "skipped",
+            "reason": "unsuccessful_final",
+        }
+
+    def test_persist_completed_turn_skips_last_success_task_for_repair_blocked(
+        self,
+        monkeypatch,
+    ):
+        """RepairPlan blocked/诊断结果不能被记录成可承接的成功任务。"""
+        from app.api.chat import _persist_completed_turn
+
+        captured = {}
+
+        class FakeStore:
+            def with_updated_capsule(self, state, *, dataset_id, capsule):
+                return None
+
+            def append_completed_turn(self, **kwargs):
+                captured["append_completed_turn"] = kwargs
+                return SimpleNamespace(turn_index=3, subagent_capsules=None, facts=[])
+
+            def update_thread_state(self, session_id, updates, *, user_id=None):
+                captured["thread_state"] = {
+                    "session_id": session_id,
+                    "updates": updates,
+                    "user_id": user_id,
+                }
+                return updates
+
+        monkeypatch.setattr(
+            "app.api.chat.build_success_task_state",
+            lambda **kwargs: {
+                "capsule_version": "last_success_task.v1",
+                "dataset_id": 10,
+                "query_type": "detail_query",
+                "main_table": "eas_person_daily_log",
+            },
+        )
+
+        completed = _persist_completed_turn(
+            store=FakeStore(),
+            state=SimpleNamespace(turn_index=2, subagent_capsules=None, facts=[]),
+            user_id="1",
+            business_session_id="session-repair-blocked",
+            effective_payload=ChatRequest(
+                question="查询杨凯 2024 年工作日志",
+                dataset_id=10,
+                session_id="session-repair-blocked",
+            ),
+            final_payload={
+                "answer": "查询处理出现问题，已停止自动修复。",
+                "sql_diagnosis": {"code": "FIELD_NOT_FOUND"},
+                "repair_status": "blocked",
+                "repair_failure_class": "FIELD_NOT_FOUND",
+                "query_plan": {"query_type": "detail_query"},
+                "sql": "SELECT missing_field FROM eas_person_daily_log",
+                "conversation_id": 308,
+            },
+            pending_resolution={},
+            payload_question="查询杨凯 2024 年工作日志",
+            trace_context_sink=[],
+        )
+
+        assert completed is True
+        updates = captured["thread_state"]["updates"]
+        assert "last_success_task" not in updates
+        assert updates["last_success_task_write_status"] == {
+            "status": "skipped",
+            "reason": "unsuccessful_final",
+        }
 
     def test_stream_chat_writes_last_success_task_and_reuses_it_next_turn(
         self,

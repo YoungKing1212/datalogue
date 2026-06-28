@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models import QueryArtifact
 
-ArtifactKind = Literal["sql_result", "report", "subagent_result"]
+ArtifactKind = Literal["sql_result", "report", "subagent_result", "repair_plan"]
 
 
 class ArtifactPayloadTooLargeError(ValueError):

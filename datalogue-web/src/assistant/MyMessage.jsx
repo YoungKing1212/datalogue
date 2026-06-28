@@ -1,7 +1,8 @@
 // MyMessage — assistant-ui Message 渲染组件
 // 使用 MessagePrimitive.Parts + ChainOfThought 接管 reasoning 步骤渲染
 // 正文走 MessagePrimitive.Text（含 smooth 流式动画）
-// SQL/查询结果/图表/复制按钮从 metadata.custom 取，由 chat-adapter.js 在 final 事件时写入
+// 查询结果/图表/复制按钮从 metadata.custom 取，由 chat-adapter.js 在 final 事件时写入。
+// 普通 Chat 用户可见层不展示 SQL 文本，SQL 仅保留在后端 control/trace 面。
 
 import React, { useState, useMemo } from 'react';
 import {
@@ -481,7 +482,6 @@ function buildQueryCaliber(custom) {
     custom.routeDecision ||
     custom.generationMode ||
     custom.intent ||
-    custom.sql ||
     custom.sqlResult,
   );
   const hasAny = hasCaliberSignal && (metrics.length || dimensions.length || timeRange || filters.length || routePath);
@@ -635,8 +635,8 @@ function AnswerExplanation({ explanation }) {
               <span>SQL 摘要</span>
               <p>
                 {sqlSummary.preview
-                  ? `涉及 ${(sqlSummary.tables || []).join('、') || '未解析到表'}`
-                  : '本次未生成 SQL'}
+                  ? '查询语句已通过执行前校验'
+                  : '本次未生成查询语句'}
               </p>
             </div>
             <div>
@@ -772,6 +772,59 @@ function CandidateDatasetCard({ candidateDatasets, onConfirm }) {
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function RepairPlanCard({ repairPlan }) {
+  if (!repairPlan || (!repairPlan.summary && !repairPlan.repairPlanRef)) return null;
+
+  const confirmRepair = () => {
+    window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
+      repair_plan_ref: repairPlan.repairPlanRef || null,
+      checkpoint_ref: repairPlan.checkpointRef || null,
+      selected_action: 'confirm',
+    };
+    window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
+      detail: { text: '确认修复' },
+    }));
+  };
+
+  return (
+    <div className="candidate-dataset-card repair-plan-card">
+      <div className="candidate-dataset-head">
+        <span className="candidate-dataset-icon">
+          <Icon name="branch" />
+        </span>
+        <div>
+          <strong>查询修复</strong>
+          <span>{repairPlan.summary || '已生成自动修复方案'}</span>
+        </div>
+      </div>
+      {repairPlan.repairPlanRef && (
+        <div className="artifact-card-refs">
+          <span className="artifact-card-ref-label">修复引用</span>
+          <code className="artifact-card-ref">{repairPlan.repairPlanRef}</code>
+        </div>
+      )}
+      {repairPlan.requiresUserConfirmation && (
+        <div className="candidate-dataset-options">
+          <button
+            type="button"
+            className="candidate-dataset-option"
+            onClick={confirmRepair}
+          >
+            <span className="candidate-dataset-index">1</span>
+            <span className="candidate-dataset-body">
+              <strong>确认修复</strong>
+              <em>继续同一任务并使用该修复方案</em>
+            </span>
+            <span className="candidate-dataset-action">
+              <Icon name="arrow_up_right" style={{ width: 12, height: 12 }} />
+            </span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1015,20 +1068,17 @@ function ArtifactAccessCard({ resultRef, reportRef, subagentToolResults }) {
  * - 用 MessagePrimitive.Parts 把 reasoning / text 分开渲染
  * - ChainOfThought 默认折叠，AccordionTrigger 控制展开
  * - 正文 markdown 走 MessageContent
- * - SQL/查询结果/图表/复制按钮从 metadata.custom 取
+ * - 查询结果/图表/复制按钮从 metadata.custom 取
  */
-export function AIMessage({ showSql = true }) {
+export function AIMessage() {
   const api = useAui();
   const message = useAuiState((s) => s.message);
-  const [sqlOpen, setSqlOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
-  const [sqlCopied, setSqlCopied] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [feedbackState, setFeedbackState] = useState(null);
 
   const isStreaming = message?.status?.type === 'running';
   const custom = message?.metadata?.custom || {};
-  const sql = custom.sql || null;
   const sqlResult = custom.sqlResult || null;
   const chartType = custom.chartType || null;
   const chartTitle = custom.chartTitle || null;
@@ -1051,6 +1101,7 @@ export function AIMessage({ showSql = true }) {
   const taskTimeline = custom.taskTimeline || null;
   const artifactCard = custom.artifactCard || null;
   const candidateDatasets = custom.candidateDatasets || null;
+  const repairPlan = custom.repairPlan || null;
 
   const handleSelectClarification = (candidate, optionIndex, label, kind = 'term') => {
     const clarificationId =
@@ -1100,15 +1151,6 @@ export function AIMessage({ showSql = true }) {
     api.message().reload();
   };
 
-  const handleCopySql = (event) => {
-    event.stopPropagation();
-    if (!sql) return;
-    navigator.clipboard.writeText(sql).then(() => {
-      setSqlCopied(true);
-      setTimeout(() => setSqlCopied(false), 1400);
-    }).catch(console.error);
-  };
-
   return (
     <div
       className="msg-row msg-ai"
@@ -1156,6 +1198,8 @@ export function AIMessage({ showSql = true }) {
 
       {/* C-ready 候选数据集确认 — 只展示 dataset_name + 业务原因 */}
       <CandidateDatasetCard candidateDatasets={candidateDatasets} />
+
+      <RepairPlanCard repairPlan={repairPlan} />
 
       <TraceLinkCard
         traceId={langfuseTraceId}
@@ -1260,43 +1304,6 @@ export function AIMessage({ showSql = true }) {
           {chartType === 'bar' && <GroupedBar data={chartData} h={200} w={640} />}
           {chartType === 'line' && <LineChart data={chartData} h={200} w={640} />}
           {chartType === 'pie' && <Donut data={chartData} h={200} w={640} />}
-        </div>
-      )}
-
-      {/* SQL 可折叠 */}
-      {showSql && sql && (
-        <div className={'collapse sql-collapse ' + (sqlOpen ? 'open' : '')}>
-          <div
-            role="button"
-            tabIndex={0}
-            className="collapse-head"
-            onClick={() => setSqlOpen((v) => !v)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                setSqlOpen((v) => !v);
-              }
-            }}
-            aria-expanded={sqlOpen}
-          >
-            <Icon name="sql" />
-            <span className="sql-collapse-title">SQL</span>
-            <button
-              type="button"
-              className="collapse-copy"
-              onClick={handleCopySql}
-              title="复制 SQL"
-            >
-              <Icon name="copy" />
-              <span>{sqlCopied ? '已复制' : '复制'}</span>
-            </button>
-            <Icon name="chev_down" className="sql-collapse-chev" />
-          </div>
-          {sqlOpen && (
-            <div className="collapse-body">
-              <pre className="sql">{sql}</pre>
-            </div>
-          )}
         </div>
       )}
 

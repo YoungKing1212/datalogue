@@ -219,6 +219,183 @@ class _RetryFailureSubAgent:
         )
 
 
+class _RepairPlanSuccessSubAgent:
+    def __init__(self, db, dataset_id):
+        self.db = db
+        self.dataset_id = dataset_id
+
+    async def run(self, request, _trace_context, *, graph, initial_state=None, graph_kwargs=None):
+        from app.services.subagent_planning import SubAgentEvent
+
+        query_plan = {
+            "query_type": "detail_query",
+            "execution_strategy": "query_graph",
+            "planner_source": "deterministic",
+        }
+        diagnosis = {
+            "code": "FIELD_NOT_FOUND",
+            "severity": "retryable",
+            "retryable": True,
+            "title": "字段不存在",
+            "suggested_action": "使用工作日期口径重新执行",
+        }
+        repair_plan = {
+            "schema_version": "repair_plan.v1",
+            "dataset_id": request.dataset_id,
+            "failure_class": "FIELD_NOT_FOUND",
+            "status": "plan_created",
+            "business_summary": "字段口径不匹配，已按工作日志日期口径生成自动修复方案。",
+            "actions": [
+                {
+                    "action_type": "replace_field",
+                    "business_summary": "将不存在的日期口径替换为已发布的工作日期口径。",
+                    "target": {"dataset_id": request.dataset_id, "table": "work_log", "field": "bad_col"},
+                    "replacement": {"dataset_id": request.dataset_id, "table": "work_log", "field": "work_date"},
+                    "confidence": 0.94,
+                }
+            ],
+            "requires_user_confirmation": False,
+            "confidence": 0.94,
+            "attempts": 1,
+        }
+        yield SubAgentEvent(
+            event_type="graph_event",
+            payload={
+                "event": {
+                    "event": "on_chain_start",
+                    "metadata": {"langgraph_node": "sql_audit"},
+                    "data": {},
+                }
+            },
+        )
+        yield SubAgentEvent(
+            event_type="graph_event",
+            payload={
+                "event": {
+                    "event": "on_chain_end",
+                    "metadata": {"langgraph_node": "sql_audit"},
+                    "data": {
+                        "output": {
+                            "entry_route": "query_graph",
+                            "query_plan": query_plan,
+                            "error": "no such column: work_log.bad_col",
+                            "sql": "SELECT bad_col FROM work_log",
+                            "sql_list": ["SELECT bad_col FROM work_log"],
+                            "sql_diagnosis": diagnosis,
+                            "sql_audit_result": diagnosis,
+                            "repair_plan": repair_plan,
+                            "repair_failure_class": "FIELD_NOT_FOUND",
+                            "repair_status": "plan_created",
+                            "repair_attempts": 1,
+                            "repair_requires_user_confirmation": False,
+                            "should_retry": True,
+                            "retry_count": 1,
+                        }
+                    },
+                }
+            },
+        )
+        yield SubAgentEvent(
+            event_type="graph_event",
+            payload={
+                "event": {
+                    "event": "on_chain_start",
+                    "metadata": {"langgraph_node": "sql_execute"},
+                    "data": {},
+                }
+            },
+        )
+        yield SubAgentEvent(
+            event_type="graph_event",
+            payload={
+                "event": {
+                    "event": "on_chain_end",
+                    "metadata": {"langgraph_node": "sql_execute"},
+                    "data": {
+                        "output": {
+                            "answer": "杨凯 2024 年共有 2 条工作日志。",
+                            "entry_intent": "detail_query",
+                            "entry_route": "query_graph",
+                            "entry_reason": "repair_plan_rerun_success",
+                            "query_plan": query_plan,
+                            "sql": "SELECT work_date, content FROM work_log",
+                            "sql_list": ["SELECT work_date, content FROM work_log"],
+                            "sql_result": {
+                                "columns": ["work_date", "content"],
+                                "rows": [
+                                    {"work_date": "2024-01-01", "content": "项目研发"},
+                                    {"work_date": "2024-01-02", "content": "联调验收"},
+                                ],
+                                "row_count": 2,
+                            },
+                            "error": None,
+                            "repair_status": "rerun_completed",
+                            "repair_attempts": 1,
+                            "sql_retry_trace": [{"attempt": 1, "status": "success"}],
+                            "out_capsule": {
+                                "capsule_version": "subagent.v1",
+                                "dataset_id": request.dataset_id,
+                                "query_context": {"fields": ["work_date", "content"]},
+                            },
+                        }
+                    },
+                }
+            },
+        )
+
+
+class _RepairPlanBlockedSubAgent:
+    def __init__(self, db, dataset_id):
+        self.db = db
+        self.dataset_id = dataset_id
+
+    async def run(self, request, _trace_context, *, graph, initial_state=None, graph_kwargs=None):
+        from app.services.subagent_planning import SubAgentEvent
+
+        diagnosis = {
+            "code": "FIELD_NOT_FOUND",
+            "severity": "architectural",
+            "retryable": False,
+            "title": "字段不存在",
+            "suggested_action": "需要先修正数据集语义资产。",
+        }
+        yield SubAgentEvent(
+            event_type="graph_event",
+            payload={
+                "event": {
+                    "event": "on_chain_start",
+                    "metadata": {"langgraph_node": "sql_audit"},
+                    "data": {},
+                }
+            },
+        )
+        yield SubAgentEvent(
+            event_type="graph_event",
+            payload={
+                "event": {
+                    "event": "on_chain_end",
+                    "metadata": {"langgraph_node": "sql_audit"},
+                    "data": {
+                        "output": {
+                            "entry_route": "query_graph",
+                            "error": "SQL 执行失败诊断：字段不存在，需要先修正数据集语义资产。",
+                            "sql": "SELECT bad_col FROM work_log",
+                            "sql_list": ["SELECT bad_col FROM work_log"],
+                            "sql_diagnosis": diagnosis,
+                            "sql_audit_result": diagnosis,
+                            "repair_failure_class": "FIELD_NOT_FOUND",
+                            "repair_status": "blocked",
+                            "repair_attempts": 0,
+                            "repair_requires_user_confirmation": False,
+                            "should_retry": False,
+                            "retry_count": 0,
+                        }
+                    },
+                }
+            },
+        )
+
+
 def test_single_dataset_success_cross_checks_five_evidence_sets(
     db_session, sample_dataset, monkeypatch
 ):
@@ -280,6 +457,139 @@ def test_single_dataset_success_cross_checks_five_evidence_sets(
     assert {item.message_id for item in artifacts} == {final["message_id"]}
     assert thread_state["last_success_task"]["result_ref"] == final["result_artifact"]["result_ref"]
     assert thread_state["last_success_task_write_status"]["status"] == "ready"
+
+
+def test_repair_plan_success_cross_checks_five_evidence_sets(
+    db_session, sample_dataset, monkeypatch
+):
+    """RepairPlan 自动修复成功后，应串起 SSE、artifact、trace index 和 conversation_state。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+    monkeypatch.setattr(
+        "app.api.chat.get_settings",
+        lambda: Settings(MULTITURN_ENABLED=True, LANGFUSE_ENABLED=False),
+    )
+    monkeypatch.setattr(
+        "app.api.chat.build_lead_agent_context",
+        lambda *_args, **_kwargs: _lead_context(sample_dataset),
+    )
+    monkeypatch.setattr(
+        "app.api.chat.route_query_intent",
+        lambda *_args, **_kwargs: {
+            "intent": "query",
+            "entities": {"fields": ["工作日志"]},
+            "entry_intent": "detail_query",
+            "entry_route": "query_graph",
+            "entry_reason": "repair_plan_acceptance",
+            "route_payload": {"kind": "detail_query"},
+        },
+    )
+    monkeypatch.setattr("app.api.chat.build_workflow", lambda _db: object())
+    monkeypatch.setattr("app.api.chat.DatasetSubAgent", _RepairPlanSuccessSubAgent)
+
+    events = _collect_stream_events(
+        {
+            "question": "查询杨凯 2024 年工作日志",
+            "dataset_id": sample_dataset.id,
+            "session_id": "acceptance-repair-plan",
+        },
+        db_session,
+    )
+
+    final = [event for event in events if event.get("type") == "final"][-1]
+    repair_event_types = [
+        event["event_envelope"]["event_type"]
+        for event in events
+        if event.get("event_envelope", {}).get("event_type", "").startswith("repair.")
+    ]
+    assert repair_event_types == [
+        "repair.evaluated",
+        "repair.plan_created",
+        "repair.rerun_started",
+        "repair.rerun_completed",
+    ]
+    assert final["answer"] == "杨凯 2024 年共有 2 条工作日志。"
+    assert final["repair_plan_ref"].startswith("artifact:")
+    assert final["repair_status"] == "rerun_completed"
+    assert any(ref["ref_type"] == "repair_plan" for ref in final["related_refs"])
+    assert final["artifact_card"]["related_refs"] == final["related_refs"]
+
+    repair_artifact = (
+        db_session.query(models.QueryArtifact)
+        .filter(models.QueryArtifact.artifact_id == final["repair_plan_ref"])
+        .one()
+    )
+    assert repair_artifact.kind == "repair_plan"
+    assert repair_artifact.message_id == final["message_id"]
+    assert "actions" in repair_artifact.content_json
+
+    trace_index = db_session.query(models.ObservabilityTraceIndex).one()
+    assert trace_index.metadata_json["repair_plan"]["repair_plan_ref"] == final["repair_plan_ref"]
+    assert trace_index.metadata_json["repair_plan"]["failure_class"] == "FIELD_NOT_FOUND"
+
+    state = db_session.get(models.ConversationState, "acceptance-repair-plan")
+    repair_facts = [
+        item for item in (state.facts or []) if isinstance(item, dict) and item.get("kind") == "repair_plan"
+    ]
+    assert repair_facts[-1]["repair_plan_ref"] == final["repair_plan_ref"]
+    assert repair_facts[-1]["failure_class"] == "FIELD_NOT_FOUND"
+    assert repair_facts[-1]["repair_status"] == "rerun_completed"
+
+
+def test_repair_plan_blocked_emits_repair_events_without_artifact_ref(
+    db_session, sample_dataset, monkeypatch
+):
+    """不可自动修复类仍应发 repair 评估事件，但不能伪造 RepairPlan artifact。"""
+
+    publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
+    monkeypatch.setattr(
+        "app.api.chat.get_settings",
+        lambda: Settings(MULTITURN_ENABLED=True, LANGFUSE_ENABLED=False),
+    )
+    monkeypatch.setattr(
+        "app.api.chat.build_lead_agent_context",
+        lambda *_args, **_kwargs: _lead_context(sample_dataset),
+    )
+    monkeypatch.setattr(
+        "app.api.chat.route_query_intent",
+        lambda *_args, **_kwargs: {
+            "intent": "query",
+            "entities": {"fields": ["工作日志"]},
+            "entry_intent": "detail_query",
+            "entry_route": "query_graph",
+            "entry_reason": "repair_plan_blocked",
+            "route_payload": {"kind": "detail_query"},
+        },
+    )
+    monkeypatch.setattr("app.api.chat.build_workflow", lambda _db: object())
+    monkeypatch.setattr("app.api.chat.DatasetSubAgent", _RepairPlanBlockedSubAgent)
+
+    events = _collect_stream_events(
+        {
+            "question": "查询杨凯 2024 年工作日志",
+            "dataset_id": sample_dataset.id,
+            "session_id": "acceptance-repair-plan-blocked",
+        },
+        db_session,
+    )
+
+    final = [event for event in events if event.get("type") == "final"][-1]
+    repair_event_types = [
+        event["event_envelope"]["event_type"]
+        for event in events
+        if event.get("event_envelope", {}).get("event_type", "").startswith("repair.")
+    ]
+    assert repair_event_types == ["repair.evaluated", "repair.blocked"]
+    assert final["repair_status"] == "blocked"
+    assert final["repair_failure_class"] == "FIELD_NOT_FOUND"
+    assert final["repair_plan_ref"] is None
+    assert not any(ref.get("ref_type") == "repair_plan" for ref in final["related_refs"])
+    assert (
+        db_session.query(models.QueryArtifact)
+        .filter(models.QueryArtifact.kind == "repair_plan")
+        .count()
+        == 0
+    )
 
 
 def test_low_confidence_candidate_confirmation_records_clarification_without_artifacts(

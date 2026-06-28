@@ -107,7 +107,7 @@ function formatStepAsReasoning(step) {
   } else if (step.node === 'dsl_validate') {
     detail = 'DSL 校验通过';
   } else if (step.node === 'dsl_compiler') {
-    detail = step.sql ? `已生成：${step.sql.slice(0, 60)}${step.sql.length > 60 ? '…' : ''}` : '编译完成';
+    detail = '查询语句已生成并进入执行校验';
   } else if (step.node === 'sql_execute') {
     const rows = step.rows ?? 0;
     detail = `返回 ${rows} 行${step.columns?.length ? ' · ' + step.columns.length + ' 列' : ''}`;
@@ -143,12 +143,31 @@ function sqlResultFromTrace(traces) {
   };
 }
 
+const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
+  'sql',
+  'raw_sql',
+  'direct_sql',
+  'llm_sql',
+  'compiled_sql',
+  'sql_list',
+]);
+
+function sanitizeUserVisibleTrace(value) {
+  if (Array.isArray(value)) return value.map(sanitizeUserVisibleTrace);
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (USER_VISIBLE_TRACE_FORBIDDEN_KEYS.has(key)) continue;
+    out[key] = sanitizeUserVisibleTrace(item);
+  }
+  return out;
+}
+
 export function buildHistoryMessageCustom(message, traces = []) {
   const metadata = message?.response_metadata || {};
-  const compilerStep = lastTraceByNode(traces, 'dsl_compiler');
-
+  const safeTraces = sanitizeUserVisibleTrace(traces);
   return {
-    sql: metadata.sql || compilerStep?.sql || null,
+    sql: null,
     sqlResult: metadata.sql_result || metadata.sqlResult || sqlResultFromTrace(traces),
     sqlDiagnosis: metadata.sql_diagnosis || null,
     sqlAuditResult: metadata.sql_audit_result || null,
@@ -190,7 +209,7 @@ export function buildHistoryMessageCustom(message, traces = []) {
     langfuseTraceId: metadata.langfuse?.trace_id || null,
     langfuseSessionId: metadata.langfuse?.session_id || null,
     observability: metadata.observability || metadata.langfuse || null,
-    stepTrace: traces,
+    stepTrace: safeTraces,
     feedback: metadata.feedback || null,
   };
 }

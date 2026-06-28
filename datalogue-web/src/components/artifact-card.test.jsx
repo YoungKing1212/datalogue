@@ -195,6 +195,34 @@ describe('ArtifactCard', () => {
     expect(screen.getByText('ready')).toBeInTheDocument();
   });
 
+  it('renders repair_plan related ref and hides patch/raw SQL preview details', () => {
+    render(
+      <ArtifactCard
+        artifact={{
+          title: 'BI 查询结果',
+          status: 'ready',
+          summary: '已自动修复并完成查询',
+          primary_ref: { ref_id: 'artifact:result-1', ref_type: 'result' },
+          related_refs: [
+            { ref_id: 'artifact:repair-1', ref_type: 'repair_plan', label: 'RepairPlan' },
+          ],
+          preview_payload: {
+            status_label: 'ready',
+            patch: { field: 'bad_col' },
+            raw_sql: 'select bad_col from work_log',
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('artifact:repair-1')).toBeInTheDocument();
+    expect(screen.getByText('status_label')).toBeInTheDocument();
+    expect(screen.getByText('ready')).toBeInTheDocument();
+    expect(screen.queryByText(/bad_col/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/select/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('raw_sql')).not.toBeInTheDocument();
+  });
+
   it('accepts action_id and payload_ref aliases for retry', () => {
     const listener = vi.fn();
     window.addEventListener('datalogue:artifact-action', listener);

@@ -191,11 +191,56 @@ class TestSqlAuditNode:
         assert result["sql_retry_trace"][0]["original_sql"] == state["sql"]
         assert result["sql_retry_trace"][0]["status"] == "pending"
         assert "apply_time" in result["sql_retry_trace"][0]["repair_reason"]
+        assert result["repair_plan"]["schema_version"] == "repair_plan.v1"
+        assert result["repair_plan"]["failure_class"] == "FIELD_NOT_FOUND"
+        assert result["repair_plan"]["status"] == "plan_created"
+        assert result["repair_status"] == "plan_created"
+        assert result["repair_attempts"] == 1
+        assert result["repair_requires_user_confirmation"] is False
+        assert result["repair_plan"]["actions"][0]["action_type"] == "replace_field"
+        assert "select" not in json.dumps(result["repair_plan"], ensure_ascii=False).lower()
         # error 字段被改写为诊断友好文本
         assert "SQL 执行失败诊断" in result["error"]
         assert "time_range.field" in result["error"]
         # token_usage 累加
         assert result["token_usage"]["total_tokens"] == 300
+
+    def test_repair_plan_validation_failure_blocks_workflow_retry(self, monkeypatch):
+        from app.graph.nodes import sql_audit_node
+        from app.graph.workflow import _sql_audit_router
+        from app.services.repair_plan import RepairPlanValidationError
+
+        llm_response = _mock_llm_response(
+            json.dumps(
+                {
+                    "root_cause": "time_range.field 错填 DDL 列名",
+                    "wrong_field": "create_date",
+                    "suggested_fix": "应改用指标'退款金额'的 time_field 'apply_time'",
+                    "severity": "fixable",
+                },
+                ensure_ascii=False,
+            )
+        )
+        _patch_get_llm(monkeypatch, llm_response)
+        _patch_fetch_sample_rows(monkeypatch)
+
+        def _reject_plan(**kwargs):
+            raise RepairPlanValidationError("attempt limit exceeded")
+
+        monkeypatch.setattr("app.graph.nodes.build_repair_plan_from_diagnosis", _reject_plan)
+
+        db = MagicMock()
+        db.get.return_value = None
+        db.query.return_value.filter.return_value.first.return_value = None
+
+        result = sql_audit_node(db)(_make_state())
+
+        assert result["should_retry"] is False
+        assert result["sql_audit_result"]["retryable"] is False
+        assert result["sql_audit_result"]["retry_decision"]["will_retry"] is False
+        assert result["repair_status"] == "blocked"
+        assert result["sql_retry_trace"] == []
+        assert _sql_audit_router(result) == "end"
 
     # ── 测试 2: architectural → should_retry=False ─────────
 
@@ -233,6 +278,8 @@ class TestSqlAuditNode:
         assert result["sql_audit_result"]["code"] == "FIELD_NOT_FOUND"
         assert result["should_retry"] is False
         assert result["sql_retry_trace"] == []
+        assert "repair_plan" not in result
+        assert result["repair_status"] == "blocked"
         assert "SQL 执行失败诊断" in result["error"]
         assert "语义层" in result["error"]
 

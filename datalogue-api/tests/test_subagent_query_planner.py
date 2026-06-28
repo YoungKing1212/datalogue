@@ -223,6 +223,33 @@ def test_dataset10_log_detail_uses_template_plan():
     assert "LIMIT 10" in plan.debug["sql_template"]
 
 
+def test_plan_query_short_circuits_dataset10_template_plan(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.subagent_planning.planner.get_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("template plan should not call LLM")),
+    )
+
+    plan = plan_query(
+        db=None,
+        question="查询杨凯 2024 年工作日志",
+        routing={
+            "dataset_id": 10,
+            "time_context": {
+                "detected_time_range": {
+                    "start_date": "2024-01-01",
+                    "end_date": "2024-12-31",
+                }
+            },
+        },
+        candidate_assets=[_blueprint(), _daily_field("rzrq"), _daily_table(), _person_table()],
+    )
+
+    assert plan.planner_source == "template"
+    assert plan.execution_strategy == "query_graph"
+    assert plan.debug["template_name"] == "dataset10_log_detail"
+    assert "ep.person_name = '杨凯'" in plan.debug["sql_template"]
+
+
 def test_dataset10_log_detail_template_filters_person_name():
     plan = build_rule_based_query_plan(
         "我想看姓名为杨凯的日志",

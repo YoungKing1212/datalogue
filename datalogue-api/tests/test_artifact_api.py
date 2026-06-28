@@ -114,3 +114,56 @@ def test_artifact_store_attach_message_id(db_session, sample_dataset):
     assert updated == 1
     artifact = store.get(ref)
     assert artifact.message_id == 987
+
+
+def test_get_repair_plan_artifact_returns_sanitized_summary(client, db_session, sample_dataset):
+    ref = ArtifactStore(db_session).put_json(
+        kind="repair_plan",
+        payload={
+            "schema_version": "repair_plan.v1",
+            "failure_class": "FIELD_NOT_FOUND",
+            "status": "plan_created",
+            "business_summary": "字段口径不匹配，已生成自动修复方案。",
+            "attempts": 1,
+            "requires_user_confirmation": False,
+            "repair_plan_ref": "artifact:repair-1",
+            "checkpoint_ref": "checkpoint://conv-1-msg-2/repair",
+            "trace_ref": "trace:trace-1",
+            "actions": [
+                {
+                    "action_type": "replace_field",
+                    "target": {"table": "work_log", "field": "bad_col"},
+                    "replacement": {"table": "work_log", "field": "work_date"},
+                }
+            ],
+            "raw_sql": "select bad_col from work_log",
+            "raw_result": {"rows": []},
+            "schema": {"tables": ["work_log"]},
+        },
+        dataset_id=sample_dataset.id,
+        conversation_id=123,
+        trace_id="trace-1",
+    )
+
+    response = client.get(f"/api/artifacts/{ref}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["kind"] == "repair_plan"
+    assert payload["content_json"] == {
+        "schema_version": "repair_plan.v1",
+        "failure_class": "FIELD_NOT_FOUND",
+        "status": "plan_created",
+        "business_summary": "字段口径不匹配，已生成自动修复方案。",
+        "attempts": 1,
+        "requires_user_confirmation": False,
+        "repair_plan_ref": "artifact:repair-1",
+        "checkpoint_ref": "checkpoint://conv-1-msg-2/repair",
+        "trace_ref": "trace:trace-1",
+    }
+    rendered = str(payload).lower()
+    assert "bad_col" not in rendered
+    assert "work_log" not in rendered
+    assert "raw_sql" not in rendered
+    assert "raw_result" not in rendered
+    assert "actions" not in rendered

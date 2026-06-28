@@ -41,6 +41,15 @@ export function shouldSwitchToRouteThread(routeId, mainThreadId, remoteId) {
   return true;
 }
 
+export function resolveUrlSyncTarget({ routeId, remoteId, mainThreadChanged, hasObservedThread }) {
+  if (!remoteId) return null;
+  if (String(remoteId) === String(routeId)) return null;
+  if (routeId && !hasObservedThread) return null; // 首次深链加载时，URL 是权威输入，等待 RouteThreadSync 完成。
+  if (routeId && !mainThreadChanged) return null; // 路由刚变化但 runtime 仍是旧会话时，避免把地址栏回滚。
+  if (mainThreadChanged) return `/chat/${remoteId}`;
+  return null;
+}
+
 /**
  * 在 runtime context 内部：URL 正向同步
  * 直接打开 /chat/:id 时，assistant-ui 的首帧本地草稿可能还没有 remoteId，
@@ -84,6 +93,7 @@ function RouteThreadSync({ routeId }) {
  */
 function UrlSync({ routeId }) {
   const navigate = useNavigate();
+  const previousMainThreadIdRef = useRef(null);
   const mainThreadId = useAuiState((s) => s.threads?.mainThreadId);
   const remoteId = useAuiState((s) => {
     const id = s.threads?.mainThreadId;
@@ -92,12 +102,17 @@ function UrlSync({ routeId }) {
   });
 
   useEffect(() => {
-    if (remoteId && String(remoteId) !== String(routeId)) {
-      navigate(`/chat/${remoteId}`, { replace: true });
-    } else if (!remoteId && routeId) {
-      // 当前 thread 没有 remoteId（new thread 未初始化）且路由有 id，保持 URL
-      // 不处理：等用户发消息触发 initialize 后再同步
-    }
+    const previousMainThreadId = previousMainThreadIdRef.current;
+    const hasObservedThread = previousMainThreadId != null;
+    const mainThreadChanged = previousMainThreadId !== mainThreadId;
+    previousMainThreadIdRef.current = mainThreadId;
+    const target = resolveUrlSyncTarget({
+      routeId,
+      remoteId,
+      mainThreadChanged,
+      hasObservedThread,
+    });
+    if (target) navigate(target, { replace: true }); // 只有 runtime 主线程真实变更时，才反向同步 URL。
   }, [remoteId, routeId, navigate, mainThreadId]);
 
   return null;
@@ -226,7 +241,7 @@ function ComposerTextSetter({ register }) {
 /**
  * ChatPage 内部主体（在 AssistantRuntimeProvider 之内）
  */
-function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSql, agentVerbosity }) {
+function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentVerbosity }) {
   const [selectedDs, setSelectedDs] = useState(null);
   const [datasetList, setDatasetList] = useState([]);
 
@@ -235,7 +250,6 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
   const [intent, setIntent] = useState(null);
   const [metricResolution, setMetricResolution] = useState(null);
   const [generationMode, setGenerationMode] = useState(null);
-  const [sqlText, setSqlText] = useState('');
   const [sqlResult, setSqlResult] = useState(null);
   const [traceMeta, setTraceMeta] = useState(null);
 
@@ -371,9 +385,6 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
         if (ev.node === 'dsl_generate' && ev.status === 'done') {
           setGenerationMode(ev.generation_mode || null);
         }
-        if (ev.node === 'dsl_compiler' && ev.status === 'done') {
-          setSqlText(ev.sql || '');
-        }
         if (ev.node === 'sql_execute' && ev.status === 'done') {
           setSqlResult({
             rows: ev.rows,
@@ -390,7 +401,6 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
           messageId: ev.message_id || null,
           observability: ev.observability || null,
         });
-        if (ev.sql) setSqlText(ev.sql);
         if (ev.sql_result) {
           setSqlResult({
             rows: ev.sql_result.rows,
@@ -412,7 +422,6 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
     setIntent(null);
     setMetricResolution(null);
     setGenerationMode(null);
-    setSqlText('');
     setSqlResult(null);
     setTraceMeta(null);
   }, [mainThreadId]);
@@ -424,7 +433,6 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
       setIntent(null);
       setMetricResolution(null);
       setGenerationMode(null);
-      setSqlText('');
       setSqlResult(null);
       setTraceMeta(null);
     };
@@ -453,9 +461,9 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
   }, [aui]);
 
   const traceContextValue = useMemo(
-    () => ({ traceSteps, showSql, showFollowups, agentVerbosity }),
+    () => ({ traceSteps, showFollowups, agentVerbosity }),
     // traceSteps 仅供 AgentPanel 展示；AIMessage 自身从 message.content 读 reasoning
-    [traceSteps, showSql, showFollowups, agentVerbosity],
+    [traceSteps, showFollowups, agentVerbosity],
   );
 
   return (
@@ -494,7 +502,6 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
           intent={intent}
           metricResolution={metricResolution}
           generationMode={generationMode}
-          sql={sqlText}
           sqlResult={sqlResult}
           traceMeta={traceMeta}
         />
@@ -506,7 +513,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, showSq
 /**
  * ChatPage —— /chat 与 /chat/:id 的入口组件
  */
-export function ChatPage({ traceOpen, setTraceOpen, showFollowups, showSql, agentVerbosity }) {
+export function ChatPage({ traceOpen, setTraceOpen, showFollowups, agentVerbosity }) {
   const { id: routeId } = useParams();
 
   // datasetId 共享 ref：ChatPage 维护 selectedDs，通过 ref 传给 chat adapter
@@ -530,7 +537,6 @@ export function ChatPage({ traceOpen, setTraceOpen, showFollowups, showSql, agen
         traceOpen={traceOpen}
         setTraceOpen={setTraceOpen}
         showFollowups={showFollowups}
-        showSql={showSql}
         agentVerbosity={agentVerbosity}
       />
     </AssistantRuntimeProvider>

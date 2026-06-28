@@ -17,12 +17,24 @@ import { Icon } from '../components/icons';
  * - active 状态：当前主 thread → 高亮
  */
 function ThreadListItem() {
+  const navigate = useNavigate();
   const isActive = useAuiState(
     (s) => s.threads?.mainThreadId === s.threadListItem?.id,
   );
+  const remoteId = useAuiState((s) => s.threadListItem?.remoteId);
+  const title = useAuiState((s) => s.threadListItem?.title);
+  const onClick = () => {
+    if (!remoteId) return;
+    navigate(`/chat/${remoteId}`); // 点击历史会话时同步地址栏，避免消息区已切换但深链仍停在旧会话。
+  };
   return (
     <ThreadListItemPrimitive.Root className={`thread-list-item ${isActive ? 'active' : ''}`}>
-      <ThreadListItemPrimitive.Trigger className="thread-list-item-trigger">
+      <ThreadListItemPrimitive.Trigger
+        className="thread-list-item-trigger"
+        data-conversation-id={remoteId}
+        aria-label={remoteId ? `${title || '新对话'}，会话 ${remoteId}` : undefined}
+        onClick={onClick}
+      >
         <Icon name="chat" style={{ width: 13, height: 13, color: 'var(--text-3)' }} />
         <ThreadListItemPrimitive.Title fallback="新对话" />
       </ThreadListItemPrimitive.Trigger>

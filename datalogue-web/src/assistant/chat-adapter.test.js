@@ -81,6 +81,12 @@ describe('chat-adapter C-ready metadata', () => {
       },
       {
         type: 'step',
+        node: 'dsl_compiler',
+        status: 'done',
+        sql: 'SELECT secret_col FROM hidden_table',
+      },
+      {
+        type: 'step',
         node: 'sql_execute',
         status: 'done',
         rows: 2,
@@ -125,7 +131,8 @@ describe('chat-adapter C-ready metadata', () => {
       title: '查询结果',
       primary_ref: 'artifact:result:42',
     });
-    expect(finalChunk.metadata.custom.stepTrace).toHaveLength(2);
+    expect(finalChunk.metadata.custom.stepTrace).toHaveLength(3);
+    expect(JSON.stringify(finalChunk.content)).not.toMatch(/SELECT|secret_col|hidden_table/i);
   });
 
   it('maps final SSE observability and artifact refs into page metadata', async () => {
@@ -166,6 +173,7 @@ describe('chat-adapter C-ready metadata', () => {
     expect(final.metadata.custom.langfuseTraceId).toBe('trace-1');
     expect(final.metadata.custom.observability).toEqual({ trace_id: 'trace-1', session_id: 'session-1' });
     expect(final.metadata.custom.stepTrace).toHaveLength(1);
+    expect(final.metadata.custom.sql).toBeNull();
     expect(final.metadata.custom.sqlResult).toBeNull();
   });
 
@@ -240,5 +248,86 @@ describe('chat-adapter C-ready metadata', () => {
     expect(custom.reportRef).toBeNull();
     expect(custom.subagentToolResults).toBeNull();
     expect(custom.langfuseTraceId).toBe('trace-old');
+  });
+
+  it('does not restore raw SQL into history message custom metadata', () => {
+    const custom = buildHistoryMessageCustom({
+      id: 100,
+      response_metadata: {
+        sql: 'SELECT secret_col FROM hidden_table',
+      },
+    }, [
+      {
+        node: 'dsl_compiler',
+        status: 'done',
+        sql: 'SELECT other_secret FROM other_hidden_table',
+      },
+    ]);
+
+    expect(custom.sql).toBeNull();
+    expect(JSON.stringify(custom)).not.toMatch(/SELECT|secret_col|hidden_table|other_secret/i);
+  });
+
+  it('maps repair event envelopes into business-level metadata without leaking patch details', async () => {
+    streamChatEvents.mockReturnValue(events([
+      {
+        type: 'repair',
+        event_envelope: {
+          event_type: 'repair.plan_created',
+          visibility: 'user_visible',
+          payload: {
+            summary: '字段口径不匹配，已生成自动修复方案。',
+            status: 'plan_created',
+            repair_plan_ref: 'artifact:repair-1',
+            checkpoint_ref: 'checkpoint://conv-1-msg-2/repair',
+            patch: { field: 'bad_col' },
+            raw_sql: 'select bad_col from work_log',
+          },
+        },
+      },
+      {
+        type: 'repair',
+        event_envelope: {
+          event_type: 'repair.rerun_completed',
+          visibility: 'user_visible',
+          payload: {
+            summary: '字段口径不匹配，已生成自动修复方案。',
+            status: 'rerun_completed',
+            repair_plan_ref: 'artifact:repair-1',
+          },
+        },
+      },
+      {
+        type: 'final',
+        answer: '杨凯 2024 年共有 2 条工作日志。',
+        conversation_id: 42,
+        message_id: 99,
+        result_ref: 'artifact:result-1',
+        repair_plan_ref: 'artifact:repair-1',
+        repair_status: 'rerun_completed',
+        repair_failure_class: 'FIELD_NOT_FOUND',
+        repair_plan: {
+          business_summary: '字段口径不匹配，已生成自动修复方案。',
+          repair_plan_ref: 'artifact:repair-1',
+          patch: { field: 'bad_col' },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯 2024 年工作日志' }));
+    const custom = chunks.at(-1).metadata.custom;
+
+    expect(custom.repairPlan).toMatchObject({
+      summary: '字段口径不匹配，已生成自动修复方案。',
+      status: 'rerun_completed',
+      repairPlanRef: 'artifact:repair-1',
+      failureClass: 'FIELD_NOT_FOUND',
+    });
+    expect(custom.repairTimeline.map((item) => item.eventType)).toEqual([
+      'repair.plan_created',
+      'repair.rerun_completed',
+    ]);
+    expect(JSON.stringify(custom.repairPlan)).not.toMatch(/bad_col|work_log|select/i);
   });
 });

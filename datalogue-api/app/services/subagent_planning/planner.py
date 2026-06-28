@@ -582,6 +582,24 @@ def _extract_dataset10_log_filter_value(question: str, names: tuple[str, ...]) -
     return value or None
 
 
+def _extract_dataset10_log_person_name(question: str) -> str | None:
+    """从“查询杨凯 2024 年工作日志”这类自然问法中提取人员姓名。"""
+    text = str(question or "")
+    placeholders = {"某人", "某员工", "员工", "用户", "人员"}
+    patterns = (
+        r"(?:查询|查看|看下|看一下|帮我查一下)?\s*([\u4e00-\u9fff]{2,4})\s*(?:20\d{2}\s*年|今年|去年|本年|最近|本月|上月)?\s*(?:的)?\s*(?:工作日志|日志|日报)",
+        r"(?:工作日志|日志|日报).*?(?:人员|员工|姓名|名字)\s*(?:为|是|=|等于|叫)\s*([\u4e00-\u9fff]{2,4})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        person_name = match.group(1).strip()
+        if person_name and person_name not in placeholders:
+            return person_name
+    return None
+
+
 def _dataset10_log_time_filters(question: str, routing: Any) -> list[str]:
     """数据集 10 日志模板的时间过滤，优先使用 LeadAgent 抽象时间槽位。"""
 
@@ -639,6 +657,10 @@ def _dataset10_log_filters(
         )
         if person_name and not person_slot:
             filters.append(f"ep.person_name = {_sql_string_literal(person_name)}")
+        elif not person_slot:
+            inferred_person_name = _extract_dataset10_log_person_name(question)
+            if inferred_person_name:
+                filters.append(f"ep.person_name = {_sql_string_literal(inferred_person_name)}")
     dept_name = _extract_dataset10_log_filter_value(question, ("部门", "部门名称"))
     if dept_name and not dept_slot:
         filters.append(f"d.dept_name = {_sql_string_literal(dept_name)}")
@@ -1493,6 +1515,19 @@ def parse_asset_detail_requests(payload: Any) -> list[AssetDetailRequest]:
     return parsed
 
 
+def _required_input_value_present(item: dict[str, Any]) -> bool:
+    """判断 required_inputs 是否已携带可执行值；只缺值时才让蓝图执行转澄清。"""
+    if not isinstance(item, dict):
+        return False
+    if item.get("required") is False:
+        return True
+    for field in ("value", "input_value", "selected_value", "default", "default_value"):
+        value = item.get(field)
+        if value not in (None, "", [], {}):
+            return True
+    return False
+
+
 def _validate_hard_rules(
     plan: QueryPlan,
     *,
@@ -1500,8 +1535,10 @@ def _validate_hard_rules(
     candidate_assets: CandidateAssetInput,
 ) -> None:
     del question
-    if plan.execution_strategy == "blueprint_execute" and plan.required_inputs:
-        raise QueryPlanValidationError("blueprint_execute cannot include required_inputs")
+    if plan.execution_strategy == "blueprint_execute" and any(
+        not _required_input_value_present(item) for item in plan.required_inputs
+    ):
+        raise QueryPlanValidationError("blueprint_execute cannot include missing required_inputs")
     if plan.execution_strategy == "blueprint_as_reference" and not plan.reference_assets:
         raise QueryPlanValidationError("blueprint_as_reference requires reference_assets")
     if plan.execution_strategy == "reject" and not str(plan.explanation.get("summary") or "").strip():
@@ -1593,10 +1630,11 @@ def plan_query(
         candidate_assets=candidate_assets,
     )
     if (
-        deterministic_plan.planner_source == "deterministic"
+        deterministic_plan.planner_source in {"deterministic", "template"}
         and deterministic_plan.query_type == "detail_query"
         and deterministic_plan.execution_strategy == "query_graph"
     ):
+        # 可信规则模板已带受控 SQL 旁路信息，继续交给 LLM 会把计划扩散成宽字段 QueryGraph。
         return deterministic_plan
 
     messages = [

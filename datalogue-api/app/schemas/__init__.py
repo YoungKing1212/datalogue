@@ -89,6 +89,7 @@ from .bi_workbench import (
     sanitize_event_payload,
     validate_event_visibility,
 )
+from .repair_plan import RepairAction, RepairFailureClass, RepairPlan, RepairStatus
 from .capsule import CapsuleMeta, QueryContext, ResultDigest, SubAgentCapsule
 from .llm import (
     LLMModelConfigCreate,
@@ -177,6 +178,10 @@ __all__ = [
     "build_datalogue_event_envelope",
     "sanitize_event_payload",
     "validate_event_visibility",
+    "RepairAction",
+    "RepairFailureClass",
+    "RepairPlan",
+    "RepairStatus",
     "LLMModelConfigCreate",
     "LLMModelConfigUpdate",
     "LLMModelConfigOut",

@@ -98,6 +98,30 @@ def test_normalize_query_plan_accepts_wrapped_asset_lists():
     assert plan.reference_assets[0].usage == "reference"
 
 
+def test_normalize_query_plan_accepts_template_reference_usage_alias():
+    raw = {
+        "query_type": "detail_query",
+        "execution_strategy": "blueprint_as_reference",
+        "confidence": 0.9,
+        "reference_assets": [
+            {
+                "asset_type": "blueprint",
+                "asset_id": 1,
+                "name": "个人计划任务日报查询",
+                "source": "analysis_blueprint",
+                "confidence": 0.99,
+                "usage": "template_reference",
+            }
+        ],
+        "planner_source": "llm",
+        "explanation": {"summary": "蓝图只作为模板参考。"},
+    }
+
+    plan = normalize_query_plan(raw)
+
+    assert plan.reference_assets[0].usage == "reference"
+
+
 def test_normalize_query_plan_rejects_malformed_asset_wrapper():
     raw = {
         "query_type": "detail_query",

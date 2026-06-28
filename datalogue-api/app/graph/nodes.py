@@ -41,6 +41,11 @@ from app.prompts.sql_audit import SQL_AUDIT_SYSTEM
 from app.prompts.report_generate import build_report_system
 from app.services.observability.prompts import get_prompt_manager
 from app.services.observability.tracer import get_observability_tracer
+from app.services.repair_plan import (
+    RepairPlanValidationError,
+    build_repair_plan_from_diagnosis,
+    classify_sql_failure,
+)
 from app.models.dataset import (
     AnalysisBlueprint,
     BusinessTerm,
@@ -1575,6 +1580,19 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
     retry_count = state.get("retry_count", 0)
     error = state.get("error")
     query_constraints = normalize_query_constraints(state.get("query_constraints"))
+    template_sql = _template_sql_from_query_plan(state.get("query_plan"))
+    if template_sql:
+        logger.info("DSL生成命中模板旁路: template_sql_len=%s", len(template_sql))
+        return {
+            "dsl": {"direct_sql": template_sql, "template": True},
+            "sql": template_sql,
+            "sql_list": [template_sql],
+            "generation_mode": "template",
+            "error": None,
+            "should_retry": False,
+            "llm_skipped_reason": "query_plan_template_sql",
+            "token_usage": state.get("token_usage"),
+        }
     query_plan_compilation = state.get("query_plan_compilation")
     if isinstance(query_plan_compilation, dict) and query_plan_compilation.get("ok"):
         sql = query_plan_compilation.get("sql")
@@ -1618,20 +1636,6 @@ def dsl_generate_node(state: AgentState, db: Session | None = None) -> Dict[str,
         dsl_limit_example = "null"
         semantic_time_rule = "3. 时间范围只在用户明确提出时设置，不要自行添加默认时间范围\n"
         semantic_limit_rule = "5. 用户明确要求返回条数时再设置 limit；否则可以省略或设为 null\n"
-
-    template_sql = _template_sql_from_query_plan(state.get("query_plan"))
-    if template_sql:
-        logger.info("DSL生成命中模板旁路: template_sql_len=%s", len(template_sql))
-        return {
-            "dsl": {"direct_sql": template_sql, "template": True},
-            "sql": template_sql,
-            "sql_list": [template_sql],
-            "generation_mode": "template",
-            "error": None,
-            "should_retry": False,
-            "llm_skipped_reason": "query_plan_template_sql",
-            "token_usage": state.get("token_usage"),
-        }
 
     llm = get_llm(temperature=0.1, role="dsl", db=db)
 
@@ -2927,17 +2931,48 @@ def sql_audit_node(db: Session):
 
         friendly_error = _format_sql_diagnosis_error(diagnosis, original_error)
         retry_trace = _sql_retry_trace(state)
-        if will_retry:
-            retry_trace = _start_sql_retry_trace(
-                state,
-                diagnosis,
-                original_error=original_error,
-            )
-        elif retryable:
+        if retryable and not will_retry:
             friendly_error = (
                 f"{friendly_error}。已达到自动修复重试上限（{max_retry} 次），"
                 "无法继续安全重试。"
             )
+        repair_output: dict[str, Any] = {
+            "repair_status": "failed" if retryable else "blocked",
+            "repair_failure_class": classify_sql_failure(original_error),
+            "repair_attempts": retry_count,
+            "repair_requires_user_confirmation": False,
+        }
+        if will_retry:
+            try:
+                repair_plan = build_repair_plan_from_diagnosis(
+                    dataset_id=int(dataset_id or 0),
+                    failure_class=classify_sql_failure(original_error),
+                    diagnosis=diagnosis,
+                    attempt_count=retry_count,
+                )
+                repair_output.update(
+                    {
+                        "repair_plan": repair_plan.model_dump(mode="json"),
+                        "repair_status": "plan_created",
+                        "repair_failure_class": repair_plan.failure_class,
+                        "repair_attempts": repair_plan.attempts,
+                        "repair_requires_user_confirmation": repair_plan.requires_user_confirmation,
+                    }
+                )
+            except (RepairPlanValidationError, ValueError) as exc:
+                logger.warning("RepairPlan 生成或校验失败，终止自动重跑: %s", exc)
+                will_retry = False
+                diagnosis["retryable"] = False  # RepairPlan 是 C1 自动修复门禁，校验失败必须同步阻断 router。
+                diagnosis["retry_decision"]["will_retry"] = False
+                diagnosis["retry_decision"]["reason"] = "RepairPlan 未通过工具校验，终止重跑"
+                repair_output["repair_status"] = "blocked"
+        if will_retry:
+            retry_trace = _start_sql_retry_trace(  # 只有 RepairPlan 通过后才登记待重跑，避免留下伪 pending。
+                state,
+                diagnosis,
+                original_error=original_error,
+            )
+        audit = dict(diagnosis)  # 返回给 LangGraph router 的审计结果必须反映 RepairPlan 门禁后的最终决策。
 
         return {
             "sql_audit_result": audit,
@@ -2946,6 +2981,7 @@ def sql_audit_node(db: Session):
             "error": friendly_error,
             "sql_retry_trace": retry_trace,
             "token_usage": merged,
+            **repair_output,
         }
 
     return _node

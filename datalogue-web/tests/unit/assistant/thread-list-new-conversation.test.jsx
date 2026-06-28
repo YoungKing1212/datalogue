@@ -10,6 +10,7 @@ const assistantUiMocks = vi.hoisted(() => {
       mainThreadId: null,
       newThreadId: null,
     },
+    threadListItem: null,
   };
   return {
     state,
@@ -26,12 +27,21 @@ vi.mock('react-router-dom', () => ({
 vi.mock('@assistant-ui/react', () => ({
   ThreadListPrimitive: {
     Root: ({ children, className }) => <div className={className}>{children}</div>,
-    Items: ({ archived }) => (archived ? null : <div data-testid="persisted-thread-items" />),
+    Items: ({ archived, components }) => {
+      if (archived) return null;
+      const ThreadListItem = components?.ThreadListItem;
+      assistantUiMocks.state.threadListItem = {
+        id: 'conversation-1',
+        remoteId: '1',
+        title: '查询杨凯2025年的工作日志',
+      };
+      return ThreadListItem ? <ThreadListItem /> : <div data-testid="persisted-thread-items" />;
+    },
   },
   ThreadListItemPrimitive: {
     Root: ({ children, className }) => <div className={className}>{children}</div>,
-    Trigger: ({ children, className }) => <button type="button" className={className}>{children}</button>,
-    Title: ({ fallback }) => <span>{fallback}</span>,
+    Trigger: ({ children, className, ...props }) => <button type="button" className={className} {...props}>{children}</button>,
+    Title: ({ fallback }) => <span>{assistantUiMocks.state.threadListItem?.title || fallback}</span>,
     Delete: ({ children, className, ...props }) => <button type="button" className={className} {...props}>{children}</button>,
   },
   useAui: () => ({
@@ -112,5 +122,20 @@ describe('ThreadList draft item', () => {
     await waitFor(() => {
       expect(navigateMock).toHaveBeenCalledWith('/chat');
     });
+  });
+
+  it('点击历史会话时同步 URL 到对应 remoteId', async () => {
+    navigateMock.mockClear();
+    assistantUiMocks.state.threads.mainThreadId = 'conversation-25';
+    assistantUiMocks.state.threads.newThreadId = null;
+
+    render(<ThreadList />);
+
+    const persistedThread = screen.getByRole('button', { name: '查询杨凯2025年的工作日志，会话 1' });
+    expect(persistedThread).toHaveAttribute('data-conversation-id', '1');
+
+    fireEvent.click(persistedThread);
+
+    expect(navigateMock).toHaveBeenCalledWith('/chat/1');
   });
 });

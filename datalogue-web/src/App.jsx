@@ -24,8 +24,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "accent": "#3b82f6",
   "density": "regular",
   "agentVerbosity": "expanded",
-  "showFollowups": true,
-  "showSql": true
+  "showFollowups": true
 }/*EDITMODE-END*/;
 
 const ACCENT_OKLCH = {
@@ -146,8 +145,8 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
         <div className="content">
           <Routes>
             <Route path="/" element={<Workspace />} />
-            <Route path="/chat" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} showSql={t.showSql} agentVerbosity={t.agentVerbosity} />} />
-            <Route path="/chat/:id" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} showSql={t.showSql} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat/:id" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
             <Route path="/datasets" element={<DatasetsScreen />} />
             <Route path="/dashboard" element={<DashboardScreen />} />
             <Route path="/apis" element={<ApisScreen />} />
@@ -181,8 +180,6 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
           onChange={(v) => setTweak('agentVerbosity', v)} />
         <TweakToggle label="显示追问 chips" value={t.showFollowups}
           onChange={(v) => setTweak('showFollowups', v)} />
-        <TweakToggle label="显示生成的 SQL" value={t.showSql}
-          onChange={(v) => setTweak('showSql', v)} />
 
         <TweakSection label="调试" />
         <TweakButton label="打开发布接口 Drawer" onClick={() => setPublishOpen(true)} />

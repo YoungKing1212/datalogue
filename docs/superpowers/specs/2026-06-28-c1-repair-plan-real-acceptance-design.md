@@ -125,7 +125,7 @@ Tool 校验职责：
 确认卡双层展示：
 
 - 普通用户只看到业务级解释，例如“系统发现时间条件引用的数据口径不可用，建议改用工作日志日期口径继续查询”。
-- 开发 / 管理员详情可查看 `failure_class`、RepairPlan、字段级 patch、trace/ref 和 Tool 校验结果。
+- C1 不做开发 / 管理员详情 UI；字段级 patch、Tool 校验结果和内部定位只进入 Langfuse observation、后端日志和 trace-only metadata。
 
 用户确认时只提交：
 
@@ -225,7 +225,7 @@ C1 只使用现有 Chat Shell。
 - raw result。
 - RepairPlan patch 详情。
 
-开发 / 管理员详情能力先不做完整面板，但数据结构预留：
+开发 / 管理员详情能力 C1 不实现独立面板，只预留 trace-only / Langfuse / 后端日志数据：
 
 - `failure_class`。
 - `repair_plan_ref`。
@@ -248,7 +248,7 @@ C1 不新建 repair_plan 表，先复用 `conversation_state`、`query_artifact`
 ```json
 {
   "kind": "repair_plan",
-  "repair_plan_ref": "repair_plan:<uuid>",
+  "repair_plan_ref": "artifact:<uuid>",
   "failure_class": "FIELD_NOT_FOUND",
   "repair_status": "rerun_completed",
   "attempts": 1,
@@ -266,20 +266,22 @@ ArtifactCard `related_refs` 增加：
 读取边界：
 
 - 普通用户只读取业务级 repair summary。
-- 开发 / 管理员可通过受控详情能力查看 RepairPlan 摘要和 Tool 校验结果。
+- `repair_plan_ref` 使用现有 `artifact:<uuid>` 句柄，`ArtifactRef.ref_type="repair_plan"`，不引入 `repair_plan:<uuid>` 新前缀。
+- Artifact API 对 `kind="repair_plan"` 只返回脱敏 RepairPlan 摘要；字段级 patch、Tool 校验详情只保存在 Langfuse observation、后端日志和 trace-only metadata。
 - `repair_plan_ref` 读取必须 fail closed。
 - 不返回 raw SQL、raw result 或完整 schema。
 
 ## 11. Langfuse 要求
 
-C1 必须同步修复本地后端 `langfuse` SDK / observation。
+C1 必须同步修复本地后端 `langfuse` SDK / observation，并区分自动化和真实验收层级。
 
 完成标准：
 
-- 后端 Python 环境可导入 `langfuse` SDK。
+- 自动化测试覆盖 SDK 初始化或 mocked / no-op observation 写入路径。
 - 本地服务真实请求能写入 Langfuse trace / observation。
 - Langfuse UI 可通过同一 `trace_id` 查到链路。
 - RepairPlan 关键阶段作为 observation 或 metadata 可见。
+- 真实验收必须由手工或 Playwright 辅助核对 Langfuse UI，并写入验收记录。
 - 如果 SDK 不通或 UI 查不到 observation，C1 不算完成。
 
 ## 12. 验收问题

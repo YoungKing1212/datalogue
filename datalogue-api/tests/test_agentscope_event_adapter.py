@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from app.schemas.bi_workbench import DatalogueEventEnvelope
+from app.schemas.bi_workbench import DatalogueEventEnvelope, build_datalogue_event_envelope
 from app.services.agentscope_event_adapter import AgentScopeEventAdapter
 
 
@@ -66,3 +66,37 @@ def test_agentscope_event_adapter_accepts_dict_envelopes():
     )
 
     assert result.visible_events[0].event_type == "answer.completed"
+
+
+def test_agentscope_event_adapter_maps_repair_events_without_control_plane():
+    result = AgentScopeEventAdapter().map_events(
+        [
+            build_datalogue_event_envelope(
+                event_type="repair.rerun_started",
+                visibility="user_visible",
+                task_id="task-1",
+                trace_id="trace-1",
+                payload={
+                    "summary": "已生成自动修复方案，正在重新执行查询。",
+                    "repair_plan_ref": "artifact:repair-1",
+                    "checkpoint_ref": "checkpoint://conv-1-msg-2/repair",
+                    "raw_sql": "select bad_col from work_log",
+                    "patch": {"field": "bad_col"},
+                },
+            )
+        ]
+    )
+
+    assert len(result.visible_events) == 1
+    event = result.visible_events[0]
+    assert event.event_type == "repair.rerun_started"
+    assert event.channel == "shell_visible"
+    assert event.trace_id == "trace-1"
+    assert event.payload == {
+        "summary": "已生成自动修复方案，正在重新执行查询。",
+        "repair_plan_ref": "artifact:repair-1",
+        "checkpoint_ref": "checkpoint://conv-1-msg-2/repair",
+    }
+    rendered = result.model_dump_json()
+    assert "bad_col" not in rendered
+    assert "work_log" not in rendered

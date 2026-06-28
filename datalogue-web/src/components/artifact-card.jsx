@@ -101,6 +101,18 @@ function formatRef(ref) {
   return ref.ref || ref.artifact_ref || ref.ref_id || ref.artifactRef || '';
 }
 
+function isSafePreviewKey(key) {
+  const value = String(key || '').toLowerCase();
+  return !(
+    value === 'patch'
+    || value === 'schema'
+    || value === 'control_plane'
+    || value === 'raw_result'
+    || value === 'raw_sql'
+    || value.includes('sql')
+  );
+}
+
 function PreviewTable({ columns, rows, maxRows = 5 }) {
   const trimmedRows = useMemo(() => rows.slice(0, maxRows), [rows, maxRows]);
   const colKeys = useMemo(() => {
@@ -183,6 +195,7 @@ function PreviewBody({ previewPayload }) {
   }
 
   const entries = Object.entries(previewPayload || {})
+    .filter(([key]) => isSafePreviewKey(key))
     .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value));
   if (entries.length > 0) {
     return (

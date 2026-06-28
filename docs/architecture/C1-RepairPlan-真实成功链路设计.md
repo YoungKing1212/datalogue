@@ -31,7 +31,7 @@ RepairPlan 不是可执行 SQL。普通用户也不会看到字段、表、schem
 确认卡采用双层展示：
 
 - 普通用户只看到业务级解释。
-- 开发 / 管理员详情可查看 failure class、RepairPlan、字段级 patch、trace/ref 和 Tool 校验结果。
+- C1 不做开发 / 管理员详情 UI；failure class、字段级 patch、Tool 校验结果只进入 Langfuse observation、后端日志和 trace-only metadata。
 
 用户确认时只提交 `repair_plan_ref / checkpoint_ref / selected_action`，不提交字段、schema、SQL。
 
@@ -56,15 +56,17 @@ C1 不新增 repair_plan 表，先复用现有状态和引用体系：
 - `conversation_state.facts` 写入 `kind=repair_plan`、`repair_plan_ref`、`failure_class`、`repair_status`、`attempts`、`requires_user_confirmation`、`checkpoint_ref`。
 - ArtifactCard `related_refs` 增加 `repair_plan_ref`、`retry_checkpoint_ref`、`trace_ref`。
 - 历史回放只展示业务级 repair summary。
-- `repair_plan_ref` 读取必须 fail closed，不能返回 raw SQL、raw result 或完整 schema。
+- `repair_plan_ref` 使用现有 `artifact:<uuid>` 句柄，`ArtifactRef.ref_type="repair_plan"`，不引入 `repair_plan:<uuid>` 新前缀。
+- Artifact API 对 `kind="repair_plan"` 只返回脱敏 RepairPlan 摘要，不能返回 raw SQL、raw result、完整 schema 或字段级 patch 主体。
 
 ## Langfuse 验收
 
-C1 必须修复本地后端 `langfuse` SDK / observation：
+C1 必须修复本地后端 `langfuse` SDK / observation，并区分自动化和真实验收：
 
-- 后端能导入并初始化 `langfuse` SDK。
+- 自动化测试覆盖 SDK 初始化或 mocked / no-op observation 写入路径。
 - 真实请求能写入 Langfuse trace / observation。
 - Langfuse UI 能用同一 `trace_id` 找到 RepairPlan 相关链路。
+- 真实验收必须手工或 Playwright 辅助核对 Langfuse UI，并写入验收记录。
 
 如果 Langfuse observation 不通，C1 不能标为完成。
 
