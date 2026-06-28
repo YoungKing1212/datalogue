@@ -139,4 +139,21 @@ describe('TaskTimeline', () => {
 
     expect(labels).toEqual(['任务理解', '数据集匹配', 'BI 执行', '结果产物', '下一步']);
   });
+
+  it('renders repair patch as a first-class business node between BI execution and artifact', () => {
+    const events = [
+      { type: 'artifact_created', text: '已生成查询结果', status: 'done' },
+      { type: 'repair_patch', text: '已按业务口径自动修复字段引用', status: 'done' },
+      { type: 'bi_execution', text: '正在完成查询处理', status: 'done' },
+    ];
+
+    render(<TaskTimeline events={events} />);
+
+    const labels = [...document.querySelectorAll('.task-timeline-label span')]
+      .map((el) => el.textContent)
+      .filter((text) => ['BI 执行', '自动修复', '结果产物'].includes(text));
+
+    expect(labels).toEqual(['BI 执行', '自动修复', '结果产物']);
+    expect(screen.queryByText(/bad_col|work_log|select/i)).not.toBeInTheDocument();
+  });
 });

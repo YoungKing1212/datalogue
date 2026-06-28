@@ -322,6 +322,20 @@
 - 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py -q` 确认 RED，失败表现为 `_sql_audit_router` 仍返回 `retry` 且 `repair_patch_node` 不存在；实现后该命令 3 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，171 条通过。
 - 残留风险：PR2 完成后端主链接入和自动化重跑 fixture；前端 repair timeline 细化、ArtifactCard repair ref 展示、页面 E2E 以及真实问题字段漂移注入五件套验收仍归 C2 PR3。
 
+### 2026-06-28 17:50 · C2 PR3 前端 RepairPatch timeline 承接
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/components/task-timeline.jsx`、`datalogue-web/src/components/task-timeline.test.jsx`、`.codex/project-memory.md`
+- 关键改动：按 TDD 承接 C2 PR2 的 `repair_patch` 主链输出；`chat-adapter` 支持从 `repair_patch` graph step、`repair.patch_applied` event envelope 和 final payload 的 `repair_patch_summary` 生成业务级 `repairPlan`、`repairTimeline` 和 `taskTimeline`，同时保留 `artifact_card.related_refs` 中的 `repair_plan` ref；`TaskTimeline` 增加一等业务节点 `repair_patch/自动修复`，排序在 BI 执行和结果产物之间；前端 trace 清洗新增 `repair_patch/trace_only_metadata/replacement_field_ref` 等字段级 patch 主体黑名单，普通用户可见层不展示表、字段、SQL、raw result。
+- 验证方式：先执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx` 确认 RED，失败表现为 `repair_patch_summary` 未映射、`repair_patch` timeline 节点被当未知节点；实现后该命令 20 条通过；执行 `cd datalogue-web && npm run test`，9 个测试文件 78 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk warning；执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，171 条通过。
+- 残留风险：本次完成前端协议和组件承接；真实页面 E2E、字段漂移注入五件套验收和 Langfuse UI 证据仍需在本地服务启动后补充记录。
+
+### 2026-06-28 17:56 · C2 PR3 终审 RepairPatch 时间线去重
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`.codex/project-memory.md`
+- 关键改动：终审 #20 与 #19 stacked diff 时发现真实 repair 序列会连续发 `repair.evaluated / repair.plan_created / repair.rerun_started / repair.rerun_completed`，前端若逐条追加会产生多条“自动修复”节点且部分保持 running；本次新增 `upsertTaskTimelineEvent`，将 repair 业务时间线收敛为单个 `repair_patch/自动修复` 节点，并用完整 repair event 序列补测试。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx`，20 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `git diff --check` 通过。
+- 残留风险：本次只修复前端时间线重复节点；真实页面 E2E 和五件套验收仍需在 PR2/PR3 Ready 后用本地服务补证。
+
 ### 2026-06-28 18:04 · C2 PR2 终审 RepairPatch 契约收口
 
 - 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/graph/nodes.py`、`datalogue-api/app/graph/workflow.py`、`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/schemas/repair_plan.py`、`datalogue-api/app/services/repair_plan.py`、`datalogue-api/app/utils/sql_diagnosis.py`、`datalogue-api/tests/test_event_envelope.py`、`datalogue-api/tests/test_repair_patch_stream.py`、`datalogue-api/tests/test_repair_plan_contract.py`、`datalogue-api/tests/test_sql_audit.py`、`.codex/project-memory.md`

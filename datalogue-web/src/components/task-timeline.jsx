@@ -23,6 +23,11 @@ const NODE_CONFIG = {
     icon: 'play',
     order: 3,
   },
+  repair_patch: {
+    label: '自动修复',
+    icon: 'branch',
+    order: 3.5,
+  },
   artifact_created: {
     label: '结果产物',
     icon: 'table',
