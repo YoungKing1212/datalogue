@@ -332,3 +332,10 @@
 - 关键改动：从合并后的 `b-first-c` 新建 `c2-repair-patch-engine-pr1`，按 TDD 新增 RepairPatch 离线内核；定义 `RepairPatch` envelope、字段候选 `FieldCandidate`、patch operation、Tool validation 和 apply 结果；候选生成优先使用当前数据集 `SemanticDimension`，再 fallback 到已选 source columns，拒绝未选字段和跨数据集；新增粗粒度类型归一、MockSemanticJudge、语义裁判 prompt input sanitizer、confidence merge/clamp；实现 `query_graph_patch` 与 `compiler_binding_patch` 纯函数 apply，返回脱敏 diff summary 和 trace-only 字段详情；新增本地 fallback prompt `repair_plan_field_semantic_judge`，约束 LLM 只判定业务语义等价，不生成 SQL/字段 patch。
 - 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_engine.py -q`，确认因 `app.services.repair_patch` 缺失 RED；补实现后执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py -q`，28 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/repair_patch.py app/services/repair_plan.py app/prompts/repair_patch.py` 通过。
 - 残留风险：PR1 只实现离线 Patch Engine，不接 `/chat/stream`、RepairPlan 生命周期、Langfuse observation 或前端 timeline；真实字段漂移自动重跑成功链路属于 C2 PR2/PR3。
+
+### 2026-06-28 17:36 · C2 PR1 终审安全边界修复
+
+- 涉及文件：`datalogue-api/app/services/repair_patch.py`、`datalogue-api/tests/test_repair_patch_engine.py`、`.codex/project-memory.md`
+- 关键改动：#18 终审发现两个合并前风险并修复：字段候选缺少业务注释时，语义裁判 prompt 不再把物理列名或表名 fallback 给 LLM，而是统一替换为“当前数据集候选字段”；用户可见 RepairPatch summary 不再原样透传 validation summary / risk flags，命中 SQL、schema、raw result、query_plan 等执行细节时退回固定业务文案，并只保留稳定枚举型 risk flag；同时补齐 confidence clamp，避免异常分数越过 `0..1` 契约。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_query_plan_compiler.py -q`，34 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/repair_patch.py app/prompts/repair_patch.py` 通过；执行 `git diff --check` 通过。
+- 残留风险：本次仍保持 PR1 范围，不接 `/chat/stream` 和真实重跑；PR2 接主链时需要继续验证 RepairPatch trace-only metadata 不进入 SSE/history/API 用户可见面。

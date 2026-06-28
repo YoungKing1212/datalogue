@@ -59,6 +59,7 @@ _FORBIDDEN_PATCH_KEYS = {
     "schema_dump",
     "control_plane",
 }
+_SAFE_PLACEHOLDER = "当前数据集候选字段"
 
 
 class RepairPatchValidationError(ValueError):
@@ -299,11 +300,14 @@ def build_semantic_judge_prompt_input(
     """构造 LLM 语义裁判输入；不包含物理字段名、表名、SQL 或 schema。"""
 
     source_label = "governed_asset" if candidate.source == "semantic_asset" else "current_dataset"
+    # 语义裁判只看业务词；当字段缺少治理描述时，不能把物理列名 fallback 给 LLM。
+    business_name = _safe_business_text(candidate.business_name, candidate=candidate, max_len=120)
+    business_description = _safe_business_text(candidate.business_description, candidate=candidate, max_len=300)
     return {
         "question_intent_summary": str(question_intent_summary or "")[:300],
         "failed_field_intent_summary": str(failed_field_intent_summary or "")[:160],
-        "candidate_business_name": str(candidate.business_name or "")[:120],
-        "candidate_business_description": str(candidate.business_description or "")[:300],
+        "candidate_business_name": business_name,
+        "candidate_business_description": business_description,
         "candidate_coarse_type": candidate.coarse_type,
         "candidate_source": source_label,
         "candidate_governance_status": candidate.governance_status or "unknown",
@@ -319,16 +323,17 @@ def merge_confidence(
 ) -> dict[str, Any]:
     """合并规则分和语义裁判分；Tool 是最终裁判并负责 clamp。"""
 
+    clamped_rule_score = min(max(float(rule_score), 0.0), 1.0)
     if not hard_constraints_ok or not type_compatible:
         return {"confidence": 0.0, "confidence_band": "blocked", "requires_user_confirmation": False}
-    semantic_score = float(semantic_judgement.get("semantic_score") or 0.0)
+    semantic_score = min(max(float(semantic_judgement.get("semantic_score") or 0.0), 0.0), 1.0)
     equivalent = bool(semantic_judgement.get("semantic_equivalent"))
     if not equivalent:
-        return {"confidence": min(round(float(rule_score), 2), 0.59), "confidence_band": "blocked", "requires_user_confirmation": False}
-    if rule_score >= 0.85 and semantic_score >= 0.85:
-        confidence = round((float(rule_score) + semantic_score) / 2, 2)
+        return {"confidence": min(round(clamped_rule_score, 2), 0.59), "confidence_band": "blocked", "requires_user_confirmation": False}
+    if clamped_rule_score >= 0.85 and semantic_score >= 0.85:
+        confidence = round((clamped_rule_score + semantic_score) / 2, 2)
     else:
-        confidence = min(round(max(float(rule_score), semantic_score), 2), 0.84)
+        confidence = min(round(max(clamped_rule_score, semantic_score), 2), 0.84)
     if confidence >= 0.85:
         return {"confidence": confidence, "confidence_band": "high", "requires_user_confirmation": False}
     if confidence >= 0.60:
@@ -338,6 +343,36 @@ def merge_confidence(
 
 def _field_ref(candidate: FieldCandidate) -> str:
     return candidate.field_ref
+
+
+def _safe_business_text(value: str | None, *, candidate: FieldCandidate, max_len: int) -> str:
+    """清理进入 LLM/用户摘要的业务文本，避免物理字段、表名或 SQL 混入。"""
+
+    text = str(value or "").strip()
+    lowered = text.lower()
+    blocked_fragments = {
+        candidate.table_name.lower(),
+        candidate.column_name.lower(),
+        candidate.field_ref.lower(),
+    }
+    if not text:
+        return _SAFE_PLACEHOLDER
+    # 这里不尝试“部分脱敏”，因为字段名常常是完整语义载体；命中后直接换成业务占位更稳。
+    if _SQL_TEXT_RE.search(text) or any(fragment and fragment in lowered for fragment in blocked_fragments):
+        return _SAFE_PLACEHOLDER
+    return text[:max_len]
+
+
+def _safe_summary_text(value: str | None, *, fallback: str) -> str:
+    """用户可见摘要只允许业务级短句；命中执行细节时退回固定文案。"""
+
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    lowered = text.lower()
+    if _SQL_TEXT_RE.search(text) or any(token in lowered for token in ("schema", "raw_sql", "query_plan", "raw_result")):
+        return fallback
+    return text[:160]
 
 
 def build_repair_patch(
@@ -509,6 +544,17 @@ def apply_repair_patch(original: dict[str, Any], patch: RepairPatch) -> RepairPa
 def sanitize_repair_patch_summary(patch: RepairPatch) -> dict[str, Any]:
     """生成用户可见 RepairPatch 摘要，不包含字段名、表名、schema、SQL 或 operations。"""
 
+    validation_summary = _safe_summary_text(
+        patch.validation.summary,
+        fallback="修复方案已通过工具校验。",
+    )
+    # risk_flags 只保留稳定机器枚举，避免把外部返回的解释性文本带到用户面。
+    risk_flags = [
+        item
+        for item in patch.validation.risk_flags
+        if re.fullmatch(r"[a-z0-9_]{1,64}", str(item or ""))
+        and item not in {"schema", "raw_sql", "query_plan", "raw_result"}
+    ]
     return {
         "schema_version": patch.schema_version,
         "patch_id": patch.patch_id,
@@ -517,6 +563,6 @@ def sanitize_repair_patch_summary(patch: RepairPatch) -> dict[str, Any]:
         "confidence": patch.confidence,
         "confidence_band": patch.confidence_band,
         "requires_user_confirmation": patch.requires_user_confirmation,
-        "validation_summary": patch.validation.summary,
-        "risk_flags": list(patch.validation.risk_flags),
+        "validation_summary": validation_summary,
+        "risk_flags": risk_flags,
     }

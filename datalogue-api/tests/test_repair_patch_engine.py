@@ -28,6 +28,7 @@ from app.models.dataset import (
 from app.services.repair_patch import (
     MockSemanticJudge,
     RepairPatch,
+    RepairPatchValidation,
     RepairPatchValidationError,
     apply_repair_patch,
     build_repair_patch,
@@ -168,6 +169,66 @@ def test_prompt_input_and_summary_hide_physical_fields_schema_and_sql(db_session
     assert "operations" not in rendered_summary
 
 
+def test_prompt_input_masks_physical_fallback_when_business_metadata_missing(db_session, sample_dataset):
+    _selected_table(db_session, sample_dataset)
+    candidate = collect_field_candidates(
+        db_session,
+        dataset_id=sample_dataset.id,
+        failed_field_intent_summary="人员姓名",
+    )[1].model_copy(
+        update={
+            "business_name": "person_name",
+            "business_description": "use work_log.person_name",
+        }
+    )
+
+    prompt_input = build_semantic_judge_prompt_input(
+        question_intent_summary="查询某员工 2024 年工作日志",
+        failed_field_intent_summary="人员姓名",
+        candidate=candidate,
+    )
+    rendered_prompt = json.dumps(prompt_input, ensure_ascii=False).lower()
+
+    assert "person_name" not in rendered_prompt
+    assert "work_log" not in rendered_prompt
+    assert prompt_input["candidate_business_name"] == "当前数据集候选字段"
+    assert prompt_input["candidate_business_description"] == "当前数据集候选字段"
+
+
+def test_sanitize_repair_patch_summary_masks_validation_leaks(db_session, sample_dataset):
+    _selected_table(db_session, sample_dataset)
+    candidate = collect_field_candidates(
+        db_session,
+        dataset_id=sample_dataset.id,
+        failed_field_intent_summary="工作日期",
+    )[0]
+    patch = build_repair_patch(
+        patch_type="compiler_binding_patch",
+        dataset_id=sample_dataset.id,
+        failure_class="FIELD_NOT_FOUND",
+        target={"binding_key": "date_field", "field_intent": "工作日期"},
+        replacement=candidate,
+        rule_score=0.9,
+        semantic_judgement={"semantic_equivalent": True, "semantic_score": 0.92},
+    ).model_copy(
+        update={
+            "validation": RepairPatchValidation(
+                summary="SELECT * FROM work_log，schema=public",
+                risk_flags=["needs_confirmation", "schema", "RAW SQL detail"],
+            )
+        }
+    )
+
+    summary = sanitize_repair_patch_summary(patch)
+    rendered_summary = json.dumps(summary, ensure_ascii=False).lower()
+
+    assert summary["validation_summary"] == "修复方案已通过工具校验。"
+    assert summary["risk_flags"] == ["needs_confirmation"]
+    assert "select" not in rendered_summary
+    assert "schema=public" not in rendered_summary
+    assert "work_log" not in rendered_summary
+
+
 def test_repair_patch_semantic_judge_prompt_template_declares_public_boundary():
     from app.prompts.repair_patch import REPAIR_PLAN_FIELD_SEMANTIC_JUDGE_PROMPT_NAME, REPAIR_PLAN_FIELD_SEMANTIC_JUDGE_SYSTEM
 
@@ -203,6 +264,12 @@ def test_merge_confidence_bands_and_mock_judge():
     assert medium["confidence_band"] == "medium"
     assert medium["requires_user_confirmation"] is True
     assert blocked == {"confidence": 0.0, "confidence_band": "blocked", "requires_user_confirmation": False}
+    assert merge_confidence(
+        rule_score=1.5,
+        semantic_judgement={"semantic_equivalent": True, "semantic_score": 2},
+        hard_constraints_ok=True,
+        type_compatible=True,
+    ) == {"confidence": 1.0, "confidence_band": "high", "requires_user_confirmation": False}
     assert MockSemanticJudge(score=0.77).judge({})["semantic_score"] == 0.77
 
 
