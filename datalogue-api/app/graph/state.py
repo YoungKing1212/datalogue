@@ -106,6 +106,14 @@ class AgentState(TypedDict):
     max_retry_count: int  # 本轮 SQL 自动修复最多重试次数
     should_retry: bool  # 是否触发重试
     sql_retry_trace: Optional[List[dict]]  # SQL 自动修复重试记录，含原 SQL、修复原因和结果
+    repair_plan: Optional[dict]  # C1 RepairPlan 内部契约，用户可见层只拿脱敏摘要/ref
+    repair_status: Optional[str]  # RepairPlan/RepairPatch 当前状态，供工作流和事件层路由
+    repair_failure_class: Optional[str]  # SQL 失败分类，用于决定是否允许自动 patch
+    repair_attempts: Optional[int]  # 当前 RepairPlan 尝试次数
+    repair_requires_user_confirmation: Optional[bool]  # 低置信修复是否需要用户确认
+    repair_patch: Optional[dict]  # C2 RepairPatch 完整内部主体，仅允许 trace/日志使用
+    repair_patch_summary: Optional[dict]  # RepairPatch 用户可见业务级摘要，不含字段/SQL/schema
+    repair_patch_apply: Optional[dict]  # patch apply 的差异摘要和 trace-only 详情
 
     # SQL 审计（sql_audit_node 写入）：区分 fixable（可重试） / architectural（需用户改数据集）
     # 注意：节点名是 "sql_audit"，state 字段必须用不同名（LangGraph 禁止同名）

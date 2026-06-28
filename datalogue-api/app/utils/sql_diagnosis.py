@@ -26,6 +26,13 @@ DIAGNOSIS_META = {
         "retryable": True,
         "suggested_action": "检查字段名、指标表达式和时间字段配置，改用已选表中存在的字段。",
     },
+    "FIELD_MAPPING_DRIFT": {
+        "category": "semantic_mapping",
+        "title": "字段映射漂移",
+        "severity": "fixable",
+        "retryable": True,
+        "suggested_action": "按当前数据集已选表结构重新匹配业务字段，并通过工具校验后重跑。",
+    },
     "TABLE_NOT_SELECTED": {
         "category": "dataset_config",
         "title": "表未加入数据集",
@@ -144,7 +151,7 @@ def _sql_table_names(sql: str | None) -> set[str]:
 
 
 def _field_in_semantic_assets(field: str | None, structured: dict | None) -> bool:
-    """判断缺失字段是否来自语义层配置，来自配置时应视作需人工修复。"""
+    """判断缺失字段是否来自语义层配置；C2 将这类问题视作字段映射漂移。"""
     if not field or not structured:
         return False
     normalized = field.split(".")[-1].strip("`\"[]").lower()
@@ -214,10 +221,12 @@ def classify_sql_execution_error(
     meta = DIAGNOSIS_META[code]
     wrong_field = evidence.get("wrong_field")
     if code == "FIELD_NOT_FOUND" and _field_in_semantic_assets(wrong_field, schema_structured):
-        severity = "architectural"
-        retryable = False
-        detail = f"字段 {wrong_field} 来自语义层配置，但当前所选表结构中不可用。"
-        suggested_action = "请修正语义层指标、维度或字段映射后重新提问。"
+        code = "FIELD_MAPPING_DRIFT"
+        meta = DIAGNOSIS_META[code]
+        severity = meta["severity"]
+        retryable = bool(meta["retryable"])
+        detail = f"字段映射 {wrong_field} 来自语义资产，但当前所选表结构中不可用。"
+        suggested_action = meta["suggested_action"]
     else:
         severity = meta["severity"]
         retryable = bool(meta["retryable"])
@@ -252,6 +261,8 @@ def _default_detail(code: str, evidence: dict[str, Any]) -> str:
     """按分类生成默认中文诊断详情。"""
     if code == "FIELD_NOT_FOUND" and evidence.get("wrong_field"):
         return f"SQL 引用了不存在或不可访问的字段：{evidence['wrong_field']}。"
+    if code == "FIELD_MAPPING_DRIFT" and evidence.get("wrong_field"):
+        return f"语义资产字段映射已漂移：{evidence['wrong_field']}。"
     if code == "TABLE_NOT_SELECTED":
         return "SQL 引用了当前数据集未选择的表，或数据集尚未维护可查询表。"
     if code == "TABLE_NOT_FOUND" and evidence.get("wrong_table"):

@@ -135,7 +135,7 @@ class TestSqlDiagnosisClassifier:
         assert diagnosis["suggested_action"]
         assert diagnosis["original_error"] == error
 
-    def test_semantic_asset_missing_field_is_architectural(self):
+    def test_semantic_asset_missing_field_is_field_mapping_drift(self):
         from app.utils import classify_sql_execution_error
 
         diagnosis = classify_sql_execution_error(
@@ -147,10 +147,10 @@ class TestSqlDiagnosisClassifier:
             },
         )
 
-        assert diagnosis["code"] == "FIELD_NOT_FOUND"
-        assert diagnosis["severity"] == "architectural"
-        assert diagnosis["retryable"] is False
-        assert "语义层" in diagnosis["detail"]
+        assert diagnosis["code"] == "FIELD_MAPPING_DRIFT"
+        assert diagnosis["severity"] == "fixable"
+        assert diagnosis["retryable"] is True
+        assert "字段映射" in diagnosis["detail"]
 
 
 class TestSqlAuditNode:
@@ -242,9 +242,9 @@ class TestSqlAuditNode:
         assert result["sql_retry_trace"] == []
         assert _sql_audit_router(result) == "end"
 
-    # ── 测试 2: architectural → should_retry=False ─────────
+    # ── 测试 2: 字段映射漂移 → RepairPlan 接管重跑 ─────────
 
-    def test_architectural_should_not_retry(self, monkeypatch):
+    def test_field_mapping_drift_should_retry_even_when_llm_calls_architectural(self, monkeypatch):
         from app.graph.nodes import sql_audit_node
 
         llm_response = _mock_llm_response(
@@ -273,15 +273,15 @@ class TestSqlAuditNode:
 
         result = node(state)
 
-        assert result["sql_audit_result"]["severity"] == "architectural"
-        assert result["sql_audit_result"]["retryable"] is False
-        assert result["sql_audit_result"]["code"] == "FIELD_NOT_FOUND"
-        assert result["should_retry"] is False
-        assert result["sql_retry_trace"] == []
-        assert "repair_plan" not in result
-        assert result["repair_status"] == "blocked"
+        assert result["sql_audit_result"]["severity"] == "fixable"
+        assert result["sql_audit_result"]["retryable"] is True
+        assert result["sql_audit_result"]["code"] == "FIELD_MAPPING_DRIFT"
+        assert result["should_retry"] is True
+        assert result["sql_retry_trace"][0]["status"] == "pending"
+        assert result["repair_plan"]["failure_class"] == "FIELD_MAPPING_DRIFT"
+        assert result["repair_status"] == "plan_created"
         assert "SQL 执行失败诊断" in result["error"]
-        assert "语义层" in result["error"]
+        assert "字段映射" in result["error"]
 
     def test_retry_exhausted_should_explain_unable_to_fix(self, monkeypatch):
         from app.graph.nodes import sql_audit_node

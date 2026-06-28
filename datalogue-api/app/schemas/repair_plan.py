@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 RepairFailureClass = Literal[
     "FIELD_NOT_FOUND",
+    "FIELD_MAPPING_DRIFT",
     "TABLE_NOT_FOUND",
     "DIALECT_FUNCTION_UNSUPPORTED",
     "TYPE_ERROR",

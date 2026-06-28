@@ -31,6 +31,7 @@ DatalogueEventType = Literal[
     "repair.evaluated",
     "repair.plan_created",
     "repair.confirmation_required",
+    "repair.patch_applied",
     "repair.rerun_started",
     "repair.rerun_completed",
     "repair.failed",
