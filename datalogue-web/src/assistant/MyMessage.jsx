@@ -20,14 +20,26 @@ import { getArtifact, submitMessageFeedback } from '../api/client';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
-  clarification_resolution: 'clarification_resolution',
-  intent_recognition: 'intent_recognition',
-  schema_recall: 'schema_recall',
-  dsl_generate: 'dsl_generate',
-  dsl_validate: 'dsl_validate',
-  dsl_compiler: 'dsl_compiler',
-  sql_execute: 'sql_execute',
-  report_generator: 'report_generator',
+  message_gateway: '任务理解',
+  'message-gateway': '任务理解',
+  lead_agent_tools: '能力匹配',
+  manifest_route: '场景匹配',
+  clarification_resolution: '澄清处理',
+  intent_recognition: '意图识别',
+  entry_intent_classification: '入口判断',
+  analysis_blueprint_execute: '分析蓝图执行',
+  candidate_assets: '数据资产匹配',
+  query_plan: '查询规划',
+  schema_recall: '数据范围确认',
+  term_normalize_node: '术语标准化',
+  semantic_asset_resolution_node: '语义资产解析',
+  metric_resolution_node: '指标解析',
+  dsl_generate: '查询生成',
+  dsl_validate: '查询校验',
+  dsl_compiler: '执行计划生成',
+  sql_execute: '查询执行',
+  sql_audit: '结果诊断',
+  report_generator: '结果整理',
 };
 
 const NODE_ICONS = {
@@ -45,7 +57,7 @@ const NODE_ICONS = {
  * StepCard — 单个流式步骤的视觉卡片（供 AgentPanel 复用）
  */
 export function StepCard({ node, display_name, status, elapsed_ms }) {
-  const label = display_name || NODE_STEP_NAMES[node] || node;
+  const label = NODE_STEP_NAMES[node] || NODE_STEP_NAMES[display_name] || '任务处理';
   return (
     <div className={`step-card step-card-${status}`}>
       <div className="step-icon">
@@ -71,7 +83,7 @@ function ReasoningPart({ text }) {
   // part 形如 { type: 'reasoning', text: '意图识别：销售归因...', parentId: 'intent_recognition' }
   // 把 parentId 当 step 节点名（chat-adapter.js 用 parentId 写 ev.node）
   const node = useAuiState((s) => s.part?.parentId);
-  const label = NODE_STEP_NAMES[node] || node || 'reasoning';
+  const label = NODE_STEP_NAMES[node] || '任务处理';
   const icon = NODE_ICONS[node] || 'brain';
   return (
     <div className="cot-step">
@@ -474,10 +486,10 @@ function AnswerExplanation({ explanation }) {
           <div className="answer-explanation-lines">
             <div>
               <span>数据来源</span>
-              <p>{sources.length ? sources.slice(0, 8).join('、') : '未能确定具体表或字段'}</p>
+              <p>{sources.length ? sources.slice(0, 8).join('、') : '未能确定具体数据来源'}</p>
             </div>
             <div>
-              <span>SQL 摘要</span>
+              <span>查询校验</span>
               <p>
                 {sqlSummary.preview
                   ? '查询语句已通过执行前校验'

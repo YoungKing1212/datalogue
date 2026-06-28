@@ -16,26 +16,26 @@ import { Icon } from './icons';
 // 普通 Chat 用户可见面板只展示业务级执行摘要，不展示 SQL 文本或复制入口。
 
 const BUSINESS_STEP_NAMES = {
-  message_gateway: 'message_gateway',
-  'message-gateway': 'message_gateway',
-  lead_agent_tools: 'lead_agent_tools',
-  manifest_route: 'manifest_route',
-  clarification_resolution: 'clarification_resolution',
-  intent_recognition: 'intent_recognition',
-  entry_intent_classification: 'entry_intent_classification',
-  analysis_blueprint_execute: 'analysis_blueprint_execute',
-  candidate_assets: 'subagent.candidate_assets',
-  query_plan: 'subagent.query_plan',
-  schema_recall: 'schema_recall',
-  term_normalize_node: 'term_normalize_node',
-  semantic_asset_resolution_node: 'semantic_asset_resolution_node',
-  metric_resolution_node: 'metric_resolution_node',
-  dsl_generate: 'dsl_generate',
-  dsl_validate: 'dsl_validate',
-  dsl_compiler: 'dsl_compiler',
-  sql_execute: 'sql_execute',
-  sql_audit: 'sql_audit',
-  report_generator: 'report_generator',
+  message_gateway: '任务理解',
+  'message-gateway': '任务理解',
+  lead_agent_tools: '能力匹配',
+  manifest_route: '场景匹配',
+  clarification_resolution: '澄清处理',
+  intent_recognition: '意图识别',
+  entry_intent_classification: '入口判断',
+  analysis_blueprint_execute: '分析蓝图执行',
+  candidate_assets: '数据资产匹配',
+  query_plan: '查询规划',
+  schema_recall: '数据范围确认',
+  term_normalize_node: '术语标准化',
+  semantic_asset_resolution_node: '语义资产解析',
+  metric_resolution_node: '指标解析',
+  dsl_generate: '查询生成',
+  dsl_validate: '查询校验',
+  dsl_compiler: '执行计划生成',
+  sql_execute: '查询执行',
+  sql_audit: '结果诊断',
+  report_generator: '结果整理',
 };
 
 const QUERY_TYPE_LABELS = {
@@ -60,7 +60,7 @@ function enumLabel(labels, value) {
 }
 
 function businessStepName(step) {
-  return BUSINESS_STEP_NAMES[step?.node] || step?.display_name || step?.node || 'step';
+  return BUSINESS_STEP_NAMES[step?.node] || BUSINESS_STEP_NAMES[step?.display_name] || '任务处理';
 }
 
 function summarizeCompletedSteps(steps, sqlResult) {
@@ -144,56 +144,6 @@ function formatCandidateAssetSummary(candidateAssets) {
     .filter(Boolean);
 }
 
-function compactJson(value) {
-  if (!value || typeof value !== 'object') return '';
-  return JSON.stringify(value, null, 2);
-}
-
-function StructuredBlock({ title, value }) {
-  const body = compactJson(value);
-  if (!body) return null;
-  return (
-    <details
-      open
-      style={{
-        border: '1px solid var(--hairline)',
-        borderRadius: 6,
-        background: 'var(--surface)',
-        marginTop: 6,
-        overflow: 'hidden',
-      }}
-    >
-      <summary
-        style={{
-          cursor: 'pointer',
-          color: 'var(--text-2)',
-          fontSize: 11,
-          fontWeight: 600,
-          padding: '6px 8px',
-        }}
-      >
-        {title}
-      </summary>
-      <pre
-        style={{
-          margin: 0,
-          padding: '0 8px 8px',
-          maxHeight: 180,
-          overflow: 'auto',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          color: 'var(--text-3)',
-          fontSize: 11,
-          lineHeight: 1.5,
-          fontFamily: 'var(--font-mono)',
-        }}
-      >
-        {body}
-      </pre>
-    </details>
-  );
-}
-
 function StepDetail({ step }) {
   const isMessageGateway = isMessageGatewayStep(step);
   const turnEvent = step.turn_event || step.payload?.turn_event;
@@ -201,11 +151,8 @@ function StepDetail({ step }) {
   const details =
     isMessageGateway && turnEvent
       ? [
-          turnEvent.event_type ? `Turn Event：${turnEvent.event_type}` : null,
-          queryTaskCapsule?.turn_type ? `Capsule：${queryTaskCapsule.turn_type}` : null,
-          queryTaskCapsule?.standalone_question
-            ? `问题：${queryTaskCapsule.standalone_question}`
-            : null,
+          turnEvent.event_type === 'continue_query' ? '本轮延续上下文' : '已完成任务理解',
+          queryTaskCapsule?.standalone_question ? `问题：${queryTaskCapsule.standalone_question}` : null,
         ].filter(Boolean)
       : step.node === 'query_plan' && step.query_plan
       ? formatQueryPlanDetails(step.query_plan)
@@ -217,12 +164,6 @@ function StepDetail({ step }) {
   return (
     <div style={{ marginLeft: 22, marginTop: -2, marginBottom: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
       {details.length > 0 && <div>{details.join(' · ')}</div>}
-      {isMessageGateway && (
-        <>
-          <StructuredBlock title="Turn Event" value={turnEvent} />
-          <StructuredBlock title="Query Task Capsule" value={queryTaskCapsule} />
-        </>
-      )}
     </div>
   );
 }
@@ -241,11 +182,16 @@ function GatewayContext({ steps }) {
   const turnEvent = gatewayStep.turn_event || gatewayStep.payload?.turn_event;
   const queryTaskCapsule = gatewayStep.query_task_capsule || gatewayStep.payload?.query_task_capsule;
   if (!turnEvent && !queryTaskCapsule) return null;
+  const contextText = turnEvent?.event_type === 'continue_query'
+    ? '已识别为上下文追问'
+    : '已识别为新的业务查询';
   return (
     <div>
-      <div className="agent-section-label">Message Gateway</div>
-      <StructuredBlock title="Turn Event" value={turnEvent} />
-      <StructuredBlock title="Query Task Capsule" value={queryTaskCapsule} />
+      <div className="agent-section-label">任务理解</div>
+      <div style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.6 }}>
+        {contextText}
+        {queryTaskCapsule?.standalone_question ? ` · 问题：${queryTaskCapsule.standalone_question}` : ''}
+      </div>
     </div>
   );
 }

@@ -65,23 +65,31 @@ if (typeof window !== 'undefined') {
  */
 // 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐）
 const NODE_DISPLAY = {
-  intent_recognition: 'intent_recognition',
-  entry_intent_classification: 'entry_intent_classification',
-  analysis_blueprint_execute: 'analysis_blueprint_execute',
-  schema_recall: 'schema_recall',
-  term_normalize_node: 'term_normalize_node',
-  semantic_asset_resolution_node: 'semantic_asset_resolution_node',
-  metric_resolution_node: 'metric_resolution_node',
-  dsl_generate: 'dsl_generate',
-  dsl_validate: 'dsl_validate',
-  dsl_compiler: 'dsl_compiler',
-  sql_execute: 'sql_execute',
-  sql_audit: 'sql_audit',
-  report_generator: 'report_generator',
+  message_gateway: '任务理解',
+  'message-gateway': '任务理解',
+  lead_agent_tools: '能力匹配',
+  manifest_route: '场景匹配',
+  clarification_resolution: '澄清处理',
+  intent_recognition: '意图识别',
+  entry_intent_classification: '入口判断',
+  analysis_blueprint_execute: '分析蓝图执行',
+  candidate_assets: '数据资产匹配',
+  query_plan: '查询规划',
+  schema_recall: '数据范围确认',
+  term_normalize_node: '术语标准化',
+  semantic_asset_resolution_node: '语义资产解析',
+  metric_resolution_node: '指标解析',
+  dsl_generate: '查询生成',
+  dsl_validate: '查询校验',
+  dsl_compiler: '执行计划生成',
+  sql_execute: '查询执行',
+  sql_audit: '结果诊断',
+  report_generator: '结果整理',
 };
 
 function formatStepAsReasoning(step) {
-  const label = step.display_name || NODE_DISPLAY[step.node] || step.node;
+  // 历史 step_trace 保留内部 display_name；回放时必须映射成业务文案。
+  const label = NODE_DISPLAY[step.node] || NODE_DISPLAY[step.display_name] || '任务处理';
   const elapsed = step.elapsed_ms != null ? `（${step.elapsed_ms}ms）` : '';
   let detail = '';
 
@@ -113,7 +121,7 @@ function formatStepAsReasoning(step) {
     detail = `返回 ${rows} 行${step.columns?.length ? ' · ' + step.columns.length + ' 列' : ''}`;
   } else if (step.node === 'sql_audit') {
     const diagnosis = step.sql_diagnosis || step.sql_audit_result || {};
-    const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || 'SQL 执行失败';
+    const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || '查询执行失败';
     const suggested = diagnosis.suggested_action || diagnosis.suggested_fix || '';
     detail = suggested ? `${title} · ${suggested}` : title;
   } else if (step.node === 'report_generator') {

@@ -19,22 +19,32 @@ const BUSINESS_SESSION_PREFIX = 'assistant-thread';
 
 // 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐，作为前端兜底）
 const NODE_DISPLAY = {
-  intent_recognition: 'intent_recognition',
-  entry_intent_classification: 'entry_intent_classification',
-  analysis_blueprint_execute: 'analysis_blueprint_execute',
-  candidate_assets: 'subagent.candidate_assets',
-  query_plan: 'subagent.query_plan',
-  schema_recall: 'schema_recall',
-  term_normalize_node: 'term_normalize_node',
-  semantic_asset_resolution_node: 'semantic_asset_resolution_node',
-  metric_resolution_node: 'metric_resolution_node',
-  dsl_generate: 'dsl_generate',
-  dsl_validate: 'dsl_validate',
-  dsl_compiler: 'dsl_compiler',
-  sql_execute: 'sql_execute',
-  sql_audit: 'sql_audit',
-  report_generator: 'report_generator',
+  message_gateway: '任务理解',
+  'message-gateway': '任务理解',
+  lead_agent_tools: '能力匹配',
+  manifest_route: '场景匹配',
+  clarification_resolution: '澄清处理',
+  intent_recognition: '意图识别',
+  entry_intent_classification: '入口判断',
+  analysis_blueprint_execute: '分析蓝图执行',
+  candidate_assets: '数据资产匹配',
+  query_plan: '查询规划',
+  schema_recall: '数据范围确认',
+  term_normalize_node: '术语标准化',
+  semantic_asset_resolution_node: '语义资产解析',
+  metric_resolution_node: '指标解析',
+  dsl_generate: '查询生成',
+  dsl_validate: '查询校验',
+  dsl_compiler: '执行计划生成',
+  sql_execute: '查询执行',
+  sql_audit: '结果诊断',
+  report_generator: '结果整理',
 };
+
+function safeStepLabel(node, displayName) {
+  // 后端 display_name 可能仍是内部节点名，普通 Chat 可见层统一映射为业务文案。
+  return NODE_DISPLAY[node] || NODE_DISPLAY[displayName] || '任务处理';
+}
 
 const QUERY_TYPE_LABELS = {
   detail_query: '明细查询',
@@ -147,7 +157,7 @@ function summarizeQueryPlan(queryPlan) {
  * 把单个 step 事件格式化成 reasoning 文本（一行小卡片式）
  */
 function formatStepAsReasoning(ev) {
-  const label = ev.display_name || NODE_DISPLAY[ev.node] || ev.node;
+  const label = safeStepLabel(ev.node, ev.display_name);
   const elapsed = ev.elapsed_ms != null ? `（${ev.elapsed_ms}ms）` : '';
   let detail = '';
 
@@ -183,7 +193,7 @@ function formatStepAsReasoning(ev) {
     detail = `返回 ${rows} 行${ev.columns?.length ? ' · ' + ev.columns.length + ' 列' : ''}`;
   } else if (ev.node === 'sql_audit') {
     const diagnosis = ev.sql_diagnosis || ev.sql_audit_result || {};
-    const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || 'SQL 执行失败';
+    const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || '查询执行失败';
     const suggested = diagnosis.suggested_action || diagnosis.suggested_fix || '';
     detail = suggested ? `${title} · ${suggested}` : title;
   } else if (ev.node === 'report_generator') {
