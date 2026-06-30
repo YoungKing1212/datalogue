@@ -39,6 +39,12 @@ from .conversation import (
     TraceAnnotationCandidate,
     ConversationState,
 )
+from .agentscope_workbench import (
+    AgentScopeEvent,
+    AgentScopeMessage,
+    AgentScopeRef,
+    AgentScopeSession,
+)
 from .llm import LLMModelConfig, LLMRoleBinding
 
 __all__ = [
@@ -66,6 +72,10 @@ __all__ = [
     "QueryArtifact",
     "TraceAnnotationCandidate",
     "ConversationState",
+    "AgentScopeSession",
+    "AgentScopeMessage",
+    "AgentScopeEvent",
+    "AgentScopeRef",
     "LLMModelConfig",
     "LLMRoleBinding",
 ]
