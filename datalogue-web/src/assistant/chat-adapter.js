@@ -38,6 +38,7 @@ const NODE_DISPLAY = {
   dsl_compiler: '执行计划生成',
   sql_execute: '查询执行',
   sql_audit: '结果诊断',
+  repair_patch: '自动修复',
   report_generator: '结果整理',
 };
 
@@ -68,9 +69,17 @@ function enumLabel(labels, value) {
 }
 
 function safeRepairPlanFromPayload(payload = {}, finalPayload = {}) {
+  const patchSummary =
+    payload.repair_patch_summary
+    || payload.repairPatchSummary
+    || finalPayload.repair_patch_summary
+    || finalPayload.repairPatchSummary
+    || null;
   const summary =
     payload.summary
     || payload.business_summary
+    || patchSummary?.repair_strategy
+    || patchSummary?.validation_summary
     || finalPayload.repair_plan?.business_summary
     || finalPayload.repair_plan?.summary
     || null;
@@ -80,10 +89,18 @@ function safeRepairPlanFromPayload(payload = {}, finalPayload = {}) {
     || finalPayload.repair_plan?.repair_plan_ref
     || null;
   if (!summary && !repairPlanRef) return null;
+  const eventType = payload.event_type || payload.eventType || '';
+  const inferredPatchStatus = patchSummary ? 'patch_applied' : null;
   return {
     summary,
-    status: payload.status || finalPayload.repair_status || finalPayload.repair_plan?.status || null,
-    failureClass: finalPayload.repair_failure_class || finalPayload.repair_plan?.failure_class || null,
+    status: payload.status || finalPayload.repair_status || finalPayload.repair_plan?.status || (
+      eventType === 'repair.patch_applied' ? 'patch_applied' : inferredPatchStatus
+    ),
+    failureClass:
+      patchSummary?.failure_class
+      || finalPayload.repair_failure_class
+      || finalPayload.repair_plan?.failure_class
+      || null,
     repairPlanRef,
     checkpointRef: payload.checkpoint_ref || finalPayload.repair_plan?.checkpoint_ref || null,
     requiresUserConfirmation: Boolean(
@@ -91,7 +108,34 @@ function safeRepairPlanFromPayload(payload = {}, finalPayload = {}) {
       || finalPayload.repair_requires_user_confirmation
       || finalPayload.repair_plan?.requires_user_confirmation,
     ),
+    confidenceBand: patchSummary?.confidence_band || null,
   };
+}
+
+function safeRepairPatchSummaryText(summary = {}) {
+  if (!summary || typeof summary !== 'object') return null;
+  return safeDisplayText(summary.repair_strategy || summary.validation_summary || summary.summary) || null;
+}
+
+function mergeRepairPlan(previous, next) {
+  if (!next) return previous || null;
+  const merged = { ...(previous || {}) };
+  for (const [key, value] of Object.entries(next)) {
+    if (value !== null && value !== undefined && value !== '') {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function upsertTaskTimelineEvent(taskTimeline, event) {
+  const existing = taskTimeline.find((item) => item.type === event.type);
+  if (existing) {
+    Object.assign(existing, event);
+    return existing;
+  }
+  taskTimeline.push(event);
+  return event;
 }
 
 function summarizeCandidateAssets(candidateAssets) {
@@ -196,6 +240,8 @@ function formatStepAsReasoning(ev) {
     const title = diagnosis.title || diagnosis.root_cause || diagnosis.code || '查询执行失败';
     const suggested = diagnosis.suggested_action || diagnosis.suggested_fix || '';
     detail = suggested ? `${title} · ${suggested}` : title;
+  } else if (ev.node === 'repair_patch') {
+    detail = safeRepairPatchSummaryText(ev.repair_patch_summary) || '已按业务口径自动修复查询引用';
   } else if (ev.node === 'report_generator') {
     detail = '已生成分析报告';
   }
@@ -323,9 +369,15 @@ const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
   'fields',
   'raw_result',
   'rawResult',
+  'repair_patch',
+  'repairPatch',
   'node',
   'display_name',
   'displayName',
+  'trace_only_metadata',
+  'traceOnlyMetadata',
+  'replacement_field_ref',
+  'replacementFieldRef',
 ]);
 
 function sanitizeUserVisibleTrace(value) {
@@ -682,7 +734,10 @@ export function makeChatAdapter({ datasetIdRef }) {
             const intentText = ev.intent ? `理解为您想查询「${ev.intent}」` : '已理解您的分析需求';
             taskTimeline.push({ type: 'task_understood', label: '任务理解', text: intentText, status: 'done' });
           }
-          if (ev.status === 'done' && ev.node !== 'intent_recognition') {
+          if (ev.node === 'repair_patch' && ev.status === 'done') {
+            const text = safeRepairPatchSummaryText(ev.repair_patch_summary) || '已按业务口径自动修复查询引用';
+            upsertTaskTimelineEvent(taskTimeline, { type: 'repair_patch', label: '自动修复', text, status: 'done' });
+          } else if (ev.status === 'done' && ev.node !== 'intent_recognition') {
             // 后续 step 归入 BI 执行阶段（多个 step 合并为一条，更新文本）
             const existing = taskTimeline.find((t) => t.type === 'bi_execution');
             if (existing) {
@@ -694,20 +749,24 @@ export function makeChatAdapter({ datasetIdRef }) {
         } else if (ev.event_envelope?.event_type?.startsWith('repair.')) {
           emitTrace(ev);
           const repairPayload = ev.event_envelope.payload || {};
-          const safeRepair = safeRepairPlanFromPayload(repairPayload);
+          const eventType = ev.event_envelope.event_type;
+          const safeRepair = safeRepairPlanFromPayload({
+            ...repairPayload,
+            event_type: eventType,
+          });
           if (safeRepair) {
-            repairPlan = { ...(repairPlan || {}), ...safeRepair };
+            repairPlan = mergeRepairPlan(repairPlan, safeRepair);
             repairTimeline.push({
-              eventType: ev.event_envelope.event_type,
+              eventType,
               status: safeRepair.status,
               summary: safeRepair.summary,
               repairPlanRef: safeRepair.repairPlanRef,
             });
-            taskTimeline.push({
-              type: 'repair',
+            upsertTaskTimelineEvent(taskTimeline, {
+              type: 'repair_patch',
               label: '自动修复',
               text: safeRepair.summary || '已更新自动修复状态',
-              status: ev.event_envelope.event_type === 'repair.rerun_completed' ? 'done' : 'running',
+              status: eventType === 'repair.rerun_completed' || eventType === 'repair.patch_applied' ? 'done' : 'running',
             });
           }
         } else if (ev.type === 'final') {
@@ -796,7 +855,7 @@ export function makeChatAdapter({ datasetIdRef }) {
 
         const finalRepairPlan = safeRepairPlanFromPayload({}, finalPayload);
         if (finalRepairPlan) {
-          repairPlan = { ...(repairPlan || {}), ...finalRepairPlan };
+          repairPlan = mergeRepairPlan(repairPlan, finalRepairPlan);
         }
 
         if (finalPayload.title && finalPayload.conversation_id) {

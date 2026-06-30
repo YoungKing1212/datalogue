@@ -33,6 +33,7 @@ def test_datalogue_event_envelope_supports_required_event_types_and_visibility()
         "repair.evaluated",
         "repair.plan_created",
         "repair.confirmation_required",
+        "repair.patch_applied",
         "repair.rerun_started",
         "repair.rerun_completed",
         "repair.failed",
@@ -227,6 +228,53 @@ def test_chat_sse_public_payload_removes_final_internal_debug_fields():
     assert "sql_result" not in payload
     assert "secret_col" not in encoded
     assert "hidden_table" not in encoded
+    assert "select" not in encoded
+
+
+def test_chat_sse_public_payload_keeps_repair_patch_summary_but_removes_internal_body():
+    """RepairPatch 公开层只能暴露业务摘要/ref，完整 patch 和 apply 详情留在 trace/store。"""
+
+    from app.api.chat import _with_event_envelope
+
+    payload = _with_event_envelope(
+        {
+            "type": "step",
+            "node": "repair_patch",
+            "status": "done",
+            "repair_plan_ref": "artifact:repair-1",
+            "repair_patch_summary": {
+                "repair_strategy": "按业务口径自动修复字段引用。",
+                "failure_class": "FIELD_MAPPING_DRIFT",
+                "confidence_band": "high",
+                "validation_summary": "修复方案已通过工具校验。",
+            },
+            "repair_patch": {
+                "operations": [
+                    {
+                        "replacement_field_ref": "work_log.work_date",
+                        "target_path": ["selected_assets", 0, "metadata", "column_name"],
+                    }
+                ],
+                "trace_only_metadata": {"replacement_field_ref": "work_log.work_date"},
+            },
+            "repair_patch_apply": {
+                "trace_only_details": [{"before": "missing_date", "after": "work_date"}],
+            },
+            "raw_sql": "select missing_date from work_log",
+        },
+        event_type="repair.patch_applied",
+        visibility="user_visible",
+        payload_fields=("repair_plan_ref", "repair_patch_summary"),
+    )
+
+    encoded = json.dumps(payload, ensure_ascii=False).lower()
+    assert payload["repair_plan_ref"] == "artifact:repair-1"
+    assert payload["repair_patch_summary"]["failure_class"] == "FIELD_MAPPING_DRIFT"
+    assert "repair_patch" not in payload
+    assert "repair_patch_apply" not in payload
+    assert "replacement_field_ref" not in encoded
+    assert "work_log" not in encoded
+    assert "missing_date" not in encoded
     assert "select" not in encoded
 
 

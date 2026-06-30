@@ -41,6 +41,7 @@ _CLASSIFY_PATTERNS: list[tuple[re.Pattern[str], RepairFailureClass]] = [
 
 _ATTEMPT_LIMITS: dict[RepairFailureClass, int] = {
     "FIELD_NOT_FOUND": 1,
+    "FIELD_MAPPING_DRIFT": 1,
     "TABLE_NOT_FOUND": 1,
     "DIALECT_FUNCTION_UNSUPPORTED": 2,
     "TYPE_ERROR": 1,
@@ -148,6 +149,7 @@ def build_repair_plan_from_diagnosis(
 
     action_type = {
         "FIELD_NOT_FOUND": "replace_field",
+        "FIELD_MAPPING_DRIFT": "replace_field",
         "TABLE_NOT_FOUND": "replace_table",
         "DIALECT_FUNCTION_UNSUPPORTED": "replace_dialect_function",
         "TYPE_ERROR": "cast_type",

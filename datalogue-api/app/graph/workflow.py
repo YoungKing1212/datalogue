@@ -28,6 +28,7 @@ from app.graph.nodes import (
     dsl_compiler_node,
     sql_execute_node,
     sql_audit_node,
+    repair_patch_node,
     report_generator_node,
 )
 from app.graph.state import AgentState
@@ -35,6 +36,8 @@ from app.graph.state import AgentState
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_SQL_RETRY_COUNT = 3
+REPAIR_PATCH_FAILURE_CLASSES = {"FIELD_NOT_FOUND", "FIELD_MAPPING_DRIFT"}
+REPAIR_PATCH_GRAPH_NODE = "repair_patch_step"
 
 
 def _sql_max_retry_count() -> int:
@@ -109,7 +112,8 @@ def _sql_audit_router(state: AgentState) -> str:
     """SQL 审计后路由。
     - retryable=False：权限、表未选、语义层缺字段等硬性问题 → END
     - retry_count 已用尽（>= max_retry_count） → END
-    - retryable=True → increment_retry → dsl_generate
+    - C2 可修复字段漂移 → RepairPatch → dsl_compiler → sql_execute
+    - 其他 retryable=True → increment_retry → dsl_generate
     """
     audit = state.get("sql_audit_result") or {}
     if audit.get("retryable") is False or audit.get("severity") == "architectural":
@@ -118,7 +122,28 @@ def _sql_audit_router(state: AgentState) -> str:
     max_retry = state.get("max_retry_count", _sql_max_retry_count())
     if retry >= max_retry:
         return "end"
+    repair_plan = state.get("repair_plan") or {}
+    failure_class = (
+        repair_plan.get("failure_class")
+        or state.get("repair_failure_class")
+        or audit.get("code")
+    )
+    if (
+        state.get("repair_status") == "plan_created"
+        and failure_class in REPAIR_PATCH_FAILURE_CLASSES
+        and isinstance(state.get("query_plan"), dict)
+    ):
+        return "repair_patch"
     return "retry"
+
+
+def _repair_patch_router(state: AgentState) -> str:
+    """RepairPatch 通过工具编译后继续执行；失败则终止，避免回退到模型 SQL。"""
+
+    compilation = state.get("query_plan_compilation") or {}
+    if state.get("repair_status") == "patch_applied" and compilation.get("ok"):
+        return "compile"
+    return "end"
 
 
 def _increment_retry(state: AgentState) -> dict:
@@ -140,7 +165,7 @@ def build_workflow(db: Session) -> Any:
     # Phase 6 改造：删 term_normalize_node，由 chat 层 `DatasetSubAgent.resolve_term_conflict` 接管。
     # Phase 7 改造：删 semantic_asset_resolution_node，由 chat 层 `DatasetSubAgent.resolve_metric` 接管。
     # 当前 LangGraph 节点数：9：lead_agent / schema_recall / dsl_generate / dsl_validate / dsl_compiler /
-    #   sql_execute / sql_audit / report_generator / increment_retry）
+    #   sql_execute / sql_audit / repair_patch_step / report_generator / increment_retry）
     workflow.add_node("lead_agent", lead_agent_node)
     workflow.add_node("schema_recall", schema_recall_node(db))
     workflow.add_node("dsl_generate", lambda state: dsl_generate_node(state, db=db))
@@ -149,6 +174,9 @@ def build_workflow(db: Session) -> Any:
     workflow.add_node("dsl_compiler", dsl_compiler_node(db))
     workflow.add_node("sql_execute", sql_execute_node(db))
     workflow.add_node("sql_audit", sql_audit_node(db))
+    # LangGraph 不允许节点名与 AgentState 字段同名；内部节点用 step 后缀，
+    # 对外 SSE/Artifact 仍映射为业务节点 repair_patch，保持前端契约稳定。
+    workflow.add_node(REPAIR_PATCH_GRAPH_NODE, repair_patch_node(db))
     async def _report_generator_with_db(state: AgentState) -> dict:
         return await report_generator_node(state, db=db)
 
@@ -201,12 +229,22 @@ def build_workflow(db: Session) -> Any:
         },
     )
 
-    # SQL 审计分支：architectural 走 END，fixable 走 increment_retry
+    # SQL 审计分支：C2 字段漂移走 RepairPatch，其余 fixable 保留原 retry 链路。
     workflow.add_conditional_edges(
         "sql_audit",
         _sql_audit_router,
         {
+            "repair_patch": REPAIR_PATCH_GRAPH_NODE,
             "retry": "increment_retry",
+            "end": END,
+        },
+    )
+
+    workflow.add_conditional_edges(
+        REPAIR_PATCH_GRAPH_NODE,
+        _repair_patch_router,
+        {
+            "compile": "dsl_compiler",
             "end": END,
         },
     )

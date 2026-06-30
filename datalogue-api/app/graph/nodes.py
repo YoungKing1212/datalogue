@@ -19,7 +19,7 @@ import re
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, Any
+from typing import Dict, Any, cast
 
 import logging
 from fastapi.encoders import jsonable_encoder
@@ -45,6 +45,26 @@ from app.services.repair_plan import (
     RepairPlanValidationError,
     build_repair_plan_from_diagnosis,
     classify_sql_failure,
+)
+from app.schemas.repair_plan import RepairFailureClass
+from app.services.repair_patch import (
+    FieldCandidate,
+    MockSemanticJudge,
+    RepairPatchValidationError,
+    apply_repair_patch,
+    build_repair_patch,
+    build_semantic_judge_prompt_input,
+    collect_field_candidates,
+    normalize_coarse_type,
+    sanitize_repair_patch_summary,
+    validate_repair_patch,
+)
+from app.services.query_plan_compiler import compile_query_plan_to_sql
+from app.services.subagent_planning import (
+    CandidateAsset,
+    QueryPlan,
+    QueryPlanValidationError,
+    build_query_plan_compiler_context,
 )
 from app.models.dataset import (
     AnalysisBlueprint,
@@ -130,6 +150,21 @@ def _clean_llm_response_if_needed(llm, response):
         id=getattr(response, "id", None),
         name=getattr(response, "name", None),
     )
+
+
+_REPAIR_FAILURE_CLASSES = set(getattr(RepairFailureClass, "__args__", ()))
+
+
+def _repair_failure_class_from_diagnosis(
+    diagnosis: dict[str, Any],
+    original_error: str,
+) -> RepairFailureClass:
+    """RepairPlan failure class 优先采用确定性诊断 code，避免字段映射漂移被原始 DB 错误降回 FIELD_NOT_FOUND。"""
+
+    code = str(diagnosis.get("code") or "")
+    if code in _REPAIR_FAILURE_CLASSES:
+        return cast(RepairFailureClass, code)
+    return classify_sql_failure(original_error)
 
 
 def _compact_report_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
@@ -367,6 +402,341 @@ def _attach_sql_retry_failure(
     if retry_trace is not None:
         output["sql_retry_trace"] = retry_trace
     return output
+
+
+_REPAIR_PATCH_FORBIDDEN_KEYS = {"sql", "raw_sql", "direct_sql", "llm_sql", "query_sql", "raw_result"}
+
+
+def _contains_repair_patch_forbidden_payload(value: Any, *, key_name: str = "") -> bool:
+    """RepairPatch 接入主链前的轻量安全门禁，禁止 patch 入口携带可执行 SQL。"""
+
+    key = str(key_name or "").lower()
+    if key in _REPAIR_PATCH_FORBIDDEN_KEYS:
+        return True
+    if isinstance(value, dict):
+        return any(
+            _contains_repair_patch_forbidden_payload(item, key_name=str(item_key))
+            for item_key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_repair_patch_forbidden_payload(item, key_name=key_name) for item in value)
+    return False
+
+
+def _query_plan_from_dict(payload: dict[str, Any]) -> QueryPlan:
+    """把 LangGraph state 中的 QueryPlan dict 重建为编译器契约对象。"""
+
+    return QueryPlan(
+        query_type=str(payload.get("query_type") or "detail_query"),
+        execution_strategy=str(payload.get("execution_strategy") or "query_graph"),
+        confidence=float(payload.get("confidence") or 0),
+        selected_assets=[
+            CandidateAsset.from_dict(item)
+            for item in payload.get("selected_assets") or []
+            if isinstance(item, dict)
+        ],
+        reference_assets=[
+            CandidateAsset.from_dict(item)
+            for item in payload.get("reference_assets") or []
+            if isinstance(item, dict)
+        ],
+        rejected_assets=[
+            CandidateAsset.from_dict(item)
+            for item in payload.get("rejected_assets") or []
+            if isinstance(item, dict)
+        ],
+        required_inputs=list(payload.get("required_inputs") or []),
+        clarification=payload.get("clarification"),
+        fallback_reason=payload.get("fallback_reason"),
+        planner_source=str(payload.get("planner_source") or "deterministic"),
+        execution_source=payload.get("execution_source"),
+        explanation=dict(payload.get("explanation") or {}),
+        decision_factors=list(payload.get("decision_factors") or []),
+        planner_warnings=list(payload.get("planner_warnings") or []),
+        governance_suggestions=list(payload.get("governance_suggestions") or []),
+        detail_rounds=int(payload.get("detail_rounds") or 0),
+        attempted_detail_requests=list(payload.get("attempted_detail_requests") or []),
+        asset_detail_coverage=dict(payload.get("asset_detail_coverage") or {}),
+        missing_context=list(payload.get("missing_context") or []),
+        why_not_generate_sql=payload.get("why_not_generate_sql"),
+        risk_flags=list(payload.get("risk_flags") or []),
+        debug=dict(payload.get("debug") or {}),
+    )
+
+
+def _compiler_context_field_candidates(
+    state: AgentState,
+    *,
+    dataset_id: int,
+    datasource_id: int,
+) -> list[FieldCandidate]:
+    """从工具编译上下文生成候选字段；只作为 DB 语义资产缺失时的受控兜底。"""
+
+    context = build_query_plan_compiler_context(state.get("sql_generation_context"))
+    candidates: list[FieldCandidate] = []
+    for table in context.get("table_schemas") or []:
+        if not isinstance(table, dict):
+            continue
+        table_name = str(table.get("table_name") or table.get("name") or "").strip()
+        if not table_name:
+            continue
+        for field in table.get("fields") or table.get("columns") or []:
+            if not isinstance(field, dict):
+                continue
+            column_name = str(field.get("column_name") or field.get("name") or "").strip()
+            if not column_name:
+                continue
+            candidates.append(
+                FieldCandidate(
+                    dataset_id=dataset_id,
+                    datasource_id=datasource_id,
+                    table_name=table_name,
+                    column_name=column_name,
+                    business_name=str(
+                        field.get("display_name")
+                        or field.get("business_name")
+                        or field.get("comment")
+                        or column_name
+                    ),
+                    business_description=field.get("description") or field.get("comment"),
+                    coarse_type=normalize_coarse_type(field.get("data_type") or field.get("type")),
+                    source="selected_column",
+                    selected=True,
+                    governance_status=field.get("review_status"),
+                    semantic_role=field.get("semantic_role"),
+                )
+            )
+    return candidates
+
+
+def _asset_column_name(asset: dict[str, Any]) -> str:
+    metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+    raw = str(metadata.get("column_name") or asset.get("name") or asset.get("asset_id") or "")
+    return raw.rsplit(".", 1)[-1]
+
+
+def _select_failed_asset(query_plan: dict[str, Any], diagnosis: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+    """定位需要替换的 QueryPlan 字段资产；找不到时不猜测，交给 fail-closed。"""
+
+    selected_assets = query_plan.get("selected_assets") or []
+    if not isinstance(selected_assets, list):
+        return None
+    wrong_field = str(
+        diagnosis.get("wrong_field")
+        or diagnosis.get("missing_field")
+        or diagnosis.get("field")
+        or ""
+    ).rsplit(".", 1)[-1]
+    for idx, asset in enumerate(selected_assets):
+        if not isinstance(asset, dict):
+            continue
+        if wrong_field and _asset_column_name(asset) == wrong_field:
+            return idx, asset
+    for idx, asset in enumerate(selected_assets):
+        if isinstance(asset, dict) and asset.get("asset_type") == "field":
+            return idx, asset
+    return None
+
+
+def _score_repair_candidate(candidate: FieldCandidate, failed_asset: dict[str, Any], diagnosis: dict[str, Any]) -> float:
+    """用业务名和诊断文本做确定性粗排；最终仍由 Tool 校验候选是否属于当前数据集。"""
+
+    business_terms = {
+        str(failed_asset.get("display_name") or "").strip().lower(),
+        str(failed_asset.get("name") or "").strip().lower(),
+        str(diagnosis.get("suggested_fix") or "").strip().lower(),
+        str(diagnosis.get("suggested_action") or "").strip().lower(),
+    }
+    business_terms.discard("")
+    candidate_terms = {
+        str(candidate.business_name or "").strip().lower(),
+        str(candidate.business_description or "").strip().lower(),
+    }
+    if business_terms & candidate_terms:
+        return 0.95
+    if any(term and term in text for term in business_terms for text in candidate_terms):
+        return 0.88
+    return 0.65
+
+
+def _repair_patch_blocked_output(
+    state: AgentState,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """RepairPatch 主链失败统一 fail-closed，不把内部字段/SQL 细节暴露给用户侧摘要。"""
+
+    output = {
+        "repair_status": "blocked",
+        "repair_patch_summary": {
+            "schema_version": "repair_patch.v1",
+            "repair_strategy": "自动字段修复未通过工具校验。",
+            "failure_class": state.get("repair_failure_class") or "UNKNOWN",
+            "confidence": 0.0,
+            "confidence_band": "blocked",
+            "requires_user_confirmation": False,
+            "validation_summary": "自动修复未通过工具校验，请检查数据集治理配置。",
+            "risk_flags": ["repair_patch_blocked"],
+        },
+        "query_plan_compilation": {
+            "ok": False,
+            "code": "REPAIR_PATCH_BLOCKED",
+            "error": "RepairPatch 未通过工具校验",
+            "sql": None,
+            "sql_list": [],
+            "execution_source": "tool_compiler",
+        },
+        "error": "RepairPatch 未通过工具校验",
+        "should_retry": False,
+    }
+    retry_trace = _finish_latest_sql_retry_trace(
+        state,
+        status="blocked",
+        result="自动字段修复未通过工具校验",
+        error=reason,
+    )
+    if retry_trace is not None:
+        output["sql_retry_trace"] = retry_trace
+    return output
+
+
+def repair_patch_node(db: Session):
+    """把 C2 RepairPatch Engine 接入 RepairPlan 后的真实重跑链路。"""
+
+    def _node(state: AgentState) -> Dict[str, Any]:
+        logger.info("RepairPatch节点开始")
+        dataset_id = int(state.get("dataset_id") or 0)
+        query_plan = copy.deepcopy(state.get("query_plan") or {})
+        diagnosis = state.get("sql_diagnosis") or state.get("sql_audit_result") or {}
+        if not dataset_id or not isinstance(query_plan, dict):
+            return _repair_patch_blocked_output(state, reason="missing dataset or query plan")
+        if _contains_repair_patch_forbidden_payload(query_plan):
+            return _repair_patch_blocked_output(state, reason="query plan contains executable detail")
+
+        selected = _select_failed_asset(query_plan, diagnosis)
+        if selected is None:
+            return _repair_patch_blocked_output(state, reason="failed field asset not found")
+        asset_index, failed_asset = selected
+
+        dataset = db.get(SemanticDataset, dataset_id)
+        datasource_id = int(getattr(dataset, "datasource_id", 0) or 0)
+        failed_intent = str(
+            failed_asset.get("display_name")
+            or failed_asset.get("name")
+            or diagnosis.get("suggested_fix")
+            or "当前业务字段"
+        )
+        candidates = collect_field_candidates(
+            db,
+            dataset_id=dataset_id,
+            failed_field_intent_summary=failed_intent,
+        )
+        if not candidates:
+            candidates = _compiler_context_field_candidates(
+                state,
+                dataset_id=dataset_id,
+                datasource_id=datasource_id,
+            )
+        if not candidates:
+            return _repair_patch_blocked_output(state, reason="no selected field candidates")
+
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: _score_repair_candidate(candidate, failed_asset, diagnosis),
+            reverse=True,
+        )
+        replacement = ranked[0]
+        rule_score = _score_repair_candidate(replacement, failed_asset, diagnosis)
+        judgement_input = build_semantic_judge_prompt_input(
+            question_intent_summary=str(state.get("question") or ""),
+            failed_field_intent_summary=failed_intent,
+            candidate=replacement,
+        )
+        judgement = MockSemanticJudge(score=max(rule_score, 0.9)).judge(judgement_input)
+        target_path = ["selected_assets", asset_index, "metadata", "column_name"]
+        failure_class = (
+            (state.get("repair_plan") or {}).get("failure_class")
+            or state.get("repair_failure_class")
+            or diagnosis.get("code")
+            or "UNKNOWN"
+        )
+
+        try:
+            patch = build_repair_patch(
+                patch_type="query_graph_patch",
+                dataset_id=dataset_id,
+                failure_class=failure_class,
+                target={"field_intent": failed_intent, "target_path": target_path},
+                replacement=replacement,
+                rule_score=rule_score,
+                semantic_judgement=judgement,
+            )
+            expected_type = normalize_coarse_type(
+                (failed_asset.get("metadata") or {}).get("data_type")
+                or (failed_asset.get("metadata") or {}).get("type")
+            )
+            validate_repair_patch(
+                patch,
+                candidates=candidates,
+                dataset_id=dataset_id,
+                expected_type_group=None if expected_type == "unknown" else expected_type,
+            )
+            apply_result = apply_repair_patch(query_plan, patch)
+            patched_plan = dict(apply_result.patched_copy)
+            patched_plan.setdefault("debug", {})
+            patched_plan["debug"]["repair_patch"] = {
+                "patch_id": patch.patch_id,
+                "status": "applied",
+                "failure_class": patch.failure_class,
+            }
+            compiled_plan = _query_plan_from_dict(patched_plan)
+            datasource_context = state.get("datasource_context") or {}
+            dialect = datasource_context.get("dialect") or _resolve_dialect(db, dataset_id)
+            compilation = compile_query_plan_to_sql(
+                query_plan=compiled_plan,
+                sql_generation_context=build_query_plan_compiler_context(
+                    state.get("sql_generation_context")
+                ),
+                dialect=dialect,
+                current_datasource_dialect=dialect,
+                query_constraints=normalize_query_constraints(state.get("query_constraints")),
+                allowed_tables=datasource_context.get("allowed_tables") or [],
+            )
+            if not compilation.get("ok"):
+                return _repair_patch_blocked_output(
+                    state,
+                    reason=str(compilation.get("code") or "patch compilation failed"),
+                )
+        except (RepairPatchValidationError, QueryPlanValidationError, ValueError) as exc:
+            logger.warning("RepairPatch 校验或应用失败，终止自动重跑: %s", exc)
+            return _repair_patch_blocked_output(state, reason=str(exc))
+
+        retry_trace = _finish_latest_sql_retry_trace(
+            state,
+            status="patch_applied",
+            result="自动字段修复已通过工具校验，准备重新执行",
+            repaired_sql=compilation.get("sql"),
+        )
+        output = {
+            "query_plan": patched_plan,
+            "query_plan_compilation": compilation,
+            "dsl": {"compiled_query_plan": True},
+            "repair_status": "patch_applied",
+            "repair_patch": patch.model_dump(mode="json"),
+            "repair_patch_summary": sanitize_repair_patch_summary(patch),
+            "repair_patch_apply": {
+                "diff_summary": apply_result.diff_summary,
+                "trace_only_details": apply_result.trace_only_details,
+            },
+            "error": None,
+            "should_retry": False,
+        }
+        if retry_trace is not None:
+            output["sql_retry_trace"] = retry_trace
+        logger.info("RepairPatch节点完成: patch_id=%s", patch.patch_id)
+        return jsonable_encoder(output)
+
+    return _node
 
 
 # ── 节点 1: 意图识别 ──────────────────────────────────
@@ -2936,9 +3306,10 @@ def sql_audit_node(db: Session):
                 f"{friendly_error}。已达到自动修复重试上限（{max_retry} 次），"
                 "无法继续安全重试。"
             )
+        repair_failure_class = _repair_failure_class_from_diagnosis(diagnosis, original_error)
         repair_output: dict[str, Any] = {
             "repair_status": "failed" if retryable else "blocked",
-            "repair_failure_class": classify_sql_failure(original_error),
+            "repair_failure_class": repair_failure_class,
             "repair_attempts": retry_count,
             "repair_requires_user_confirmation": False,
         }
@@ -2946,7 +3317,7 @@ def sql_audit_node(db: Session):
             try:
                 repair_plan = build_repair_plan_from_diagnosis(
                     dataset_id=int(dataset_id or 0),
-                    failure_class=classify_sql_failure(original_error),
+                    failure_class=repair_failure_class,
                     diagnosis=diagnosis,
                     attempt_count=retry_count,
                 )

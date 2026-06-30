@@ -112,7 +112,7 @@ logger = logging.getLogger(__name__)
 _NODE_DISPLAY_NAMES = {
     # Chat 层
     "message_gateway": "message_gateway",
-    # Graph 节点（build_workflow 注册的 9 个节点）
+    # Graph 节点（build_workflow 注册的主链节点）
     "lead_agent": "lead_agent",
     "schema_recall": "schema_recall",
     "dsl_generate": "dsl_generate",
@@ -120,6 +120,7 @@ _NODE_DISPLAY_NAMES = {
     "dsl_compiler": "dsl_compiler",
     "sql_execute": "sql_execute",
     "sql_audit": "sql_audit",
+    "repair_patch_step": "repair_patch",
     "report_generator": "report_generator",
     "increment_retry": "increment_retry",
     # SubAgent 事件（SSE 展示用）
@@ -128,6 +129,14 @@ _NODE_DISPLAY_NAMES = {
     # LeadAgent 自动路由报告
     "lead_agent_report_generator": "lead_agent_report_generator",
 }
+
+
+def _public_graph_node_name(node_name: str) -> str:
+    """把内部 LangGraph 节点名映射为稳定的用户可见业务节点名。"""
+
+    if node_name == "repair_patch_step":
+        return "repair_patch"
+    return node_name
 
 _TRACE_CAPSULE_BLOCKED_KEYS = {
     "data",
@@ -174,6 +183,8 @@ _PUBLIC_SSE_BLOCKED_KEYS = {
     "raw_result",
     "raw_sql",
     "records",
+    "repair_patch",
+    "repair_patch_apply",
     "result",
     "result_artifact",
     "result_rows",
@@ -192,6 +203,7 @@ _PUBLIC_SSE_BLOCKED_KEYS = {
     "subagent_control_plane",
     "table",
     "tables",
+    "trace_only_metadata",
 }
 
 
@@ -3031,6 +3043,7 @@ async def _stream_chat_singleturn(
                 meta: dict = event.get("metadata", {})
                 # langgraph_node 元数据标识当前所属顶层图节点
                 lg_node: str = meta.get("langgraph_node", "")
+                public_node = _public_graph_node_name(lg_node)
 
                 # ── 节点开始（每节点只报一次）────────────────────
                 if (
@@ -3042,14 +3055,14 @@ async def _stream_chat_singleturn(
                     node_start_times[lg_node] = time.monotonic()
                     sse_payload = {
                         "type": "step",
-                        "node": lg_node,
+                        "node": public_node,
                         "display_name": _NODE_DISPLAY_NAMES[lg_node],
                         "status": "running",
                     }
-                    logger.info(f"[_stream_chat] step running: {lg_node}")
+                    logger.info(f"[_stream_chat] step running: {public_node}")
                     tracer.start_span(
                         trace_context,
-                        node=lg_node,
+                        node=public_node,
                         display_name=_NODE_DISPLAY_NAMES[lg_node],
                         input_payload={
                             "question": payload.question,
@@ -3091,17 +3104,17 @@ async def _stream_chat_singleturn(
 
                     sse_payload = {
                         "type": "step",
-                        "node": lg_node,
+                        "node": public_node,
                         "display_name": _NODE_DISPLAY_NAMES[lg_node],
                         "status": "done",
                         "elapsed_ms": elapsed_ms,
                     }
                     # 节点特定数据
                     # 旧语义解析节点不再作为 LangGraph 顶层节点处理，SubAgent.run 统一输出规划事件。
-                    if lg_node == "dsl_generate":
+                    if public_node == "dsl_generate":
                         sse_payload["dsl"] = final_state.get("dsl") or {}
                         sse_payload["generation_mode"] = final_state.get("generation_mode") or ""
-                    elif lg_node == "schema_recall":
+                    elif public_node == "schema_recall":
                         schema = final_state.get("schema_context", "") or ""
                         lines_ = [
                             line
@@ -3109,14 +3122,14 @@ async def _stream_chat_singleturn(
                             if line.strip() and not line.startswith("-")
                         ]
                         sse_payload["schema_summary"] = lines_[:3]
-                    elif lg_node == "dsl_compiler":
+                    elif public_node == "dsl_compiler":
                         sse_payload["sql"] = final_state.get("sql") or ""
-                    elif lg_node == "sql_execute":
+                    elif public_node == "sql_execute":
                         result = final_state.get("sql_result") or {}
                         sse_payload["row_count"] = result.get("row_count", 0)
                         sse_payload["column_count"] = len(result.get("columns") or [])
                         sse_payload["elapsed_ms"] = elapsed_ms
-                    elif lg_node == "sql_audit":
+                    elif public_node == "sql_audit":
                         diagnosis = (
                             final_state.get("sql_diagnosis")
                             or final_state.get("sql_audit_result")
@@ -3128,21 +3141,24 @@ async def _stream_chat_singleturn(
                         sse_payload["severity"] = diagnosis.get("severity")
                         sse_payload["retryable"] = diagnosis.get("retryable")
                         sse_payload["sql_retry_trace"] = final_state.get("sql_retry_trace") or []
+                    elif public_node == "repair_patch":
+                        sse_payload["repair_plan_ref"] = final_state.get("repair_plan_ref")
+                        sse_payload["repair_patch_summary"] = final_state.get("repair_patch_summary") or {}
                     step_traces.append(sse_payload)
-                    logger.info(f"[_stream_chat] step done: {lg_node} ({elapsed_ms}ms)")
+                    logger.info(f"[_stream_chat] step done: {public_node} ({elapsed_ms}ms)")
                     tracer.end_span(
                         trace_context,
-                        node=lg_node,
+                        node=public_node,
                         output_payload=sse_payload,
                         elapsed_ms=elapsed_ms,
-                        error=final_state.get("error") if lg_node == "sql_audit" else None,
+                        error=final_state.get("error") if public_node == "sql_audit" else None,
                     )
                     step_visibility: DatalogueEventVisibility = (
-                        "user_visible" if lg_node == "sql_execute" else "trace_only"
+                        "user_visible" if public_node == "sql_execute" else "trace_only"
                     )
                     step_payload_fields = (
                         ("node", "status", "elapsed_ms", "row_count", "column_count")
-                        if lg_node == "sql_execute"
+                        if public_node == "sql_execute"
                         else ("node", "status", "elapsed_ms")
                     )
                     yield _sse_data(
@@ -3157,7 +3173,7 @@ async def _stream_chat_singleturn(
                             },
                         )
                     )
-                    if lg_node == "sql_audit":
+                    if public_node == "sql_audit":
                         repair_summary = _ensure_repair_plan_artifact(
                             final_state=final_state,
                             artifact_store=query_artifact_store,
@@ -3209,8 +3225,8 @@ async def _stream_chat_singleturn(
                                             "conversation_id": conv_id,
                                             "dataset_id": effective_dataset_id,
                                         },
+                                        )
                                     )
-                                )
                         elif final_state.get("repair_status") in {"blocked", "failed"}:
                             blocked_status = str(final_state.get("repair_status") or "blocked")
                             _log_chat_stream_checkpoint(  # 不可修复类也必须进入 repair envelope，便于前端/审计对齐。
@@ -3240,10 +3256,40 @@ async def _stream_chat_singleturn(
                                             "conversation_id": conv_id,
                                             "dataset_id": effective_dataset_id,
                                         },
-                                    )
-                                )
+                                            )
+                                        )
+                    elif public_node == "repair_patch" and final_state.get("repair_status") == "patch_applied":
+                        _log_chat_stream_checkpoint(
+                            "repair_patch_applied",
+                            conversation_id=conv_id,
+                            effective_dataset_id=effective_dataset_id,
+                            repair_plan_ref=final_state.get("repair_plan_ref"),
+                            failure_class=(
+                                (final_state.get("repair_patch_summary") or {}).get("failure_class")
+                                or final_state.get("repair_failure_class")
+                            ),
+                        )
+                        yield _sse_data(
+                            _with_event_envelope(
+                                {
+                                    "type": "repair",
+                                    "status": "patch_applied",
+                                    "repair_plan_ref": final_state.get("repair_plan_ref"),
+                                    "repair_patch_summary": final_state.get("repair_patch_summary") or {},
+                                    "repair_patch": final_state.get("repair_patch"),
+                                    "repair_patch_apply": final_state.get("repair_patch_apply"),
+                                },
+                                event_type="repair.patch_applied",
+                                visibility="user_visible",
+                                payload_fields=("repair_plan_ref", "repair_patch_summary"),
+                                metadata={
+                                    "conversation_id": conv_id,
+                                    "dataset_id": effective_dataset_id,
+                                },
+                            )
+                        )
                     elif (
-                        lg_node == "sql_execute"
+                        public_node == "sql_execute"
                         and final_state.get("repair_plan_ref")
                         and final_state.get("sql_result")
                         and not final_state.get("error")
@@ -3786,6 +3832,7 @@ async def _stream_chat_singleturn(
         "repair_requires_user_confirmation": final_state.get(
             "repair_requires_user_confirmation"
         ),
+        "repair_patch_summary": final_state.get("repair_patch_summary"),
         "repair_plan": _repair_plan_summary(final_state),
         "sql_diagnosis": sql_diagnosis,
         "sql_audit_result": final_state.get("sql_audit_result"),
@@ -3846,6 +3893,7 @@ async def _stream_chat_singleturn(
                 "repair_status",
                 "repair_attempts",
                 "repair_requires_user_confirmation",
+                "repair_patch_summary",
                 "repair_plan",
             ),
         )

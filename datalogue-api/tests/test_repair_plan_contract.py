@@ -100,6 +100,7 @@ def test_classify_sql_failure(message, expected):
 
 def test_repair_attempt_limit_matches_c1_policy():
     assert repair_attempt_limit("FIELD_NOT_FOUND") == 1
+    assert repair_attempt_limit("FIELD_MAPPING_DRIFT") == 1
     assert repair_attempt_limit("TABLE_NOT_FOUND") == 1
     assert repair_attempt_limit("DIALECT_FUNCTION_UNSUPPORTED") == 2
     assert repair_attempt_limit("TYPE_ERROR") == 1
