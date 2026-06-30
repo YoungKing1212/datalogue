@@ -365,3 +365,10 @@
 - 关键改动：在 `b-first-c@3ad8bb2c` 上补充 C2 RepairPatch 合并后验收记录，明确 #19/#20 已进入主线；记录字段映射漂移内部 E2E 的事件顺序、关键断言、公开层脱敏边界、前端 timeline 承接和五件套分层状态；如实标注本次未启动浏览器真实会话和 Langfuse UI，不伪造成完整发布级五件套通过。
 - 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py::test_workflow_e2e_repairs_injected_field_mapping_drift -q`，1 条通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，192 条通过、3 条 skipped；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，48 条通过；执行 `cd datalogue-web && npm run lint && npm run build` 通过，保留既有 15 个 lint warning 和 Vite chunk warning；执行 `git diff --check` 通过。
 - 残留风险：C2 RepairPatch 自动修复主链已有合并后可重复证据；发布级浏览器页面、Langfuse observation、真实 `query_artifact/conversation_state` 同一 trace 五件套仍需用本地服务单独补证。
+
+### 2026-06-30 10:18 · C3 AgentScope Workbench 产品化设计落档
+
+- 涉及文件：`docs/architecture/C3-AgentScope-Workbench-产品化设计.md`、`docs/superpowers/specs/2026-06-30-c3-agentscope-workbench-design.md`、`.codex/project-memory.md`
+- 关键改动：将 C3 脑暴决策正式落为架构设计和 superpowers spec；C3 主线定为 BI 工作台产品化，入口采用 Chat 右侧 Workbench Panel + 隐藏 `/workbench/:threadId/:artifactRef?` 路由；新会话以 AgentScope-compatible `session/message/event/ref` mirror 为真相源，统一 thread id 为 `as_* / conv_*`；后端提供 Workbench View Model API，支持普通视图、管理员诊断抽屉、Lease / timeout、只读 action 和受控 retry；旧会话只做只读回放，转新会话时仅带业务级摘要和 refs。
+- 验证方式：执行两份 C3 文档占位词扫描，无命中；执行关键决策扫描，确认 BI 工作台产品化、Session / Message Bridge、mirror 四表、统一 thread id、Lease、View Model、受控 retry、管理员诊断抽屉和旧会话策略均已写入两份文档；执行 `git diff --check` 通过。
+- 残留风险：本次仅完成 C3 设计文档，不实现代码；下一步需要按设计生成开发计划，并把 P0 拆成数据库迁移、后端 API、前端 Panel、retry action 和验收用例等可执行 PR。
