@@ -142,17 +142,39 @@ def _safe_public_history_value(value: Any, *, key_name: str = "") -> Any:
     return value
 
 
-def _safe_public_refs(value: Any) -> list[str]:
+def _safe_public_ref(value: Any) -> str | dict[str, Any] | None:
+    """只保留公开 ref 句柄和业务级类型，兼容 string 与 {ref_id, ref_type} 两种契约。"""
+
+    if isinstance(value, str) and (
+        value.startswith("artifact:") or value.startswith("trace:") or value.startswith("checkpoint://")
+    ):
+        return value
+    if isinstance(value, dict):
+        ref_id = value.get("ref_id") or value.get("ref")
+        if isinstance(ref_id, str) and (
+            ref_id.startswith("artifact:") or ref_id.startswith("trace:") or ref_id.startswith("checkpoint://")
+        ):
+            # ref 对象是前端 ArtifactCard 的稳定输入；这里只保留句柄、类型和标签，不回放 nested payload。
+            safe: dict[str, Any] = {"ref_id": ref_id}
+            ref_type = _safe_public_history_value(value.get("ref_type"))
+            label = _safe_public_history_value(value.get("label"))
+            if ref_type:
+                safe["ref_type"] = ref_type
+            if label:
+                safe["label"] = label
+            return safe
+    return None
+
+
+def _safe_public_refs(value: Any) -> list[str | dict[str, Any]]:
     """只把公开 ref 句柄带回历史消息，避免嵌套对象夹带执行细节。"""
 
     if not isinstance(value, list):
         return []
-    safe_refs: list[str] = []
+    safe_refs: list[str | dict[str, Any]] = []
     for item in value[:8]:
-        ref = item.get("ref_id") if isinstance(item, dict) else item
-        if isinstance(ref, str) and (
-            ref.startswith("artifact:") or ref.startswith("trace:") or ref.startswith("checkpoint://")
-        ):
+        ref = _safe_public_ref(item)
+        if ref is not None:
             safe_refs.append(ref)
     return safe_refs
 
@@ -162,6 +184,23 @@ def _safe_artifact_card(card: Any) -> dict[str, Any] | None:
 
     if not isinstance(card, dict):
         return None
+    safe_card: dict[str, Any] = {
+        "title": _safe_public_history_value(card.get("title")) or "查询结果",
+    }
+    status = _safe_public_history_value(card.get("status"))
+    summary_for_chat = _safe_public_history_value(card.get("summary_for_chat"))
+    primary_ref = _safe_public_ref(card.get("primary_ref"))
+    related_refs = _safe_public_refs(card.get("related_refs"))
+    if status is not None:
+        safe_card["status"] = status
+    if summary_for_chat is not None:
+        safe_card["summary_for_chat"] = summary_for_chat
+    if "preview_payload" in card:
+        safe_card["preview_payload"] = None  # 旧卡片可能带 raw preview，历史回放只保留“存在过”的空占位。
+    if primary_ref is not None:
+        safe_card["primary_ref"] = primary_ref
+    if related_refs:
+        safe_card["related_refs"] = related_refs
     actions: list[dict[str, Any]] = []
     for action in card.get("actions") or []:
         if not isinstance(action, dict):
@@ -175,15 +214,10 @@ def _safe_artifact_card(card: Any) -> dict[str, Any] | None:
                 "disabled_reason": _safe_public_history_value(action.get("disabled_reason")),
             }
         )
-    return {
-        "title": _safe_public_history_value(card.get("title")) or "查询结果",
-        "status": _safe_public_history_value(card.get("status")),
-        "summary_for_chat": _safe_public_history_value(card.get("summary_for_chat")),
-        "preview_payload": None,
-        "primary_ref": card.get("primary_ref") if isinstance(card.get("primary_ref"), str) else None,
-        "related_refs": _safe_public_refs(card.get("related_refs")),
-        "actions": [item for item in actions if item.get("action_type") or item.get("label")],
-    }
+    safe_actions = [item for item in actions if item.get("action_type") or item.get("label")]
+    if safe_actions:
+        safe_card["actions"] = safe_actions
+    return safe_card
 
 
 def _safe_observability_metadata(metadata: dict[str, Any], key: str) -> dict[str, Any] | None:
