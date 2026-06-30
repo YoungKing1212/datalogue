@@ -102,3 +102,17 @@ npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-pa
 
 - 本次已补真实浏览器页面、SSE/mirror、DB refs 和旧会话/隐藏路由证据；仍未打开 Langfuse UI 做人工核对。
 - retry action 当前只创建新的 running message 并记录 checkpoint/event，不在 PR6 内直接驱动真实 Datalogue 主链重跑；后续需要把 checkpoint restore 与 Workbench action 编排打通。
+
+## C3-P1 PR1：Retry 主链恢复契约补证
+
+- 范围：Workbench 受控 retry 不直接执行 SQL，也不把 QueryGraph/字段/schema 等执行面 payload 带回前端；后端只生成 `run_request`，前端通过 assistant-ui `thread.append()` 发起普通 Chat run，`chat-adapter` 将 `retry_checkpoint_ref` 交给现有 `/chat/stream` 恢复链路。
+- 后端证据：`POST /api/workbench/actions/retry` 对 `as_*` failed/interrupted message 返回 `accepted=true`、新的 running mirror message、`workbench.retry_requested` event 和业务级 `run_request`；`conv_*` 仍返回只读禁用态且 `run_request=null`。
+- 前端证据：Workbench Panel 收到 accepted retry response 后调用 Chat shell；pending retry request 只消费一次，发送给 `/chat/stream` 的 payload 包含 `question/conversation_id/thread_id/dataset_id/retry_checkpoint_ref`，并清空 `window.__DATALOGUE_PENDING_WORKBENCH_RETRY__`。
+- 安全证据：`run_request` 和前端回调序列化扫描未命中 `select/schema/raw_rows/query_plan` 等执行面字段；真实恢复上下文仍由后端 checkpoint ref 读取。
+- 验证命令：
+  - `cd datalogue-api && python3 -m pytest tests/test_workbench_retry_actions.py tests/test_retry_checkpoint.py tests/test_c3_workbench_acceptance.py tests/test_workbench_view_api.py -q`，16 条通过。
+  - `cd datalogue-web && npm run test -- src/components/workbench-panel.test.jsx src/assistant/chat-adapter.test.js src/components/chat-page.test.jsx`，34 条通过。
+  - `cd datalogue-web && npm run lint`，0 error、15 个既有 warning。
+  - `cd datalogue-web && npm run build` 通过，仅保留既有 chunk warning。
+  - `git diff --check` 通过。
+- 残留风险：本次没有构造真实浏览器点击 retry 并完成一次业务成功重跑；它先把 Workbench action 到 `/chat/stream` checkpoint restore 的主链入口打通。下一步应补真实页面 retry 场景或内部 harness，把 `retry.checkpoint_restored -> answer.completed` 与 Workbench mirror 的同一 thread/trace/ref 串起来。

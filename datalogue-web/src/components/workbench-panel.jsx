@@ -82,7 +82,7 @@ export function WorkbenchArtifactRefs({ refs = [], onOpen }) {
   );
 }
 
-export function WorkbenchActions({ threadId, actions = [], onRetried }) {
+export function WorkbenchActions({ threadId, actions = [], onRetried, onRetryRun }) {
   if (!actions.length) return null;
   return (
     <section className="workbench-section">
@@ -104,6 +104,10 @@ export function WorkbenchActions({ threadId, actions = [], onRetried }) {
                 selected_action: action.action_id === 'retry' ? 'retry_last_step' : action.action_id,
               });
               onRetried?.(response);
+              if (response?.accepted && response?.run_request) {
+                // Workbench 只发起恢复请求，真正重跑交回 Chat 主链和 retry checkpoint。
+                onRetryRun?.(response.run_request);
+              }
             }}
           >
             <Icon name={action.action_id === 'retry' ? 'refresh' : 'play'} />
@@ -145,7 +149,7 @@ function WorkbenchMessages({ messages = [] }) {
   );
 }
 
-export function WorkbenchPanel({ threadId, initialArtifactRef = null }) {
+export function WorkbenchPanel({ threadId, initialArtifactRef = null, onRetryRun = null }) {
   const [view, setView] = useState(null);
   const [artifact, setArtifact] = useState(null);
   const [error, setError] = useState(null);
@@ -213,6 +217,7 @@ export function WorkbenchPanel({ threadId, initialArtifactRef = null }) {
         threadId={view?.thread_id || threadId}
         actions={view?.available_actions || []}
         onRetried={() => fetchWorkbenchThread(threadId).then(setView)}
+        onRetryRun={onRetryRun}
       />
       <WorkbenchDiagnosticDrawer open={false} diagnostic={null} />
     </aside>

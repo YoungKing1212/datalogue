@@ -65,6 +65,15 @@ def test_retry_action_creates_new_running_message(client, db_session):
     assert payload["accepted"] is True
     assert payload["thread_id"] == thread_id
     assert payload["retry_message_id"]
+    assert payload["run_request"] == {
+        "question": "retry 测试",
+        "conversation_id": None,
+        "thread_id": thread_id,
+        "retry_checkpoint_ref": checkpoint_ref,
+        "dataset_id": None,
+        "display_text": "重试上一步",
+    }
+    assert "sql" not in str(payload["run_request"]).lower()
     retry_message = (
         db_session.query(AgentScopeMessage)
         .filter(AgentScopeMessage.message_id == payload["retry_message_id"])
@@ -84,6 +93,45 @@ def test_retry_action_creates_new_running_message(client, db_session):
         "selected_action": "retry_last_step",
         "summary": "已接收重试请求，准备从检查点恢复。",
     }
+
+
+def test_retry_run_request_sanitizes_internal_question_text(client, db_session):
+    session = create_agentscope_session(
+        db_session,
+        thread_id="as_dddddddd-dddd-dddd-dddd-dddddddddddd",
+        title="select * from hidden_table",
+    )
+    failed = create_running_assistant_message(db_session, thread_id=session.thread_id, lease_seconds=60)
+    mark_message_failed(
+        db_session,
+        message_id=failed.message_id,
+        error_summary="查询执行中断，可基于检查点重试。",
+        payload={"checkpoint_ref": "checkpoint://retry-sanitize"},
+    )
+    record_agentscope_ref(
+        db_session,
+        thread_id=session.thread_id,
+        message_id=failed.message_id,
+        ref_type="checkpoint",
+        ref_value="checkpoint://retry-sanitize",
+        relation="checkpoint",
+    )
+
+    response = client.post(
+        "/api/workbench/actions/retry",
+        json={
+            "thread_id": session.thread_id,
+            "message_id": failed.message_id,
+            "checkpoint_ref": "checkpoint://retry-sanitize",
+            "selected_action": "retry_last_step",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["accepted"] is True
+    assert payload["run_request"]["question"] == "重试上一步"
+    assert "select" not in str(payload["run_request"]).lower()
 
 
 def test_retry_payload_rejects_internal_execution_keys(client, db_session):
@@ -123,6 +171,7 @@ def test_legacy_retry_returns_disabled_reason(client):
         "retry_message_id": None,
         "accepted": False,
         "disabled_reason": "旧会话为只读模式，不能直接发起 Workbench 重试。",
+        "run_request": None,
     }
 
 

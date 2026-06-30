@@ -94,6 +94,22 @@
 - 基于页面 E2E 修复普通 Chat 可见层 SQL 泄露、ArtifactCard 回放、会话切换 URL 同步、新对话草稿不回填旧会话等问题；验证包含后端 pytest、前端 test/lint/build、`git diff --check` 和本地 `/chat/25` 页面扫描。
 - 保留边界：C1 不实现字段级 RepairPatch apply/recompile；真实字段漂移自动修复、RepairPatch IR、候选字段和真实重跑验收归 C2。
 
+
+### 2026-06-26 B-first C-ready 核心链路集成
+
+- 完成 BI_SOUL 内部契约同步、Capability Router 路由收窄、QueryGraph Compiler 与当前数据源方言门禁、SubAgent ToolAdapter 三层出参、统一 Event Envelope、ask_bi 最小契约、AgentScope Shell Adapter、ArtifactCard/TaskTimeline/CandidateDatasetCard 前端承接、Retry checkpoint、Artifact refs 持久化、旧会话兼容和 DAT-18 五件套验收记录。
+- 核心边界：LeadAgent 只看业务能力摘要，外层 Agent 只能调用 `ask_bi`；LLM 不直接生成可执行 SQL；用户可见 SSE/前端/历史回放不暴露 raw SQL、raw result、schema、capsule、query_plan、完整字段/表资产详情；旧会话不迁移、不回填、不伪造 ArtifactCard。
+- 验证覆盖：后端 capability/BI_SOUL/router/compiler/dialect/tool adapter/event envelope/ask_bi/AgentScope adapter/artifact/retry/legacy/chat/main-chain acceptance 系列 pytest，前端 chat-adapter、ArtifactCard、TaskTimeline、MyMessage、ChatPage、lint/build 和 `git diff --check`；真实页面仍按后续 DAT-18/C1/C2/C3 记录继续补证。
+- 残留风险：2026-06-26 阶段仍处 B-first C-ready，AgentScope 未接管主 runtime；真实 Langfuse UI 和真实业务成功查询证据在后续 C1/C2/C3 记录中继续分层推进。
+
+
+### 2026-06-28 至 2026-06-30 C2 RepairPatch 主链收口
+
+- 完成 C2 RepairPatch 设计、离线 Patch Engine、字段候选与 Tool validation、字段漂移注入 fixture、RepairPatch 接入 `sql_audit -> repair_patch -> dsl_compiler -> sql_execute` 主链、前端 repair timeline / Artifact refs 承接、timeline 去重和合并后验收落档。
+- 核心边界：LLM 只参与业务语义裁判，不产出可执行 SQL；Patch IR 只 patch QueryGraph/compiler binding，禁止 patch raw SQL；字段级 patch 主体只进入 trace-only/Langfuse/后端日志，用户可见层只显示业务级 repair summary、status 和 refs。
+- 验证覆盖：`tests/test_repair_patch_engine.py`、`tests/test_repair_patch_stream.py`、`tests/test_repair_plan_contract.py`、`tests/test_event_envelope.py`、`tests/test_sql_audit.py`、`tests/test_query_plan_compiler.py`、`tests/test_chat.py`，前端 `chat-adapter`、`task-timeline`、`artifact-card`、`MyMessage` 测试，以及 lint/build、`git diff --check`；内部-only E2E 固化 `FIELD_MAPPING_DRIFT -> repair.patch_applied -> answer.completed`。
+- 残留风险：C2 合并后已有内部 E2E 和自动化验收，发布级浏览器页面、Langfuse UI 和真实五件套证据在 C3 Workbench 阶段继续补。
+
 ## 高价值判断
 
 - Datalogue 当前业务链路不依赖 Redis 保存多轮业务状态；`last_success_task`、`conversation_state.subagent_capsules` 和 query artifacts 的真相在数据库或应用 ArtifactStore 路径，Langfuse/BullMQ Redis key 不能当成业务状态依据。
@@ -167,205 +183,6 @@
 - 验证方式：先执行 `cd datalogue-web && npm test -- tests/unit/assistant/thread-list-new-conversation.test.jsx` 确认组件层用例红灯，失败表现为找不到 `thread-list-draft-item`；实现后再次执行该命令，4 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过；调用 `GET /api/conversation?archived=false` 记录点击前数量为 4，使用 in-app Browser 打开 `http://localhost:5173/chat/4` 后点击 `.thread-list-new` 且不发送消息，URL 回到 `/chat`，左栏第 0 项为 active draft“新对话”，再次请求后端列表数量仍为 4。
 - 残留风险：本次只验证“未发送不新增数据库会话”和本地草稿可见；未实际发送一条新消息走 LLM 全链路验证创建后的标题刷新和列表排序。
 
-### 2026-06-26 16:44 · BI_SOUL 内部契约与外部入口同步校验
-
-- 涉及文件：`datalogue-api/app/contracts/BI_SOUL.md`、`datalogue-api/app/services/soul_contract_sync.py`、`datalogue-api/tests/test_bi_soul_contract.py`、`hermes-skills/datalogue/SOUL.md`、`.omx/plans/DAT-6-BI_SOUL-内部契约同步计划.md`、`.codex/project-memory.md`
-- 关键改动：新增 BI 不可越界内部 source of truth，明确 LeadAgent 不看字段级 schema 明细、外层 Agent 只能调用 `ask_bi`、LLM 不直接生成可执行 SQL、raw SQL/raw result/capsule/trace 主体属于 `control_plane`；新增同步服务抽取并规范化 `BI_SOUL_SYNC` 块，校验 Hermes SOUL 与内部契约一致，并为未来 AgentScopeShellAdapter 渲染只允许 `ask_bi` 的 policy；Hermes SOUL 嵌入同一同步块。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q` 确认红灯，失败为 `ModuleNotFoundError: app.services.soul_contract_sync`；实现后执行 `cd datalogue-api && python3 -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/soul_contract_sync.py` 通过；创建被 `.gitignore` 忽略的本地 `.venv` 链接后执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_soul_contract.py -q`，3 条用例通过、仅有既有依赖弃用告警。
-- 残留风险：当前仓库尚无 `AgentScopeShellAdapter` 实现，本次只提供可注入的 policy 文本和同步校验；未实现 `ask_bi`、未新增公开 API、未接管 BI 主链 runtime。
-
-### 2026-06-26 17:02 · LeadAgent Capability Router 路由收窄
-
-- 涉及文件：`datalogue-api/app/services/dataset_router.py`、`datalogue-api/app/services/lead_agent_routing.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_lead_agent_capability_router.py`、`.omx/plans/DAT-13-leadagent-capability-router.md`、`.codex/project-memory.md`
-- 关键改动：新增 DAT-13 计划文件；`dataset_router` 内部改用 Manifest capability 摘要打分，但对外候选只暴露 `dataset_id/dataset_name/reason/confidence/requires_confirmation`；低置信和多数据集近分均标记需确认且不 dispatch；`lead_agent_routing` 在未确认数据集时阻断指标/明细问法直接进入 `query_graph`；`chat` 阻断提示改读 `confidence/reason`。
-- 验证方式：先执行 `python3 -m pytest tests/test_lead_agent_capability_router.py -q` 确认旧候选字段导致 3 条红灯，再实现后通过；最终执行 `python3 -m pytest tests/test_lead_agent_capability_router.py tests/test_lead_agent_routing.py tests/test_lead_agent_tools.py -q`，52 条通过；执行 `python3 -m ruff check app/services/dataset_router.py app/services/lead_agent_routing.py app/api/chat.py tests/test_lead_agent_capability_router.py` 通过；执行 `python3 -m py_compile app/services/dataset_router.py app/services/lead_agent_routing.py app/api/chat.py` 通过。
-- 残留风险：本次覆盖后端路由与阻断提示，未启动真实 `/chat/stream` SSE 回放；pytest 仍输出 starlette/pydantic/pytest-asyncio 既有弃用 warning。
-
-### 2026-06-26 17:10 · QueryGraph Compiler 与当前数据源方言门禁
-
-- 涉及文件：`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/app/services/sql_dialect_adapter.py`、`datalogue-api/app/services/dataset_subagent.py`、`datalogue-api/app/services/subagent_planning/contracts.py`、`datalogue-api/app/services/subagent_planning/sql_context.py`、`datalogue-api/app/services/subagent_planning/__init__.py`、`datalogue-api/app/graph/nodes.py`、`datalogue-api/app/graph/state.py`、`datalogue-api/tests/test_query_plan_compiler.py`、`datalogue-api/tests/test_sql_dialect_adapter.py`、`datalogue-api/tests/test_subagent_run.py`
-- 关键改动：新增 QueryPlan 工具编译器与方言适配外壳，编译产物统一输出 `execution_source=tool_compiler`；SQL 执行来源拒绝 `llm_sql/direct_sql/raw_sql/sql` 等模型 SQL 字段；运行期只允许当前选中数据源 dialect，QueryPlan 目标方言与当前数据源不一致或当前数据源方言未启用时返回 `DIALECT_UNSUPPORTED_FOR_CURRENT_DATASOURCE`；SubAgent 初始态写入 `query_plan_compilation`、`control_plane`、`query_artifact`，Graph 在编译产物可用时跳过 DSL LLM SQL 生成，执行层只透传工具编译 SQL。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_subagent_run.py -q` 通过；执行 `cd datalogue-api && python3 -m py_compile app/services/query_plan_compiler.py app/services/sql_dialect_adapter.py app/services/dataset_subagent.py app/graph/nodes.py app/graph/state.py` 通过；执行 `git diff --check` 通过。
-- 残留风险：第一阶段编译器只覆盖明细字段/表资产到 SELECT 的保守编译，不覆盖复杂指标表达式、JOIN 拓扑和全部数据源方言；后续需要按真实资产口径扩展 metric/dimension 编译能力。
-
-### 2026-06-26 17:40 · SubAgent ToolAdapter 三层出参协议
-
-- 涉及文件：`datalogue-api/app/services/subagent_tool_adapter.py`、`datalogue-api/tests/test_subagent_tool_adapter.py`、`.omx/plans/2026-06-26-p0-4-subagent-tool-adapter-three-layer.md`、`.codex/project-memory.md`
-- 关键改动：先落地 P0.4 实施计划，明确兼容迁移、调用点顺序和泄露扫描规则；将 `SubAgentToolResult` 固化为 `llm_visible`、`control_plane`、`trace_metadata` 三层；`control_plane` 增加 `raw_sql` / `raw_result` 承接内部执行 payload；`trace_metadata` 增加 `schema_version`、`tool_name`、`dataset_id`、`guard_status`、`artifact_id` 等稳定追踪字段；`llm_visible` 增加 raw/control 关键字与 SQL 形态扫描，命中后降级为安全引用摘要。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_subagent_tool_adapter.py -q` 确认 3 个新增用例红灯，失败点分别是 control plane 拒绝 raw 字段、trace metadata 缺 schema/tool 字段、display summary 泄露 raw 内容；实现后执行 `python3 -m pytest tests/test_subagent_tool_adapter.py -q`，10 条通过；执行 `python3 -m pytest tests/test_subagent_run.py -q`，14 条通过；执行 `python3 -m pytest tests/test_subagent_tool_adapter.py tests/test_subagent_run.py -q`，24 条通过；执行 `python3 -m ruff check app/services/subagent_tool_adapter.py tests/test_subagent_tool_adapter.py`、`python3 -m py_compile app/services/subagent_tool_adapter.py app/services/subagent_fanout.py app/api/chat.py` 和 `git diff --check` 均通过。
-- 残留风险：本次聚焦 ToolAdapter 协议与现有 Chat/fanout 调用点静态审查，未启动真实 `/chat/stream` 做端到端 SSE 回放；当前本地 checkout 没有 `.venv/bin/python`，验证使用系统 `python3`。
-
-### 2026-06-26 17:55 · DatalogueEventEnvelope 与 `/chat/stream` SSE 映射
-
-- 涉及文件：`.omx/plans/DAT-5-event-envelope-plan.md`、`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_event_envelope.py`、`.codex/project-memory.md`
-- 关键改动：新增统一 `DatalogueEventEnvelope` schema，覆盖 `route.started`、`dataset.selected`、`clarification.required`、`dataset.query.started`、`dataset.query.completed`、`artifact.created`、`answer.completed`、`error.blocked` 与 `user_visible` / `trace_only` / `control_plane`；在 `/chat/stream` 关键 SSE payload 上追加 `event_envelope`，保留旧 `type`、`answer`、`sql`、`response_metadata` 等顶层字段；对 `user_visible` envelope 递归清理 raw SQL、完整结果集、schema、capsule 和 control_plane 主体。
-- 验证方式：先执行 `cd datalogue-api && pytest tests/test_event_envelope.py` 确认新增测试红灯，失败原因为 `app.schemas.bi_workbench` 与 `_with_event_envelope` 缺失；实现后再次执行通过；执行 `cd datalogue-api && pytest tests/test_chat.py`，117 条用例通过。
-- 残留风险：本次未启动真实前端页面回放 SSE Network，只用 schema/helper 单测和现有 `_stream_chat` 近真实测试验证；未来 AgentScope event stream 仍需在消费端接入时补端到端契约测试。
-
-### 2026-06-26 18:07 · ask_bi / BIWorkbenchTool 最小稳定契约
-
-- 涉及文件：`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/services/bi_workbench_tool.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/tests/test_bi_workbench_tool.py`、`.codex/project-memory.md`
-- 关键改动：新增 `AskBIRequest`、`AskBIResponse`、`DatalogueEventEnvelope`、`ArtifactCard`、`ArtifactRef` 等外层契约；新增 `BIWorkbenchTool` / `ask_bi` async 入口，将 `confirmed_dataset_id` 转为现有 `ChatRequest.dataset_id` 并复用 `_stream_chat`；响应只投影 answer、候选数据集、事件信封和引用句柄，公开 ref 会把内部 `sql_result` 命名归一化为 `result`，并在 schema 层拒绝 `raw_sql`、`raw_result`、`schema`、`capsule`、`control_plane` 等内部字段进入用户可见面。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_bi_workbench_tool.py -q` 确认红灯为缺少 `app.schemas.bi_workbench`；实现后执行 `cd datalogue-api && python3 -m pytest tests/test_bi_workbench_tool.py tests/test_chat.py -q`，119 条用例通过；执行 `cd datalogue-api && python3 -m ruff check app/schemas/bi_workbench.py app/services/bi_workbench_tool.py app/schemas/__init__.py tests/test_bi_workbench_tool.py` 通过；执行 `git diff --check -- datalogue-api/app/schemas/bi_workbench.py datalogue-api/app/services/bi_workbench_tool.py datalogue-api/app/schemas/__init__.py datalogue-api/tests/test_bi_workbench_tool.py .codex/project-memory.md` 无输出。
-- 残留风险：本次是 P0.6 最小后端工具契约，未新增公开 API 路由，也未把现有 `/chat/stream` SSE 全量改造成 event envelope；真实链路仍依赖现有 Chat/LeadAgent/DatasetAgent 主链。
-
-### 2026-06-26 18:44 · ArtifactCard 保留动作轻量协议验收
-
-- 涉及文件：`datalogue-api/app/services/artifact_actions.py`、`datalogue-api/tests/test_reserved_actions_contract.py`、`datalogue-api/tests/test_llm_config.py`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`.omx/plans/DAT-7-轻量协议验收与全量回归计划.md`、`.codex/project-memory.md`
-- 关键改动：新增后端 ArtifactCard action 协议生成器，固定 `export` / `continue_edit` 第一阶段禁用态、忽略未知 action、不透传内部 payload；新增前端 `ArtifactCard` 组件，白名单渲染 title/status/summary/preview/refs/actions，未知 action 只写 debug，不展示；将 LLM 配置测试的 `max_tokens` 断言改为引用 `ROLE_CALL_POLICIES`，对齐 2026-06-23 已调整的角色策略。
-- 验证方式：执行 `cd datalogue-api && pytest -q tests/test_reserved_actions_contract.py`，3 条用例通过；执行 `cd datalogue-web && npm run test -- artifact-card`，1 个测试文件 3 条用例通过；执行 `cd datalogue-api && pytest -q tests/test_reserved_actions_contract.py tests/test_multiturn.py tests/test_multiturn_regression.py tests/test_multiturn_context_builder.py tests/test_subagent_tool_adapter.py tests/test_artifact_api.py`，79 条用例通过；执行 `cd datalogue-api && pytest -q`，732 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run test`，5 个测试文件 21 条用例通过；执行 `cd datalogue-web && npm run build` 通过，仅 Vite chunk size warning。
-- 残留风险：真实链路抽检 `python3 scripts/api_assets.py health` 返回 `GET /health failed: [Errno 61] Connection refused`，本地 Datalogue API 未启动，因此未执行只读 SQL preview；新 `ArtifactCard` 组件当前是协议组件，尚未替换 `MyMessage.jsx` 内的旧 artifact 展示路径。
-
-### 2026-06-26 18:29 · Retry checkpoint 与受控重试动作
-
-- 涉及文件：`datalogue-api/app/services/conversation_store.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/schemas/chat.py`、`datalogue-api/tests/test_retry_checkpoint.py`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/styles.css`、`.omx/plans/DAT-12-retry-checkpoint-plan.md`、`.codex/project-memory.md`
-- 关键改动：按 DAT-12 先落地开发计划；在 ConversationStore 的 `_thread.retry_checkpoints` 中注册/恢复 `dataset_confirmed`、`query_context_ready`、`artifact_generation_failed` 三类安全 checkpoint，校验 user、conversation、task、permission_scope 和 expires_at，恢复上下文清洗掉 SQL/schema/control_plane；`ChatRequest` 增加可选 `retry_checkpoint_ref`，多轮 wrapper 输出 `retry.started`、`retry.checkpoint_restored`、`retry.fallback_to_whole_task`、`retry.completed`、`retry.failed`，恢复失败时走整任务重试；final payload 回填 `retry_checkpoint`；新增 ArtifactCard，retry action 只派发 checkpointRef。
-- 验证方式：先执行 `python3 -m pytest tests/test_retry_checkpoint.py -q` 确认 RED 失败为缺少 `register_retry_checkpoint`；实现后执行 `python3 -m pytest tests/test_retry_checkpoint.py -q` 通过；执行 `python3 -m pytest tests/test_retry_checkpoint.py tests/test_chat.py -q`，120 条通过；执行 `cd datalogue-web && npm run test -- artifact-card`，2 条通过；执行 `npm run lint`，0 error、15 个既有 warning；执行 `npm run build` 通过，保留既有大 chunk warning。
-- 残留风险：本次没有把 ArtifactCard 接入现有 MyMessage 渲染入口，只完成组件和受控 retry action 契约；未启动真实页面回放 SSE retry 流，当前以单测模拟 stream 和既有 chat 回归覆盖。
-
-### 2026-06-26 18:24 · DAT-11 AgentScope Shell Adapter 最小验证线
-
-- 涉及文件：`.omx/plans/DAT-11-agentscope-shell-adapter.md`、`datalogue-api/app/services/agentscope_shell_adapter.py`、`datalogue-api/app/services/agentscope_event_adapter.py`、`datalogue-api/tests/test_agentscope_shell_adapter.py`、`datalogue-api/tests/test_agentscope_event_adapter.py`、`.codex/project-memory.md`
-- 关键改动：按 DAT-11 要求先保存开发计划；新增 AgentScope Shell Adapter service，第一阶段固定只允许 `ask_bi`，不开放公开 API、不接前端、不启动 runner；新增 AgentScope Event Adapter，`control_plane` 事件只计入内部丢弃数，不进入 Shell 可见事件或 trace 事件输出；适配当前已合入的 async `ask_bi`、`DatalogueEventEnvelope` 和 `ArtifactRef.ref_id` 契约。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q` 通过；执行 `cd datalogue-api && python3 -m py_compile app/services/agentscope_shell_adapter.py app/services/agentscope_event_adapter.py app/schemas/bi_workbench.py app/services/bi_workbench_tool.py` 通过；执行 `git diff --check` 通过。
-- 残留风险：当前是 contract-first 最小验证线，未接真实 `/chat/stream`、未导入 AgentScope runtime、未做真实 BI 主链回放。
-
-### 2026-06-26 18:26 · P1 Chat Shell：ArtifactCard、任务时间线与候选确认
-
-- 涉及文件：`datalogue-web/src/components/artifact-card.jsx`（新建）、`datalogue-web/src/components/task-timeline.jsx`（新建）、`datalogue-web/src/components/artifact-card.test.jsx`（新建）、`datalogue-web/src/components/task-timeline.test.jsx`（新建）、`datalogue-web/src/assistant/MyMessage.test.jsx`（新建）、`datalogue-web/src/assistant/chat-adapter.test.js`（新建）、`datalogue-web/src/assistant/chat-adapter.js`（修改）、`datalogue-web/src/assistant/MyMessage.jsx`（修改）、`datalogue-web/src/styles.css`（修改）、`.codex/project-memory.md`
-- 关键改动：
-  - 新增 ArtifactCard 统一产物卡片（title/status/summary/preview/refs/actions），未知 action_type 不渲染，disabled action 仅展示不交互；
-  - 新增 TaskTimeline 业务级时间线（五类节点：任务理解/数据集匹配/BI 执行/结果产物/下一步），内置 FORBIDDEN_PATTERNS 安全扫描自动截断 SQL/schema 等关键词；
-  - 新增 CandidateDatasetCard 候选确认（只展示 dataset_name + short_reason，不暴露字段/表/资产详情）；
-  - chat-adapter.js 新增 taskTimeline 累加器，从 route_decision/step/final 事件推断 C-ready 数据结构，在 metadata.custom 中输出 taskTimeline/artifactCard/candidateDatasets，补充 adapter 单测覆盖业务 session、artifact metadata、候选数据集和 clarification_response 一次性消费；
-  - MyMessage.jsx 新增 CandidateDatasetCard 组件并渲染 TaskTimeline + ArtifactCard；
-  - styles.css 新增三套 CSS 类（.artifact-card/.task-timeline/.candidate-dataset-card），遵循现有设计令牌体系。
-- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，4 个测试文件 31 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
-- 残留风险：后端 C-ready event envelope 正式上线后，chat-adapter.js 中从 step 推断的 timeline 节点可能需要与后端新 event type 对齐调整；未做深色模式样式适配；MyMessage 测试依赖 assistant-ui mock，真实 assistant-ui 渲染路径未端到端验证。
-
-### 2026-06-26 21:05 · DAT-17 Artifact refs 持久化与旧会话兼容
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/tests/test_artifact_card_contract.py`、`datalogue-api/tests/test_legacy_conversation_replay.py`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/tests/unit/assistant/artifact-custom.test.js`、`.codex/project-memory.md`
-- 关键改动：final payload 统一补齐 `task_id`、`trace_id`、`primary_ref`、`related_refs` 和 `artifact_card`，event envelope 透传同一 task/trace；ArtifactCard 只暴露 `artifact:/trace:/checkpoint://` 引用句柄和禁用态动作，不携带 raw SQL/raw result；assistant message metadata 写回新 refs，`query_artifact` 只按 `artifact:<uuid>` 反连 message_id；`conversation_state.facts` 写入 `artifact_refs` fact，旧会话不迁移、不回填；前端历史回放只渲染真实 `response_metadata.artifact_card`，不会根据旧 `result_ref/report_ref` 伪造卡片；补充 `/chat/:id` 正向线程同步，直接打开历史会话时显式切到路由会话，避免停留在本地草稿导致 ArtifactCard 不回放。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_artifact_card_contract.py tests/test_legacy_conversation_replay.py tests/test_conversation.py tests/test_artifact_api.py -q`，15 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_event_envelope.py tests/test_retry_checkpoint.py tests/test_chat.py -q`，123 条用例通过；执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/components/artifact-card.test.jsx tests/unit/assistant/artifact-custom.test.js src/assistant/chat-adapter.test.js`，4 个测试文件 28 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/schemas/bi_workbench.py`、`python3 -m ruff check app/api/chat.py app/schemas/bi_workbench.py tests/test_artifact_card_contract.py tests/test_legacy_conversation_replay.py` 通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
-- 残留风险：DAT-17 只完成协议与持久化闭环；真实页面、SSE、后端日志、Langfuse、`query_artifact/conversation_state` 五件套一致性仍需 DAT-18 用本地服务和真实问题记录验收。
-
-### 2026-06-26 18:50 · DAT-14 主链路五件套验收用例
-
-- 涉及文件：`.omx/plans/2026-06-26-dat-14-main-chain-acceptance.md`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_chat.py`、`datalogue-api/tests/test_bi_main_chain_acceptance.py`、`datalogue-web/src/assistant/chat-adapter.test.js`、`docs/main-chain-acceptance-record-template.md`、`.codex/project-memory.md`
-- 关键改动：新增 DAT-14 验收计划和真实链路记录模板；补充主链路验收测试，核对成功问数的 SSE/message metadata/trace index/query_artifact/conversation_state，覆盖低置信候选确认、无法回答拒答和受控失败 retry；扩展 `/chat/stream` 日志摘要，加入 result/report artifact ref 与 Langfuse trace/session；新增前端 adapter 测试，确认 final SSE metadata 映射并保护旧历史缺 ArtifactCard 不伪造。
-- 验证方式：先执行 `cd datalogue-api && pytest tests/test_chat.py::TestChatAPI::test_chat_stream_log_summary_extracts_debug_fields tests/test_bi_main_chain_acceptance.py -q` 确认 RED（日志摘要缺 result/report/trace 字段，验收 fixture 调整后复现），修复后该命令 4 passed；执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，121 passed；执行 `cd datalogue-api && python3 -m pytest tests/test_observability.py tests/test_artifact_api.py -q`，20 passed；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js`，1 个文件 6 条用例通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过。
-- 残留风险：本轮未连接真实 Langfuse 控制台做外部 observation 截图；自动化使用 no-op trace 与本地 `observability_trace_index` 验证主链路不阻塞。Vite build 仍有既有大 chunk warning，lint 仍有 15 个既有 warning。
-
-### 2026-06-26 21:25 · DAT-18 五件套验收记录落档
-
-- 涉及文件：`docs/main-chain-acceptance-records/2026-06-26-b-first-c-core-chain.md`、`.codex/project-memory.md`
-- 关键改动：新增 B-first C-ready 主链路五件套验收记录，明确自动化代表问题 `最近30日GMV趋势如何` 已覆盖 SSE、后端 checkpoint、trace index、query_artifact 和 conversation_state 交叉核对；2026-06-27 补录真实问题 `查询杨凯 2024 年工作日志`，记录 Manifest stale fail-closed、Manifest v3 发布、`conversation_id=16/message_id=34/task_id=conv-16-msg-34/trace_id=dlg-a85416ec39724384b5aa992a23641bb7/artifact:e668a634847a41a4b5489d11092da363` 在页面、SSE、Artifact API、query_artifact、conversation_state 和本地 trace index 的一致性。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py tests/test_observability.py tests/test_artifact_api.py -q`，141 条用例通过；执行最终集成套件 `cd datalogue-api && python3 -m pytest tests/test_capability_manifest.py tests/test_bi_soul_contract.py tests/test_lead_agent_capability_router.py tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_subagent_tool_adapter.py tests/test_event_envelope.py tests/test_bi_workbench_tool.py tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_artifact_card_contract.py tests/test_retry_checkpoint.py tests/test_legacy_conversation_replay.py tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，168 条用例通过；执行 `cd datalogue-web && npm run test`，9 个测试文件 62 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过；Playwright 打开 `/chat/16` 确认历史问题、错误诊断、`BI 查询结果` ArtifactCard、同一 artifact_ref 和重试按钮可见。
-- 残留风险：Langfuse 页面服务可达但后端 Python 环境缺少 `langfuse` SDK，真实 observation 未写入；真实业务 SQL 因语义层错误引用不存在字段 `eas_personofile.create_time` 受控失败，需修正 dataset 10 语义资产后才能把 DAT-18 标为“真实业务成功查询 + Langfuse observation 完整五件套”通过。
-
-### 2026-06-28 15:32 · C2 RepairPatch Engine 设计与开发计划
-
-- 涉及文件：`docs/architecture/C2-RepairPatch-字段漂移自动修复设计.md`、`docs/superpowers/specs/2026-06-28-c2-repair-patch-engine-design.md`、`docs/superpowers/plans/2026-06-28-c2-repair-patch-engine.md`、`.codex/project-memory.md`
-- 关键改动：固化 C2 阶段设计，明确 P0 聚焦字段不存在 / 字段漂移自动修复；字段候选采用语义资产优先、selected columns fallback；Patch IR 使用统一 `RepairPatch` envelope，支持 `query_graph_patch` 与 `compiler_binding_patch`，禁止直接 patch SQL；confidence 采用规则打底 + LLM 业务语义裁判 + Tool merge/clamp；高置信自动修复，中置信只保留确认协议和占位 UI，低置信阻断；真实验收用 `查询杨凯 2024 年工作日志`，通过 compiler binding 注入字段漂移，不污染真实语义资产。
-- 开发计划：C2 等 C1 合并到 `b-first-c` 后启动，拆成 3 个 stacked PR：PR1 离线 Patch Engine 内核；PR2 RepairPlan 协议与真实链路；PR3 前端 timeline、ArtifactCard 承接和页面 E2E。
-- 验证方式：执行 `rg -n "TODO|TBD|待定|placeholder|FIXME" docs/architecture/C2-RepairPatch-字段漂移自动修复设计.md docs/superpowers/specs/2026-06-28-c2-repair-patch-engine-design.md docs/superpowers/plans/2026-06-28-c2-repair-patch-engine.md`，仅命中“中置信占位 UI”等已确认范围；执行关键约束扫描，确认 `selected columns`、`compiler_binding_patch`、`repair.patch_validated`、真实问题和五件套验收已写入；执行 `git diff --check` 通过。
-- 残留风险：这是设计和开发计划落档，尚未实现 C2 代码；C2 开发需要先完成 C1 合并，再从合并后的 `b-first-c` 拉 PR1 分支。
-
-### 2026-06-28 16:13 · C1/C2 RepairPlan 文档边界 review 收口
-
-- 涉及文件：`docs/architecture/C1-RepairPlan-真实成功链路设计.md`、`docs/superpowers/specs/2026-06-28-c1-repair-plan-real-acceptance-design.md`、`docs/main-chain-acceptance-records/2026-06-28-c1-repair-plan-acceptance.md`、`.codex/project-memory.md`
-- 关键改动：按 review 结论修正 C1/C2 边界，明确 C1 只交付 RepairPlan 协议、`repair.*` 事件、Artifact refs、失败分类、受控 retry / fixture 验证和现有可信 template 路径下的真实业务成功链路；“真实成功链路”不等于字段漂移自动修复闭环；`FIELD_NOT_FOUND` / `FIELD_MAPPING_DRIFT` 的字段候选、RepairPatch IR、apply、重新编译和真实漂移验收统一归 C2 RepairPatch Engine。
-- 验收记录：补充 Review 收口结论和 C2 后续闸门，要求 C2 禁止直接 patch raw SQL，并用可复现字段漂移注入完成五件套验收，避免把 C1 的 template / fixture 成功误标为完整自动修复。
-- 验证方式：执行 C1/C2 边界关键词扫描，确认 C1 文档不再声称已实现真实字段级 patch / apply / recompile；执行 `git diff --check` 通过。
-- 残留风险：本次仅做文档边界收口，不实现 C2 RepairPatch Engine；后续 C2 仍需按独立设计和开发计划落地真实字段漂移修复。
-
-### 2026-06-28 16:31 · C1 review 阻断项代码收口
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_event_envelope.py`、`datalogue-api/tests/test_chat.py`、`datalogue-api/tests/test_bi_main_chain_acceptance.py`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/tests/unit/assistant/artifact-custom.test.js`、`.codex/project-memory.md`
-- 关键改动：按多智能体 review 的阻断意见补齐公开层脱敏，`/chat/stream` 的顶层兼容 payload 不再旁路输出 `sql/sql_result/query_plan/candidate_assets/dsl/query_task_capsule` 等内部执行字段，`sql_execute` step 只暴露 `row_count/column_count`；前端 live 和历史回放统一用安全 mapper 提炼业务口径、Artifact refs、候选确认和 RepairPlan 摘要，不再保存或渲染 SQL 结果表、query plan、candidate assets、DSL、diagnosis、raw rows；ArtifactCard 历史对象也经过安全清洗，preview payload 不再携带 raw rows。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_artifact_card_contract.py tests/test_artifact_api.py tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，154 条通过；执行 `cd datalogue-web && npm run test`，9 个测试文件 75 条通过；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/assistant/MyMessage.test.jsx && npm run lint && npm run build`，目标测试 19 条通过、lint 0 error 15 个既有 warning、build 通过；执行 `git diff --check` 通过。
-- 残留风险：本次只收口 C1 review 阻断项，不启动 C2 RepairPatch Engine；真实字段漂移自动修复仍需等 C1 合并后按 C2 独立 PR 落地。
-
-### 2026-06-28 16:52 · C1 页面可见层内部节点名终审修复
-
-- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/components/agent-panel.jsx`、`.codex/project-memory.md`
-- 关键改动：C1 最终页面复验发现 Chain-of-Thought 和 AgentPanel 仍显示 `query_plan`、`candidate_assets`、`subagent.query_plan`、`Query Task Capsule` 等内部节点或 control-plane 标题；本次统一将 live reasoning、历史回放、消息气泡和 AgentPanel 步骤标签映射为业务级中文文案，并移除 AgentPanel 中 message gateway 的原始 `turn_event/query_task_capsule` JSON 展示，只保留任务理解业务摘要。
-- 验证方式：执行 Playwright 页面冒烟，打开 `http://127.0.0.1:5180/chat/25`，确认 ArtifactCard 可见，切到会话 1 后旧 artifact 不残留，再切回 25 后 ArtifactCard 恢复，页面 body 对 `SELECT`、`SQL 复制`、`复制 SQL`、`显示生成的 SQL`、`query_plan`、`candidate_assets`、`raw_result`、`Query Task Capsule`、`Turn Event`、`subagent.query_plan`、`subagent.candidate_assets` 的扫描均为空；执行 `cd datalogue-web && npm run test && npm run lint && npm run build`，75 条前端用例通过、lint 0 error 15 个既有 warning、build 通过；执行 `cd datalogue-api && python3 -m pytest tests/test_event_envelope.py tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，131 条通过；执行 `git diff --check` 通过。
-- 残留风险：本次只处理普通 Chat 页面和 AgentPanel 可见层文案，不改变后端 trace/control-plane 内部节点名。
-
-### 2026-06-28 17:07 · C1 公共 API 红action终审修复
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/api/conversation.py`、`datalogue-api/app/services/repair_plan.py`、`datalogue-api/tests/test_chat.py`、`datalogue-api/tests/test_conversation.py`、`datalogue-api/tests/test_event_envelope.py`、`datalogue-api/tests/test_repair_plan_contract.py`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`.codex/project-memory.md`
-- 关键改动：按 C1 终审阻断项把服务端公共层补齐为 fail-closed：`/chat/stream` 的 `event_envelope.payload` 和旧 SSE 顶层统一阻断 `query_profile/explainability/response_metadata/result_artifact/schema_summary` 等内部执行面；`/api/conversation/{id}` 不再原样返回落库 `response_metadata/step_trace/sql_list`，改为公共 DTO，只保留正文、业务摘要、Artifact refs、RepairPlan 摘要、trace 链接和安全 SubAgent 摘要；历史 step_trace 节点名映射为业务级 `display_name`；ArtifactCard 彻底取消 raw rows/columns 预览；RepairPlan 服务层修正类型构造和脱敏返回类型。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_conversation.py tests/test_artifact_card_contract.py tests/test_artifact_api.py tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，161 条通过；执行 `cd datalogue-web && npm run test && npm run lint && npm run build`，75 条前端用例通过、lint 0 error 15 个既有 warning、build 通过；执行 `python3 -m py_compile datalogue-api/app/api/conversation.py datalogue-api/app/api/chat.py datalogue-api/app/services/repair_plan.py` 和 `git diff --check` 通过；Browser 打开 `/chat/25`，确认 ArtifactCard 与会话 25 refs 可见，`SELECT/SQL 复制/复制 SQL/显示生成的 SQL/query_plan/candidate_assets/raw_result/schema_summary/Query Task Capsule/Turn Event/subagent.query_plan/subagent.candidate_assets` 均未出现在页面；执行 `/chat/25 -> /chat/1 -> /chat/25` 切换，旧 25 artifact 不残留、切回后 refs 恢复，console error/warning 为空。
-- 残留风险：C1 仍不实现 C2 RepairPatch Engine；`query_profile/explainability` 只保留在数据库内部 metadata、trace 和日志，普通 SSE/history API 不再暴露，后续 C2 需要继续遵守公共层红action边界。
-
-### 2026-06-28 17:20 · C2 PR1 RepairPatch Engine 离线内核
-
-- 涉及文件：`datalogue-api/app/services/repair_patch.py`、`datalogue-api/app/prompts/repair_patch.py`、`datalogue-api/tests/test_repair_patch_engine.py`、`.codex/project-memory.md`
-- 关键改动：从合并后的 `b-first-c` 新建 `c2-repair-patch-engine-pr1`，按 TDD 新增 RepairPatch 离线内核；定义 `RepairPatch` envelope、字段候选 `FieldCandidate`、patch operation、Tool validation 和 apply 结果；候选生成优先使用当前数据集 `SemanticDimension`，再 fallback 到已选 source columns，拒绝未选字段和跨数据集；新增粗粒度类型归一、MockSemanticJudge、语义裁判 prompt input sanitizer、confidence merge/clamp；实现 `query_graph_patch` 与 `compiler_binding_patch` 纯函数 apply，返回脱敏 diff summary 和 trace-only 字段详情；新增本地 fallback prompt `repair_plan_field_semantic_judge`，约束 LLM 只判定业务语义等价，不生成 SQL/字段 patch。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_engine.py -q`，确认因 `app.services.repair_patch` 缺失 RED；补实现后执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py -q`，28 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/repair_patch.py app/services/repair_plan.py app/prompts/repair_patch.py` 通过。
-- 残留风险：PR1 只实现离线 Patch Engine，不接 `/chat/stream`、RepairPlan 生命周期、Langfuse observation 或前端 timeline；真实字段漂移自动重跑成功链路属于 C2 PR2/PR3。
-
-### 2026-06-28 17:36 · C2 PR1 终审安全边界修复
-
-- 涉及文件：`datalogue-api/app/services/repair_patch.py`、`datalogue-api/tests/test_repair_patch_engine.py`、`.codex/project-memory.md`
-- 关键改动：#18 终审发现两个合并前风险并修复：字段候选缺少业务注释时，语义裁判 prompt 不再把物理列名或表名 fallback 给 LLM，而是统一替换为“当前数据集候选字段”；用户可见 RepairPatch summary 不再原样透传 validation summary / risk flags，命中 SQL、schema、raw result、query_plan 等执行细节时退回固定业务文案，并只保留稳定枚举型 risk flag；同时补齐 confidence clamp，避免异常分数越过 `0..1` 契约。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_query_plan_compiler.py -q`，34 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/repair_patch.py app/prompts/repair_patch.py` 通过；执行 `git diff --check` 通过。
-- 残留风险：本次仍保持 PR1 范围，不接 `/chat/stream` 和真实重跑；PR2 接主链时需要继续验证 RepairPatch trace-only metadata 不进入 SSE/history/API 用户可见面。
-
-### 2026-06-28 17:45 · C2 PR2 RepairPatch 接入主链重跑
-
-- 涉及文件：`datalogue-api/app/graph/nodes.py`、`datalogue-api/app/graph/workflow.py`、`datalogue-api/app/graph/state.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_repair_patch_stream.py`、`.codex/project-memory.md`
-- 关键改动：按 TDD 把 C2 PR1 的 RepairPatch Engine 接入 RepairPlan 后的真实重跑生命周期；新增 `repair_patch_node`，在 `sql_audit` 生成 `FIELD_NOT_FOUND` RepairPlan 后生成字段候选、构造 query_graph patch、Tool 校验、apply 到 QueryPlan、重新调用 `compile_query_plan_to_sql`，再通过 `dsl_compiler -> sql_execute` 继续真实执行；`workflow` 新增 `repair_patch` 路由和 fail-closed router，非字段漂移仍保留旧 retry 链；`AgentState` 增加 RepairPatch 内部态和脱敏摘要；`chat.py` 加入 `repair_patch` 节点展示名；安全边界上只允许 trace-only metadata 保存字段级 patch，用户可见 `repair_patch_summary` 不包含表、字段、SQL、schema 或 raw result。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py -q` 确认 RED，失败表现为 `_sql_audit_router` 仍返回 `retry` 且 `repair_patch_node` 不存在；实现后该命令 3 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，171 条通过。
-- 残留风险：PR2 完成后端主链接入和自动化重跑 fixture；前端 repair timeline 细化、ArtifactCard repair ref 展示、页面 E2E 以及真实问题字段漂移注入五件套验收仍归 C2 PR3。
-
-### 2026-06-28 17:50 · C2 PR3 前端 RepairPatch timeline 承接
-
-- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/components/task-timeline.jsx`、`datalogue-web/src/components/task-timeline.test.jsx`、`.codex/project-memory.md`
-- 关键改动：按 TDD 承接 C2 PR2 的 `repair_patch` 主链输出；`chat-adapter` 支持从 `repair_patch` graph step、`repair.patch_applied` event envelope 和 final payload 的 `repair_patch_summary` 生成业务级 `repairPlan`、`repairTimeline` 和 `taskTimeline`，同时保留 `artifact_card.related_refs` 中的 `repair_plan` ref；`TaskTimeline` 增加一等业务节点 `repair_patch/自动修复`，排序在 BI 执行和结果产物之间；前端 trace 清洗新增 `repair_patch/trace_only_metadata/replacement_field_ref` 等字段级 patch 主体黑名单，普通用户可见层不展示表、字段、SQL、raw result。
-- 验证方式：先执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx` 确认 RED，失败表现为 `repair_patch_summary` 未映射、`repair_patch` timeline 节点被当未知节点；实现后该命令 20 条通过；执行 `cd datalogue-web && npm run test`，9 个测试文件 78 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk warning；执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，171 条通过。
-- 残留风险：本次完成前端协议和组件承接；真实页面 E2E、字段漂移注入五件套验收和 Langfuse UI 证据仍需在本地服务启动后补充记录。
-
-### 2026-06-28 17:56 · C2 PR3 终审 RepairPatch 时间线去重
-
-- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`.codex/project-memory.md`
-- 关键改动：终审 #20 与 #19 stacked diff 时发现真实 repair 序列会连续发 `repair.evaluated / repair.plan_created / repair.rerun_started / repair.rerun_completed`，前端若逐条追加会产生多条“自动修复”节点且部分保持 running；本次新增 `upsertTaskTimelineEvent`，将 repair 业务时间线收敛为单个 `repair_patch/自动修复` 节点，并用完整 repair event 序列补测试。
-- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx`，20 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `git diff --check` 通过。
-- 残留风险：本次只修复前端时间线重复节点；真实页面 E2E 和五件套验收仍需在 PR2/PR3 Ready 后用本地服务补证。
-
-### 2026-06-28 18:04 · C2 PR2 终审 RepairPatch 契约收口
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/graph/nodes.py`、`datalogue-api/app/graph/workflow.py`、`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/schemas/repair_plan.py`、`datalogue-api/app/services/repair_plan.py`、`datalogue-api/app/utils/sql_diagnosis.py`、`datalogue-api/tests/test_event_envelope.py`、`datalogue-api/tests/test_repair_patch_stream.py`、`datalogue-api/tests/test_repair_plan_contract.py`、`datalogue-api/tests/test_sql_audit.py`、`.codex/project-memory.md`
-- 关键改动：按 #19/#20 终审阻断项补齐 C2 后端契约；新增 `FIELD_MAPPING_DRIFT` failure class、重跑预算和 `repair_patch` 路由，语义资产字段存在但当前表不可用时归类为可修复字段映射漂移；`sql_audit_node` 优先采用确定性诊断 code 生成 RepairPlan，避免被原始 DB 错误降回 `FIELD_NOT_FOUND`；统一事件类型新增 `repair.patch_applied`，`repair_patch` 节点完成后发 canonical patch-applied envelope；公开 SSE 顶层阻断 `repair_patch/repair_patch_apply/trace_only_metadata`，只暴露脱敏 `repair_patch_summary`、`repair_plan_ref` 和状态。
-- 验证方式：先执行 targeted pytest 确认 RED，失败覆盖 `repair.patch_applied` 事件类型缺失、RepairPatch 内部 body 进入公开 payload、`FIELD_MAPPING_DRIFT` 未路由；修复后执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，193 条通过；执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/graph/nodes.py app/graph/workflow.py app/schemas/bi_workbench.py app/schemas/repair_plan.py app/services/repair_plan.py app/utils/sql_diagnosis.py` 通过。
-- 残留风险：PR2 仍未做真实浏览器 E2E 和 Langfuse UI 五件套验收；这些随 PR3 前端承接后统一补证。
-
-### 2026-06-28 18:26 · C2 真实链路 E2E 与 LangGraph 节点名修复
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/graph/workflow.py`、`datalogue-api/tests/test_repair_patch_stream.py`、`.codex/project-memory.md`
-- 关键改动：真实 `/api/chat/stream` 链路触发 LangGraph `ValueError: 'repair_patch' is already being used as a state key`，原因是 graph node 名称与 `AgentState.repair_patch` 状态字段重名；本次将内部 graph node 改为 `repair_patch_step`，并在 Chat SSE、trace、日志和前端协议层继续映射为公开业务节点 `repair_patch`，避免破坏既有 RepairPatch event contract。
-- 真实验收：重启当前仓库 API `127.0.0.1:8000` 和前端 `localhost:5173` 后，用真实问题“查询杨凯 2024 年工作日志”完成主链查询，生成 `conversation_id=28`、`message_id=64`、`trace_id=d6109d98c33ff11eaf127da63dde6440`、`primary_ref=artifact:5d8fa59013334b07b20caf442eb04774`、`report_ref=artifact:cb87023d36744a199ca00e0e4f27ec6b`；页面 `/chat/28` 可见答案、任务时间线和 ArtifactCard，切换 `/chat/28 -> /chat/1 -> /chat/28` 无旧会话残留，浏览器 console error/warning 为空，用户可见层未命中 `query_plan/candidate_assets/raw_result/schema_summary/SQL` 等内部细节。
-- 数据核对：`query_artifact` 中主结果和报告 artifact 均存在并指向同一 `conversation_id/message_id/trace_id`；`conversation_state` 存在 `session_id=e2e-c2-fixed-1782641948`、`active_dataset_id=10`、`turn_index=1`；`observability_trace_index` 有同一 trace，状态为 `success`。
-- 验证方式：先执行 `.venv/bin/python -m pytest tests/test_repair_patch_stream.py::test_build_workflow_registers_repair_patch_without_state_key_collision -q` 确认 RED；修复后执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，191 条通过、3 条 skipped；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，48 条通过；执行 `cd datalogue-web && npm run lint && npm run build` 通过，仅保留 15 个既有 lint warning 和既有 chunk size warning；执行 `git diff --check` 通过。
-- 残留风险：真实问题当前走可信模板一次成功，没有触发 RepairPatch 自动修复事件；本次 E2E 证明主链、页面回放、会话切换、Artifact/trace 持久化和 LangGraph 注册问题已收口，字段漂移自动修复的真实 RepairPatch 五件套仍需要用注入式漂移场景单独补证。
-
-### 2026-06-30 09:26 · C2 RepairPatch 字段漂移内部 E2E pytest 固化
-
-- 涉及文件：`datalogue-api/tests/test_repair_patch_stream.py`、`.codex/project-memory.md`
-- 关键改动：把“注入旧字段触发字段映射漂移”的方案 1 固化为正式 pytest 内部 harness：临时 SQLite 真实执行首轮坏 SQL，模拟语义资产仍指向旧字段，确认 `sql_execute -> sql_audit -> repair_patch -> dsl_compiler -> sql_execute` 链路自动生成 RepairPatch、重编译为合法 QueryGraph SQL 并二次执行成功；测试同时校验 RepairPatch 用户可见摘要不泄露表名、字段名、SQL、query_plan、trace-only metadata 或 raw result。
-- 验证方式：先执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py::test_workflow_e2e_repairs_injected_field_mapping_drift -q` 确认 RED，初始失败为 helper 未实现；补齐 harness 后同一单例通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，192 条通过、3 条 skipped。
-- 残留风险：本次是内部-only workflow pytest，不启动真实 `/chat/stream` HTTP 服务、浏览器页面或 Langfuse UI；它用于稳定覆盖字段漂移自动修复主链，真实页面五件套仍需在本地服务验收记录中单独补证。
-
-### 2026-06-30 09:45 · C2 RepairPatch 合并后验收落档
-
-- 涉及文件：`docs/main-chain-acceptance-records/2026-06-30-c2-repairpatch-post-merge.md`、`.codex/project-memory.md`
-- 关键改动：在 `b-first-c@3ad8bb2c` 上补充 C2 RepairPatch 合并后验收记录，明确 #19/#20 已进入主线；记录字段映射漂移内部 E2E 的事件顺序、关键断言、公开层脱敏边界、前端 timeline 承接和五件套分层状态；如实标注本次未启动浏览器真实会话和 Langfuse UI，不伪造成完整发布级五件套通过。
-- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py::test_workflow_e2e_repairs_injected_field_mapping_drift -q`，1 条通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，192 条通过、3 条 skipped；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，48 条通过；执行 `cd datalogue-web && npm run lint && npm run build` 通过，保留既有 15 个 lint warning 和 Vite chunk warning；执行 `git diff --check` 通过。
-- 残留风险：C2 RepairPatch 自动修复主链已有合并后可重复证据；发布级浏览器页面、Langfuse observation、真实 `query_artifact/conversation_state` 同一 trace 五件套仍需用本地服务单独补证。
-
 ### 2026-06-30 10:18 · C3 AgentScope Workbench 产品化设计落档
 
 - 涉及文件：`docs/architecture/C3-AgentScope-Workbench-产品化设计.md`、`docs/superpowers/specs/2026-06-30-c3-agentscope-workbench-design.md`、`.codex/project-memory.md`
@@ -435,3 +252,10 @@
 - 真实验收：本地 API `127.0.0.1:8000` 和前端 `127.0.0.1:5173` 下，用真实问题“查询杨凯 2024 年工作日志”完成候选确认到成功问数；生成 `conversation_id=31`、`thread_id=as_60b44ad7-cd95-4b2e-a765-c2e82e189c2d`、`trace_id=22b163778f0bbdb422c691997ae6eb60`、`primary_ref=artifact:e1c094ea0d2242a681345f70a2404284`、`report_ref=artifact:5d40ec7b33b04ab199b8d3dc3b46f53f`、`checkpoint_ref=checkpoint://conv-31-msg-74/query_context_ready`；主 Chat 和右侧 Workbench Panel 均显示 completed，隐藏 `/workbench/:threadId/:artifactRef` 路由可打开同一产物，`/chat/25` 旧会话只读回放正常。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_event_projection.py tests/test_c3_workbench_acceptance.py tests/test_agentscope_chat_bridge.py tests/test_workbench_view_api.py tests/test_workbench_retry_actions.py -q`，31 条通过；执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/assistant/chat-adapter.test.js src/assistant/thread-list-adapter.test.js src/components/workbench-panel.test.jsx`，34 条通过；真实浏览器页面扫描未命中 `SELECT/query_plan/raw_result/schema_summary/field_patch`，console error/warn 为空。
 - 残留风险：本次没有打开 Langfuse UI 做人工核对；C3-P1 仍需把 Workbench 受控 retry 从“创建 running message + checkpoint event”推进到真实主链恢复。
+
+### 2026-06-30 14:22 · C3-P1 PR1 Workbench Retry 主链恢复入口
+
+- 涉及文件：`datalogue-api/app/schemas/agentscope_workbench.py`、`datalogue-api/app/services/workbench_actions.py`、`datalogue-api/tests/test_workbench_retry_actions.py`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/workbench-panel.jsx`、`datalogue-web/src/components/workbench-panel.test.jsx`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
+- 关键改动：C3-P1 PR1 将 Workbench 受控 retry 从“只创建 running mirror message”推进到 Chat 主链恢复入口；后端新增业务级 `WorkbenchRetryRunRequest`，`request_controlled_retry()` 在 accepted response 中返回 `question/conversation_id/thread_id/dataset_id/retry_checkpoint_ref/display_text`，但不携带 SQL/schema/raw rows/query_plan/field_patch；前端 WorkbenchPanel 接收 `run_request` 后回调 ChatPage，ChatPage 使用 assistant-ui `thread.append()` 发起普通用户消息，chat-adapter 一次性消费 `window.__DATALOGUE_PENDING_WORKBENCH_RETRY__` 并把 `retry_checkpoint_ref` 交给既有 `/chat/stream` checkpoint restore 链路。
+- 验证方式：先执行后端和前端定向测试确认 RED，失败点分别为 `run_request` 缺失、Panel 未触发 `onRetryRun`、chat-adapter 未发送 pending retry；实现后执行 `cd datalogue-api && python3 -m pytest tests/test_workbench_retry_actions.py tests/test_retry_checkpoint.py tests/test_c3_workbench_acceptance.py tests/test_workbench_view_api.py -q`，16 条通过；执行 `cd datalogue-web && npm run test -- src/components/workbench-panel.test.jsx src/assistant/chat-adapter.test.js src/components/chat-page.test.jsx`，34 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过；执行 `git diff --check` 通过。
+- 残留风险：本次完成 retry action 到 `/chat/stream` 的主链恢复入口，不伪造成真实浏览器 retry 成功；下一步需要补真实页面 retry 场景或内部 harness，验证 `retry.checkpoint_restored -> answer.completed` 与 Workbench mirror 同一 thread/trace/ref 一致。

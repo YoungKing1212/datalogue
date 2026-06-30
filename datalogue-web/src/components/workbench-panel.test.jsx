@@ -99,4 +99,52 @@ describe('WorkbenchPanel', () => {
     expect(await screen.findByText('工作台')).toBeInTheDocument();
     expect(screen.queryByText('诊断详情')).not.toBeInTheDocument();
   });
+
+  it('passes accepted retry run request to chat shell without execution details', async () => {
+    const onRetryRun = vi.fn();
+    fetchWorkbenchThread.mockResolvedValueOnce({
+      ...threadView,
+      available_actions: [
+        {
+          action_id: 'retry',
+          label: '重试',
+          enabled: true,
+          checkpoint_ref: 'checkpoint://retry',
+          message_id: 'msg_failed',
+        },
+      ],
+    });
+    requestWorkbenchRetry.mockResolvedValueOnce({
+      accepted: true,
+      retry_message_id: 'msg_retry',
+      run_request: {
+        question: '查询工作日志',
+        conversation_id: 31,
+        thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        retry_checkpoint_ref: 'checkpoint://retry',
+        dataset_id: 7,
+        display_text: '重试上一步',
+      },
+    });
+
+    render(<WorkbenchPanel threadId="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" onRetryRun={onRetryRun} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /重试/ }));
+
+    await waitFor(() => expect(onRetryRun).toHaveBeenCalledWith({
+      question: '查询工作日志',
+      conversation_id: 31,
+      thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      retry_checkpoint_ref: 'checkpoint://retry',
+      dataset_id: 7,
+      display_text: '重试上一步',
+    }));
+    expect(requestWorkbenchRetry).toHaveBeenCalledWith({
+      thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      message_id: 'msg_failed',
+      checkpoint_ref: 'checkpoint://retry',
+      selected_action: 'retry_last_step',
+    });
+    expect(JSON.stringify(onRetryRun.mock.calls)).not.toMatch(/select|schema|raw_rows|query_plan/i);
+  });
 });

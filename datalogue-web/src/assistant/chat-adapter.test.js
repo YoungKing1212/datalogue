@@ -255,6 +255,35 @@ describe('chat-adapter C-ready metadata', () => {
     expect(window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__).toBeNull();
   });
 
+  it('passes pending workbench retry request to chat stream once and clears it', async () => {
+    streamChatEvents.mockReturnValue(events([{ type: 'final', answer: '已从检查点恢复' }]));
+    window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = {
+      question: '查询杨凯 2024 年工作日志',
+      conversation_id: 31,
+      thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      retry_checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
+      dataset_id: 7,
+      display_text: '重试上一步',
+    };
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
+    await collectRun(adapter, runInput({ question: '重试上一步', threadId: 'local-thread' }));
+
+    expect(streamChatEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: '查询杨凯 2024 年工作日志',
+        session_id: 'conversation-31',
+        conversation_id: 31,
+        thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        retry_checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
+        dataset_id: 7,
+        clarification_response: null,
+      }),
+      expect.any(Object),
+    );
+    expect(window.__DATALOGUE_PENDING_WORKBENCH_RETRY__).toBeNull();
+  });
+
   it('emits resolved AgentScope thread id from final payload', async () => {
     const listener = vi.fn();
     window.addEventListener('datalogue:thread-resolved', listener);

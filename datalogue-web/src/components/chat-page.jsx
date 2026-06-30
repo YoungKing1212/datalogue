@@ -5,7 +5,7 @@
 // 3. 监听 SSE 'datalogue:trace' 事件，向 AgentPanel 推数据
 // 4. 维护 datasetList / selectedDs 顶层状态（保持跨 thread 不变）
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   AssistantRuntimeProvider,
@@ -488,6 +488,18 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
 
   // 监听标题自动更新事件（首条消息后端写入 title 后）— 触发 thread list 重新拉取
   const aui = useAui();
+  const handleWorkbenchRetryRun = useCallback((runRequest) => {
+    if (!runRequest || typeof window === 'undefined') return;
+    window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = runRequest;
+    const text = String(runRequest.display_text || '重试上一步').trim() || '重试上一步';
+    aui.thread().append({
+      role: 'user',
+      content: [{ type: 'text', text }],
+    }).catch((e) => {
+      window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = null; // append 失败时不能留下旧 checkpoint 影响下一次提问。
+      console.error('[workbench] retry run append failed', e);
+    });
+  }, [aui]);
   useEffect(() => {
     const onRename = () => {
       // 后端已写入新 title；让 assistant-ui 重新拉一次 list，覆盖本地缓存
@@ -535,7 +547,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
         </TraceProvider>
 
         {workbenchThreadId && (
-          <WorkbenchPanel threadId={workbenchThreadId} />
+          <WorkbenchPanel threadId={workbenchThreadId} onRetryRun={handleWorkbenchRetryRun} />
         )}
 
         <AgentPanel

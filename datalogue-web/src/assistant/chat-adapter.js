@@ -633,6 +633,21 @@ function requestThreadIdFromRemoteId(remoteId) {
   return value.startsWith('as_') ? value : null;
 }
 
+function consumePendingWorkbenchRetry() {
+  if (typeof window === 'undefined') return null;
+  const request = window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ || null;
+  if (request) {
+    window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = null;
+  }
+  return request && typeof request === 'object' ? request : null;
+}
+
+function normalizeDatasetId(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+  return null;
+}
+
 /**
  * 构造 ChatModelAdapter
  * @param {object} opts
@@ -648,16 +663,25 @@ export function makeChatAdapter({ datasetIdRef }) {
 
       const resolvedRemoteId =
         resolveRemoteId(unstable_threadId) || resolveRecentInitializedRemoteId();
-      const convId = resolvedRemoteId
+      const routeConvId = resolvedRemoteId
         ? normalizeConversationId(resolvedRemoteId)
         : conversationIdFromCurrentRoute() || normalizeConversationId(unstable_threadId);
+      const workbenchRetryRequest = consumePendingWorkbenchRetry();
+      const convId = normalizeConversationId(workbenchRetryRequest?.conversation_id) || routeConvId;
+      const retryThreadId = requestThreadIdFromRemoteId(workbenchRetryRequest?.thread_id);
+      const requestThreadId = retryThreadId || requestThreadIdFromRemoteId(resolvedRemoteId);
       const businessSessionId = buildBusinessSessionId({
         threadId: unstable_threadId,
         conversationId: convId,
         fallbackSessionId,
       });
-	      const datasetId = datasetIdRef?.current ?? null;
-	      const requestThreadId = requestThreadIdFromRemoteId(resolvedRemoteId);
+      const datasetId = normalizeDatasetId(workbenchRetryRequest?.dataset_id) ?? datasetIdRef?.current ?? null;
+      // Workbench retry 只覆盖业务问题和 checkpoint ref；真实上下文由后端 checkpoint 恢复。
+      const effectiveQuestion = safeDisplayText(workbenchRetryRequest?.question) || question;
+      const retryCheckpointRef =
+        typeof workbenchRetryRequest?.retry_checkpoint_ref === 'string'
+          ? workbenchRetryRequest.retry_checkpoint_ref
+          : null;
       const clarificationResponse =
         typeof window !== 'undefined'
           ? window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ || null
@@ -669,14 +693,15 @@ export function makeChatAdapter({ datasetIdRef }) {
       let stream;
       try {
         stream = streamChatEvents(
-	          {
-	            question,
-	            session_id: businessSessionId,
-	            conversation_id: convId,
-	            thread_id: requestThreadId,
-	            dataset_id: datasetId,
-	            clarification_response: clarificationResponse,
-	          },
+          {
+            question: effectiveQuestion,
+            session_id: businessSessionId,
+            conversation_id: convId,
+            thread_id: requestThreadId,
+            dataset_id: datasetId,
+            retry_checkpoint_ref: retryCheckpointRef,
+            clarification_response: clarificationResponse,
+          },
           { signal: abortSignal },
         );
       } catch (err) {

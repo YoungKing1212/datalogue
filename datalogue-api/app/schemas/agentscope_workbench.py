@@ -131,6 +131,25 @@ class WorkbenchRetryRequest(BaseModel):
         return value
 
 
+class WorkbenchRetryRunRequest(BaseModel):
+    """Workbench retry 转交 Chat 主链的运行请求；只携带业务问题和 checkpoint ref。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str
+    conversation_id: int | None = None
+    thread_id: str
+    retry_checkpoint_ref: str
+    dataset_id: int | None = None
+    display_text: str = "重试上一步"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_internal_payload(cls, value):
+        _reject_retry_internal_payload(value)
+        return value
+
+
 class WorkbenchRetryResponse(BaseModel):
     """Workbench retry 受理结果；accepted=False 表示只读或不可重试。"""
 
@@ -140,6 +159,7 @@ class WorkbenchRetryResponse(BaseModel):
     retry_message_id: str | None
     accepted: bool
     disabled_reason: str | None = None
+    run_request: WorkbenchRetryRunRequest | None = None
 
 
 _RETRY_FORBIDDEN_KEYS = {

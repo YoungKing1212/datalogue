@@ -14,12 +14,17 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
 from app.models.agentscope_workbench import AgentScopeMessage, AgentScopeRef, AgentScopeSession
-from app.schemas.agentscope_workbench import WorkbenchRetryRequest, WorkbenchRetryResponse
+from app.schemas.agentscope_workbench import (
+    WorkbenchRetryRequest,
+    WorkbenchRetryResponse,
+    WorkbenchRetryRunRequest,
+)
 from app.services.agentscope_mirror import (
     create_running_assistant_message,
     find_expired_running_messages,
@@ -27,6 +32,12 @@ from app.services.agentscope_mirror import (
     record_agentscope_ref,
 )
 from app.services.agentscope_thread_resolver import normalize_thread_id
+
+
+_INTERNAL_RETRY_TEXT_RE = re.compile(
+    r"\b(select|insert|update|delete|from|join|where|union|with)\b|raw_sql|schema|raw_rows|query_plan|hidden_table",
+    re.IGNORECASE,
+)
 
 
 class WorkbenchActionNotFoundError(LookupError):
@@ -71,6 +82,7 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
             retry_message_id=None,
             accepted=False,
             disabled_reason="旧会话为只读模式，不能直接发起 Workbench 重试。",
+            run_request=None,
         )
     if request.selected_action != "retry_last_step":
         raise WorkbenchActionConflictError("unsupported retry action")
@@ -120,11 +132,21 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
         task_id=None,
         trace_id=None,
     )
+    run_request = WorkbenchRetryRunRequest(
+        # C3-P1 只把 Workbench retry 转成 Chat 主链恢复请求；真实执行上下文必须由 checkpoint 恢复。
+        question=_retry_run_question(session=session, source_message=source_message),
+        conversation_id=session.legacy_conversation_id,
+        thread_id=normalized_thread_id,
+        retry_checkpoint_ref=request.checkpoint_ref,
+        dataset_id=_retry_dataset_id(source_message),
+        display_text="重试上一步",
+    )
     return WorkbenchRetryResponse(
         thread_id=normalized_thread_id,
         retry_message_id=retry_message.message_id,
         accepted=True,
         disabled_reason=None,
+        run_request=run_request,
     )
 
 
@@ -162,6 +184,27 @@ def _message_checkpoint_ref(message: AgentScopeMessage) -> str | None:
 
 def _fallback_checkpoint_ref(message: AgentScopeMessage) -> str:
     return f"checkpoint://{message.thread_id}/{message.message_id}/lease"
+
+
+def _retry_run_question(*, session: AgentScopeSession, source_message: AgentScopeMessage) -> str:
+    payload = source_message.business_payload_json if isinstance(source_message.business_payload_json, dict) else {}
+    question = payload.get("question") or payload.get("original_question") or session.title or source_message.content_summary
+    text = str(question or "").strip()[:500]
+    if not text or _INTERNAL_RETRY_TEXT_RE.search(text):
+        return "重试上一步"
+    return text
+
+
+def _retry_dataset_id(message: AgentScopeMessage) -> int | None:
+    payload = message.business_payload_json if isinstance(message.business_payload_json, dict) else {}
+    value = payload.get("dataset_id")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 def _ensure_checkpoint_ref(db: Session, *, message: AgentScopeMessage, checkpoint_ref: str) -> None:
