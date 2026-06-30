@@ -614,6 +614,25 @@ function emitResolvedConversation(localThreadId, actualConvId) {
   }
 }
 
+function emitResolvedThread(localThreadId, threadId) {
+  if (!threadId) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('datalogue:thread-resolved', {
+        detail: { localThreadId, threadId },
+      }),
+    );
+  } catch (_e) {
+    /* SSR 保护 */
+  }
+}
+
+function requestThreadIdFromRemoteId(remoteId) {
+  if (!remoteId) return null;
+  const value = String(remoteId);
+  return value.startsWith('as_') ? value : null;
+}
+
 /**
  * 构造 ChatModelAdapter
  * @param {object} opts
@@ -637,7 +656,8 @@ export function makeChatAdapter({ datasetIdRef }) {
         conversationId: convId,
         fallbackSessionId,
       });
-      const datasetId = datasetIdRef?.current ?? null;
+	      const datasetId = datasetIdRef?.current ?? null;
+	      const requestThreadId = requestThreadIdFromRemoteId(resolvedRemoteId);
       const clarificationResponse =
         typeof window !== 'undefined'
           ? window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ || null
@@ -649,13 +669,14 @@ export function makeChatAdapter({ datasetIdRef }) {
       let stream;
       try {
         stream = streamChatEvents(
-          {
-            question,
-            session_id: businessSessionId,
-            conversation_id: convId,
-            dataset_id: datasetId,
-            clarification_response: clarificationResponse,
-          },
+	          {
+	            question,
+	            session_id: businessSessionId,
+	            conversation_id: convId,
+	            thread_id: requestThreadId,
+	            dataset_id: datasetId,
+	            clarification_response: clarificationResponse,
+	          },
           { signal: abortSignal },
         );
       } catch (err) {
@@ -783,8 +804,9 @@ export function makeChatAdapter({ datasetIdRef }) {
       }
 
       if (finalPayload) {
-        emitTrace(finalPayload);
-        emitResolvedConversation(unstable_threadId, finalPayload.conversation_id);
+	        emitTrace(finalPayload);
+	        emitResolvedConversation(unstable_threadId, finalPayload.conversation_id);
+	        emitResolvedThread(unstable_threadId, finalPayload.thread_id);
 
         // 收敛：text 用 final.answer 兜底（report_generator token 可能没全到）
         const finalText = finalPayload.answer || accText;

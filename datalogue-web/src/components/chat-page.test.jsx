@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveUrlSyncTarget, shouldSwitchToRouteThread } from './chat-page.jsx';
+import { resolveUrlSyncTarget, resolveWorkbenchThreadId, shouldSwitchToRouteThread } from './chat-page.jsx';
 
 describe('shouldSwitchToRouteThread', () => {
   it('skips route sync when no conversation id is present', () => {
@@ -64,5 +64,23 @@ describe('resolveUrlSyncTarget', () => {
       mainThreadChanged: true,
       hasObservedThread: true,
     })).toBe('/chat/25');
+  });
+});
+
+describe('resolveWorkbenchThreadId', () => {
+  it('maps numeric chat routes to legacy conv threads', () => {
+    expect(resolveWorkbenchThreadId('25', null)).toBe('conv_25');
+  });
+
+  it('keeps AgentScope chat routes as the workbench thread source', () => {
+    expect(resolveWorkbenchThreadId('as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', null)).toBe(
+      'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    );
+  });
+
+  it('uses runtime remote id when the URL has no route id', () => {
+    expect(resolveWorkbenchThreadId(undefined, 'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')).toBe(
+      'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    );
   });
 });

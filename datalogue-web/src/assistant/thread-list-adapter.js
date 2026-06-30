@@ -16,8 +16,9 @@ import {
   archiveConversation,
   unarchiveConversation,
   deleteConversation,
-  getConversation,
+	getConversation,
 } from '../api/client';
+import { fetchWorkbenchThread } from './workbench-api';
 
 // 内存缓存：localThreadId -> { remoteId, externalId }
 const idMap = new Map();
@@ -49,11 +50,29 @@ function rememberResolvedConversation(localThreadId, actualConvId) {
   reverseIdMap.set(remoteId, localId);
 }
 
+function rememberResolvedThread(localThreadId, threadId) {
+  if (localThreadId == null || !threadId) return;
+  const localId = String(localThreadId);
+  const remoteId = String(threadId);
+  if (!localId || !remoteId) return;
+  const previous = idMap.get(localId);
+  if (previous?.remoteId && previous.remoteId !== remoteId) {
+    reverseIdMap.delete(previous.remoteId);
+  }
+  idMap.set(localId, { remoteId, externalId: previous?.externalId });
+  reverseIdMap.set(remoteId, localId);
+  lastInitializedThread = { localId, remoteId, createdAt: Date.now() };
+}
+
 if (typeof window !== 'undefined') {
-  window.addEventListener('datalogue:conv-resolved', (event) => {
-    const { localThreadId, actualConvId } = event.detail || {};
-    rememberResolvedConversation(localThreadId, actualConvId);
-  });
+	window.addEventListener('datalogue:conv-resolved', (event) => {
+	  const { localThreadId, actualConvId } = event.detail || {};
+	  rememberResolvedConversation(localThreadId, actualConvId);
+	});
+	window.addEventListener('datalogue:thread-resolved', (event) => {
+	  const { localThreadId, threadId } = event.detail || {};
+	  rememberResolvedThread(localThreadId, threadId);
+	});
 }
 
 /**
@@ -441,18 +460,46 @@ export function messagesFromBackend(detail) {
   return out;
 }
 
+export function messagesFromWorkbench(view) {
+  const msgs = view?.messages || [];
+  return msgs.map((message) => ({
+    id: message.message_id,
+    role: message.role === 'user' ? 'user' : 'assistant',
+    content: [{ type: 'text', text: message.content_summary || '' }],
+    createdAt: message.created_at ? new Date(message.created_at) : new Date(),
+    status: message.role === 'assistant' ? { type: 'complete', reason: 'stop' } : undefined,
+    metadata: {
+      custom: {
+        workbenchThreadId: view.thread_id,
+        artifactCard: view.primary_artifact_ref
+          ? {
+              title: '查询结果',
+              status: 'completed',
+              primary_ref: view.primary_artifact_ref,
+              related_refs: view.related_refs || [],
+            }
+          : null,
+      },
+    },
+  }));
+}
+
 /**
  * 自定义 history adapter — 每次 load() 都从后端拉取
  */
 function makeHistoryAdapter(getRemoteId) {
   return {
-    async load() {
-      const remoteId = getRemoteId();
-      if (!remoteId) return { messages: [] };
-      try {
-        const detail = await getConversation(remoteId);
-        const messages = messagesFromBackend(detail);
-        return ExportedMessageRepository.fromArray(messages);
+	    async load() {
+	      const remoteId = getRemoteId();
+	      if (!remoteId) return { messages: [] };
+	      try {
+	        if (String(remoteId).startsWith('as_')) {
+	          const view = await fetchWorkbenchThread(remoteId);
+	          return ExportedMessageRepository.fromArray(messagesFromWorkbench(view));
+	        }
+	        const detail = await getConversation(remoteId);
+	        const messages = messagesFromBackend(detail);
+	        return ExportedMessageRepository.fromArray(messages);
       } catch (e) {
         console.error('加载历史消息失败', e);
         return { messages: [] };
@@ -541,14 +588,23 @@ export class DatalogueThreadListAdapter {
    * 切换到已有会话时：runtime 给 localId，adapter 返回元数据
    * 这里 localId 直接当 remoteId 用（URL 里就是 conv_id）
    */
-  async fetch(threadId) {
-    const m = idMap.get(threadId);
-    if (!m) {
-      idMap.set(threadId, { remoteId: threadId, externalId: undefined });
-      reverseIdMap.set(threadId, threadId);
-    }
-    const remoteId = m?.remoteId || threadId;
-    const detail = await getConversation(remoteId);
+	  async fetch(threadId) {
+	    const m = idMap.get(threadId);
+	    if (!m) {
+	      idMap.set(threadId, { remoteId: threadId, externalId: undefined });
+	      reverseIdMap.set(threadId, threadId);
+	    }
+	    const remoteId = m?.remoteId || threadId;
+	    if (String(remoteId).startsWith('as_')) {
+	      const view = await fetchWorkbenchThread(remoteId);
+	      return {
+	        status: 'regular',
+	        remoteId: view.thread_id,
+	        externalId: view.thread_id,
+	        title: view.messages?.[0]?.content_summary || '问数工作台',
+	      };
+	    }
+	    const detail = await getConversation(remoteId);
     const c = detail?.conversation || {};
     return {
       status: c.archived ? 'archived' : 'regular',

@@ -23,6 +23,8 @@ import { MyComposer, DatasetChip } from '../assistant/MyComposer';
 import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
 import { getConversation, listDatasets } from '../api/client';
+import { normalizeWorkbenchThreadId } from '../assistant/workbench-api';
+import WorkbenchPanel from './workbench-panel';
 
 // 单例 adapter（避免每次渲染重建）
 const threadListAdapter = new DatalogueThreadListAdapter();
@@ -48,6 +50,10 @@ export function resolveUrlSyncTarget({ routeId, remoteId, mainThreadChanged, has
   if (routeId && !mainThreadChanged) return null; // 路由刚变化但 runtime 仍是旧会话时，避免把地址栏回滚。
   if (mainThreadChanged) return `/chat/${remoteId}`;
   return null;
+}
+
+export function resolveWorkbenchThreadId(routeId, remoteId) {
+  return normalizeWorkbenchThreadId(routeId || remoteId);
 }
 
 /**
@@ -417,6 +423,12 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
 
   // 切换 thread 时重置 trace 数据
   const mainThreadId = useAuiState((s) => s.threads?.mainThreadId);
+  const remoteId = useAuiState((s) => {
+    const id = s.threads?.mainThreadId;
+    const item = s.threads?.threadItems?.find((t) => t.id === id);
+    return item?.remoteId;
+  });
+  const workbenchThreadId = resolveWorkbenchThreadId(routeId, remoteId);
   useEffect(() => {
     setTraceSteps([]);
     setIntent(null);
@@ -494,6 +506,10 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
             }
           />
         </TraceProvider>
+
+        {workbenchThreadId && (
+          <WorkbenchPanel threadId={workbenchThreadId} />
+        )}
 
         <AgentPanel
           open={traceOpen}

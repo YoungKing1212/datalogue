@@ -255,6 +255,29 @@ describe('chat-adapter C-ready metadata', () => {
     expect(window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__).toBeNull();
   });
 
+  it('emits resolved AgentScope thread id from final payload', async () => {
+    const listener = vi.fn();
+    window.addEventListener('datalogue:thread-resolved', listener);
+    streamChatEvents.mockReturnValue(events([
+      {
+        type: 'final',
+        answer: '已完成',
+        thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
+    await collectRun(adapter, runInput({ threadId: 'local-thread' }));
+
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+      detail: {
+        localThreadId: 'local-thread',
+        threadId: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      },
+    }));
+    window.removeEventListener('datalogue:thread-resolved', listener);
+  });
+
   it('does not fabricate ArtifactCard refs when replaying old history metadata', () => {
     const custom = buildHistoryMessageCustom({
       id: 99,

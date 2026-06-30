@@ -7701,6 +7701,219 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 }
 
 /* ================================================
+   C3 Workbench Panel — Chat 右侧业务工作台
+   ================================================ */
+.workbench-panel {
+  width: 340px;
+  flex: 0 0 340px;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--hairline);
+  background: var(--surface);
+  padding: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15,23,42,0.12) transparent;
+}
+.workbench-route {
+  min-height: 100%;
+  background: var(--bg);
+}
+.workbench-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.workbench-panel-head h3 {
+  margin: 2px 0 0;
+  font-size: 16px;
+  line-height: 1.25;
+  font-weight: 650;
+  color: var(--text);
+}
+.workbench-eyebrow {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  color: var(--text-3);
+  text-transform: uppercase;
+}
+.workbench-readonly {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 11px;
+}
+.workbench-section {
+  margin-top: 14px;
+}
+.workbench-section h4 {
+  margin: 0 0 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+.workbench-muted,
+.workbench-error,
+.workbench-notice {
+  margin: 12px 0 0;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.workbench-muted {
+  color: var(--text-3);
+  background: var(--bg-2);
+}
+.workbench-error {
+  color: var(--neg);
+  background: var(--neg-soft);
+}
+.workbench-notice {
+  color: var(--text-2);
+  background: var(--accent-soft);
+}
+.workbench-messages,
+.workbench-actions,
+.workbench-refs,
+.workbench-timeline {
+  display: grid;
+  gap: 8px;
+}
+.workbench-message {
+  padding: 9px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+}
+.workbench-message span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.workbench-message p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.workbench-timeline-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.workbench-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.workbench-timeline-item strong,
+.workbench-timeline-item span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.workbench-timeline-item strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.workbench-timeline-item span {
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+}
+.workbench-ref,
+.workbench-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.workbench-ref {
+  width: 100%;
+  padding: 7px 9px;
+}
+.workbench-ref code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+.workbench-ref:disabled,
+.workbench-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.workbench-action {
+  justify-content: flex-start;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.workbench-action span {
+  font-weight: 600;
+}
+.workbench-action small {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workbench-diagnostic {
+  margin-top: 14px;
+  padding: 10px;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+.workbench-diagnostic pre {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 11px;
+}
+
+@media (max-width: 1180px) {
+  .workbench-panel {
+    width: 300px;
+    flex-basis: 300px;
+  }
+}
+
+@media (max-width: 900px) {
+  .chat-layout {
+    flex-direction: column;
+  }
+  .workbench-panel {
+    width: 100%;
+    flex: 0 0 auto;
+    max-height: 38vh;
+    border-left: none;
+    border-top: 1px solid var(--hairline);
+  }
+}
+
+/* ================================================
    C-ready TaskTimeline — 业务级任务时间线
    ================================================ */
 .task-timeline {

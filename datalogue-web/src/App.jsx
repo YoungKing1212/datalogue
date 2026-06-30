@@ -17,6 +17,7 @@ import { DatasourcesScreen } from './components/datasources';
 import { KnowledgeScreen } from './components/knowledge';
 import { AuditQueryScreen } from './components/audit-query';
 import { EditorModalHost } from './components/editor-modal';
+import WorkbenchRoute from './components/workbench-route';
 
 // App — main router with URL-based routing.
 
@@ -147,6 +148,8 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
             <Route path="/" element={<Workspace />} />
             <Route path="/chat" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
             <Route path="/chat/:id" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/workbench/:threadId" element={<WorkbenchRoute />} />
+            <Route path="/workbench/:threadId/:artifactRef" element={<WorkbenchRoute />} />
             <Route path="/datasets" element={<DatasetsScreen />} />
             <Route path="/dashboard" element={<DashboardScreen />} />
             <Route path="/apis" element={<ApisScreen />} />
