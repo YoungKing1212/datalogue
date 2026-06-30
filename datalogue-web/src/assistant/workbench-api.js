@@ -22,9 +22,10 @@ export async function fetchWorkbenchThread(threadId) {
   return requestJson(`/api/workbench/thread/${encodeURIComponent(normalized)}`);
 }
 
-export async function fetchWorkbenchArtifact(artifactRef) {
+export async function fetchWorkbenchArtifact(artifactRef, threadId = null) {
   if (!artifactRef) return null;
-  return requestJson(`/api/workbench/artifact/${encodeURIComponent(artifactRef)}`);
+  const query = threadId ? `?${new URLSearchParams({ thread_id: normalizeWorkbenchThreadId(threadId) }).toString()}` : '';
+  return requestJson(`/api/workbench/artifact/${encodeURIComponent(artifactRef)}${query}`);
 }
 
 export async function requestWorkbenchRetry(payload = {}) {

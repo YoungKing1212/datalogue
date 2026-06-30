@@ -99,6 +99,23 @@ class WorkbenchActionView(BaseModel):
     message_id: str | None = None
 
 
+class WorkbenchStatusSummary(BaseModel):
+    """工作台线程产品态摘要；前端据此渲染状态，不自行拼接执行面细节。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    label: str
+    tone: str = "neutral"
+    actionable: bool = False
+    read_only: bool = False
+    latest_message_id: str | None = None
+    primary_artifact_ref: str | None = None
+    retry_checkpoint_ref: str | None = None
+    trace_ref: str | None = None
+    summary: str | None = None
+
+
 class WorkbenchThreadView(BaseModel):
     """工作台线程 View Model，供 Chat 详情面板和后续独立 Workbench 页面复用。"""
 
@@ -112,6 +129,7 @@ class WorkbenchThreadView(BaseModel):
     related_refs: list[dict[str, Any]] = Field(default_factory=list)
     available_actions: list[WorkbenchActionView] = Field(default_factory=list)
     legacy_notice: str | None = None
+    status_summary: WorkbenchStatusSummary | None = None
 
 
 class WorkbenchRetryRequest(BaseModel):

@@ -42,6 +42,18 @@ const threadView = {
     },
   ],
   legacy_notice: null,
+  status_summary: {
+    status: 'completed',
+    label: '已完成',
+    tone: 'success',
+    actionable: false,
+    read_only: false,
+    latest_message_id: 'msg_failed',
+    primary_artifact_ref: 'artifact:result-1',
+    retry_checkpoint_ref: null,
+    trace_ref: 'trace:workbench-1',
+    summary: '已完成查询，共 10 条工作日志。',
+  },
 };
 
 describe('WorkbenchPanel', () => {
@@ -52,6 +64,7 @@ describe('WorkbenchPanel', () => {
       artifact_ref: 'artifact:result-1',
       kind: 'query_result',
       preview_payload: { summary: '共 10 条工作日志' },
+      related_refs: [{ ref_type: 'trace', ref: 'trace:workbench-1', relation: 'trace' }],
     });
     requestWorkbenchRetry.mockResolvedValue({ accepted: true, retry_message_id: 'msg_retry' });
   });
@@ -62,7 +75,8 @@ describe('WorkbenchPanel', () => {
     expect(await screen.findByText('工作台')).toBeInTheDocument();
     expect(screen.getByText('查询工作日志')).toBeInTheDocument();
     expect(screen.getByText('已完成查询')).toBeInTheDocument();
-    expect(screen.getByText('artifact:result-1')).toBeInTheDocument();
+    expect(screen.getByText('已完成查询，共 10 条工作日志。')).toBeInTheDocument();
+    expect(screen.getAllByText('artifact:result-1').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('artifact:repair-1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /重试/ })).toBeDisabled();
     expect(screen.getByText('当前消息不需要重试。')).toBeInTheDocument();
@@ -88,9 +102,21 @@ describe('WorkbenchPanel', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /artifact:result-1/ }));
 
-    await waitFor(() => expect(fetchWorkbenchArtifact).toHaveBeenCalledWith('artifact:result-1'));
+    await waitFor(() => expect(fetchWorkbenchArtifact).toHaveBeenCalledWith(
+      'artifact:result-1',
+      'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    ));
     expect(await screen.findByText('共 10 条工作日志')).toBeInTheDocument();
+    expect(screen.getByTestId('workbench-artifact-drawer')).toBeInTheDocument();
+    expect(screen.getByText('trace:workbench-1')).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/raw_rows|query_plan|schema|select/i);
+  });
+
+  it('renders an empty state when no thread is selected', () => {
+    render(<WorkbenchPanel threadId={null} />);
+
+    expect(screen.getByText('选择一个会话后查看工作台。')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /重试/ })).not.toBeInTheDocument();
   });
 
   it('keeps admin diagnostic drawer closed by default', async () => {
@@ -113,6 +139,18 @@ describe('WorkbenchPanel', () => {
           message_id: 'msg_failed',
         },
       ],
+      status_summary: {
+        status: 'failed',
+        label: '执行失败',
+        tone: 'warning',
+        actionable: true,
+        read_only: false,
+        latest_message_id: 'msg_failed',
+        primary_artifact_ref: null,
+        retry_checkpoint_ref: 'checkpoint://retry',
+        trace_ref: null,
+        summary: '任务超时中断，可从检查点重试。',
+      },
     });
     requestWorkbenchRetry.mockResolvedValueOnce({
       accepted: true,
@@ -128,6 +166,9 @@ describe('WorkbenchPanel', () => {
     });
 
     render(<WorkbenchPanel threadId="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" onRetryRun={onRetryRun} />);
+
+    expect(await screen.findByText('诊断摘要')).toBeInTheDocument();
+    expect(screen.getAllByText('checkpoint://retry').length).toBeGreaterThanOrEqual(1);
 
     fireEvent.click(await screen.findByRole('button', { name: /重试/ }));
 
@@ -159,6 +200,19 @@ describe('WorkbenchPanel', () => {
         timeline: [
           { event_id: 'evt_retry', event_type: 'workbench.retry_requested', summary: '已接收重试请求' },
         ],
+        primary_artifact_ref: null,
+        status_summary: {
+          status: 'running',
+          label: '执行中',
+          tone: 'pending',
+          actionable: false,
+          read_only: false,
+          latest_message_id: 'msg_retry',
+          primary_artifact_ref: null,
+          retry_checkpoint_ref: null,
+          trace_ref: null,
+          summary: '正在恢复检查点',
+        },
         available_actions: [],
       })
       .mockResolvedValueOnce({
@@ -171,16 +225,38 @@ describe('WorkbenchPanel', () => {
           { event_id: 'evt_restored', event_type: 'retry.checkpoint_restored', summary: '已恢复检查点' },
           { event_id: 'evt_completed', event_type: 'answer.completed', summary: '已完成回答' },
         ],
+        primary_artifact_ref: 'artifact:retry-result',
+        status_summary: {
+          status: 'completed',
+          label: '已完成',
+          tone: 'success',
+          actionable: false,
+          read_only: false,
+          latest_message_id: 'msg_retry',
+          primary_artifact_ref: 'artifact:retry-result',
+          retry_checkpoint_ref: null,
+          trace_ref: 'trace:retry',
+          summary: '重试已完成',
+        },
         available_actions: [],
       });
+    fetchWorkbenchArtifact.mockResolvedValueOnce({
+      artifact_ref: 'artifact:retry-result',
+      kind: 'query_result',
+      preview_payload: { summary: '重试结果已生成' },
+      related_refs: [],
+    });
 
     render(<WorkbenchPanel threadId="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" refreshIntervalMs={1} />);
 
-    expect(await screen.findByText('正在恢复检查点')).toBeInTheDocument();
-
     await waitFor(() => expect(fetchWorkbenchThread).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('已恢复检查点')).toBeInTheDocument();
-    expect(screen.getByText('重试已完成')).toBeInTheDocument();
+    expect(screen.getAllByText('重试已完成').length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByText('重试结果已生成')).toBeInTheDocument();
+    expect(fetchWorkbenchArtifact).toHaveBeenCalledWith(
+      'artifact:retry-result',
+      'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    );
   });
 
   it('only keeps polling while the latest message is running', () => {

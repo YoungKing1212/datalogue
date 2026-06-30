@@ -102,6 +102,24 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
         raise WorkbenchActionConflictError("message is not retryable")
     validate_retry_checkpoint(db, thread_id=normalized_thread_id, checkpoint_ref=request.checkpoint_ref)
 
+    existing_retry_message = _find_existing_running_retry_message(
+        db,
+        thread_id=normalized_thread_id,
+        checkpoint_ref=request.checkpoint_ref,
+    )
+    if existing_retry_message is not None:
+        return WorkbenchRetryResponse(
+            thread_id=normalized_thread_id,
+            retry_message_id=existing_retry_message.message_id,
+            accepted=True,
+            disabled_reason=None,
+            run_request=_build_retry_run_request(
+                session=session,
+                source_message=source_message,
+                checkpoint_ref=request.checkpoint_ref,
+            ),
+        )
+
     retry_message = create_running_assistant_message(db, thread_id=normalized_thread_id, lease_seconds=300)
     retry_message.business_payload_json = {
         "checkpoint_ref": request.checkpoint_ref,
@@ -132,21 +150,16 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
         task_id=None,
         trace_id=None,
     )
-    run_request = WorkbenchRetryRunRequest(
-        # C3-P1 只把 Workbench retry 转成 Chat 主链恢复请求；真实执行上下文必须由 checkpoint 恢复。
-        question=_retry_run_question(session=session, source_message=source_message),
-        conversation_id=session.legacy_conversation_id,
-        thread_id=normalized_thread_id,
-        retry_checkpoint_ref=request.checkpoint_ref,
-        dataset_id=_retry_dataset_id(source_message),
-        display_text="重试上一步",
-    )
     return WorkbenchRetryResponse(
         thread_id=normalized_thread_id,
         retry_message_id=retry_message.message_id,
         accepted=True,
         disabled_reason=None,
-        run_request=run_request,
+        run_request=_build_retry_run_request(
+            session=session,
+            source_message=source_message,
+            checkpoint_ref=request.checkpoint_ref,
+        ),
     )
 
 
@@ -160,7 +173,7 @@ def validate_retry_checkpoint(db: Session, *, thread_id: str, checkpoint_ref: st
         .filter(AgentScopeRef.thread_id == thread_id)
         .filter(AgentScopeRef.ref_type == "checkpoint")
         .filter(AgentScopeRef.ref_value == checkpoint_ref)
-        .one_or_none()
+        .first()
     )
     if exists is None:
         raise WorkbenchActionConflictError("checkpoint unavailable")
@@ -193,6 +206,44 @@ def _retry_run_question(*, session: AgentScopeSession, source_message: AgentScop
     if not text or _INTERNAL_RETRY_TEXT_RE.search(text):
         return "重试上一步"
     return text
+
+
+def _build_retry_run_request(
+    *,
+    session: AgentScopeSession,
+    source_message: AgentScopeMessage,
+    checkpoint_ref: str,
+) -> WorkbenchRetryRunRequest:
+    return WorkbenchRetryRunRequest(
+        # Workbench retry 只恢复 checkpoint；真实执行上下文必须由 Chat 主链从 checkpoint 读取。
+        question=_retry_run_question(session=session, source_message=source_message),
+        conversation_id=session.legacy_conversation_id,
+        thread_id=session.thread_id,
+        retry_checkpoint_ref=checkpoint_ref,
+        dataset_id=_retry_dataset_id(source_message),
+        display_text="重试上一步",
+    )
+
+
+def _find_existing_running_retry_message(
+    db: Session,
+    *,
+    thread_id: str,
+    checkpoint_ref: str,
+) -> AgentScopeMessage | None:
+    candidates = (
+        db.query(AgentScopeMessage)
+        .filter(AgentScopeMessage.thread_id == thread_id)
+        .filter(AgentScopeMessage.role == "assistant")
+        .filter(AgentScopeMessage.status == "running")
+        .order_by(AgentScopeMessage.created_at.desc(), AgentScopeMessage.id.desc())
+        .all()
+    )
+    for message in candidates:
+        payload = message.business_payload_json if isinstance(message.business_payload_json, dict) else {}
+        if payload.get("checkpoint_ref") == checkpoint_ref and payload.get("selected_action") == "retry_last_step":
+            return message
+    return None
 
 
 def _retry_dataset_id(message: AgentScopeMessage) -> int | None:

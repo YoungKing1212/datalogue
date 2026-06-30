@@ -37,9 +37,70 @@ function collectRefs(view) {
 }
 
 export function hasRunningWorkbenchMessage(view) {
+  if (view?.status_summary?.status === 'running') return true;
   const messages = view?.messages || [];
   const latestMessage = messages[messages.length - 1];
   return latestMessage?.status === 'running';
+}
+
+function statusToneClass(tone = 'neutral') {
+  if (tone === 'success') return 'workbench-status workbench-status-success';
+  if (tone === 'warning') return 'workbench-status workbench-status-warning';
+  if (tone === 'pending') return 'workbench-status workbench-status-pending';
+  return 'workbench-status';
+}
+
+function fallbackStatusSummary(view) {
+  if (!view) return null;
+  const messages = view.messages || [];
+  const latestMessage = messages[messages.length - 1];
+  if (view.read_only) {
+    return {
+      status: 'read_only',
+      label: '只读回放',
+      tone: 'neutral',
+      read_only: true,
+      actionable: false,
+      summary: view.legacy_notice || '旧会话以只读方式展示。',
+      primary_artifact_ref: view.primary_artifact_ref,
+    };
+  }
+  if (!latestMessage) {
+    return {
+      status: 'empty',
+      label: '等待问数',
+      tone: 'neutral',
+      actionable: false,
+      summary: '当前线程还没有可展示的 BI 结果。',
+      primary_artifact_ref: view.primary_artifact_ref,
+    };
+  }
+  return {
+    status: latestMessage.status,
+    label: latestMessage.status === 'completed' ? '已完成' : latestMessage.status,
+    tone: latestMessage.status === 'completed' ? 'success' : latestMessage.status === 'running' ? 'pending' : 'neutral',
+    actionable: false,
+    summary: latestMessage.content_summary,
+    primary_artifact_ref: view.primary_artifact_ref,
+  };
+}
+
+export function WorkbenchStatusSummary({ summary }) {
+  if (!summary) return null;
+  return (
+    <section className={statusToneClass(summary.tone)}>
+      <div>
+        <span>{safeText(summary.label, '工作台状态')}</span>
+        <strong>{safeText(summary.summary, '等待工作台状态更新')}</strong>
+      </div>
+      {summary.primary_artifact_ref && (
+        <code>{safeText(summary.primary_artifact_ref)}</code>
+      )}
+      {summary.retry_checkpoint_ref && (
+        <small>{safeText(summary.retry_checkpoint_ref)}</small>
+      )}
+    </section>
+  );
 }
 
 export function WorkbenchTimeline({ timeline = [] }) {
@@ -133,9 +194,40 @@ export function WorkbenchDiagnosticDrawer({ open = false, diagnostic = null }) {
   if (!open || !diagnostic) return null;
   return (
     <aside className="workbench-diagnostic">
-      <h4>诊断详情</h4>
-      <pre>{JSON.stringify(diagnostic, null, 2)}</pre>
+      <h4>诊断摘要</h4>
+      <p>{safeText(diagnostic.summary, '当前任务可从检查点继续处理。')}</p>
+      {diagnostic.retry_checkpoint_ref && <code>{safeText(diagnostic.retry_checkpoint_ref)}</code>}
     </aside>
+  );
+}
+
+export function WorkbenchArtifactDrawer({ artifact = null, onClose }) {
+  if (!artifact) return null;
+  const refs = artifact.related_refs || [];
+  return (
+    <section className="workbench-artifact-drawer" data-testid="workbench-artifact-drawer">
+      <div className="workbench-artifact-head">
+        <div>
+          <span>{safeText(artifact.kind, 'artifact')}</span>
+          <h4>产物详情</h4>
+        </div>
+        <button type="button" className="workbench-close" onClick={onClose} aria-label="关闭产物详情">
+          <Icon name="x" />
+        </button>
+      </div>
+      <p>{safeText(artifact.preview_payload?.summary || artifact.summary, '产物摘要已生成')}</p>
+      <code>{safeText(artifact.artifact_ref)}</code>
+      {!!refs.length && (
+        <div className="workbench-refs">
+          {refs.map((ref) => (
+            <span className="workbench-ref workbench-ref-static" key={`${ref.ref_type}-${ref.ref}`}>
+              <Icon name="link" />
+              <code>{safeText(ref.ref)}</code>
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -166,10 +258,12 @@ export function WorkbenchPanel({
   const [artifact, setArtifact] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [focusedArtifactRef, setFocusedArtifactRef] = useState(initialArtifactRef);
 
   useEffect(() => {
     if (!threadId) {
       setView(null);
+      setArtifact(null);
       return undefined;
     }
     let cancelled = false;
@@ -216,12 +310,24 @@ export function WorkbenchPanel({
 
   useEffect(() => {
     if (!initialArtifactRef) return;
-    fetchWorkbenchArtifact(initialArtifactRef).then(setArtifact).catch(setError);
-  }, [initialArtifactRef]);
+    setFocusedArtifactRef(initialArtifactRef);
+    fetchWorkbenchArtifact(initialArtifactRef, threadId).then(setArtifact).catch(setError);
+  }, [initialArtifactRef, threadId]);
 
   const refs = useMemo(() => collectRefs(view), [view]);
+  const statusSummary = view?.status_summary || fallbackStatusSummary(view);
+  const primaryArtifactRef = statusSummary?.primary_artifact_ref || view?.primary_artifact_ref;
+  useEffect(() => {
+    if (!primaryArtifactRef || hasRunningWorkbenchMessage(view)) return;
+    if (focusedArtifactRef === primaryArtifactRef) return;
+    setFocusedArtifactRef(primaryArtifactRef);
+    // completed 快照出现新主产物时自动聚焦，避免 retry 结束后用户仍停在旧失败状态。
+    fetchWorkbenchArtifact(primaryArtifactRef, threadId).then(setArtifact).catch(setError);
+  }, [primaryArtifactRef, view, focusedArtifactRef, threadId]);
+
   const openArtifact = async (artifactRef) => {
-    const next = await fetchWorkbenchArtifact(artifactRef);
+    setFocusedArtifactRef(artifactRef);
+    const next = await fetchWorkbenchArtifact(artifactRef, view?.thread_id || threadId);
     setArtifact(next);
   };
 
@@ -239,22 +345,23 @@ export function WorkbenchPanel({
       {error && <p className="workbench-error">工作台暂不可用</p>}
       {view?.legacy_notice && <p className="workbench-notice">{safeText(view.legacy_notice)}</p>}
 
+      {!threadId && <p className="workbench-muted">选择一个会话后查看工作台。</p>}
+      {threadId && !loading && !view && !error && <p className="workbench-muted">暂无工作台数据。</p>}
+      <WorkbenchStatusSummary summary={statusSummary} />
       <WorkbenchMessages messages={view?.messages || []} />
       <WorkbenchTimeline timeline={view?.timeline || []} />
       <WorkbenchArtifactRefs refs={refs} onOpen={openArtifact} />
-      {artifact?.preview_payload && (
-        <section className="workbench-section">
-          <h4>产物详情</h4>
-          <p>{safeText(artifact.preview_payload.summary, '产物摘要已生成')}</p>
-        </section>
-      )}
+      <WorkbenchArtifactDrawer artifact={artifact} onClose={() => setArtifact(null)} />
       <WorkbenchActions
         threadId={view?.thread_id || threadId}
         actions={view?.available_actions || []}
         onRetried={() => fetchWorkbenchThread(threadId).then(setView)}
         onRetryRun={onRetryRun}
       />
-      <WorkbenchDiagnosticDrawer open={false} diagnostic={null} />
+      <WorkbenchDiagnosticDrawer
+        open={statusSummary?.actionable}
+        diagnostic={statusSummary}
+      />
     </aside>
   );
 }

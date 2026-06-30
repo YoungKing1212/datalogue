@@ -41,6 +41,17 @@ describe('workbench-api', () => {
     expect(fetchSpy.mock.calls[1][0]).toBe('/api/workbench/artifact/artifact%3A1');
   });
 
+  it('fetches artifact views with optional thread ownership scope', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ artifact_ref: 'artifact:1' }),
+    });
+
+    await fetchWorkbenchArtifact('artifact:1', '25');
+
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/workbench/artifact/artifact%3A1?thread_id=conv_25');
+  });
+
   it('sends retry action with only allowed payload keys', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,

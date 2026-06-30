@@ -95,6 +95,40 @@ def test_retry_action_creates_new_running_message(client, db_session):
     }
 
 
+def test_retry_action_is_idempotent_for_same_running_checkpoint(client, db_session):
+    thread_id, message_id, checkpoint_ref = _failed_message_with_checkpoint(db_session)
+
+    first = client.post(
+        "/api/workbench/actions/retry",
+        json={
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "checkpoint_ref": checkpoint_ref,
+            "selected_action": "retry_last_step",
+        },
+    )
+    second = client.post(
+        "/api/workbench/actions/retry",
+        json={
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "checkpoint_ref": checkpoint_ref,
+            "selected_action": "retry_last_step",
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["retry_message_id"] == first.json()["retry_message_id"]
+    retry_messages = (
+        db_session.query(AgentScopeMessage)
+        .filter(AgentScopeMessage.thread_id == thread_id)
+        .filter(AgentScopeMessage.status == "running")
+        .all()
+    )
+    assert len(retry_messages) == 1
+
+
 def test_retry_run_request_sanitizes_internal_question_text(client, db_session):
     session = create_agentscope_session(
         db_session,
