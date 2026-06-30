@@ -358,3 +358,10 @@
 - 关键改动：把“注入旧字段触发字段映射漂移”的方案 1 固化为正式 pytest 内部 harness：临时 SQLite 真实执行首轮坏 SQL，模拟语义资产仍指向旧字段，确认 `sql_execute -> sql_audit -> repair_patch -> dsl_compiler -> sql_execute` 链路自动生成 RepairPatch、重编译为合法 QueryGraph SQL 并二次执行成功；测试同时校验 RepairPatch 用户可见摘要不泄露表名、字段名、SQL、query_plan、trace-only metadata 或 raw result。
 - 验证方式：先执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py::test_workflow_e2e_repairs_injected_field_mapping_drift -q` 确认 RED，初始失败为 helper 未实现；补齐 harness 后同一单例通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，192 条通过、3 条 skipped。
 - 残留风险：本次是内部-only workflow pytest，不启动真实 `/chat/stream` HTTP 服务、浏览器页面或 Langfuse UI；它用于稳定覆盖字段漂移自动修复主链，真实页面五件套仍需在本地服务验收记录中单独补证。
+
+### 2026-06-30 09:45 · C2 RepairPatch 合并后验收落档
+
+- 涉及文件：`docs/main-chain-acceptance-records/2026-06-30-c2-repairpatch-post-merge.md`、`.codex/project-memory.md`
+- 关键改动：在 `b-first-c@3ad8bb2c` 上补充 C2 RepairPatch 合并后验收记录，明确 #19/#20 已进入主线；记录字段映射漂移内部 E2E 的事件顺序、关键断言、公开层脱敏边界、前端 timeline 承接和五件套分层状态；如实标注本次未启动浏览器真实会话和 Langfuse UI，不伪造成完整发布级五件套通过。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py::test_workflow_e2e_repairs_injected_field_mapping_drift -q`，1 条通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，192 条通过、3 条 skipped；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，48 条通过；执行 `cd datalogue-web && npm run lint && npm run build` 通过，保留既有 15 个 lint warning 和 Vite chunk warning；执行 `git diff --check` 通过。
+- 残留风险：C2 RepairPatch 自动修复主链已有合并后可重复证据；发布级浏览器页面、Langfuse observation、真实 `query_artifact/conversation_state` 同一 trace 五件套仍需用本地服务单独补证。
