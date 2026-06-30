@@ -49,7 +49,13 @@ describe('WorkbenchRoute', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText('artifact:result-1')).toBeInTheDocument();
+    await screen.findByText('已加载工作台产物摘要');
+    expect(screen.getAllByText('artifact:result-1').length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByText('已加载工作台产物摘要')).toBeInTheDocument();
     expect(fetchWorkbenchThread).toHaveBeenCalledWith('as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    expect(fetchWorkbenchArtifact).toHaveBeenCalledWith(
+      'artifact:result-1',
+      'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    );
   });
 });

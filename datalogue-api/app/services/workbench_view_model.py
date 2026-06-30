@@ -32,6 +32,7 @@ from app.schemas.agentscope_workbench import (
     WorkbenchActionView,
     WorkbenchArtifactView,
     WorkbenchMessageView,
+    WorkbenchStatusSummary,
     WorkbenchThreadView,
     WorkbenchTimelineItem,
 )
@@ -126,6 +127,7 @@ def build_workbench_thread_view(db: Session, *, thread_id: str) -> WorkbenchThre
     )
     primary_ref = _select_primary_artifact_ref(refs)
     related_refs = [_ref_to_view(ref) for ref in refs if not (ref.relation == "primary" and ref.ref_value == primary_ref)]
+    available_actions = _build_agentscope_actions(messages, refs)
     view = WorkbenchThreadView(
         thread_id=session.thread_id,
         read_only=False,
@@ -133,8 +135,14 @@ def build_workbench_thread_view(db: Session, *, thread_id: str) -> WorkbenchThre
         timeline=[_event_to_timeline_item(event) for event in events],
         primary_artifact_ref=primary_ref,
         related_refs=related_refs,
-        available_actions=_build_agentscope_actions(messages, refs),
+        available_actions=available_actions,
         legacy_notice=None,
+        status_summary=_build_agentscope_status_summary(
+            messages=messages,
+            refs=refs,
+            primary_artifact_ref=primary_ref,
+            actions=available_actions,
+        ),
     )
     return _validated_thread_view(view)
 
@@ -161,14 +169,25 @@ def build_legacy_conversation_view(db: Session, *, legacy_conversation_id: int) 
         related_refs=related_refs,
         available_actions=[],
         legacy_notice="旧会话以只读方式展示；不会迁移、回填或伪造 Workbench 产物卡。",
+        status_summary=_build_legacy_status_summary(
+            messages=messages,
+            primary_artifact_ref=primary_ref,
+        ),
     )
     return _validated_thread_view(view)
 
 
-def build_workbench_artifact_view(db: Session, *, artifact_ref: str) -> WorkbenchArtifactView:
+def build_workbench_artifact_view(
+    db: Session,
+    *,
+    artifact_ref: str,
+    thread_id: str | None = None,
+) -> WorkbenchArtifactView:
     """读取 artifact 工作台摘要；只接受 artifact:<uuid> 句柄，其他 ref 统一 fail-closed。"""
 
     if not artifact_ref or not artifact_ref.startswith("artifact:"):
+        raise WorkbenchViewNotFoundError("artifact not found")
+    if thread_id and not _thread_owns_artifact_ref(db, thread_id=thread_id, artifact_ref=artifact_ref):
         raise WorkbenchViewNotFoundError("artifact not found")
     artifact = ArtifactStore(db).get(artifact_ref)
     if artifact is None:
@@ -190,6 +209,26 @@ def build_workbench_artifact_view(db: Session, *, artifact_ref: str) -> Workbenc
     encoded = cast(dict[str, Any], jsonable_encoder(view.model_dump()))
     sanitize_workbench_view_payload(encoded)
     return view
+
+
+def _thread_owns_artifact_ref(db: Session, *, thread_id: str, artifact_ref: str) -> bool:
+    normalized = (thread_id or "").strip()
+    if normalized.startswith("as_"):
+        return (
+            db.query(AgentScopeRef)
+            .filter(AgentScopeRef.thread_id == normalized)
+            # Workbench 对外统一使用 artifact:<uuid> 句柄；内部 ref_type 仍保留 result/report 等业务语义。
+            # 因此归属校验必须按 ref_value 精确匹配，而不是要求 ref_type 固定为 artifact。
+            .filter(AgentScopeRef.ref_value == artifact_ref)
+            .first()
+            is not None
+        )
+    if normalized.startswith("conv_"):
+        legacy_view = build_legacy_conversation_view(db, legacy_conversation_id=_parse_legacy_conversation_id(normalized))
+        if legacy_view.primary_artifact_ref == artifact_ref:
+            return True
+        return any(ref.get("ref") == artifact_ref for ref in legacy_view.related_refs)
+    return False
 
 
 def _validated_thread_view(view: WorkbenchThreadView) -> WorkbenchThreadView:
@@ -258,8 +297,93 @@ def _ref_to_view(ref: AgentScopeRef) -> dict[str, Any]:
     }
 
 
+def _latest_assistant_message(messages: list[AgentScopeMessage]) -> AgentScopeMessage | None:
+    return next((message for message in reversed(messages) if message.role == "assistant"), None)
+
+
+def _checkpoint_ref_for_message(refs: list[AgentScopeRef], message_id: str | None) -> str | None:
+    if not message_id:
+        return None
+    for ref in reversed(refs):
+        if ref.message_id == message_id and ref.ref_type == "checkpoint" and str(ref.ref_value).startswith(("checkpoint://", "checkpoint:")):
+            return ref.ref_value
+    return None
+
+
+def _trace_ref_from_refs(refs: list[AgentScopeRef]) -> str | None:
+    for ref in reversed(refs):
+        if ref.ref_type == "trace" and ref.ref_value:
+            value = str(ref.ref_value)
+            return value if value.startswith("trace:") else f"trace:{value}"
+    return None
+
+
+def _build_agentscope_status_summary(
+    *,
+    messages: list[AgentScopeMessage],
+    refs: list[AgentScopeRef],
+    primary_artifact_ref: str | None,
+    actions: list[WorkbenchActionView],
+) -> WorkbenchStatusSummary:
+    """生成线程级产品态；前端只按该摘要渲染，不推断内部执行状态。"""
+
+    latest = _latest_assistant_message(messages)
+    if latest is None:
+        return WorkbenchStatusSummary(
+            status="empty",
+            label="等待问数",
+            tone="neutral",
+            actionable=False,
+            read_only=False,
+            primary_artifact_ref=primary_artifact_ref,
+            trace_ref=_trace_ref_from_refs(refs),
+            summary="当前线程还没有可展示的 BI 结果。",
+        )
+
+    checkpoint_ref = _checkpoint_ref_for_message(refs, latest.message_id)
+    retry_action = next((action for action in actions if action.action_id == "retry"), None)
+    actionable = bool(retry_action and retry_action.enabled)
+    labels = {
+        "running": ("执行中", "pending"),
+        "completed": ("已完成", "success"),
+        "failed": ("执行失败", "warning"),
+        "interrupted": ("已中断", "warning"),
+        "created": ("已创建", "neutral"),
+    }
+    label, tone = labels.get(str(latest.status), ("处理中", "neutral"))
+    return WorkbenchStatusSummary(
+        status=str(latest.status),
+        label=label,
+        tone=tone,
+        actionable=actionable,
+        read_only=False,
+        latest_message_id=latest.message_id,
+        primary_artifact_ref=primary_artifact_ref,
+        retry_checkpoint_ref=checkpoint_ref if actionable else None,
+        trace_ref=_trace_ref_from_refs(refs),
+        summary=_safe_text(latest.content_summary, fallback=label),
+    )
+
+
+def _build_legacy_status_summary(
+    *,
+    messages: list[Message],
+    primary_artifact_ref: str | None,
+) -> WorkbenchStatusSummary:
+    latest = messages[-1] if messages else None
+    return WorkbenchStatusSummary(
+        status="read_only",
+        label="只读回放",
+        tone="neutral",
+        actionable=False,
+        read_only=True,
+        latest_message_id=f"conv_msg_{latest.id}" if latest is not None else None,
+        primary_artifact_ref=primary_artifact_ref,
+        summary="旧会话以只读方式展示，不会迁移、回填或发起 Workbench 重试。",
+    )
+
+
 def _build_agentscope_actions(messages: list[AgentScopeMessage], refs: list[AgentScopeRef]) -> list[WorkbenchActionView]:
-    checkpoint_ref = next((ref.ref_value for ref in refs if ref.ref_type == "checkpoint"), None)
     latest_terminal = next(
         (
             message
@@ -268,15 +392,17 @@ def _build_agentscope_actions(messages: list[AgentScopeMessage], refs: list[Agen
         ),
         None,
     )
-    # PR3 只声明动作可见性；真正 retry 执行在后续 PR4 接入，避免 View Model API 引入副作用。
+    checkpoint_ref = _checkpoint_ref_for_message(refs, latest_terminal.message_id if latest_terminal is not None else None)
+    retryable = bool(latest_terminal and latest_terminal.status in {"failed", "interrupted"} and checkpoint_ref)
+    # View Model 只声明动作可见性；真实重跑交给 Workbench action 和 Chat checkpoint 主链。
     return [
         WorkbenchActionView(
             action_id="retry",
             label="重试",
-            enabled=bool(latest_terminal and latest_terminal.status in {"failed", "interrupted"} and checkpoint_ref),
+            enabled=retryable,
             disabled_reason=None
-            if latest_terminal and latest_terminal.status in {"failed", "interrupted"} and checkpoint_ref
-            else "当前消息不需要重试。",
+            if retryable
+            else ("当前消息缺少可用检查点。" if latest_terminal and latest_terminal.status in {"failed", "interrupted"} else "当前消息不需要重试。"),
             checkpoint_ref=checkpoint_ref,
             message_id=latest_terminal.message_id if latest_terminal is not None else None,
         )

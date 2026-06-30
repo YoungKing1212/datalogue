@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -55,11 +55,15 @@ def get_workbench_thread(thread_id: str, db: Session = Depends(get_db)) -> Workb
 
 
 @router.get("/artifact/{artifact_ref:path}", response_model=WorkbenchArtifactView)
-def get_workbench_artifact(artifact_ref: str, db: Session = Depends(get_db)) -> WorkbenchArtifactView:
+def get_workbench_artifact(
+    artifact_ref: str,
+    thread_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> WorkbenchArtifactView:
     """读取工作台 artifact 摘要；只返回业务级 preview，不返回原始结果或 RepairPlan patch 主体。"""
 
     try:
-        return build_workbench_artifact_view(db, artifact_ref=artifact_ref)
+        return build_workbench_artifact_view(db, artifact_ref=artifact_ref, thread_id=thread_id)
     except WorkbenchViewNotFoundError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
     except ValueError as exc:
