@@ -372,3 +372,10 @@
 - 关键改动：将 C3 脑暴决策正式落为架构设计和 superpowers spec；C3 主线定为 BI 工作台产品化，入口采用 Chat 右侧 Workbench Panel + 隐藏 `/workbench/:threadId/:artifactRef?` 路由；新会话以 AgentScope-compatible `session/message/event/ref` mirror 为真相源，统一 thread id 为 `as_* / conv_*`；后端提供 Workbench View Model API，支持普通视图、管理员诊断抽屉、Lease / timeout、只读 action 和受控 retry；旧会话只做只读回放，转新会话时仅带业务级摘要和 refs。
 - 验证方式：执行两份 C3 文档占位词扫描，无命中；执行关键决策扫描，确认 BI 工作台产品化、Session / Message Bridge、mirror 四表、统一 thread id、Lease、View Model、受控 retry、管理员诊断抽屉和旧会话策略均已写入两份文档；执行 `git diff --check` 通过。
 - 残留风险：本次仅完成 C3 设计文档，不实现代码；下一步需要按设计生成开发计划，并把 P0 拆成数据库迁移、后端 API、前端 Panel、retry action 和验收用例等可执行 PR。
+
+### 2026-06-30 11:08 · C3-P0 AgentScope Workbench 实施计划
+
+- 涉及文件：`docs/superpowers/plans/2026-06-30-c3-agentscope-workbench-p0.md`、`.codex/project-memory.md`
+- 关键改动：按 superpowers implementation plan 格式把 C3-P0 拆成 6 个可执行 PR：AgentScope mirror 四表和 thread resolver、Chat Session Bridge、Workbench View Model API、受控 retry 与 lease recovery、Chat 右侧 Workbench Panel、双主路径验收加固；计划明确 `as_* / conv_*` 线程规则、AgentScope 管会话消息而 Datalogue 主链管 BI 执行的边界、用户可见层禁止 SQL/schema/raw rows/query_plan/field_patch 的安全约束，以及每个 PR 的测试文件、验证命令、提交范围和 stop condition。
+- 验证方式：执行 C3-P0 plan 空白项和简写扫描，无命中；检查计划包含 writing-plans 要求的 agentic worker 提示、Goal、Architecture、Tech Stack、checkbox 任务、PR stack、验证命令和 merge plan。
+- 残留风险：本次只完成实施计划，不修改业务代码；下一步应从 PR1 `c3-p0-01-agentscope-mirror-storage` 开始按 TDD 实现数据库迁移、模型、schema、thread resolver 和 mirror service。
