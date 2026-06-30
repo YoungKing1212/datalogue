@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveUrlSyncTarget, resolveWorkbenchThreadId, shouldSwitchToRouteThread } from './chat-page.jsx';
+import {
+  resolveUrlSyncTarget,
+  resolveWorkbenchThreadId,
+  shouldAcceptResolvedWorkbenchThread,
+  shouldSwitchToRouteThread,
+} from './chat-page.jsx';
 
 describe('shouldSwitchToRouteThread', () => {
   it('skips route sync when no conversation id is present', () => {
@@ -79,15 +84,50 @@ describe('resolveWorkbenchThreadId', () => {
   });
 
   it('uses runtime remote id when the URL has no route id', () => {
-    expect(resolveWorkbenchThreadId(undefined, 'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')).toBe(
+    expect(resolveWorkbenchThreadId(undefined, 'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', null)).toBe(
       'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
     );
   });
 
   it('keeps the route as the panel source while runtime remote id is catching up', () => {
-    expect(resolveWorkbenchThreadId('25', 'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')).toBe('conv_25');
-    expect(resolveWorkbenchThreadId('as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '25')).toBe(
+    expect(resolveWorkbenchThreadId('25', 'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', null)).toBe('conv_25');
+    expect(resolveWorkbenchThreadId('as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '25', null)).toBe(
       'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     );
+  });
+
+  it('prefers resolved AgentScope thread over numeric runtime id for a new chat draft', () => {
+    expect(resolveWorkbenchThreadId(undefined, '29', 'as_cccccccc-cccc-cccc-cccc-cccccccccccc')).toBe(
+      'as_cccccccc-cccc-cccc-cccc-cccccccccccc',
+    );
+  });
+});
+
+describe('shouldAcceptResolvedWorkbenchThread', () => {
+  it('accepts the latest AgentScope mirror on a route-less chat page', () => {
+    expect(shouldAcceptResolvedWorkbenchThread({
+      routeId: undefined,
+      threadId: 'as_dddddddd-dddd-dddd-dddd-dddddddddddd',
+      mainThreadId: 'local-thread',
+      localThreadId: '30',
+    })).toBe(true);
+  });
+
+  it('keeps explicit history routes as the panel source', () => {
+    expect(shouldAcceptResolvedWorkbenchThread({
+      routeId: '25',
+      threadId: 'as_dddddddd-dddd-dddd-dddd-dddddddddddd',
+      mainThreadId: 'local-thread',
+      localThreadId: 'local-thread',
+    })).toBe(false);
+  });
+
+  it('rejects non-AgentScope thread ids', () => {
+    expect(shouldAcceptResolvedWorkbenchThread({
+      routeId: undefined,
+      threadId: 'conv_25',
+      mainThreadId: 'local-thread',
+      localThreadId: 'local-thread',
+    })).toBe(false);
   });
 });

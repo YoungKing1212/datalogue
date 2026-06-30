@@ -166,6 +166,46 @@ def test_project_error_event_sanitizes_internal_database_error_text(db_session):
     assert "does not exist" not in payload_text
 
 
+def test_project_error_event_keeps_candidate_summary_and_drops_schema_metadata(db_session):
+    session = create_agentscope_session(
+        db_session,
+        thread_id="as_abababab-abab-abab-abab-abababababab",
+        title="候选数据集事件投影测试",
+    )
+    message = create_running_assistant_message(db_session, thread_id=session.thread_id, lease_seconds=60)
+    envelope = build_datalogue_event_envelope(
+        event_type="error.blocked",
+        visibility="user_visible",
+        payload={
+            "reason": "没有 Manifest 达到自动路由阈值。",
+            "route_decision": {
+                "decision": "no_match",
+                "bound_schema_version": "internal-schema-v1",
+                "candidates": [
+                    {
+                        "dataset_id": 10,
+                        "dataset_name": "生产经营管理系统日志数据集",
+                        "reason": "业务问题可能相关。",
+                        "requires_confirmation": True,
+                    }
+                ],
+            },
+        },
+    )
+
+    event = project_event_envelope_to_agentscope(
+        db_session,
+        thread_id=session.thread_id,
+        assistant_message_id=message.message_id,
+        envelope=envelope,
+    )
+
+    payload_text = str(event.payload_json)
+    assert event.payload_json["route_decision"]["candidates"][0]["dataset_name"] == "生产经营管理系统日志数据集"
+    assert "bound_schema_version" not in payload_text
+    assert "schema" not in payload_text
+
+
 def session_refs(db_session, thread_id):
     from app.models.agentscope_workbench import AgentScopeRef
 

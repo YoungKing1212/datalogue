@@ -75,16 +75,25 @@ def sanitize_event_payload_for_workbench(event_type: str, payload: dict) -> dict
 
 
 def _sanitize_generic_payload(payload: dict) -> dict:
-    safe: dict = {}
-    for key, value in payload.items():
-        if key in {"answer", "summary"} and isinstance(value, str):
-            safe[key] = _safe_event_text(value, fallback="问数执行失败，内部细节已隐藏。")
-        elif key == "error" and isinstance(value, str):
-            safe["error_summary"] = _safe_event_text(value, fallback="问数执行失败，内部细节已隐藏。")
-        else:
-            safe[key] = value
-    return safe
+    sanitized = _sanitize_generic_value(payload)
+    return sanitized if isinstance(sanitized, dict) else {}
 
+
+def _sanitize_generic_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        safe: dict = {}
+        for key, nested in value.items():
+            key_text = str(key).lower()
+            if any(fragment in key_text for fragment in _FORBIDDEN_KEY_FRAGMENTS):
+                continue  # 通用事件只保留业务摘要，内部 schema/query/raw/result 等字段直接裁剪。
+            safe_key = "error_summary" if key == "error" and isinstance(nested, str) else str(key)
+            safe[safe_key] = _sanitize_generic_value(nested)
+        return safe
+    if isinstance(value, list):
+        return [_sanitize_generic_value(item) for item in value[:8]]
+    if isinstance(value, str):
+        return _safe_event_text(value, fallback="问数执行失败，内部细节已隐藏。")
+    return value
 
 def _safe_event_text(text: str, *, fallback: str) -> str:
     if _INTERNAL_TEXT_RE.search(text):

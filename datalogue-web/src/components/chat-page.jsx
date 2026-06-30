@@ -52,8 +52,17 @@ export function resolveUrlSyncTarget({ routeId, remoteId, mainThreadChanged, has
   return null;
 }
 
-export function resolveWorkbenchThreadId(routeId, remoteId) {
-  return normalizeWorkbenchThreadId(routeId || remoteId);
+export function resolveWorkbenchThreadId(routeId, remoteId, resolvedThreadId = null) {
+  if (routeId) return normalizeWorkbenchThreadId(routeId);
+  return normalizeWorkbenchThreadId(resolvedThreadId || remoteId);
+}
+
+export function shouldAcceptResolvedWorkbenchThread({
+  routeId,
+  threadId,
+}) {
+  if (!threadId || !String(threadId).startsWith('as_')) return false;
+  return !routeId; // `/chat` 候选确认可能用 remote conv id 触发 run，仍应切到最新 as_* mirror。
 }
 
 /**
@@ -428,7 +437,24 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
     const item = s.threads?.threadItems?.find((t) => t.id === id);
     return item?.remoteId;
   });
-  const workbenchThreadId = resolveWorkbenchThreadId(routeId, remoteId);
+  const [resolvedWorkbenchThreadId, setResolvedWorkbenchThreadId] = useState(null);
+  const workbenchThreadId = resolveWorkbenchThreadId(routeId, remoteId, resolvedWorkbenchThreadId);
+
+  useEffect(() => {
+    const onResolvedThread = (event) => {
+      const { localThreadId, threadId } = event.detail || {};
+      if (!shouldAcceptResolvedWorkbenchThread({
+        routeId,
+        threadId,
+        mainThreadId,
+        localThreadId,
+      })) return;
+      setResolvedWorkbenchThreadId(threadId); // 新会话 final 返回 as_* 后，右侧工作台立即切到 AgentScope 真相源。
+    };
+    window.addEventListener('datalogue:thread-resolved', onResolvedThread);
+    return () => window.removeEventListener('datalogue:thread-resolved', onResolvedThread);
+  }, [mainThreadId, routeId]);
+
   useEffect(() => {
     setTraceSteps([]);
     setIntent(null);
@@ -436,6 +462,7 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
     setGenerationMode(null);
     setSqlResult(null);
     setTraceMeta(null);
+    setResolvedWorkbenchThreadId(null); // 切换会话时必须让 route/remoteId 重新决定 Panel source，避免串旧 as_*。
   }, [mainThreadId]);
 
   // 开始新 run 时清空 trace

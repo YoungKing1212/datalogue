@@ -74,13 +74,31 @@ npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-pa
 
 ## 五件套状态
 
-- 页面 Chat / Workbench Panel：由前端组件与 adapter 自动化测试覆盖；本记录未启动真实浏览器页面进行人工截图验收。
+- 页面 Chat / Workbench Panel：已补真实浏览器 E2E。`/chat` 提交 `查询杨凯 2024 年工作日志` 后先出现候选数据集确认，点击 `生产经营管理系统日志数据集` 后同一 legacy conversation 继续生成查询结果；主 Chat 显示最终回答和 Artifact refs，右侧 Workbench Panel 从第一轮 failed mirror 切到第二轮 completed mirror。
 - SSE/event envelope：由 `_stream_chat` stub 事件进入真实 AgentScope bridge，覆盖 `task.started -> answer.completed`。
-- 后端日志/checkpoint：本次未采集真实日志文件；用 DB 状态断言替代。
+- 后端日志/checkpoint：真实浏览器 E2E 通过 DB 状态补证，`conversation_id=31`、`thread_id=as_60b44ad7-cd95-4b2e-a765-c2e82e189c2d`、`trace_id=22b163778f0bbdb422c691997ae6eb60`、`checkpoint_ref=checkpoint://conv-31-msg-74/query_context_ready`。
 - Langfuse：本次未打开 Langfuse UI；C3-P0 只验证 mirror 与 Workbench，不新增 Langfuse observation 语义。
-- query_artifact / conversation_state / AgentScope mirror：路径 A 使用 `query_artifact` 风格 artifact store 和 AgentScope mirror；C3 新真相源以 `agentscope_session/message/event/ref` 为准。
+- query_artifact / conversation_state / AgentScope mirror：真实浏览器 E2E 生成 `primary_ref=artifact:e1c094ea0d2242a681345f70a2404284`、`report_ref=artifact:5d40ec7b33b04ab199b8d3dc3b46f53f`，AgentScope mirror refs 中记录 result/report/trace/checkpoint；C3 新真相源以 `agentscope_session/message/event/ref` 为准。
+
+## 真实浏览器补证
+
+- 测试入口：`http://127.0.0.1:5173/chat`
+- API：`http://127.0.0.1:8000`
+- 问题：`查询杨凯 2024 年工作日志`
+- 路由行为：第一轮 `no_match`，页面展示候选 `生产经营管理系统日志数据集`，未直接执行 SQL；候选确认后继续 `conversation_id=31`。
+- AgentScope mirror：
+  - 第一轮候选 thread：`as_d3d041ee-864b-482e-ab27-6f1b5cc720c6`，assistant `failed`，events 为 `error.blocked`，refs 只包含 trace。
+  - 第二轮完成 thread：`as_60b44ad7-cd95-4b2e-a765-c2e82e189c2d`，assistant `completed`，events 包含 `dataset.selected` 和 `answer.completed`。
+- 结果 refs：`artifact:e1c094ea0d2242a681345f70a2404284`、`artifact:5d40ec7b33b04ab199b8d3dc3b46f53f`、`trace:22b163778f0bbdb422c691997ae6eb60`、`checkpoint://conv-31-msg-74/query_context_ready`。
+- 页面证据：主 Chat 最终回答可见，包含“杨凯2024年全年共登记 100条 工作日志”；右侧 Workbench Panel 显示 `助手 · completed`、同一 artifact/trace/checkpoint refs，且无 `只读` 提示。
+- 隐藏 Workbench route：`/workbench/as_60b44ad7-cd95-4b2e-a765-c2e82e189c2d/artifact%3Ae1c094ea0d2242a681345f70a2404284` 可打开，显示 completed 消息、产物详情和同一 refs，非只读。
+- 旧会话回放：`/chat/25` 显示 Workbench `只读` notice，回放历史消息和 artifact refs，不迁移、不回填、不伪造新 mirror。
+- 浏览器安全扫描：真实页面未命中 `SELECT`、`query_plan`、`raw_result`、`schema_summary`、`field_patch`；console error/warn 为空。
+- 本轮发现并修复：
+  - 新会话 final 后右侧 Panel 未切到 `as_*`，已修复为 `/chat` route-less 场景接受最新 AgentScope mirror。
+  - 候选阻断事件投影时 `bound_schema_version` 触发 mirror payload 泄露拦截，已修复为通用 user-visible payload 递归裁剪内部键后再 fail-closed。
 
 ## 残留风险
 
-- 本次是自动化 acceptance hardening，不是完整真实浏览器五件套发布验收；PR6 后仍建议启动本地 API/前端，用真实页面验证 `/chat/as_*`、`/chat/25`、隐藏 `/workbench/:threadId/:artifactRef` 和受控 retry 点击路径。
+- 本次已补真实浏览器页面、SSE/mirror、DB refs 和旧会话/隐藏路由证据；仍未打开 Langfuse UI 做人工核对。
 - retry action 当前只创建新的 running message 并记录 checkpoint/event，不在 PR6 内直接驱动真实 Datalogue 主链重跑；后续需要把 checkpoint restore 与 Workbench action 编排打通。
