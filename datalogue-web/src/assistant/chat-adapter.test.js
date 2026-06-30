@@ -322,6 +322,18 @@ describe('chat-adapter C-ready metadata', () => {
       {
         type: 'repair',
         event_envelope: {
+          event_type: 'repair.evaluated',
+          visibility: 'user_visible',
+          payload: {
+            summary: '字段口径不匹配，正在评估自动修复方案。',
+            status: 'evaluated',
+            repair_plan_ref: 'artifact:repair-plan-1',
+          },
+        },
+      },
+      {
+        type: 'repair',
+        event_envelope: {
           event_type: 'repair.plan_created',
           visibility: 'user_visible',
           payload: {
@@ -374,9 +386,165 @@ describe('chat-adapter C-ready metadata', () => {
       failureClass: 'FIELD_NOT_FOUND',
     });
     expect(custom.repairTimeline.map((item) => item.eventType)).toEqual([
+      'repair.evaluated',
       'repair.plan_created',
       'repair.rerun_completed',
     ]);
     expect(JSON.stringify(custom.repairPlan)).not.toMatch(/bad_col|work_log|select/i);
+  });
+
+  it('maps C2 repair patch summary into timeline, artifact refs, and safe metadata', async () => {
+    streamChatEvents.mockReturnValue(events([
+      {
+        type: 'repair',
+        event_envelope: {
+          event_type: 'repair.evaluated',
+          visibility: 'user_visible',
+          payload: {
+            summary: '字段口径不匹配，正在评估自动修复方案。',
+            status: 'evaluated',
+            repair_plan_ref: 'artifact:repair-plan-1',
+          },
+        },
+      },
+      {
+        type: 'repair',
+        event_envelope: {
+          event_type: 'repair.plan_created',
+          visibility: 'user_visible',
+          payload: {
+            summary: '字段口径不匹配，已生成自动修复方案。',
+            status: 'plan_created',
+            repair_plan_ref: 'artifact:repair-plan-1',
+          },
+        },
+      },
+      {
+        type: 'repair',
+        event_envelope: {
+          event_type: 'repair.rerun_started',
+          visibility: 'user_visible',
+          payload: {
+            summary: '字段口径不匹配，正在重新执行查询。',
+            status: 'rerun_started',
+            repair_plan_ref: 'artifact:repair-plan-1',
+          },
+        },
+      },
+      {
+        type: 'repair',
+        event_envelope: {
+          event_type: 'repair.patch_applied',
+          visibility: 'user_visible',
+          payload: {
+            repair_patch_summary: {
+              repair_strategy: '按业务口径自动修复字段引用。',
+              failure_class: 'FIELD_NOT_FOUND',
+              confidence_band: 'high',
+              validation_summary: '修复方案已通过工具校验。',
+            },
+            repair_patch: {
+              trace_only_metadata: {
+                replacement_field_ref: 'work_log.bad_col',
+              },
+            },
+            raw_sql: 'select bad_col from work_log',
+          },
+        },
+      },
+      {
+        type: 'final',
+        answer: '已完成查询。',
+        conversation_id: 42,
+        message_id: 99,
+        result_ref: 'artifact:result-1',
+        repair_plan_ref: 'artifact:repair-plan-1',
+        repair_patch_summary: {
+          repair_strategy: '按业务口径自动修复字段引用。',
+          failure_class: 'FIELD_NOT_FOUND',
+          confidence_band: 'high',
+          validation_summary: '修复方案已通过工具校验。',
+        },
+        repair_patch: {
+          trace_only_metadata: {
+            replacement_field_ref: 'work_log.bad_col',
+          },
+        },
+        artifact_card: {
+          title: 'BI 查询结果',
+          status: 'ready',
+          summary_for_chat: '已自动修复并完成查询',
+          primary_ref: { ref_id: 'artifact:result-1', ref_type: 'result' },
+          related_refs: [
+            { ref_id: 'artifact:repair-plan-1', ref_type: 'repair_plan', label: 'RepairPlan' },
+          ],
+          preview_payload: {
+            patch: { field: 'bad_col' },
+            raw_sql: 'select bad_col from work_log',
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯 2024 年工作日志' }));
+    const custom = chunks.at(-1).metadata.custom;
+
+    expect(custom.repairPlan).toMatchObject({
+      summary: '按业务口径自动修复字段引用。',
+      status: 'patch_applied',
+      failureClass: 'FIELD_NOT_FOUND',
+      repairPlanRef: 'artifact:repair-plan-1',
+      confidenceBand: 'high',
+    });
+    expect(custom.repairTimeline.map((item) => item.eventType)).toEqual([
+      'repair.evaluated',
+      'repair.plan_created',
+      'repair.rerun_started',
+      'repair.patch_applied',
+    ]);
+    expect(custom.taskTimeline.map((item) => item.type)).toContain('repair_patch');
+    expect(custom.taskTimeline.filter((item) => item.type === 'repair_patch')).toHaveLength(1);
+    expect(custom.artifactCard.related_refs).toEqual([
+      { ref_id: 'artifact:repair-plan-1', ref_type: 'repair_plan', label: 'RepairPlan' },
+    ]);
+    expect(custom.artifactCard.preview_payload).toBeNull();
+    expect(JSON.stringify(custom)).not.toMatch(/bad_col|work_log|raw_sql|select/i);
+  });
+
+  it('maps repair_patch graph step into business timeline without internal patch body', async () => {
+    streamChatEvents.mockReturnValue(events([
+      {
+        type: 'step',
+        node: 'repair_patch',
+        status: 'done',
+        repair_patch_summary: {
+          repair_strategy: '按业务口径自动修复字段引用。',
+          failure_class: 'FIELD_NOT_FOUND',
+          confidence_band: 'high',
+        },
+        repair_patch: {
+          trace_only_metadata: {
+            replacement_field_ref: 'work_log.bad_col',
+          },
+        },
+      },
+      {
+        type: 'final',
+        answer: '已完成查询。',
+        conversation_id: 42,
+        message_id: 99,
+        result_ref: 'artifact:result-1',
+        repair_plan_ref: 'artifact:repair-plan-1',
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯 2024 年工作日志' }));
+    const final = chunks.at(-1);
+
+    expect(final.content.some((part) => part.type === 'reasoning' && /自动修复/.test(part.text))).toBe(true);
+    expect(final.metadata.custom.taskTimeline.map((item) => item.type)).toContain('repair_patch');
+    expect(JSON.stringify(final.metadata.custom)).not.toMatch(/bad_col|work_log|replacement_field_ref/i);
   });
 });

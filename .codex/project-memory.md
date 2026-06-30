@@ -322,6 +322,20 @@
 - 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py -q` 确认 RED，失败表现为 `_sql_audit_router` 仍返回 `retry` 且 `repair_patch_node` 不存在；实现后该命令 3 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，171 条通过。
 - 残留风险：PR2 完成后端主链接入和自动化重跑 fixture；前端 repair timeline 细化、ArtifactCard repair ref 展示、页面 E2E 以及真实问题字段漂移注入五件套验收仍归 C2 PR3。
 
+### 2026-06-28 17:50 · C2 PR3 前端 RepairPatch timeline 承接
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/components/task-timeline.jsx`、`datalogue-web/src/components/task-timeline.test.jsx`、`.codex/project-memory.md`
+- 关键改动：按 TDD 承接 C2 PR2 的 `repair_patch` 主链输出；`chat-adapter` 支持从 `repair_patch` graph step、`repair.patch_applied` event envelope 和 final payload 的 `repair_patch_summary` 生成业务级 `repairPlan`、`repairTimeline` 和 `taskTimeline`，同时保留 `artifact_card.related_refs` 中的 `repair_plan` ref；`TaskTimeline` 增加一等业务节点 `repair_patch/自动修复`，排序在 BI 执行和结果产物之间；前端 trace 清洗新增 `repair_patch/trace_only_metadata/replacement_field_ref` 等字段级 patch 主体黑名单，普通用户可见层不展示表、字段、SQL、raw result。
+- 验证方式：先执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx` 确认 RED，失败表现为 `repair_patch_summary` 未映射、`repair_patch` timeline 节点被当未知节点；实现后该命令 20 条通过；执行 `cd datalogue-web && npm run test`，9 个测试文件 78 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk warning；执行 `cd datalogue-api && python3 -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，171 条通过。
+- 残留风险：本次完成前端协议和组件承接；真实页面 E2E、字段漂移注入五件套验收和 Langfuse UI 证据仍需在本地服务启动后补充记录。
+
+### 2026-06-28 17:56 · C2 PR3 终审 RepairPatch 时间线去重
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`.codex/project-memory.md`
+- 关键改动：终审 #20 与 #19 stacked diff 时发现真实 repair 序列会连续发 `repair.evaluated / repair.plan_created / repair.rerun_started / repair.rerun_completed`，前端若逐条追加会产生多条“自动修复”节点且部分保持 running；本次新增 `upsertTaskTimelineEvent`，将 repair 业务时间线收敛为单个 `repair_patch/自动修复` 节点，并用完整 repair event 序列补测试。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx`，20 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `git diff --check` 通过。
+- 残留风险：本次只修复前端时间线重复节点；真实页面 E2E 和五件套验收仍需在 PR2/PR3 Ready 后用本地服务补证。
+
 ### 2026-06-28 18:04 · C2 PR2 终审 RepairPatch 契约收口
 
 - 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/graph/nodes.py`、`datalogue-api/app/graph/workflow.py`、`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/schemas/repair_plan.py`、`datalogue-api/app/services/repair_plan.py`、`datalogue-api/app/utils/sql_diagnosis.py`、`datalogue-api/tests/test_event_envelope.py`、`datalogue-api/tests/test_repair_patch_stream.py`、`datalogue-api/tests/test_repair_plan_contract.py`、`datalogue-api/tests/test_sql_audit.py`、`.codex/project-memory.md`
@@ -337,3 +351,10 @@
 - 数据核对：`query_artifact` 中主结果和报告 artifact 均存在并指向同一 `conversation_id/message_id/trace_id`；`conversation_state` 存在 `session_id=e2e-c2-fixed-1782641948`、`active_dataset_id=10`、`turn_index=1`；`observability_trace_index` 有同一 trace，状态为 `success`。
 - 验证方式：先执行 `.venv/bin/python -m pytest tests/test_repair_patch_stream.py::test_build_workflow_registers_repair_patch_without_state_key_collision -q` 确认 RED；修复后执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，191 条通过、3 条 skipped；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，48 条通过；执行 `cd datalogue-web && npm run lint && npm run build` 通过，仅保留 15 个既有 lint warning 和既有 chunk size warning；执行 `git diff --check` 通过。
 - 残留风险：真实问题当前走可信模板一次成功，没有触发 RepairPatch 自动修复事件；本次 E2E 证明主链、页面回放、会话切换、Artifact/trace 持久化和 LangGraph 注册问题已收口，字段漂移自动修复的真实 RepairPatch 五件套仍需要用注入式漂移场景单独补证。
+
+### 2026-06-30 09:26 · C2 RepairPatch 字段漂移内部 E2E pytest 固化
+
+- 涉及文件：`datalogue-api/tests/test_repair_patch_stream.py`、`.codex/project-memory.md`
+- 关键改动：把“注入旧字段触发字段映射漂移”的方案 1 固化为正式 pytest 内部 harness：临时 SQLite 真实执行首轮坏 SQL，模拟语义资产仍指向旧字段，确认 `sql_execute -> sql_audit -> repair_patch -> dsl_compiler -> sql_execute` 链路自动生成 RepairPatch、重编译为合法 QueryGraph SQL 并二次执行成功；测试同时校验 RepairPatch 用户可见摘要不泄露表名、字段名、SQL、query_plan、trace-only metadata 或 raw result。
+- 验证方式：先执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py::test_workflow_e2e_repairs_injected_field_mapping_drift -q` 确认 RED，初始失败为 helper 未实现；补齐 harness 后同一单例通过；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_repair_patch_stream.py tests/test_repair_patch_engine.py tests/test_repair_plan_contract.py tests/test_event_envelope.py tests/test_sql_audit.py tests/test_query_plan_compiler.py tests/test_chat.py -q`，192 条通过、3 条 skipped。
+- 残留风险：本次是内部-only workflow pytest，不启动真实 `/chat/stream` HTTP 服务、浏览器页面或 Langfuse UI；它用于稳定覆盖字段漂移自动修复主链，真实页面五件套仍需在本地服务验收记录中单独补证。
