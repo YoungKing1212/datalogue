@@ -210,3 +210,21 @@ npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-pa
 - Workbench View Model 证据：`build_workbench_thread_view(thread_id=as_e5ccbdd5-d026-45cc-b6bd-720bcae88dff)` 返回 `status_summary.status=completed`，`primary_artifact_ref=artifact:4359f70b36344dfeb07afa884f81bbe1`，`trace_ref=trace:0afae92c6ece62037d78e9a7e21e84c8`。
 - 安全边界：真实浏览器页面 DOM 扫描未命中 `raw_rows/raw_result/query_plan/field_patch/direct_sql/llm_sql/SELECT`；页面和记录只保留业务级摘要、event 名称和 refs。
 - 当前结论：C3-P2 PR1 的真实浏览器 retry 发布闸门已从“点击已触发但 completed 未复验”更新为“点击 retry 到 `answer.completed` 复验通过”。
+
+### C3-P2 Retry Completed 自动化 Harness
+
+- 固化时间：`2026-06-30 17:35`。
+- 自动化用例：`datalogue-api/tests/test_c3_workbench_acceptance.py::test_browser_retry_completed_harness_replays_workbench_click_to_completed`。
+- Harness 入口：`datalogue-api/tests/workbench_retry_harness.py::run_workbench_retry_completed_harness`。
+- 复刻动作顺序：
+  - 构造 `as_*` failed 会话、user completed message、assistant failed message 和 `checkpoint://.../query_context_ready`。
+  - 先拉取 `GET /api/workbench/thread/{thread_id}`，断言初始 Workbench status 为 `failed`。
+  - 调用 `POST /api/workbench/actions/retry`，只提交 `thread_id/message_id/checkpoint_ref/selected_action`。
+  - 使用 response 中的业务级 `run_request` 调用 `_stream_chat(ChatRequest(... retry_checkpoint_ref=...))`，模拟真实 ChatPage 接管 `/chat/stream`。
+  - 再拉取 `GET /api/workbench/thread/{thread_id}`，断言 `status_summary.status=completed`、`primary_artifact_ref` 和 refs 对齐。
+- 自动化证据：断言事件顺序 `retry.checkpoint_restored < answer.completed`，并要求 persisted AgentScope events 包含 `retry.completed` 和 `answer.completed`；refs 中必须存在 primary artifact、checkpoint 和 trace。
+- 安全证据：测试对 initial view、retry response、stream events 和 completed view 递归扫描，不允许 `sql/raw_sql/llm_sql/direct_sql/schema/raw_result/raw_rows/query_plan/field_patch/table_name/column_name/columns/rows` 等执行面字段进入用户可见层。
+- 验证命令：
+  - `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py::test_browser_retry_completed_harness_replays_workbench_click_to_completed -q`，1 条通过。
+  - `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py -q`，5 条通过。
+- 边界说明：该 harness 固化的是“真实浏览器点击后的后端 API/stream/Workbench 状态闭环”，不启动浏览器，也不依赖真实 MySQL；发布前真实浏览器 + 真实数据源复验仍作为手工闸门保留。

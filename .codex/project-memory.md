@@ -116,6 +116,7 @@
 - C3-P0 PR1 完成 AgentScope Workbench 本地 mirror 四表基础：`agentscope_session/message/event/ref`、线程解析、mirror 写入、assistant running lease 和 ref 唯一约束；验证包含 mirror/thread resolver pytest 与 py_compile，后续 PR2-PR6 继续接入 Chat stream、View Model、retry、Panel 和验收。
 - C3-P0 PR2 完成 Chat Session Bridge：`/chat/stream` 接入 AgentScope mirror 但不替换 Datalogue 主链，新增 `thread_id`、新 `as_*` session/message/event/ref 投影、final payload 回写线程和异常/取消/无 final 收口；验证覆盖 chat bridge、event projection、mirror、thread resolver 和 chat pytest。
 - C3-P0 PR3 完成 Workbench View Model API：新增 `/api/workbench/thread/{thread_id}` 和 artifact view，支持 `as_*` mirror 视图、`conv_*` 旧会话只读回放、artifact refs 脱敏摘要和用户可见层禁止 SQL/schema/raw rows/query_plan/field_patch。
+- C3-P0 PR4 完成 Controlled Retry And Lease Recovery：`POST /api/workbench/actions/retry` 白名单化接收 thread/message/checkpoint/action，过期 running message 收口为 interrupted 并生成可恢复 checkpoint，旧 `conv_*` 只读禁用 retry。
 
 ## 高价值判断
 
@@ -127,14 +128,6 @@
 
 ## 最新详细记录
 
-
-### 2026-06-30 13:22 · C3-P0 PR4 Controlled Retry And Lease Recovery
-
-- 涉及文件：`datalogue-api/app/api/workbench.py`、`datalogue-api/app/schemas/agentscope_workbench.py`、`datalogue-api/app/services/workbench_actions.py`、`datalogue-api/tests/test_workbench_retry_actions.py`、`datalogue-api/tests/test_agentscope_lease_recovery.py`、`.codex/project-memory.md`
-- 关键改动：新增 Workbench 受控 retry 契约和动作服务；`POST /api/workbench/actions/retry` 只接受 `thread_id/message_id/checkpoint_ref/selected_action`，拒绝 SQL/schema/raw rows/query_plan/field_patch 等执行面 payload；对 failed/interrupted assistant message 创建新的 AgentScope running message、挂载 checkpoint ref，并记录 `workbench.retry_requested` 业务事件；legacy `conv_*` 返回 `accepted=False` 和只读禁用原因，不启动任何重跑。
-- Lease recovery：新增 `run_lease_recovery`，把超过 lease 的 running assistant message 收口为 `interrupted`，写入业务级中断提示、`checkpoint_ref` 和 `recovery_status`，未过期 running message 保持不变；缺少 checkpoint 的过期消息会生成 thread/message 级 fallback checkpoint ref，便于后续受控 retry。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_workbench_retry_actions.py tests/test_agentscope_lease_recovery.py -q` 确认 RED，失败为 `app.services.workbench_actions` 缺失；实现后该命令 6 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_workbench_retry_actions.py tests/test_agentscope_lease_recovery.py tests/test_workbench_view_api.py -q`，11 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py tests/test_agentscope_event_projection.py tests/test_agentscope_mirror_models.py tests/test_agentscope_thread_resolver.py tests/test_workbench_view_api.py tests/test_workbench_retry_actions.py tests/test_agentscope_lease_recovery.py -q`，42 条通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/agentscope_workbench.py app/services/workbench_actions.py app/api/workbench.py` 通过。
-- 残留风险：PR4 只完成后端 retry/lease 动作层；真实 retry 继续依赖后续 chat/checkpoint 流程承接，Chat 右侧 Workbench Panel、隐藏 route 和双主路径 E2E 仍按 C3-P0 PR5-PR6 继续。
 
 ### 2026-06-30 13:35 · C3-P0 PR5 Chat Workbench Panel
 
@@ -209,3 +202,11 @@
 - 后端核验：AgentScope mirror 中同一 thread 持久化 `assistant failed -> assistant running -> user completed -> assistant completed`，events 包含 `workbench.retry_requested`、`retry.started`、`retry.checkpoint_restored`、`dataset.query.completed`、`retry.completed`、`answer.completed`；Workbench View Model 返回 `status_summary.status=completed` 和同一 primary artifact ref。
 - 验证方式：真实浏览器页面 DOM 扫描未命中 `raw_rows/raw_result/query_plan/field_patch/direct_sql/llm_sql/SELECT`；随后执行后端 C3-P2 验收 pytest、前端 Workbench/Chat 相关测试、`npm run lint`、`npm run build` 和 `git diff --check`。
 - 残留风险：本次复验确认浏览器 retry 到 completed 和 refs 持久化一致；Langfuse UI 仍受本地登录权限限制，后续如要做人工 UI 深链核对，需要先登录对应 Langfuse 项目。
+
+### 2026-06-30 17:35 · C3-P2 Retry Completed 自动化 Harness
+
+- 涉及文件：`datalogue-api/tests/test_c3_workbench_acceptance.py`、`datalogue-api/tests/workbench_retry_harness.py`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
+- 关键改动：新增内部-only `run_workbench_retry_completed_harness()`，把手工浏览器复验动作固化为 pytest 可复现流程：构造 `as_*` failed 会话和 retry checkpoint，调用 `POST /api/workbench/actions/retry`，用返回的业务级 `run_request` 驱动 `/chat/stream` checkpoint restore，再拉取 Workbench View Model 断言 completed、primary artifact、trace/checkpoint refs 和事件顺序。
+- TDD 记录：先新增 `test_browser_retry_completed_harness_replays_workbench_click_to_completed` 并确认 RED 失败为 `ModuleNotFoundError: No module named 'workbench_retry_harness'`；随后实现 harness，单测转 GREEN。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py::test_browser_retry_completed_harness_replays_workbench_click_to_completed -q`，1 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py -q`，5 条通过。
+- 残留风险：该 harness 复刻浏览器点击后的 API/stream/Workbench 状态闭环，但不启动真实浏览器、不连接真实 MySQL；真实浏览器和真实数据源复验仍按发布前手工闸门保留。

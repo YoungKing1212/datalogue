@@ -340,6 +340,38 @@ async def test_workbench_retry_run_request_restores_checkpoint_through_chat_stre
     _assert_public_payload_safe(events)
 
 
+@pytest.mark.asyncio
+async def test_browser_retry_completed_harness_replays_workbench_click_to_completed(
+    client,
+    db_session,
+    monkeypatch,
+    sample_dataset,
+):
+    from workbench_retry_harness import run_workbench_retry_completed_harness
+
+    result = await run_workbench_retry_completed_harness(
+        client=client,
+        db_session=db_session,
+        monkeypatch=monkeypatch,
+        dataset_id=sample_dataset.id,
+    )
+
+    assert result.initial_view["status_summary"]["status"] == "failed"
+    assert result.retry_response["accepted"] is True
+    assert result.final_payload["thread_id"] == result.thread_id
+    assert result.final_payload["result_ref"] == result.primary_artifact_ref
+    assert result.completed_view["status_summary"]["status"] == "completed"
+    assert result.completed_view["primary_artifact_ref"] == result.primary_artifact_ref
+    assert result.event_types.index("retry.checkpoint_restored") < result.event_types.index("answer.completed")
+    assert "retry.completed" in result.persisted_event_types
+    assert "answer.completed" in result.persisted_event_types
+    assert any(ref["relation"] == "primary" and ref["ref"] == result.primary_artifact_ref for ref in result.refs)
+    _assert_public_payload_safe(result.initial_view)
+    _assert_public_payload_safe(result.retry_response)
+    _assert_public_payload_safe(result.stream_events)
+    _assert_public_payload_safe(result.completed_view)
+
+
 def test_legacy_conversation_workbench_view_is_read_only_without_mirror(client, db_session, sample_dataset):
     before_sessions = db_session.query(AgentScopeSession).count()
     conversation = models.Conversation(
