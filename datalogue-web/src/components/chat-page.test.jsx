@@ -83,4 +83,11 @@ describe('resolveWorkbenchThreadId', () => {
       'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
     );
   });
+
+  it('keeps the route as the panel source while runtime remote id is catching up', () => {
+    expect(resolveWorkbenchThreadId('25', 'as_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')).toBe('conv_25');
+    expect(resolveWorkbenchThreadId('as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '25')).toBe(
+      'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    );
+  });
 });

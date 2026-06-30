@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 DatalogueEventType = Literal[
+    "task.started",
     "route.started",
     "dataset.selected",
     "clarification.required",

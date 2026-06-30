@@ -418,3 +418,12 @@
 - 前端形态：现有 Chat 入口直接挂载右侧 Panel，不新建独立 BI 工作台页面；隐藏 route 只作为后续独立 Workbench 页面升级出口；移动端 Panel 自动落到消息流下方，桌面固定右侧工作区。
 - 验证方式：先执行 `cd datalogue-web && npm run test -- src/assistant/workbench-api.test.js src/components/workbench-panel.test.jsx src/components/workbench-route.test.jsx src/components/chat-page.test.jsx` 确认 RED，失败为 Workbench API、Panel、Route 和 `resolveWorkbenchThreadId` 未实现；实现后执行 `cd datalogue-web && npm run test -- src/assistant/workbench-api.test.js src/components/workbench-panel.test.jsx src/components/workbench-route.test.jsx src/assistant/chat-adapter.test.js src/components/chat-page.test.jsx`，31 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
 - 残留风险：PR5 只完成 Chat 侧 Workbench Panel 和隐藏 route；PR6 仍需做双主路径验收加固，包括真实 `as_*` 页面回放、`conv_*` 旧会话只读回放、Artifact refs、受控 retry 禁用/发起路径和用户可见层脱敏扫描。
+
+### 2026-06-30 13:55 · C3-P0 PR6 Acceptance Hardening
+
+- 涉及文件：`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/tests/test_c3_workbench_acceptance.py`、`datalogue-web/src/assistant/thread-list-adapter.test.js`、`datalogue-web/src/components/chat-page.test.jsx`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
+- 关键改动：新增 C3 Workbench 双主路径验收测试；后端覆盖新 `as_*` Chat stream mirror 到 Workbench View Model、lease interrupted + 受控 retry、legacy `conv_*` 只读回放三条路径；前端覆盖 `datalogue:thread-resolved` 后本地 draft thread remap 到 `as_*`、`as_*` Workbench View Model 回放、artifact refs 映射和 Chat route 对 Workbench Panel source 的优先级。
+- 契约补洞：PR6 RED 暴露 `agentscope_event_projection` 和 C3 计划已使用 `task.started`，但 `DatalogueEventType` 未纳入该事件；本次将 `task.started` 加入统一 event envelope schema，保证新会话工作台 timeline 可从任务开始事件建立。
+- 验收记录：新增 `docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`，记录路径 A/B/C 的 thread、task、trace、artifact/checkpoint/ref 证据，以及页面、SSE、mirror、Langfuse 和残留风险分层状态；明确本次是自动化 acceptance hardening，未伪造成真实浏览器/Langfuse UI 五件套。
+- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py -q` 确认 RED，失败为 `task.started` 不在 `DatalogueEventType`；修复后同一命令 3 条通过；执行 `cd datalogue-web && npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-page.test.jsx src/components/workbench-panel.test.jsx src/assistant/workbench-api.test.js`，22 条通过。
+- 残留风险：PR6 不启动真实浏览器或 Langfuse UI；retry action 仍只创建新的 running message 并记录 checkpoint/event，不在本阶段直接驱动 Datalogue 主链重跑。
