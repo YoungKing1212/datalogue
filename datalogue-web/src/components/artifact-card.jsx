@@ -101,6 +101,18 @@ function formatRef(ref) {
   return ref.ref || ref.artifact_ref || ref.ref_id || ref.artifactRef || '';
 }
 
+export function uniqueArtifactRefs(refs) {
+  const seen = new Set();
+  const output = [];
+  for (const rawRef of refs || []) {
+    const ref = formatRef(rawRef);
+    if (!ref || seen.has(ref)) continue;
+    seen.add(ref); // 同一个 checkpoint 可能同时来自 retry action 和 final related_refs，前端展示层必须兜底去重。
+    output.push(ref);
+  }
+  return output;
+}
+
 function isSafePreviewKey(key) {
   const value = String(key || '').toLowerCase();
   return !(
@@ -233,13 +245,10 @@ export function ArtifactCard({ artifact, onAction, collapsed: initialCollapsed =
   } = artifact;
   const summary = artifact.summary_for_chat || artifact.summaryForChat || artifact.summary || '';
   const refsFromList = Array.isArray(artifact.refs) ? artifact.refs : [];
-  const refs = [
+  const refs = uniqueArtifactRefs([
     artifact.primary_ref || artifact.primaryRef || refsFromList[0],
     ...(artifact.related_refs || artifact.relatedRefs || refsFromList.slice(1) || []),
-  ]
-    .map(formatRef)
-    .filter(Boolean)
-    .slice(0, 4);
+  ]).slice(0, 4);
 
   return (
     <div className="artifact-card">

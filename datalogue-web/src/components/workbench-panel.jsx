@@ -6,6 +6,7 @@ import { fetchWorkbenchArtifact, fetchWorkbenchThread, requestWorkbenchRetry } f
 import { Icon } from './icons';
 
 const FORBIDDEN_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|query_plan|field_patch)\b/i;
+const RUNNING_REFRESH_INTERVAL_MS = 2000;
 
 function safeText(value, fallback = '') {
   const text = String(value ?? '').trim();
@@ -33,6 +34,12 @@ function collectRefs(view) {
     seen.add(value);
     return true;
   });
+}
+
+export function hasRunningWorkbenchMessage(view) {
+  const messages = view?.messages || [];
+  const latestMessage = messages[messages.length - 1];
+  return latestMessage?.status === 'running';
 }
 
 export function WorkbenchTimeline({ timeline = [] }) {
@@ -149,7 +156,12 @@ function WorkbenchMessages({ messages = [] }) {
   );
 }
 
-export function WorkbenchPanel({ threadId, initialArtifactRef = null, onRetryRun = null }) {
+export function WorkbenchPanel({
+  threadId,
+  initialArtifactRef = null,
+  onRetryRun = null,
+  refreshIntervalMs = RUNNING_REFRESH_INTERVAL_MS,
+}) {
   const [view, setView] = useState(null);
   const [artifact, setArtifact] = useState(null);
   const [error, setError] = useState(null);
@@ -161,23 +173,46 @@ export function WorkbenchPanel({ threadId, initialArtifactRef = null, onRetryRun
       return undefined;
     }
     let cancelled = false;
-    setLoading(true);
-    fetchWorkbenchThread(threadId)
-      .then((nextView) => {
-        if (cancelled) return;
-        setView(nextView);
-        setError(null);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    const load = () => {
+      setLoading(true);
+      fetchWorkbenchThread(threadId)
+        .then((nextView) => {
+          if (cancelled) return;
+          setView(nextView);
+          setError(null);
+        })
+        .catch((err) => {
+          if (!cancelled) setError(err);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    };
+    load();
     return () => {
       cancelled = true;
     };
   }, [threadId]);
+
+  useEffect(() => {
+    if (!threadId || !hasRunningWorkbenchMessage(view)) return undefined;
+    let cancelled = false;
+    const refreshTimer = window.setTimeout(() => {
+      fetchWorkbenchThread(threadId)
+        .then((nextView) => {
+          if (cancelled) return;
+          setView(nextView); // running 期间由 view 状态驱动轮询，覆盖 retry action 的手工刷新快照。
+          setError(null);
+        })
+        .catch((err) => {
+          if (!cancelled) setError(err);
+        });
+    }, refreshIntervalMs);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(refreshTimer);
+    };
+  }, [threadId, view, refreshIntervalMs]);
 
   useEffect(() => {
     if (!initialArtifactRef) return;

@@ -22,7 +22,7 @@ import { ThreadList } from '../assistant/ThreadList';
 import { MyComposer, DatasetChip } from '../assistant/MyComposer';
 import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
-import { getConversation, listDatasets } from '../api/client';
+import { getConversation, listDatasets, streamChatEvents } from '../api/client';
 import { normalizeWorkbenchThreadId } from '../assistant/workbench-api';
 import WorkbenchPanel from './workbench-panel';
 
@@ -55,6 +55,76 @@ export function resolveUrlSyncTarget({ routeId, remoteId, mainThreadChanged, has
 export function resolveWorkbenchThreadId(routeId, remoteId, resolvedThreadId = null) {
   if (routeId) return normalizeWorkbenchThreadId(routeId);
   return normalizeWorkbenchThreadId(resolvedThreadId || remoteId);
+}
+
+export function conversationRouteIdForDatasetRestore(routeId) {
+  if (!routeId) return null;
+  const value = String(routeId).trim();
+  if (/^\d+$/.test(value)) return value;
+  const legacyMatch = value.match(/^conv_(\d+)$/);
+  return legacyMatch ? legacyMatch[1] : null;
+}
+
+export function submitWorkbenchRetryRun(runRequest) {
+  return runWorkbenchRetryStream(runRequest).catch((e) => {
+    console.error('[workbench] retry stream failed', e);
+  });
+}
+
+function safeRetryConversationId(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+  return null;
+}
+
+function safeRetryDatasetId(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+  return null;
+}
+
+function safeRetryText(value, fallback = '') {
+  const text = String(value ?? '').trim();
+  return text || fallback;
+}
+
+function dispatchWorkbenchTrace(event) {
+  if (typeof window === 'undefined' || !event) return;
+  window.dispatchEvent(new CustomEvent('datalogue:trace', { detail: event }));
+  if (event.type === 'final' && event.thread_id) {
+    window.dispatchEvent(
+      new CustomEvent('datalogue:thread-resolved', {
+        detail: { localThreadId: event.thread_id, threadId: event.thread_id },
+      }),
+    );
+  }
+}
+
+export async function runWorkbenchRetryStream(
+  runRequest,
+  {
+    streamEvents = streamChatEvents,
+    dispatchTrace = dispatchWorkbenchTrace,
+  } = {},
+) {
+  if (!runRequest) return null;
+  const threadId = safeRetryText(runRequest.thread_id);
+  const retryCheckpointRef = safeRetryText(runRequest.retry_checkpoint_ref);
+  if (!threadId || !retryCheckpointRef) return null;
+  const payload = {
+    question: safeRetryText(runRequest.question, safeRetryText(runRequest.display_text, '重试上一步')),
+    conversation_id: safeRetryConversationId(runRequest.conversation_id),
+    thread_id: threadId,
+    dataset_id: safeRetryDatasetId(runRequest.dataset_id),
+    retry_checkpoint_ref: retryCheckpointRef,
+  };
+  let finalPayload = null;
+  for await (const event of streamEvents(payload)) {
+    // Workbench retry 只消费业务级 SSE envelope；后端 checkpoint 恢复真实执行上下文。
+    dispatchTrace(event);
+    if (event?.type === 'final') finalPayload = event;
+  }
+  return finalPayload;
 }
 
 export function shouldAcceptResolvedWorkbenchThread({
@@ -281,9 +351,10 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
 
   // 切换历史会话时恢复该会话绑定的数据集，保证后续追问仍带 dataset_id
   useEffect(() => {
-    if (!routeId || datasetList.length === 0) return undefined;
+    const conversationRouteId = conversationRouteIdForDatasetRestore(routeId);
+    if (!conversationRouteId || datasetList.length === 0) return undefined;
     let cancelled = false;
-    getConversation(routeId)
+    getConversation(conversationRouteId)
       .then((detail) => {
         if (cancelled) return;
         const datasetId = inferConversationDatasetId(detail);
@@ -489,17 +560,8 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
   // 监听标题自动更新事件（首条消息后端写入 title 后）— 触发 thread list 重新拉取
   const aui = useAui();
   const handleWorkbenchRetryRun = useCallback((runRequest) => {
-    if (!runRequest || typeof window === 'undefined') return;
-    window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = runRequest;
-    const text = String(runRequest.display_text || '重试上一步').trim() || '重试上一步';
-    aui.thread().append({
-      role: 'user',
-      content: [{ type: 'text', text }],
-    }).catch((e) => {
-      window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = null; // append 失败时不能留下旧 checkpoint 影响下一次提问。
-      console.error('[workbench] retry run append failed', e);
-    });
-  }, [aui]);
+    submitWorkbenchRetryRun(runRequest);
+  }, []);
   useEffect(() => {
     const onRename = () => {
       // 后端已写入新 title；让 assistant-ui 重新拉一次 list，覆盖本地缓存

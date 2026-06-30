@@ -2,7 +2,7 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { WorkbenchPanel } from './workbench-panel.jsx';
+import { hasRunningWorkbenchMessage, WorkbenchPanel } from './workbench-panel.jsx';
 import { fetchWorkbenchArtifact, fetchWorkbenchThread, requestWorkbenchRetry } from '../assistant/workbench-api.js';
 
 vi.mock('./icons', () => ({
@@ -146,5 +146,56 @@ describe('WorkbenchPanel', () => {
       selected_action: 'retry_last_step',
     });
     expect(JSON.stringify(onRetryRun.mock.calls)).not.toMatch(/select|schema|raw_rows|query_plan/i);
+  });
+
+  it('refreshes while a retry message is running and shows the completed snapshot', async () => {
+    fetchWorkbenchThread
+      .mockResolvedValueOnce({
+        ...threadView,
+        messages: [
+          ...threadView.messages,
+          { message_id: 'msg_retry', role: 'assistant', status: 'running', content_summary: '正在恢复检查点' },
+        ],
+        timeline: [
+          { event_id: 'evt_retry', event_type: 'workbench.retry_requested', summary: '已接收重试请求' },
+        ],
+        available_actions: [],
+      })
+      .mockResolvedValueOnce({
+        ...threadView,
+        messages: [
+          ...threadView.messages,
+          { message_id: 'msg_retry', role: 'assistant', status: 'completed', content_summary: '重试已完成' },
+        ],
+        timeline: [
+          { event_id: 'evt_restored', event_type: 'retry.checkpoint_restored', summary: '已恢复检查点' },
+          { event_id: 'evt_completed', event_type: 'answer.completed', summary: '已完成回答' },
+        ],
+        available_actions: [],
+      });
+
+    render(<WorkbenchPanel threadId="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" refreshIntervalMs={1} />);
+
+    expect(await screen.findByText('正在恢复检查点')).toBeInTheDocument();
+
+    await waitFor(() => expect(fetchWorkbenchThread).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('已恢复检查点')).toBeInTheDocument();
+    expect(screen.getByText('重试已完成')).toBeInTheDocument();
+  });
+
+  it('only keeps polling while the latest message is running', () => {
+    expect(hasRunningWorkbenchMessage({
+      messages: [
+        { message_id: 'msg_failed', status: 'failed' },
+        { message_id: 'msg_retry', status: 'running' },
+      ],
+    })).toBe(true);
+    expect(hasRunningWorkbenchMessage({
+      messages: [
+        { message_id: 'msg_failed', status: 'failed' },
+        { message_id: 'msg_retry', status: 'running' },
+        { message_id: 'msg_answer', status: 'completed' },
+      ],
+    })).toBe(false);
   });
 });

@@ -5,7 +5,7 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import ArtifactCard, { ArtifactCard as NamedArtifactCard } from './artifact-card.jsx';
+import ArtifactCard, { ArtifactCard as NamedArtifactCard, uniqueArtifactRefs } from './artifact-card.jsx';
 
 vi.mock('./icons', () => ({
   Icon: ({ name, className, style }) => (
@@ -181,6 +181,30 @@ describe('ArtifactCard', () => {
     expect(screen.getByText('已生成结果摘要')).toBeInTheDocument();
     expect(screen.getByText('artifact:result:1')).toBeInTheDocument();
     expect(screen.getByText('artifact:trace:1')).toBeInTheDocument();
+  });
+
+  it('deduplicates repeated refs before rendering', () => {
+    expect(uniqueArtifactRefs([
+      'checkpoint://retry-1',
+      { ref_id: 'checkpoint://retry-1', ref_type: 'checkpoint' },
+      { ref: 'artifact:result-1', ref_type: 'result' },
+    ])).toEqual(['checkpoint://retry-1', 'artifact:result-1']);
+
+    render(
+      <ArtifactCard
+        artifact={{
+          title: 'BI 查询结果',
+          status: 'ready',
+          primary_ref: { ref_id: 'artifact:result-1', ref_type: 'result' },
+          related_refs: [
+            { ref_id: 'checkpoint://retry-1', ref_type: 'checkpoint' },
+            { ref: 'checkpoint://retry-1', ref_type: 'checkpoint' },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText('checkpoint://retry-1')).toHaveLength(1);
   });
 
   it('renders safe key-value preview payload without table rows', () => {

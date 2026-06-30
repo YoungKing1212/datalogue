@@ -112,6 +112,7 @@
 - 验证覆盖：`tests/test_repair_patch_engine.py`、`tests/test_repair_patch_stream.py`、`tests/test_repair_plan_contract.py`、`tests/test_event_envelope.py`、`tests/test_sql_audit.py`、`tests/test_query_plan_compiler.py`、`tests/test_chat.py`，前端 `chat-adapter`、`task-timeline`、`artifact-card`、`MyMessage` 测试，以及 lint/build、`git diff --check`；内部-only E2E 固化 `FIELD_MAPPING_DRIFT -> repair.patch_applied -> answer.completed`。
 - 残留风险：C2 合并后已有内部 E2E 和自动化验收，发布级浏览器页面、Langfuse UI 和真实五件套证据在 C3 Workbench 阶段继续补。
 - C3 设计落档为 AgentScope Workbench 产品化：入口采用 Chat 右侧 Panel + 隐藏 `/workbench/:threadId/:artifactRef?`，`as_* / conv_*` 线程规则、mirror 四表、Workbench View Model、受控 retry 和旧会话只读策略进入架构文档与 superpowers spec。
+- C3-P0 实施计划按 6 个 PR 拆分为 AgentScope mirror 四表、Chat Session Bridge、Workbench View Model API、受控 retry/lease、Chat 右侧 Panel 和双主路径验收，明确 AgentScope 管会话消息、Datalogue 主链管 BI 执行，用户可见层禁止 SQL/schema/raw rows/query_plan/field_patch。
 
 ## 高价值判断
 
@@ -123,13 +124,6 @@
 
 ## 最新详细记录
 
-
-### 2026-06-30 11:08 · C3-P0 AgentScope Workbench 实施计划
-
-- 涉及文件：`docs/superpowers/plans/2026-06-30-c3-agentscope-workbench-p0.md`、`.codex/project-memory.md`
-- 关键改动：按 superpowers implementation plan 格式把 C3-P0 拆成 6 个可执行 PR：AgentScope mirror 四表和 thread resolver、Chat Session Bridge、Workbench View Model API、受控 retry 与 lease recovery、Chat 右侧 Workbench Panel、双主路径验收加固；计划明确 `as_* / conv_*` 线程规则、AgentScope 管会话消息而 Datalogue 主链管 BI 执行的边界、用户可见层禁止 SQL/schema/raw rows/query_plan/field_patch 的安全约束，以及每个 PR 的测试文件、验证命令、提交范围和 stop condition。
-- 验证方式：执行 C3-P0 plan 空白项和简写扫描，无命中；检查计划包含 writing-plans 要求的 agentic worker 提示、Goal、Architecture、Tech Stack、checkbox 任务、PR stack、验证命令和 merge plan。
-- 残留风险：本次只完成实施计划，不修改业务代码；下一步应从 PR1 `c3-p0-01-agentscope-mirror-storage` 开始按 TDD 实现数据库迁移、模型、schema、thread resolver 和 mirror service。
 
 ### 2026-06-30 11:49 · C3-P0 PR1 AgentScope Mirror Storage
 
@@ -200,3 +194,12 @@
 - 关键改动：补 C3-P1 PR2 内部-only harness，验证 Workbench retry action 返回的 `run_request` 能继续同一 `/chat/stream` checkpoint restore 链路；`retry.started/checkpoint_restored/completed/failed` 纳入统一 event envelope schema；多轮 wrapper 生成的 retry SSE 事件同步投影到 AgentScope mirror，保证 `retry.checkpoint_restored -> answer.completed` 与同一 thread、trace、artifact、checkpoint refs 可追溯。
 - 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py::test_workbench_retry_run_request_restores_checkpoint_through_chat_stream -q`，1 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py tests/test_retry_checkpoint.py tests/test_workbench_retry_actions.py tests/test_event_envelope.py tests/test_agentscope_event_projection.py -q`，25 条通过；执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/schemas/bi_workbench.py tests/test_c3_workbench_acceptance.py tests/test_event_envelope.py` 通过。
 - 残留风险：本次是 internal-only harness，不冒充真实浏览器点击 retry；下一步仍需补真实页面点击 retry、Network SSE、Workbench Panel 刷新和 Langfuse UI/observation 人工核对。
+
+### 2026-06-30 15:25 · C3-P1 真实浏览器 Retry E2E 补证
+
+- 涉及文件：`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/workbench-panel.jsx`、`datalogue-web/src/components/artifact-card.jsx`、对应前端测试、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
+- 关键改动：修复真实浏览器 retry 链路暴露的前端缺口：`as_*` route 不再调用旧会话接口恢复数据集；Workbench retry 不再依赖 assistant-ui 在历史 thread 上 append，而是由 ChatPage 直接消费后端业务级 `run_request` 并调用 `/chat/stream`；Panel 在最新消息 running 时轮询并在 completed 后停止；ArtifactCard 对重复 refs 去重。
+- 真实验收：通过浏览器打开 `http://127.0.0.1:5173/chat/as_7e4a8514-68b9-4c67-89bb-feb892b9c26a`，点击右侧 Workbench `重试`，同一 `conversation_id=43/thread_id=as_7e4a8514-68b9-4c67-89bb-feb892b9c26a/checkpoint_ref=checkpoint://c3-p1-real-browser-success-9aa39b92/query_context_ready` 触发 `POST /api/workbench/actions/retry` 和 `POST /api/chat/stream`，后端日志命中 `retry_checkpoint_restored`，Panel 自动刷新到 `assistant completed`，timeline 包含 `workbench.retry_requested -> retry.started -> retry.checkpoint_restored -> dataset.query.completed -> retry.completed -> answer.completed`。
+- 五件套证据：最终 `trace_id=11dc1e265bd7ea771d1b3116dc98d75c`、`primary_ref=artifact:93e42026c65745bea2e103b3bae6ed24`、`report_ref=artifact:8c34e0c8c1234f18ac90783fe2d3be76`、新 checkpoint `checkpoint://conv-43-msg-82/query_context_ready`；AgentScope mirror、`query_artifact`、`conversation_state` 和后端 observability trace index 均可按同一 id 对齐；`/api/observability/traces/11dc1e265bd7ea771d1b3116dc98d75c` 返回 `source=langfuse`、`langfuse_error=null`、`observation_count=23`。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/components/workbench-panel.test.jsx src/components/artifact-card.test.jsx src/assistant/chat-adapter.test.js`，58 条通过；执行 `cd datalogue-web && npm run lint` 通过，保留 15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk warning；真实浏览器页面确认 Workbench Panel completed 和 refs 展示。
+- 残留风险：Langfuse trace 深链可打开到 `http://localhost:3000/project/cmq8xx2th0006qn07zof1xttd/traces/11dc1e265bd7ea771d1b3116dc98d75c`，但当前浏览器会话无权限，页面显示 `You do not have access to this trace / Sign In`；本次不能声称已人工查看 Langfuse UI 详情，只确认后端 API 能从 Langfuse 拉取 observation。

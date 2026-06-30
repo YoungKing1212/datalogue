@@ -1,11 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  conversationRouteIdForDatasetRestore,
   resolveUrlSyncTarget,
   resolveWorkbenchThreadId,
+  runWorkbenchRetryStream,
   shouldAcceptResolvedWorkbenchThread,
   shouldSwitchToRouteThread,
+  submitWorkbenchRetryRun,
 } from './chat-page.jsx';
+
+afterEach(() => {
+  window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = null;
+  vi.restoreAllMocks();
+});
 
 describe('shouldSwitchToRouteThread', () => {
   it('skips route sync when no conversation id is present', () => {
@@ -100,6 +108,68 @@ describe('resolveWorkbenchThreadId', () => {
     expect(resolveWorkbenchThreadId(undefined, '29', 'as_cccccccc-cccc-cccc-cccc-cccccccccccc')).toBe(
       'as_cccccccc-cccc-cccc-cccc-cccccccccccc',
     );
+  });
+});
+
+describe('conversationRouteIdForDatasetRestore', () => {
+  it('allows legacy numeric and conv-prefixed routes', () => {
+    expect(conversationRouteIdForDatasetRestore('25')).toBe('25');
+    expect(conversationRouteIdForDatasetRestore('conv_25')).toBe('25');
+  });
+
+  it('does not call legacy conversation APIs for AgentScope routes', () => {
+    expect(conversationRouteIdForDatasetRestore('as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')).toBeNull();
+  });
+});
+
+describe('submitWorkbenchRetryRun', () => {
+  it('logs retry stream failures without leaking pending checkpoint state', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await submitWorkbenchRetryRun(null);
+
+    expect(window.__DATALOGUE_PENDING_WORKBENCH_RETRY__).toBeNull();
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+});
+
+describe('runWorkbenchRetryStream', () => {
+  it('streams retry through chat stream with only controlled checkpoint payload', async () => {
+    const seenPayloads = [];
+    const dispatchTrace = vi.fn();
+    async function* streamEvents(payload) {
+      seenPayloads.push(payload);
+      yield { type: 'step', node: 'retry', status: 'done' };
+      yield { type: 'final', thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', answer: '完成' };
+    }
+
+    const finalPayload = await runWorkbenchRetryStream(
+      {
+        question: '查询工作日志',
+        conversation_id: '31',
+        thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        retry_checkpoint_ref: 'checkpoint://retry',
+        dataset_id: '7',
+        display_text: '重试上一步',
+      },
+      { streamEvents, dispatchTrace },
+    );
+
+    expect(seenPayloads).toEqual([{
+      question: '查询工作日志',
+      conversation_id: 31,
+      thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      dataset_id: 7,
+      retry_checkpoint_ref: 'checkpoint://retry',
+    }]);
+    expect(dispatchTrace).toHaveBeenCalledTimes(2);
+    expect(finalPayload).toEqual({
+      type: 'final',
+      thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      answer: '完成',
+    });
+    expect(JSON.stringify(seenPayloads)).not.toMatch(/select|schema|raw_rows|query_plan/i);
   });
 });
 

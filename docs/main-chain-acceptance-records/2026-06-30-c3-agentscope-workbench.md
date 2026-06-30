@@ -135,3 +135,32 @@ npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-pa
   - `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py tests/test_retry_checkpoint.py tests/test_workbench_retry_actions.py tests/test_event_envelope.py tests/test_agentscope_event_projection.py -q`，25 条通过。
   - `cd datalogue-api && python3 -m py_compile app/api/chat.py app/schemas/bi_workbench.py tests/test_c3_workbench_acceptance.py tests/test_event_envelope.py` 通过。
 - 残留风险：本次仍是 internal-only harness，没有实际驱动浏览器点击右侧 Workbench retry 按钮，也没有打开 Langfuse UI 人工核对；下一步应补真实浏览器 retry 场景，把页面点击、Network SSE、Workbench Panel 刷新和 Langfuse observation 一并验收。
+
+## C3-P1 真实浏览器 Retry E2E 补证
+
+- 测试入口：`http://127.0.0.1:5173/chat/as_7e4a8514-68b9-4c67-89bb-feb892b9c26a`
+- API：`http://127.0.0.1:8000`
+- 问题：`查询杨凯 2024 年工作日志`
+- 真实 seed：`conversation_id=43`、`thread_id=as_7e4a8514-68b9-4c67-89bb-feb892b9c26a`、`dataset_id=10`、`checkpoint_ref=checkpoint://c3-p1-real-browser-success-9aa39b92/query_context_ready`。
+- 页面点击：真实浏览器打开 `as_*` 会话后，右侧 Workbench Panel 初始显示 `助手 · failed`、checkpoint ref 和可点击 `重试`；点击 `重试` 后同一页面自动进入真实 `/chat/stream` 主链。
+- Network/SSE 后端证据：API 日志记录 `POST /api/workbench/actions/retry` 200、`POST /api/chat/stream` 200，随后同一会话出现 `retry_checkpoint_restored`、`trace_context_created`、`final_payload_ready` 和 `turn_lock_released`。
+- Workbench Panel 刷新证据：Panel 轮询从 failed/running 刷新到 completed，消息区显示 `助手 · completed`，任务时间线包含 `workbench.retry_requested -> retry.started -> retry.checkpoint_restored -> dataset.selected -> dataset.query.completed -> retry.completed -> answer.completed`。
+- 结果 refs：`primary_ref=artifact:93e42026c65745bea2e103b3bae6ed24`、`report_ref=artifact:8c34e0c8c1234f18ac90783fe2d3be76`、`trace_ref=trace:11dc1e265bd7ea771d1b3116dc98d75c`、新 checkpoint `checkpoint://conv-43-msg-82/query_context_ready`，并保留原 retry checkpoint。
+- AgentScope mirror 证据：同一 thread 下 messages 为 `assistant failed -> assistant running -> user completed -> assistant completed`；events 持久化 `workbench.retry_requested`、`retry.started`、`retry.checkpoint_restored`、`dataset.query.completed`、`retry.completed`、`answer.completed`；refs 同时挂载原 checkpoint、result/report artifact、trace 和新 checkpoint。
+- `query_artifact / conversation_state` 证据：`query_artifact` 中同一 trace 关联 `artifact:93e42026c65745bea2e103b3bae6ed24` 与 `artifact:8c34e0c8c1234f18ac90783fe2d3be76`；`conversation_state` 为 `session_id=conversation-43`、`active_dataset_id=10`、`turn_index=1`、`status=idle`，并保留 SubAgent capsule。
+- Langfuse observation 证据：assistant message metadata 写入 `trace_url=http://localhost:3000/project/cmq8xx2th0006qn07zof1xttd/traces/11dc1e265bd7ea771d1b3116dc98d75c`；`/api/observability/traces/11dc1e265bd7ea771d1b3116dc98d75c` 返回 `found=true`、`source=langfuse`、`langfuse_error=null`、`status=success`、`observation_count=23`，包含 `user_query`、`lead.routing`、`llm.lead_agent_skill_selector`、`llm.lead_agent_tool_planner` 等 observation。
+- Langfuse UI 现状：真实浏览器打开 trace 深链成功到达 Langfuse 页面，但当前浏览器会话未登录/无权限，页面显示 `You do not have access to this trace` 和 `Sign In`；因此本次不能声称已人工查看 UI 详情，只能确认远端 Langfuse observation 可由后端 API 拉取。
+- 安全边界：页面 Workbench 和验收记录只写业务级摘要、event 名称和 refs；不记录 raw SQL、raw rows、schema、query_plan 或字段级执行细节。
+
+### 本轮发现并修复
+
+- `as_*` route 不应调用旧 `GET /api/conversation/{id}` 恢复数据集，否则页面控制台会出现 422；前端只对数字 route 和 `conv_*` route 做旧会话数据集恢复。
+- Workbench retry 不能依赖 assistant-ui 在历史 `as_*` thread 上 `append()` 触发模型 adapter；改为由 ChatPage 直接消费后端 `run_request` 并调用 `streamChatEvents()`，payload 白名单仅包含 `question/conversation_id/thread_id/dataset_id/retry_checkpoint_ref`。
+- retry action 返回 running 视图后，Workbench Panel 必须按“最新消息 running”启动轮询，并在最新消息 completed 后停止轮询，避免既不刷新或永久刷新。
+- ArtifactCard 对 refs 做展示层去重，避免同一 checkpoint 从 action 和 final refs 同时出现时触发重复 key。
+
+### 验证命令
+
+- `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/components/workbench-panel.test.jsx src/components/artifact-card.test.jsx src/assistant/chat-adapter.test.js`，58 条通过。
+- `cd datalogue-web && npm run lint` 通过，保留 15 个既有 warning。
+- `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning。
