@@ -14,11 +14,24 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Any
+
+from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.schemas.agentscope_workbench import WorkbenchArtifactView, WorkbenchThreadView
+from app.schemas.agentscope_workbench import (
+    WorkbenchArtifactView,
+    WorkbenchRetryRequest,
+    WorkbenchRetryResponse,
+    WorkbenchThreadView,
+)
+from app.services.workbench_actions import (
+    WorkbenchActionConflictError,
+    WorkbenchActionNotFoundError,
+    request_controlled_retry,
+)
 from app.services.workbench_view_model import (
     WorkbenchViewNotFoundError,
     build_workbench_artifact_view,
@@ -51,3 +64,21 @@ def get_workbench_artifact(artifact_ref: str, db: Session = Depends(get_db)) -> 
         raise HTTPException(status_code=404, detail="artifact not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="artifact view unavailable") from exc
+
+
+@router.post("/actions/retry", response_model=WorkbenchRetryResponse)
+def post_workbench_retry(
+    payload: dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+) -> WorkbenchRetryResponse:
+    """受理 Workbench 受控 retry；只接收 checkpoint/ref，不直接执行查询。"""
+
+    try:
+        request = WorkbenchRetryRequest.model_validate(payload)
+        return request_controlled_retry(db, request=request)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail="invalid retry payload") from exc
+    except WorkbenchActionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="workbench retry target not found") from exc
+    except WorkbenchActionConflictError as exc:
+        raise HTTPException(status_code=409, detail="workbench retry unavailable") from exc

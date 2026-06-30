@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AgentScopeThreadKind(str, Enum):
@@ -112,3 +112,62 @@ class WorkbenchThreadView(BaseModel):
     related_refs: list[dict[str, Any]] = Field(default_factory=list)
     available_actions: list[WorkbenchActionView] = Field(default_factory=list)
     legacy_notice: str | None = None
+
+
+class WorkbenchRetryRequest(BaseModel):
+    """Workbench 受控重试请求；只能携带 checkpoint/ref，不允许执行面 payload。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str
+    message_id: str
+    checkpoint_ref: str
+    selected_action: str = "retry_last_step"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_internal_payload(cls, value):
+        _reject_retry_internal_payload(value)
+        return value
+
+
+class WorkbenchRetryResponse(BaseModel):
+    """Workbench retry 受理结果；accepted=False 表示只读或不可重试。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str
+    retry_message_id: str | None
+    accepted: bool
+    disabled_reason: str | None = None
+
+
+_RETRY_FORBIDDEN_KEYS = {
+    "sql",
+    "raw_sql",
+    "llm_sql",
+    "direct_sql",
+    "schema",
+    "raw_result",
+    "raw_rows",
+    "query_plan",
+    "field_patch",
+    "table_name",
+    "column_name",
+}
+
+
+def _reject_retry_internal_payload(value) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            key_text = str(key).lower()
+            if key_text in _RETRY_FORBIDDEN_KEYS or "sql" in key_text:
+                raise ValueError("WORKBENCH_RETRY_PAYLOAD_LEAK_DETECTED")
+            _reject_retry_internal_payload(nested)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_retry_internal_payload(item)
+    elif isinstance(value, str):
+        lowered = value.lower()
+        if "select " in lowered or " from " in lowered or "raw_sql" in lowered or "schema_context" in lowered:
+            raise ValueError("WORKBENCH_RETRY_PAYLOAD_LEAK_DETECTED")
