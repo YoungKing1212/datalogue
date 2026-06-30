@@ -41,6 +41,17 @@ _FORBIDDEN_KEY_FRAGMENTS = (
     "column_name",
 )
 _SQL_TEXT_RE = re.compile(r"\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b", re.IGNORECASE)
+_INTERNAL_TEXT_RE = re.compile(
+    r"(\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b)"
+    r"|(\b(psycopg2|sqlalchemy|traceback|undefinedcolumn|undefinedtable|programmingerror|operationalerror)\b)"
+    r"|(\b(column|table|relation)\s+['\"]?[\w.]+['\"]?\s+(does not exist|not found))",
+    re.IGNORECASE,
+)
+_TERMINAL_MESSAGE_STATUSES = {
+    AgentScopeMessageStatus.COMPLETED.value,
+    AgentScopeMessageStatus.FAILED.value,
+    AgentScopeMessageStatus.INTERRUPTED.value,
+}
 
 
 def _utcnow() -> datetime:
@@ -68,6 +79,19 @@ def _sanitize_business_payload(payload: dict | None) -> dict:
     return payload
 
 
+def _safe_content_summary(summary: str | None, *, fallback: str) -> str:
+    text = (summary or "").strip()
+    if not text:
+        return fallback
+    if _INTERNAL_TEXT_RE.search(text):
+        return fallback
+    try:
+        _scan_forbidden_payload_keys(text)
+    except ValueError:
+        return fallback  # message summary 未来会进入 Workbench 可见层，疑似内部细节时用业务级兜底文案。
+    return text
+
+
 def _scan_forbidden_payload_keys(value: object) -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
@@ -78,25 +102,47 @@ def _scan_forbidden_payload_keys(value: object) -> None:
     elif isinstance(value, list):
         for item in value:
             _scan_forbidden_payload_keys(item)
-    elif isinstance(value, str) and _SQL_TEXT_RE.search(value):
+    elif isinstance(value, str) and (_SQL_TEXT_RE.search(value) or _INTERNAL_TEXT_RE.search(value)):
         raise ValueError("AGENTSCOPE_MIRROR_PAYLOAD_LEAK_DETECTED")
 
 
-def create_agentscope_session(db: Session, *, thread_id: str | None, title: str | None) -> AgentScopeSession:
+def create_agentscope_session(
+    db: Session,
+    *,
+    thread_id: str | None,
+    title: str | None,
+    legacy_conversation_id: int | None = None,
+    metadata: dict | None = None,
+) -> AgentScopeSession:
     normalized = normalize_thread_id(thread_id) if thread_id else new_agentscope_thread_id()
     if normalized is None or not normalized.startswith("as_"):
         raise ValueError("AGENTSCOPE_SESSION_REQUIRES_AS_THREAD")
 
     existing = db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == normalized).one_or_none()
     if existing:
+        changed = False
+        if legacy_conversation_id is not None and existing.legacy_conversation_id is None:
+            existing.legacy_conversation_id = legacy_conversation_id
+            changed = True
+        if metadata:
+            existing_metadata = dict(existing.metadata_json or {})
+            for key, value in _sanitize_business_payload(metadata).items():
+                if value is not None and existing_metadata.get(key) != value:
+                    existing_metadata[key] = value
+                    changed = True
+            existing.metadata_json = existing_metadata
+        if changed:
+            db.commit()
+            db.refresh(existing)
         return existing  # as_* 是 C3 新会话真相源，重复 begin turn 时复用同一 session。
 
     session = AgentScopeSession(
         thread_id=normalized,
         source_type="agentscope",
+        legacy_conversation_id=legacy_conversation_id,
         title=title,
         status="active",
-        metadata_json={},
+        metadata_json=_sanitize_business_payload(metadata),
     )
     db.add(session)
     db.commit()
@@ -150,8 +196,13 @@ def mark_message_completed(
     payload: dict,
 ) -> AgentScopeMessage:
     message = _get_message(db, message_id)
+    if message.status in _TERMINAL_MESSAGE_STATUSES:
+        return message  # SSE finally 可能二次收口；终态不可被后续 complete/fail 覆盖。
     message.status = AgentScopeMessageStatus.COMPLETED.value
-    message.content_summary = content_summary
+    message.content_summary = _safe_content_summary(
+        content_summary,
+        fallback="查询已完成，结果请通过引用查看。",
+    )
     message.business_payload_json = _sanitize_business_payload(payload)
     message.completed_at = _utcnow()
     message.lease_expires_at = None  # 完成态释放 lease，避免后续 recovery 误判。
@@ -168,8 +219,13 @@ def mark_message_failed(
     payload: dict,
 ) -> AgentScopeMessage:
     message = _get_message(db, message_id)
+    if message.status in _TERMINAL_MESSAGE_STATUSES:
+        return message  # complete 后的异常清理不能把成功 final 覆盖成 failed。
     message.status = AgentScopeMessageStatus.FAILED.value
-    message.content_summary = error_summary
+    message.content_summary = _safe_content_summary(
+        error_summary,
+        fallback="问数执行失败，内部细节已隐藏。",
+    )
     message.business_payload_json = _sanitize_business_payload(payload)
     message.completed_at = _utcnow()
     message.lease_expires_at = None  # 失败态只能通过 checkpoint/ref 受控 retry，不保留 running lease。
@@ -180,8 +236,13 @@ def mark_message_failed(
 
 def mark_message_interrupted(db: Session, *, message_id: str, reason: str) -> AgentScopeMessage:
     message = _get_message(db, message_id)
+    if message.status in _TERMINAL_MESSAGE_STATUSES:
+        return message
     message.status = AgentScopeMessageStatus.INTERRUPTED.value
-    message.content_summary = reason
+    message.content_summary = _safe_content_summary(
+        reason,
+        fallback="问数链路已中断，内部细节已隐藏。",
+    )
     message.completed_at = _utcnow()
     message.lease_expires_at = None
     db.commit()

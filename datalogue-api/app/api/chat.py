@@ -13,6 +13,7 @@
 
 # 问数对话路由 — SSE 流式输出 + LangGraph Agent 工作流
 
+import asyncio
 import json
 import logging
 import re
@@ -35,6 +36,7 @@ from app.schemas.bi_workbench import (
     ArtifactAction,
     ArtifactCard,
     ArtifactRef,
+    DatalogueEventEnvelope,
     DatalogueEventType,
     DatalogueEventVisibility,
     build_datalogue_event_envelope,
@@ -78,6 +80,14 @@ from app.services.conversation_store import (
     THREAD_STATE_KEY,
     pending_clarification_from_final_payload,
     session_key,
+)
+from app.services.agentscope_chat_bridge import (
+    AgentScopeChatBridgeContext,
+    begin_chat_turn,
+    complete_chat_turn,
+    fail_chat_turn,
+    interrupt_chat_turn,
+    record_stream_event,
 )
 from app.services.message_gateway import classify_turn_event
 from app.services.task_capsule import (
@@ -4375,6 +4385,147 @@ def _persist_completed_turn(
     return True
 
 
+def _begin_agentscope_chat_bridge(payload: schemas.ChatRequest, db: Session) -> AgentScopeChatBridgeContext:
+    raw_thread_id = payload.thread_id
+    return begin_chat_turn(
+        db,
+        raw_thread_id=raw_thread_id,
+        user_text=payload.question,
+        metadata={
+            "dataset_id": payload.dataset_id,
+            "checkpoint_ref": payload.retry_checkpoint_ref,
+            "legacy_conversation_id": payload.conversation_id,
+        },
+    )
+
+
+def _record_agentscope_event_from_sse(
+    db: Session,
+    context: AgentScopeChatBridgeContext,
+    event: dict,
+) -> None:
+    data = event.get("data") if isinstance(event, dict) else None
+    if not data:
+        return
+    try:
+        parsed = json.loads(data)
+        envelope_payload = parsed.get("event_envelope")
+        if not isinstance(envelope_payload, dict):
+            return
+        envelope = DatalogueEventEnvelope.model_validate(envelope_payload)
+        record_stream_event(db, context=context, envelope=envelope)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AgentScopeBridge] record_stream_event 失败，不中断主链: %s", exc)
+
+
+def _complete_agentscope_chat_bridge(
+    db: Session,
+    *,
+    context: AgentScopeChatBridgeContext,
+    final_payload: dict,
+) -> bool:
+    if _final_payload_is_error(final_payload):
+        return _fail_agentscope_chat_bridge(
+            db,
+            context=context,
+            error_summary=str(final_payload.get("answer") or final_payload.get("error") or "问数执行失败。"),
+            payload=final_payload,
+        )
+    try:
+        complete_chat_turn(  # final 前同步收口 assistant message，让前端拿到 thread_id 后可读到 completed。
+            db,
+            context=context,
+            final_summary=str(final_payload.get("answer") or "问数完成。"),
+            final_payload={
+                "answer": final_payload.get("answer"),
+                "artifact_ref": final_payload.get("result_ref") or final_payload.get("primary_ref"),
+                "checkpoint_ref": final_payload.get("retry_checkpoint_ref"),
+                "repair_plan_ref": final_payload.get("repair_plan_ref"),
+                "trace_ref": final_payload.get("trace_id") or final_payload.get("langfuse_trace_id"),
+                "thread_id": context.thread_id,
+            },
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AgentScopeBridge] complete_chat_turn 失败，不中断主链: %s", exc)
+        return False
+
+
+def _final_payload_is_error(final_payload: dict) -> bool:
+    if final_payload.get("error"):
+        return True
+    envelope = final_payload.get("event_envelope")
+    if isinstance(envelope, dict) and str(envelope.get("event_type") or "").startswith("error"):
+        return True
+    return str(final_payload.get("entry_route") or "").startswith("error")
+
+
+def _fail_agentscope_chat_bridge(
+    db: Session,
+    *,
+    context: AgentScopeChatBridgeContext,
+    error_summary: str,
+    payload: dict,
+) -> bool:
+    try:
+        fail_chat_turn(
+            db,
+            context=context,
+            error_summary=error_summary,
+            error_payload={
+                "checkpoint_ref": payload.get("checkpoint_ref") or payload.get("retry_checkpoint_ref"),
+                "trace_ref": payload.get("trace_id") or payload.get("langfuse_trace_id"),
+                "error": error_summary,
+            },
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AgentScopeBridge] fail_chat_turn 失败，不中断主链: %s", exc)
+        return False
+
+
+def _interrupt_agentscope_chat_bridge(
+    db: Session,
+    *,
+    context: AgentScopeChatBridgeContext,
+    reason: str,
+) -> bool:
+    try:
+        interrupt_chat_turn(
+            db,
+            context=context,
+            reason=reason,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AgentScopeBridge] interrupt_chat_turn 失败，不中断主链: %s", exc)
+        return False
+
+
+def _mirror_agentscope_stream_event(
+    *,
+    db: Session,
+    context: AgentScopeChatBridgeContext,
+    event: dict,
+    final_seen: bool,
+    bridge_closed: bool,
+) -> tuple[dict, bool, bool]:
+    data = event.get("data") if isinstance(event, dict) else None
+    if not data:
+        return event, final_seen, bridge_closed
+    try:
+        parsed = json.loads(data)
+        if parsed.get("type") == "final":
+            bridge_closed = _complete_agentscope_chat_bridge(db, context=context, final_payload=parsed)
+            parsed["thread_id"] = context.thread_id
+            event = _sse_data(parsed)
+            final_seen = True
+        _record_agentscope_event_from_sse(db, context, event)
+    except json.JSONDecodeError:
+        return event, final_seen, bridge_closed
+    return event, final_seen, bridge_closed
+
+
 async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     """多轮状态包装层。
 
@@ -4391,6 +4542,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         session_id=payload.session_id,
         multiturn_enabled=bool(settings.MULTITURN_ENABLED),
     )
+    agentscope_context = _begin_agentscope_chat_bridge(payload, db)
     if not settings.MULTITURN_ENABLED:
         # 关闭多轮时直接下钻单轮链路，后续不会出现锁和 ConversationState 写回日志。
         _log_chat_stream_checkpoint(
@@ -4398,8 +4550,47 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             conversation_id=payload.conversation_id,
             payload_dataset_id=payload.dataset_id,
         )
-        async for event in _stream_chat_singleturn(payload, db):
-            yield event
+        final_seen = False
+        bridge_closed = False
+        try:
+            async for event in _stream_chat_singleturn(payload, db):
+                event, final_seen, bridge_closed = _mirror_agentscope_stream_event(
+                    db=db,
+                    context=agentscope_context,
+                    event=event,
+                    final_seen=final_seen,
+                    bridge_closed=bridge_closed,
+                )
+                yield event
+        except (asyncio.CancelledError, GeneratorExit):
+            if not bridge_closed:
+                bridge_closed = _interrupt_agentscope_chat_bridge(  # 客户端断开时不能留下 running lease。
+                    db,
+                    context=agentscope_context,
+                    reason="问数链路已中断，已保留可恢复状态。",
+                )
+            raise
+        except Exception as exc:
+            if not bridge_closed:
+                bridge_closed = _fail_agentscope_chat_bridge(
+                    db,
+                    context=agentscope_context,
+                    error_summary=f"问数链路异常：{exc}",
+                    payload={"checkpoint_ref": payload.retry_checkpoint_ref},
+                )
+            raise
+        finally:
+            if not bridge_closed:
+                _fail_agentscope_chat_bridge(
+                    db,
+                    context=agentscope_context,
+                    error_summary=(
+                        "问数链路未完成 AgentScope 收口。"
+                        if final_seen
+                        else "问数链路未返回完成事件。"
+                    ),
+                    payload={"checkpoint_ref": payload.retry_checkpoint_ref},
+                )
         return
 
     store = ConversationStore(db)
@@ -4441,7 +4632,14 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             "conversation_id": payload.conversation_id,
         }
         _attach_artifact_card_refs_to_final_payload(lock_payload, include_card=False)
-        yield _sse_data(
+        _ = _fail_agentscope_chat_bridge(  # 锁冲突不会进入单轮链路，也必须关闭 mirror 中的 running assistant message。
+            db,
+            context=agentscope_context,
+            error_summary=str(lock_payload["answer"]),
+            payload=lock_payload,
+        )
+        lock_payload["thread_id"] = agentscope_context.thread_id
+        lock_event = _sse_data(
             _with_event_envelope(
                 lock_payload,
                 event_type="error.blocked",
@@ -4449,6 +4647,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 payload_fields=("answer", "entry_route", "primary_ref", "related_refs", "task_id", "trace_id"),
             )
         )
+        _record_agentscope_event_from_sse(db, agentscope_context, lock_event)
+        yield lock_event
         return
     # 锁获取成功后才解析 pending clarification，保证同一 session 只有一轮在改状态。
     _log_chat_stream_checkpoint(
@@ -4459,7 +4659,8 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     )
 
     final_payload: dict | None = None
-    completed = False
+    conversation_state_persisted = False
+    bridge_closed = False
     trace_context_sink: list = []
     subagent_control_plane_sink: list = []
     effective_payload = payload
@@ -4573,7 +4774,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                             summary=_chat_stream_log_summary(final_payload),
                         )
                         try:
-                            completed = _persist_completed_turn(  # 必须在 yield final 前写库。
+                            conversation_state_persisted = _persist_completed_turn(  # 必须在 yield final 前写库。
                                 store=store,
                                 state=state,
                                 user_id=user_id,
@@ -4603,24 +4804,40 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                                     "retry.completed",
                                     checkpoint_ref=payload.retry_checkpoint_ref,
                                 )
+                        bridge_closed = _complete_agentscope_chat_bridge(
+                            db,
+                            context=agentscope_context,
+                            final_payload=parsed,
+                        )
+                        parsed["thread_id"] = agentscope_context.thread_id
+                        event = _sse_data(parsed)
                 except json.JSONDecodeError:
                     pass
+                except Exception as bridge_exc:  # noqa: BLE001
+                    logger.warning("[AgentScopeBridge] 事件投影失败，不中断主链: %s", bridge_exc)
+            _record_agentscope_event_from_sse(db, agentscope_context, event)
             yield event
     finally:
-        if completed and trace_context_sink:
+        if conversation_state_persisted and trace_context_sink:
             tracer = get_observability_tracer()
             tracer.close_trace(trace_context_sink[0])
-        if not completed:
+        if not conversation_state_persisted:
             _log_chat_stream_checkpoint(
                 "wrapper_incomplete",
                 business_session_id=business_session_id,
                 final_seen=final_payload is not None,
             )
+        if not bridge_closed:
+            _interrupt_agentscope_chat_bridge(
+                db,
+                context=agentscope_context,
+                reason="问数链路已中断，已保留可恢复状态。",
+            )
         _log_chat_stream_checkpoint(  # finally 中留锁释放日志，避免会话长期 pending 难查。
             "turn_lock_released",
             business_session_id=business_session_id,
             lock_owner=lock_owner,
-            completed=completed,
+            completed=conversation_state_persisted,
         )
         store.release_turn_lock(session_id=business_session_id, lock_owner=lock_owner)  # 客户端断开也必须释放锁。
 

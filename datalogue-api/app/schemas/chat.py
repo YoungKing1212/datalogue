@@ -26,6 +26,7 @@ class ClarificationResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str
+    thread_id: Optional[str] = None
     session_id: Optional[str] = None
     conversation_id: Optional[int] = None
     dataset_id: Optional[int] = None
