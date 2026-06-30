@@ -834,11 +834,35 @@ def _retry_sse_event(
         "type": event_type,
         "checkpoint_ref": checkpoint_ref,
     }
+    envelope_payload = {
+        "summary": _retry_event_summary(event_type),
+        "checkpoint_ref": checkpoint_ref,
+    }
     if retry_scope:
         payload["retry_scope"] = retry_scope
+        envelope_payload["retry_scope"] = retry_scope
     if reason:
         payload["reason"] = reason
+        envelope_payload["reason"] = reason
+    payload["event_envelope"] = build_datalogue_event_envelope(
+        event_type=event_type,
+        visibility="user_visible",
+        payload=envelope_payload,
+    ).model_dump(mode="json")
     return _sse_data(payload)
+
+
+def _retry_event_summary(event_type: str) -> str:
+    """给 retry.* 用户可见 envelope 提供业务级摘要，不暴露 checkpoint 内部上下文。"""
+
+    labels = {
+        "retry.started": "开始从检查点恢复问数任务。",
+        "retry.checkpoint_restored": "已恢复检查点，继续执行问数任务。",
+        "retry.fallback_to_whole_task": "检查点不可用，已降级为整任务重试。",
+        "retry.completed": "检查点重试已完成。",
+        "retry.failed": "检查点重试失败。",
+    }
+    return labels.get(event_type, "重试状态已更新。")
 
 
 def _chat_stream_log_summary(payload: dict | None) -> dict[str, Any]:
@@ -4666,10 +4690,12 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     effective_payload = payload
     retry_restore = None
     if payload.retry_checkpoint_ref:
-        yield _retry_sse_event(
+        retry_event = _retry_sse_event(
             "retry.started",
             checkpoint_ref=payload.retry_checkpoint_ref,
         )
+        _record_agentscope_event_from_sse(db, agentscope_context, retry_event)  # retry 早期事件不经过单轮循环，必须在 yield 前补 mirror。
+        yield retry_event
         retry_restore = store.restore_retry_checkpoint(
             payload.retry_checkpoint_ref,
             user_id=user_id,
@@ -4699,11 +4725,13 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 restored_dataset_id=retry_restore.dataset_id,
                 restored_context_keys=sorted(restored_context.keys()),
             )
-            yield _retry_sse_event(
+            retry_event = _retry_sse_event(
                 "retry.checkpoint_restored",
                 checkpoint_ref=payload.retry_checkpoint_ref,
                 retry_scope=retry_restore.retry_scope,
             )
+            _record_agentscope_event_from_sse(db, agentscope_context, retry_event)  # checkpoint 恢复成功要和最终 answer 共用同一 thread 追踪。
+            yield retry_event
         else:
             _log_chat_stream_checkpoint(  # checkpoint 失效时显式降级整任务，避免客户端误以为恢复成功。
                 "retry_fallback_to_whole_task",
@@ -4711,12 +4739,14 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                 checkpoint_ref=payload.retry_checkpoint_ref,
                 reason=retry_restore.fallback_reason,
             )
-            yield _retry_sse_event(
+            retry_event = _retry_sse_event(
                 "retry.fallback_to_whole_task",
                 checkpoint_ref=payload.retry_checkpoint_ref,
                 retry_scope=retry_restore.retry_scope,
                 reason=retry_restore.fallback_reason,
             )
+            _record_agentscope_event_from_sse(db, agentscope_context, retry_event)  # 降级整任务也要持久化，避免 Workbench 误判恢复成功。
+            yield retry_event
     if retry_restore and retry_restore.retry_scope == "last_safe_checkpoint":
         pending_resolution = {"status": "none", "reason": "retry_checkpoint_restored"}
     else:
@@ -4794,16 +4824,18 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
                             logger.exception("[_stream_chat] 写入多轮状态失败: %s", persist_exc)
                         if payload.retry_checkpoint_ref:
                             if parsed.get("error"):
-                                yield _retry_sse_event(
+                                retry_event = _retry_sse_event(
                                     "retry.failed",
                                     checkpoint_ref=payload.retry_checkpoint_ref,
                                     reason=str(parsed.get("error")),
                                 )
                             else:
-                                yield _retry_sse_event(
+                                retry_event = _retry_sse_event(
                                     "retry.completed",
                                     checkpoint_ref=payload.retry_checkpoint_ref,
                                 )
+                            _record_agentscope_event_from_sse(db, agentscope_context, retry_event)  # retry 终态先落 mirror，再落最终 answer 事件。
+                            yield retry_event
                         bridge_closed = _complete_agentscope_chat_bridge(
                             db,
                             context=agentscope_context,

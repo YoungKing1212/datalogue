@@ -25,6 +25,7 @@ def test_datalogue_event_envelope_supports_required_event_types_and_visibility()
     )
 
     assert set(DatalogueEventType.__args__) == {
+        "task.started",
         "route.started",
         "dataset.selected",
         "clarification.required",
@@ -38,6 +39,11 @@ def test_datalogue_event_envelope_supports_required_event_types_and_visibility()
         "repair.rerun_completed",
         "repair.failed",
         "repair.blocked",
+        "retry.started",
+        "retry.checkpoint_restored",
+        "retry.fallback_to_whole_task",
+        "retry.completed",
+        "retry.failed",
         "artifact.created",
         "answer.completed",
         "error.blocked",

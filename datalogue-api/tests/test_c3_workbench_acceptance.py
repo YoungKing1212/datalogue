@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -24,7 +25,9 @@ from app import models
 from app.models.agentscope_workbench import AgentScopeEvent, AgentScopeMessage, AgentScopeRef, AgentScopeSession
 from app.schemas.bi_workbench import build_datalogue_event_envelope
 from app.schemas.chat import ChatRequest
+from app.services.conversation_store import ConversationStore
 from app.services.agentscope_mirror import create_agentscope_session, create_running_assistant_message
+from app.services.agentscope_mirror import mark_message_failed, record_agentscope_ref
 from app.services.artifact_store import ArtifactStore
 from app.services.workbench_actions import run_lease_recovery
 
@@ -189,6 +192,152 @@ def test_interrupted_workbench_thread_can_request_controlled_retry(client, db_se
     assert view["available_actions"][0]["enabled"] is True
     _assert_public_payload_safe(payload)
     _assert_public_payload_safe(view)
+
+
+@pytest.mark.asyncio
+async def test_workbench_retry_run_request_restores_checkpoint_through_chat_stream(
+    client,
+    db_session,
+    monkeypatch,
+    sample_dataset,
+):
+    from app.api import chat as chat_api
+
+    class MultiturnSettings:
+        MULTITURN_ENABLED = True
+        MULTITURN_LOCK_TTL_SECONDS = 300
+        MULTITURN_LAST_SUCCESS_TASK_MAX_TOKENS = 2000
+        MULTITURN_COMPACTION_ENABLED = False
+
+    monkeypatch.setattr("app.api.chat.get_settings", lambda: MultiturnSettings())
+    conversation = models.Conversation(title="C3-P1 retry harness", user_id=1, dataset_id=sample_dataset.id)
+    db_session.add(conversation)
+    db_session.commit()
+    db_session.refresh(conversation)
+    session_id = f"conversation-{conversation.id}"
+    store = ConversationStore(db_session)
+    store.load_or_create(session_id=session_id, user_id="1")
+    checkpoint_ref = store.register_retry_checkpoint(
+        session_id=session_id,
+        checkpoint_kind="query_context_ready",
+        user_id="1",
+        conversation_id=conversation.id,
+        task_id="c3-p1-retry-task",
+        permission_scope=f"dataset:{sample_dataset.id}",
+        context={
+            "question": "查询杨凯 2024 年工作日志",
+            "dataset_id": sample_dataset.id,
+            "route_decision": {"dataset_id": sample_dataset.id, "decision": "selected"},
+        },
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    session = create_agentscope_session(
+        db_session,
+        thread_id="as_11111111-2222-3333-4444-555555555555",
+        title="查询杨凯 2024 年工作日志",
+        legacy_conversation_id=conversation.id,
+    )
+    failed = create_running_assistant_message(db_session, thread_id=session.thread_id, lease_seconds=60)
+    mark_message_failed(
+        db_session,
+        message_id=failed.message_id,
+        error_summary="查询执行中断，可基于检查点重试。",
+        payload={"checkpoint_ref": checkpoint_ref},
+    )
+    record_agentscope_ref(
+        db_session,
+        thread_id=session.thread_id,
+        message_id=failed.message_id,
+        ref_type="checkpoint",
+        ref_value=checkpoint_ref,
+        relation="checkpoint",
+    )
+    retry_response = client.post(
+        "/api/workbench/actions/retry",
+        json={
+            "thread_id": session.thread_id,
+            "message_id": failed.message_id,
+            "checkpoint_ref": checkpoint_ref,
+            "selected_action": "retry_last_step",
+        },
+    )
+    run_request = retry_response.json()["run_request"]
+    trace_id = "trace-c3-p1-retry"
+    artifact_ref = ArtifactStore(db_session).put_json(
+        kind="sql_result",
+        payload={"summary": "重试后返回 100 条工作日志"},
+        dataset_id=sample_dataset.id,
+        trace_id=trace_id,
+    )
+    answer_completed = build_datalogue_event_envelope(
+        event_type="answer.completed",
+        visibility="user_visible",
+        payload={
+            "summary": "已从检查点恢复并完成查询",
+            "primary_ref": {"ref_type": "artifact", "ref": artifact_ref},
+            "related_refs": [{"ref_type": "checkpoint", "ref": checkpoint_ref}],
+        },
+        task_id="c3-p1-retry-rerun",
+        trace_id=trace_id,
+    )
+    captured_payloads: list[ChatRequest] = []
+
+    async def successful_retry_singleturn(payload, *args, **kwargs):
+        captured_payloads.append(payload)
+        yield _sse(
+            {
+                "type": "final",
+                "answer": "已从检查点恢复并完成查询",
+                "conversation_id": conversation.id,
+                "result_ref": artifact_ref,
+                "task_id": "c3-p1-retry-rerun",
+                "trace_id": trace_id,
+                "event_envelope": answer_completed.model_dump(mode="json"),
+            }
+        )
+
+    with (
+        patch("app.api.chat._stream_chat_singleturn", successful_retry_singleturn),
+        patch("app.api.chat.resolve_term_clarification", return_value={"status": "none"}),
+    ):
+        events = [
+            json.loads(item["data"])
+            async for item in chat_api._stream_chat(
+                ChatRequest(
+                    question=run_request["question"],
+                    session_id=session_id,
+                    conversation_id=run_request["conversation_id"],
+                    thread_id=run_request["thread_id"],
+                    dataset_id=run_request["dataset_id"],
+                    retry_checkpoint_ref=run_request["retry_checkpoint_ref"],
+                ),
+                db_session,
+            )
+        ]
+
+    event_keys = [event.get("event_envelope", {}).get("event_type") or event.get("type") for event in events]
+    assert retry_response.status_code == 200
+    assert run_request["thread_id"] == session.thread_id
+    assert run_request["conversation_id"] == conversation.id
+    assert captured_payloads[-1].question == "查询杨凯 2024 年工作日志"
+    assert captured_payloads[-1].dataset_id == sample_dataset.id
+    assert event_keys.index("retry.checkpoint_restored") < event_keys.index("answer.completed")
+    final_payload = [event for event in events if event.get("type") == "final"][-1]
+    assert final_payload["thread_id"] == session.thread_id
+    assert final_payload["trace_id"] == trace_id
+    assert final_payload["result_ref"] == artifact_ref
+    persisted_event_types = [
+        event.event_type
+        for event in db_session.query(AgentScopeEvent).filter_by(thread_id=session.thread_id).all()
+    ]
+    refs = db_session.query(AgentScopeRef).filter_by(thread_id=session.thread_id).all()
+    assert "workbench.retry_requested" in persisted_event_types
+    assert "retry.checkpoint_restored" in persisted_event_types
+    assert "answer.completed" in persisted_event_types
+    assert any(ref.ref_type == "artifact" and ref.ref_value == artifact_ref for ref in refs)
+    assert any(ref.ref_type == "checkpoint" and ref.ref_value == checkpoint_ref for ref in refs)
+    assert any(ref.ref_type == "trace" and ref.ref_value == trace_id for ref in refs)
+    _assert_public_payload_safe(events)
 
 
 def test_legacy_conversation_workbench_view_is_read_only_without_mirror(client, db_session, sample_dataset):

@@ -116,3 +116,22 @@ npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-pa
   - `cd datalogue-web && npm run build` 通过，仅保留既有 chunk warning。
   - `git diff --check` 通过。
 - 残留风险：本次没有构造真实浏览器点击 retry 并完成一次业务成功重跑；它先把 Workbench action 到 `/chat/stream` checkpoint restore 的主链入口打通。下一步应补真实页面 retry 场景或内部 harness，把 `retry.checkpoint_restored -> answer.completed` 与 Workbench mirror 的同一 thread/trace/ref 串起来。
+
+## C3-P1 PR2：Retry 主链恢复 internal-only harness 补证
+
+- 范围：先补内部-only pytest harness，不伪造成真实浏览器；验证 Workbench controlled retry 生成的 `run_request` 能进入同一个 `/chat/stream` checkpoint restore 链路，并在 SSE/event envelope 中出现 `retry.checkpoint_restored -> answer.completed`。
+- 自动化用例：`datalogue-api/tests/test_c3_workbench_acceptance.py::test_workbench_retry_run_request_restores_checkpoint_through_chat_stream`。
+- harness 固定证据：
+  - `thread_id=as_11111111-2222-3333-4444-555555555555`
+  - `trace_id=trace-c3-p1-retry`
+  - `checkpoint_ref=checkpoint://c3-p1-retry-task/query_context_ready`
+  - `artifact_ref=artifact:<uuid>`，由测试运行时通过 `ArtifactStore.put_json()` 生成。
+- 链路证据：`POST /api/workbench/actions/retry` 返回的 `run_request` 保持同一 `thread_id/conversation_id/dataset_id/retry_checkpoint_ref`；`_stream_chat` 从 checkpoint 读取原始问题“查询杨凯 2024 年工作日志”和 dataset，再进入 stub 成功重跑。
+- SSE/event envelope 证据：测试断言事件顺序包含 `retry.checkpoint_restored` 且早于 `answer.completed`；retry 事件已纳入 `DatalogueEventType`，并由 `_retry_sse_event()` 生成 user-visible envelope。
+- AgentScope mirror 证据：同一 thread 下持久化 `workbench.retry_requested`、`retry.checkpoint_restored`、`answer.completed`；`agentscope_ref` 同时记录 artifact、checkpoint、trace refs。
+- 安全证据：harness 对 SSE payload 做递归扫描，不允许 `sql/schema/raw_rows/raw_result/query_plan/field_patch` 等执行面字段进入用户可见层。
+- 验证命令：
+  - `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py::test_workbench_retry_run_request_restores_checkpoint_through_chat_stream -q`，1 条通过。
+  - `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py tests/test_retry_checkpoint.py tests/test_workbench_retry_actions.py tests/test_event_envelope.py tests/test_agentscope_event_projection.py -q`，25 条通过。
+  - `cd datalogue-api && python3 -m py_compile app/api/chat.py app/schemas/bi_workbench.py tests/test_c3_workbench_acceptance.py tests/test_event_envelope.py` 通过。
+- 残留风险：本次仍是 internal-only harness，没有实际驱动浏览器点击右侧 Workbench retry 按钮，也没有打开 Langfuse UI 人工核对；下一步应补真实浏览器 retry 场景，把页面点击、Network SSE、Workbench Panel 刷新和 Langfuse observation 一并验收。
