@@ -52,6 +52,12 @@ AS_R0_DISABLED_FUTURE_TOOLS = [
     "run_sandboxed_analysis_on_artifact",
 ]
 
+AS_R0_OPTIONAL_AGENT_TOOL_WHITELISTS = {
+    "report_agent": ["create_report_from_artifact"],
+    "python_agent": ["run_sandboxed_analysis_on_artifact"],
+    "audit_agent": ["classify_query_failure"],
+}
+
 # 这些字段只能在 compile/execute/tool 内部流转，不能进入 Agent 上下文或用户可见输出。
 FORBIDDEN_AGENT_CONTEXT_KEYS = {
     "sql",
@@ -250,8 +256,16 @@ class DatalogueAgenticShell:
         *,
         registry: list[AgentRegistryEntry] | None = None,
         writer: AgenticShellWriter | None = None,
+        enabled_optional_agents: list[str] | None = None,
     ) -> None:
-        self.registry = registry or self._default_registry()
+        self.enabled_optional_agents = set(enabled_optional_agents or [])
+        # P2.4 受控启用：未知 Agent 直接拒绝，避免拼写错误或越权配置绕过 registry gate。
+        invalid_optional_agents = sorted(
+            self.enabled_optional_agents - set(AS_R0_OPTIONAL_AGENT_TOOL_WHITELISTS)
+        )
+        if invalid_optional_agents:
+            raise ValueError(f"Unknown optional agents: {invalid_optional_agents}")
+        self.registry = registry or self._default_registry(self.enabled_optional_agents)
         self.writer = writer or NoopAgenticShellWriter()
 
     def prepare_turn(
@@ -262,14 +276,26 @@ class DatalogueAgenticShell:
     ) -> AgenticShellTurnContract:
         task_type = self.classify_task(question)
         selected_agent = self._select_agent(task_type)
-        status: AgenticShellStatus = "ready" if selected_agent == "bi_lead_agent" else "disabled"
-        # AS-R0 fail-closed：只有 BI 主链能拿到工具；placeholder Agent 必须没有工具白名单。
+        # P2.4 默认仍 fail-closed；只有显式启用的业务 Agent 才能从 placeholder 变成 ready。
+        status: AgenticShellStatus = (
+            "ready"
+            if selected_agent == "bi_lead_agent" or selected_agent in self.enabled_optional_agents
+            else "disabled"
+        )
+        allowed_tools = self._allowed_tools_for_agent(selected_agent) if status == "ready" else []
+        business_capabilities = (
+            self._business_capabilities_for_agent(selected_agent) if status == "ready" else []
+        )
+        disabled_future_tools = [
+            tool for tool in AS_R0_DISABLED_FUTURE_TOOLS if tool not in set(allowed_tools)
+        ]
+        # AS-R0 fail-closed：只有显式启用的 Agent 能拿到自己的单独工具白名单。
         tool_policy = (
             AgenticToolPolicy(
-                allowed_tools=list(AS_R0_ALLOWED_BI_TOOLS),
-                business_capabilities=list(AS_R0_BI_CAPABILITIES),
-                disabled_tools=list(AS_R0_RESERVED_DATASET_TOOLS + AS_R0_DISABLED_FUTURE_TOOLS),
-                disabled_tool_specs=self._future_tool_specs(),
+                allowed_tools=allowed_tools,
+                business_capabilities=business_capabilities,
+                disabled_tools=list(AS_R0_RESERVED_DATASET_TOOLS + disabled_future_tools),
+                disabled_tool_specs=self._future_tool_specs(exclude_tools=allowed_tools),
             )
             if status == "ready"
             else AgenticToolPolicy(
@@ -476,7 +502,21 @@ class DatalogueAgenticShell:
         )
 
     @staticmethod
-    def _default_registry() -> list[AgentRegistryEntry]:
+    @staticmethod
+    def _allowed_tools_for_agent(selected_agent: str) -> list[str]:
+        if selected_agent == "bi_lead_agent":
+            return list(AS_R0_ALLOWED_BI_TOOLS)
+        return list(AS_R0_OPTIONAL_AGENT_TOOL_WHITELISTS.get(selected_agent, []))
+
+    @staticmethod
+    def _business_capabilities_for_agent(selected_agent: str) -> list[str]:
+        if selected_agent == "bi_lead_agent":
+            return list(AS_R0_BI_CAPABILITIES)
+        return list(AS_R0_OPTIONAL_AGENT_TOOL_WHITELISTS.get(selected_agent, []))
+
+    @staticmethod
+    def _default_registry(enabled_optional_agents: set[str] | None = None) -> list[AgentRegistryEntry]:
+        enabled_optional_agents = enabled_optional_agents or set()
         return [
             AgentRegistryEntry(
                 name="bi_lead_agent",
@@ -486,28 +526,35 @@ class DatalogueAgenticShell:
             AgentRegistryEntry(
                 name="report_agent",
                 role="从查询 artifact 生成报告",
-                status="disabled",
-                reason="AS-R0 只启用 BI 主链，报告生成留到后续阶段",
+                status="enabled" if "report_agent" in enabled_optional_agents else "disabled",
+                reason=None
+                if "report_agent" in enabled_optional_agents
+                else "AS-R0 只启用 BI 主链，报告生成留到后续阶段",
             ),
             AgentRegistryEntry(
                 name="python_agent",
                 role="在沙箱中基于 artifact 做二次分析",
-                status="disabled",
-                reason="沙箱分析工具尚未进入 AS-R0 白名单",
+                status="enabled" if "python_agent" in enabled_optional_agents else "disabled",
+                reason=None
+                if "python_agent" in enabled_optional_agents
+                else "沙箱分析工具尚未进入 AS-R0 白名单",
             ),
             AgentRegistryEntry(
                 name="audit_agent",
                 role="审计查询、策略与工具调用",
-                status="disabled",
-                reason="审计链路先作为 registry 占位",
+                status="enabled" if "audit_agent" in enabled_optional_agents else "disabled",
+                reason=None
+                if "audit_agent" in enabled_optional_agents
+                else "审计链路先作为 registry 占位",
             ),
         ]
 
     @staticmethod
-    def _future_tool_specs() -> list[AgenticDisabledToolSpec]:
+    def _future_tool_specs(*, exclude_tools: list[str] | None = None) -> list[AgenticDisabledToolSpec]:
         """P2.3：future tools 只能以 disabled/admin-gated 契约出现，不能进入 allowed_tools。"""
 
-        return [
+        excluded = set(exclude_tools or [])
+        specs = [
             AgenticDisabledToolSpec(
                 name="repair_dsl",
                 status="admin_gated",
@@ -533,6 +580,7 @@ class DatalogueAgenticShell:
                 reason="python_agent_placeholder_disabled",
             ),
         ]
+        return [spec for spec in specs if spec.name not in excluded]
 
     @staticmethod
     def _select_agent(task_type: TaskType) -> str:

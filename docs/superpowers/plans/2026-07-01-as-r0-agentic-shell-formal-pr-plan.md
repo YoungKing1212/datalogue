@@ -213,18 +213,13 @@
 | P2.1 | Complete | `_stream_chat` transport adapter 收缩 + `docs/test-reports/2026-07-01-as-r0-p2-1.md` | 后续 P2.2 收敛 legacy adapter / `ask_bi` |
 | P2.2 | Complete | legacy adapter / `ask_bi` compatibility contract + `docs/test-reports/2026-07-01-as-r0-p2-2.md` | 后续 P2.3 接入 future tools disabled/admin-gated contract |
 | P2.3 | Complete | future tools disabled/admin-gated contract + `docs/test-reports/2026-07-01-as-r0-p2-3.md` | 后续 P2.4 分别受控启用业务 Agent |
-| P2.4 | Not started | None | 下一步进入 P2.4 |
+| P2.4 | Complete | optional business agent enablement gates + `docs/test-reports/2026-07-01-as-r0-p2-4.md` | AS-R0 P0/P1/P2 正式计划已完成；后续新增业务实现必须先走变更评审 |
 
 ## 5. Next Allowed Work Without Plan Change
 
-以下工作可继续执行，因为它们直接属于现有正式计划：
+AS-R0 P0/P1/P2 正式计划已全部完成。当前没有可在不变更计划的前提下继续实施的新工作。
 
-1. P2.4：ReportAgent/PythonAgent/AuditAgent 从 placeholder 到受控启用，每个 Agent 单独 PR、单独白名单、单独验收。
-
-优先级建议：
-
-1. 先补每个业务 Agent 的独立 enablement gate 测试，确认默认仍是 placeholder。
-2. 再为每个 Agent 增加单独白名单/验收契约，保持 fail-closed。
+后续如果要实现真实 ReportAgent、PythonAgent、AuditAgent 业务执行器，或把 feature flag 默认打开，必须先按 `6. Proposed Plan Changes` 提交变更说明并等待用户审核。
 
 ## 5.1 Completed Task Reports
 
@@ -393,6 +388,20 @@
 - `docs/test-reports/2026-07-01-as-r0-p2-3.md`
 
 **Result:** 新增 `AgenticDisabledToolSpec`，Shell policy 与 Runtime boundary 均能看到 future tools 的结构化状态。`repair_dsl`、`create_report_from_artifact`、`run_sandboxed_analysis_on_artifact` 默认 `admin_gated/admin_only`；`classify_query_failure` 默认 `disabled/not_enabled`。这些工具不会进入 Runtime executable `tool_registry`。
+
+### P2.4: optional business agent controlled enablement
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/services/agentic_shell.py`
+- `datalogue-api/app/services/agentscope_runtime_driver.py`
+- `datalogue-api/tests/test_agentic_shell_contract.py`
+- `datalogue-api/tests/test_agentscope_runtime_driver_contract.py`
+- `docs/test-reports/2026-07-01-as-r0-p2-4.md`
+
+**Result:** ReportAgent、PythonAgent、AuditAgent 默认仍是 disabled placeholder；显式启用时分别只获得自己的单一工具白名单：`create_report_from_artifact`、`run_sandboxed_analysis_on_artifact`、`classify_query_failure`。Runtime registry 只注册已启用 Agent 的对应工具，未启用 future tools 继续停留在 disabled/admin-gated contract 中。P2.4 不实现真实业务执行器、不改变 `/chat/stream` 默认主链。
 
 ## 6. Proposed Plan Changes
 

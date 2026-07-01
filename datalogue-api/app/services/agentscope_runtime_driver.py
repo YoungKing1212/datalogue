@@ -111,25 +111,32 @@ class DatalogueAgentScopeRuntimeDriver:
 
     @staticmethod
     def _build_tool_registry(allowed_tools: list[str]) -> list[AgentScopeRuntimeToolSpec]:
-        provider_methods = {
-            "get_dataset_status": BIAtomicToolProvider.get_dataset_status,
-            "list_candidate_assets": BIAtomicToolProvider.list_candidate_assets,
-            "compile_dsl_to_sql": BIAtomicToolProvider.compile_dsl_to_sql,
-            "execute_compiled_query": BIAtomicToolProvider.execute_compiled_query,
-            "create_query_artifact": BIAtomicToolProvider.create_query_artifact,
-            "get_artifact_summary": BIAtomicToolProvider.get_artifact_summary,
+        provider_specs = {
+            "get_dataset_status": ("BIAtomicToolProvider", BIAtomicToolProvider.get_dataset_status.__name__),
+            "list_candidate_assets": ("BIAtomicToolProvider", BIAtomicToolProvider.list_candidate_assets.__name__),
+            "compile_dsl_to_sql": ("BIAtomicToolProvider", BIAtomicToolProvider.compile_dsl_to_sql.__name__),
+            "execute_compiled_query": ("BIAtomicToolProvider", BIAtomicToolProvider.execute_compiled_query.__name__),
+            "create_query_artifact": ("BIAtomicToolProvider", BIAtomicToolProvider.create_query_artifact.__name__),
+            "get_artifact_summary": ("BIAtomicToolProvider", BIAtomicToolProvider.get_artifact_summary.__name__),
+            "create_report_from_artifact": ("AgenticOptionalToolProvider", "create_report_from_artifact"),
+            "run_sandboxed_analysis_on_artifact": (
+                "AgenticOptionalToolProvider",
+                "run_sandboxed_analysis_on_artifact",
+            ),
+            "classify_query_failure": ("AgenticOptionalToolProvider", "classify_query_failure"),
         }
         registry: list[AgentScopeRuntimeToolSpec] = []
         for tool_name in allowed_tools:
-            method = provider_methods.get(tool_name)
-            if method is None:
+            spec = provider_specs.get(tool_name)
+            if spec is None:
                 # allowed_tools 理论上已经是受控白名单；这里再次 fail-closed，避免注册未实现方法。
                 continue
+            provider, method = spec
             registry.append(
                 AgentScopeRuntimeToolSpec(
                     name=tool_name,
-                    provider="BIAtomicToolProvider",
-                    method=method.__name__,
+                    provider=provider,
+                    method=method,
                 )
             )
         return registry

@@ -111,6 +111,7 @@
 - AS-R0 正式 PR 计划口径收口：`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md` 成为 PR0.1-PR0.4、PR1.1-PR1.5、P2.1-P2.4 唯一执行口径；任何新增或移动 scope 必须先进入 `Proposed Plan Changes` 等待用户审核。
 - AS-R0 PR0.1 架构文档与迁移闸门完成：C3 Workbench / mirror 被明确标注为 AS-R0 foundation，不是 AgentScope Runtime ownership 完成态；P0/P1/P2 迁移闸门和禁暴露边界进入 C3 架构文档、spec、计划和验收记录。
 - AS-R0 PR0.2 Agentic Shell Writer 接口完成：`DatalogueAgenticShell` 新增 event/action/checkpoint writer interface、Noop writer 和 InMemory writer，写回前统一走 payload sanitizer。
+- AS-R0 PR0.3 BI Atomic Tool Provider 完成：补齐 compile/execute/create artifact 原子工具，SQL 只在 compile/execute 内部通过私有 handle 流转，Agent 可见响应只返回状态、句柄、artifact ref 和摘要。
 
 ## 高价值判断
 
@@ -121,15 +122,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 11:34 · AS-R0 PR0.3 BI Atomic Tool Provider
-
-- 涉及文件：`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr0-3.md`、`.codex/project-memory.md`
-- 关键改动：补齐 `BIAtomicToolProvider.compile_dsl_to_sql()` 和 `execute_compiled_query()`，用私有 `compiled_query_ref` 在 compile/execute 工具内部流转 SQL；执行结果写入 `ArtifactStore`，Agent 可见响应只返回状态、句柄、artifact ref、row/column 计数；Shell whitelist 和 Runtime registry 同步开放六个 BI 原子工具；review 后将 `subagent_planning.__init__` 的规划器/graph 导出改为 lazy，修复 provider/runtime driver 冷启动导入循环。
-- 安全边界：DatasetAgent 只能提交结构化 DSL / `QueryPlan`，不能直接给出最终可执行 SQL；tool response 不暴露 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body；`execute_compiled_query()` 校验调用方 dataset_id 必须与 compiled handle 归属一致，mismatch 时 fail-closed 且不调用 executor、不写 artifact；artifact 内部可保存查询结果，PR0.4 再扩大用户可见层安全矩阵。
-- TDD 记录：先新增 compile/execute/unknown handle 测试并确认 RED 为 `NotImplementedError` 和 `query_executor` 参数缺失；实现私有句柄、executor 注入、artifact 写入和 unknown handle fail-closed 后转 GREEN。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py -q`，13 条通过、2 个既有 warning；执行 AS-R0 最小回归 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，33 条通过、4 个既有 warning；review fix 定向测试 2 条通过；扩大回归 `tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py tests/test_query_plan_compiler.py tests/test_subagent_execution.py tests/test_subagent_run.py -q`，61 条通过、4 个既有 warning；冷启动导入 `agentic_bi_tools/agentscope_runtime_driver/app.api.chat` 通过；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：PR0.3 不替换 `/chat/stream`，不接真实 AgentScope runner；下一步按正式计划进入 PR0.4 安全测试矩阵。
 
 ### 2026-07-01 11:48 · AS-R0 PR0.4 安全测试矩阵
 
@@ -210,3 +202,12 @@
 - TDD 记录：先新增 Shell/Runtime future tool contract 测试并确认 RED 为缺少 `disabled_tool_specs`；实现结构化 spec 和 Runtime 透传后转 GREEN。
 - 验证方式：future tool 定向测试 2 条通过、2 个既有 warning；Shell/Runtime 契约回归 18 条通过、2 个既有 warning；AS-R0 最小回归 47 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：P2.4 要为 ReportAgent/PythonAgent/AuditAgent 做单独 enablement gate、单独白名单和单独验收。
+
+### 2026-07-01 12:43 · AS-R0 P2.4 业务 Agent 受控启用
+
+- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-p2-4.md`、`.codex/project-memory.md`
+- 关键改动：`DatalogueAgenticShell` 新增 `enabled_optional_agents` 受控启用入口；ReportAgent、PythonAgent、AuditAgent 默认仍是 disabled placeholder，显式启用时分别只开放 `create_report_from_artifact`、`run_sandboxed_analysis_on_artifact`、`classify_query_failure` 单一白名单；Runtime driver 只注册已启用 optional agent 的对应 tool spec。
+- 安全边界：未知 optional agent 配置 fail-closed；单个业务 Agent 启用不会连带启用其他 Agent 或 future tools；context projection 继续阻断 SQL、schema、raw rows、query_plan、RepairPatch、blueprint body 等禁区内容；P2.4 不实现真实业务执行器、不改变 `/chat/stream` 默认主链。
+- TDD 记录：先补三个 Shell enablement gate 测试和一个 Runtime registry 测试，确认 RED 为 `DatalogueAgenticShell.__init__()` 不支持 `enabled_optional_agents`；实现 registry gate、单 Agent whitelist 和 disabled spec 过滤后转 GREEN。
+- 验证方式：P2.4 定向测试 4 条通过、2 个既有 warning；Shell/Runtime 契约回归 22 条通过、2 个既有 warning；AS-R0 核心回归 51 条通过、4 个既有 warning；Workbench/retry/observability 回归 15 条通过、14 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：AS-R0 P0/P1/P2 正式计划已完成；后续真实 Report/Python/Audit Agent 业务执行器或 feature flag 默认开启需要新增已批准计划。

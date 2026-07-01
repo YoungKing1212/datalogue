@@ -143,3 +143,21 @@ def test_agentscope_runtime_driver_rejects_disabled_placeholder_without_tools():
     assert runtime_contract.lead_agent_action.status == "disabled"
     assert runtime_contract.lead_agent_action.action_type == "report_agent.disabled"
     assert runtime_contract.lead_agent_action.disabled_reason == "agent_disabled_placeholder"
+
+
+def test_agentscope_runtime_driver_registers_only_enabled_optional_agent_whitelist():
+    shell = DatalogueAgenticShell(enabled_optional_agents=["report_agent"])
+    runtime_contract = DatalogueAgentScopeRuntimeDriver(shell=shell).prepare_runtime(
+        question="根据 artifact 生成报告",
+        context={"artifact_ref": "artifact:query-result"},
+        capability="create_report_from_artifact",
+    )
+
+    assert runtime_contract.status == "ready"
+    assert runtime_contract.selected_agent == "report_agent"
+    assert [tool.name for tool in runtime_contract.tool_registry] == ["create_report_from_artifact"]
+    assert runtime_contract.business_capabilities == ["create_report_from_artifact"]
+    assert runtime_contract.lead_agent_action.status == "ready"
+    assert runtime_contract.lead_agent_action.capability == "create_report_from_artifact"
+    assert "run_sandboxed_analysis_on_artifact" in runtime_contract.disabled_tools
+    assert "classify_query_failure" in runtime_contract.disabled_tools

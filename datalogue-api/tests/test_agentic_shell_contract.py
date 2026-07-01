@@ -197,6 +197,77 @@ def test_agentic_shell_report_python_audit_return_disabled_actions():
     assert all(action.disabled_reason == "agent_disabled_placeholder" for action in (report_action, python_action, audit_action))
 
 
+def test_agentic_shell_can_enable_report_agent_with_single_tool_whitelist():
+    shell = DatalogueAgenticShell(enabled_optional_agents=["report_agent"])
+
+    contract = shell.prepare_turn(
+        question="根据 artifact 生成报告",
+        context={"artifact_ref": "artifact:query-result", "sql": "select * from hidden"},
+    )
+    action = shell.route_agent_action(
+        question="根据 artifact 生成报告",
+        context={"artifact_ref": "artifact:query-result"},
+        capability="create_report_from_artifact",
+    )
+
+    assert contract.status == "ready"
+    assert contract.selected_agent == "report_agent"
+    assert "report_agent" in contract.enabled_agents
+    assert contract.tool_policy.allowed_tools == ["create_report_from_artifact"]
+    assert contract.tool_policy.business_capabilities == ["create_report_from_artifact"]
+    assert "create_report_from_artifact" not in {
+        item.name for item in contract.tool_policy.disabled_tool_specs
+    }
+    assert contract.projected_context.model_dump() == {
+        "question": "根据 artifact 生成报告",
+        "artifact_ref": "artifact:query-result",
+    }
+    assert action.status == "ready"
+    assert action.capability == "create_report_from_artifact"
+
+
+def test_agentic_shell_can_enable_python_agent_with_single_tool_whitelist():
+    shell = DatalogueAgenticShell(enabled_optional_agents=["python_agent"])
+
+    contract = shell.prepare_turn(
+        question="用 python 分析 artifact",
+        context={"artifact_ref": "artifact:query-result"},
+    )
+    action = shell.route_agent_action(
+        question="用 python 分析 artifact",
+        context={"artifact_ref": "artifact:query-result"},
+        capability="run_sandboxed_analysis_on_artifact",
+    )
+
+    assert contract.status == "ready"
+    assert contract.selected_agent == "python_agent"
+    assert contract.tool_policy.allowed_tools == ["run_sandboxed_analysis_on_artifact"]
+    assert contract.tool_policy.business_capabilities == ["run_sandboxed_analysis_on_artifact"]
+    assert action.status == "ready"
+    assert action.capability == "run_sandboxed_analysis_on_artifact"
+
+
+def test_agentic_shell_can_enable_audit_agent_with_single_tool_whitelist():
+    shell = DatalogueAgenticShell(enabled_optional_agents=["audit_agent"])
+
+    contract = shell.prepare_turn(
+        question="审计这次查询失败",
+        context={"artifact_ref": "artifact:query-result"},
+    )
+    action = shell.route_agent_action(
+        question="审计这次查询失败",
+        context={"artifact_ref": "artifact:query-result"},
+        capability="classify_query_failure",
+    )
+
+    assert contract.status == "ready"
+    assert contract.selected_agent == "audit_agent"
+    assert contract.tool_policy.allowed_tools == ["classify_query_failure"]
+    assert contract.tool_policy.business_capabilities == ["classify_query_failure"]
+    assert action.status == "ready"
+    assert action.capability == "classify_query_failure"
+
+
 def test_agentic_shell_writer_interface_sanitizes_event_action_and_checkpoint_payloads():
     writer = InMemoryAgenticShellWriter()
     shell = DatalogueAgenticShell(writer=writer)
