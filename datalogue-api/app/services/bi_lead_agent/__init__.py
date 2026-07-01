@@ -4,7 +4,7 @@
 #   BI LeadAgent 服务包入口。
 #
 # Responsibilities:
-#   - 暴露 K1 阶段 capability manifest 构建和数据集能力摘要清洗方法。
+#   - 暴露 K1 阶段 capability manifest、run 和确认服务。
 #
 # Author      : yangkai
 # Created On  : 2026-07-01
@@ -14,5 +14,12 @@ from app.services.bi_lead_agent.capabilities import (
     build_bi_lead_agent_capabilities,
     sanitize_dataset_capability,
 )
+from app.services.bi_lead_agent.confirmation_service import BILeadAgentConfirmationService
+from app.services.bi_lead_agent.run_service import BILeadAgentRunService
 
-__all__ = ["build_bi_lead_agent_capabilities", "sanitize_dataset_capability"]
+__all__ = [
+    "BILeadAgentConfirmationService",
+    "BILeadAgentRunService",
+    "build_bi_lead_agent_capabilities",
+    "sanitize_dataset_capability",
+]
