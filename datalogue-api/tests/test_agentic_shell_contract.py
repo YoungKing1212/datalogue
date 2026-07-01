@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from app.models.dataset import AnalysisBlueprint
 from app.services.artifact_store import ArtifactStore
 from app.services.agentic_bi_tools import BIAtomicToolProvider
@@ -195,6 +198,25 @@ def test_agentic_shell_default_writer_is_noop_interface_only():
     assert record.payload == {"artifact_ref": "artifact:query:1"}
 
 
+def test_bi_atomic_tool_provider_and_runtime_driver_import_in_clean_process():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib;"
+                "importlib.import_module('app.services.agentic_bi_tools');"
+                "importlib.import_module('app.services.agentscope_runtime_driver')"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_bi_atomic_tool_provider_exposes_safe_dataset_status_and_full_catalog(
     db_session,
     sample_dataset,
@@ -347,3 +369,42 @@ def test_bi_atomic_tool_provider_executes_unknown_handle_fail_closed(db_session)
         "compiled_query_ref": "compiled_query:missing",
         "artifact_ref": None,
     }
+
+
+def test_bi_atomic_tool_provider_execute_rejects_dataset_mismatch_without_executor(
+    db_session,
+    sample_dataset,
+):
+    executed_sql: list[str] = []
+
+    def fake_executor(sql: str):
+        executed_sql.append(sql)
+        return {"rows": [{"账号": "alice"}]}
+
+    provider = BIAtomicToolProvider(db_session, query_executor=fake_executor)
+    compiled = provider.compile_dsl_to_sql(
+        dataset_id=sample_dataset.id,
+        dsl=QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.86,
+            selected_assets=[_field_asset("账号", "user_logs", "account")],
+            debug={"selected_main_table": "user_logs"},
+        ),
+        sql_generation_context={"table_schemas": [{"table_name": "user_logs"}]},
+        dialect="sqlite",
+        allowed_tables=["user_logs"],
+    )
+
+    response = provider.execute_compiled_query(
+        compiled_query_ref=compiled["compiled_query_ref"],
+        dataset_id=sample_dataset.id + 999,
+    )
+
+    assert response == {
+        "status": "blocked",
+        "code": "DATASET_MISMATCH",
+        "compiled_query_ref": compiled["compiled_query_ref"],
+        "artifact_ref": None,
+    }
+    assert executed_sql == []

@@ -23,8 +23,7 @@ from app.models.dataset import AnalysisBlueprint, SemanticDataset
 from app.services.agentic_shell import DatalogueAgenticShell
 from app.services.artifact_store import ArtifactStore
 from app.services.query_plan_compiler import compile_query_plan_to_sql
-from app.services.subagent_planning import QueryPlan
-from app.services.subagent_planning.contracts import QueryPlanValidationError, normalize_query_plan
+from app.services.subagent_planning.contracts import QueryPlan, QueryPlanValidationError, normalize_query_plan
 
 
 class BIAtomicToolProvider:
@@ -170,6 +169,13 @@ class BIAtomicToolProvider:
         if compiled is None:
             return {
                 "status": "not_found",
+                "compiled_query_ref": compiled_query_ref,
+                "artifact_ref": None,
+            }
+        if dataset_id is not None and dataset_id != compiled.get("dataset_id"):
+            return {
+                "status": "blocked",
+                "code": "DATASET_MISMATCH",
                 "compiled_query_ref": compiled_query_ref,
                 "artifact_ref": None,
             }

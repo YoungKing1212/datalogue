@@ -203,7 +203,7 @@
 | --- | --- | --- | --- |
 | PR0.1 | Complete | C3 架构文档、C3 spec、C3 implementation plan、C3-P2 plan 和 C3 验收记录已标注 foundation / runtime ownership 边界 | 后续如发现旧口径，按本文 Plan Governance 补文档 |
 | PR0.2 | Complete | `04e01c84` + writer interface commit | 后续 P1 再把 writer interface 接到真实 Workbench/mirror 写回 |
-| PR0.3 | Complete | `04e01c84` + PR0.3 atomic provider commit | 后续 PR0.4 继续扩大安全矩阵到 SSE 和 Workbench View Model |
+| PR0.3 | Complete | `04e01c84` + PR0.3 atomic provider commit + review fix commit | 后续 PR0.4 继续扩大安全矩阵到 SSE 和 Workbench View Model |
 | PR0.4 | Partial | `04e01c84`, `39fbae95` | 补 SSE 用户可见层和 Workbench View Model 安全矩阵 |
 | PR1.1 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 等 PR0 完成后再进入 |
 | PR2.1 - PR2.4 | Not started | None | 等 P1 验收后再进入 |
@@ -261,7 +261,7 @@
 - `datalogue-api/tests/test_agentscope_runtime_driver_contract.py`
 - `docs/test-reports/2026-07-01-as-r0-pr0-3.md`
 
-**Result:** `BIAtomicToolProvider` 已补齐 `compile_dsl_to_sql`、`execute_compiled_query` 和 `create_query_artifact` 的受控边界；Shell whitelist 与 Runtime tool registry 同步开放六个 BI 原子工具。SQL 只在 compile/execute 工具内部通过私有 `compiled_query_ref` 流转，Agent 可见响应只返回句柄、状态、计数和 artifact ref，不返回 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body。
+**Result:** `BIAtomicToolProvider` 已补齐 `compile_dsl_to_sql`、`execute_compiled_query` 和 `create_query_artifact` 的受控边界；Shell whitelist 与 Runtime tool registry 同步开放六个 BI 原子工具。SQL 只在 compile/execute 工具内部通过私有 `compiled_query_ref` 流转，Agent 可见响应只返回句柄、状态、计数和 artifact ref，不返回 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body。Review fix 已补冷启动导入测试和 dataset mismatch fail-closed 校验。
 
 ## 6. Proposed Plan Changes
 
