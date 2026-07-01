@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +24,7 @@ AgentStatus = Literal["enabled", "disabled"]
 AgenticShellStatus = Literal["ready", "disabled"]
 TaskType = Literal["bi_query", "report", "python_analysis", "audit", "unsupported"]
 AgenticShellWriteKind = Literal["event", "action", "checkpoint"]
+AgenticStreamDelegate = Callable[[], AsyncIterator[dict[str, Any]]]
 
 
 AS_R0_ALLOWED_BI_TOOLS = [
@@ -260,6 +262,20 @@ class DatalogueAgenticShell:
             tool_policy=tool_policy,
             projected_context=projected_context,
         )
+
+    async def run_turn(
+        self,
+        *,
+        question: str,
+        context: dict[str, Any] | None = None,
+        stream_delegate: AgenticStreamDelegate,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """PR1.1 Runtime 入口；先生成 Shell 契约，再委托兼容流执行器保持 SSE 行为不变。"""
+
+        self.prepare_turn(question=question, context=context or {})
+        async for event in stream_delegate():
+            # PR1.1 只接管入口生命周期；事件清洗仍由既有 SSE/envelope/mirror 层执行，避免改变 payload 兼容性。
+            yield event
 
     def classify_task(self, question: str) -> TaskType:
         normalized = (question or "").strip().lower()

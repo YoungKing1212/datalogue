@@ -205,19 +205,20 @@
 | PR0.2 | Complete | `04e01c84` + writer interface commit | 后续 P1 再把 writer interface 接到真实 Workbench/mirror 写回 |
 | PR0.3 | Complete | `04e01c84` + PR0.3 atomic provider commit + review fix commit | 后续 PR0.4 继续扩大安全矩阵到 SSE 和 Workbench View Model |
 | PR0.4 | Complete | AS-R0 security matrix commit | PR0 已完成；后续在 P1 新 runtime 下继续沿用矩阵 |
-| PR1.1 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.1 Runtime adapter 接管入口 |
+| PR1.1 | Complete | Runtime adapter 接管入口提交 + `docs/test-reports/2026-07-01-as-r0-pr1-1.md` | 后续 PR1.2 接入 BI LeadAgent Shell 能力路由 |
+| PR1.2 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.2 BI LeadAgent 接入 Shell |
 | PR2.1 - PR2.4 | Not started | None | 等 P1 验收后再进入 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. PR1.1：新增 AgentScope runtime adapter，`/chat/stream` 先作为 HTTP/SSE 兼容壳，内部委托 `DatalogueAgenticShell.run_turn()`。
+1. PR1.2：BI LeadAgent 接入 Shell，只开放 `query_dataset` / `query_multiple_datasets` 能力路由；Report/Python/Audit 返回 disabled action。
 
 优先级建议：
 
-1. 先在 feature flag 下实现兼容壳委托，保持 legacy `_stream_chat_singleturn` 可回退。
-2. 同步复用 PR0.4 安全矩阵，验证新 runtime 可见层不泄露禁用字段。
+1. 先补 Shell 侧 BI LeadAgent capability routing contract 测试，确保默认只开放 BI 查询能力。
+2. 再把 Report/Python/Audit 的任务路由落到 disabled action，不提前启用业务 Agent。
 
 ## 5.1 Completed Task Reports
 
@@ -276,6 +277,20 @@
 - `docs/test-reports/2026-07-01-as-r0-pr0-4.md`
 
 **Result:** 已固化 Agent context、BI tool response、SSE payload、AgentScope mirror metadata/event 和 Workbench View Model 的统一安全矩阵。`raw_rows`、`repair_patch`、`patch_body`、`blueprint_body` 及其 camelCase / 归一形式不会进入 Agent 或用户可见层；trace_only SSE 随流 payload 也移除内部 `node/display_name`。
+
+### PR1.1: Runtime adapter 接管入口
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/api/chat.py`
+- `datalogue-api/app/core/config.py`
+- `datalogue-api/app/services/agentic_shell.py`
+- `datalogue-api/tests/test_agentscope_chat_bridge.py`
+- `docs/test-reports/2026-07-01-as-r0-pr1-1.md`
+
+**Result:** 新增默认关闭的 `AS_R0_AGENTIC_RUNTIME_ENABLED` feature flag；开启后 `/chat/stream` 仍保持 HTTP/SSE 兼容壳，但单轮与多轮入口会先委托 `DatalogueAgenticShell.run_turn()`，Shell 只生成安全 turn contract 并包裹既有 `_stream_chat_singleturn` 流，不改变 final payload、mirror 写入和 legacy 回退路径。PR1.1 不提前实现 DatasetAgent tool-call runtime，后者仍归 PR1.3。
 
 ## 6. Proposed Plan Changes
 

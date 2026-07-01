@@ -131,6 +131,58 @@ async def test_chat_stream_shadow_runtime_boundary_defaults_off(db_session, monk
     assert "agentic_runtime_boundary" not in session.metadata_json
 
 
+@pytest.mark.asyncio
+async def test_chat_stream_agentic_runtime_adapter_delegates_to_shell_run_turn(db_session, monkeypatch):
+    from app.api import chat as chat_api
+
+    calls: list[dict] = []
+
+    class Settings:
+        MULTITURN_ENABLED = False
+        AS_R0_AGENTIC_RUNTIME_ENABLED = True
+        AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED = False
+
+    class SpyShell:
+        async def run_turn(self, *, question, context, stream_delegate):
+            calls.append({"question": question, "context": context})
+            async for event in stream_delegate():
+                yield event
+
+    async def successful_singleturn(*args, **kwargs):
+        yield {"data": json.dumps({"type": "final", "answer": "完成"}, ensure_ascii=False)}
+
+    monkeypatch.setattr("app.api.chat.get_settings", lambda: Settings())
+    monkeypatch.setattr(chat_api, "DatalogueAgenticShell", SpyShell)
+    monkeypatch.setattr(chat_api, "_stream_chat_singleturn", successful_singleturn)
+
+    events = [
+        event
+        async for event in chat_api._stream_chat(
+            ChatRequest(
+                question="查询 GMV",
+                dataset_id=12,
+                conversation_id=7,
+                thread_id="as_12121212-1212-1212-1212-121212121212",
+            ),
+            db_session,
+        )
+    ]
+
+    assistant = db_session.query(AgentScopeMessage).filter(AgentScopeMessage.role == "assistant").one()
+    assert len(events) == 1
+    assert assistant.status == "completed"
+    assert calls == [
+        {
+            "question": "查询 GMV",
+            "context": {
+                "conversation_id": 7,
+                "dataset_id": 12,
+                "thread_id": "as_12121212-1212-1212-1212-121212121212",
+            },
+        }
+    ]
+
+
 def test_chat_request_accepts_agentscope_thread_id():
     request = ChatRequest(
         question="继续查询",

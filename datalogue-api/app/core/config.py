@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     LEAD_AGENT_ENABLE_DATASET_FANOUT: bool = False
     # AS-R0 影子路径开关：只生成 Agentic Shell -> Runtime driver 边界契约，不替换真实 /chat/stream 主链。
     AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED: bool = False
+    # PR1.1 runtime adapter 开关：打开后 /chat/stream 兼容壳先委托 DatalogueAgenticShell.run_turn()。
+    AS_R0_AGENTIC_RUNTIME_ENABLED: bool = False
 
     QUERY_ARTIFACT_TTL_SECONDS: int = 7 * 24 * 60 * 60
     QUERY_ARTIFACT_MAX_BYTES: int = 2 * 1024 * 1024

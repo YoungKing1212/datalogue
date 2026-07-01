@@ -89,6 +89,7 @@ from app.services.agentscope_chat_bridge import (
     interrupt_chat_turn,
     record_stream_event,
 )
+from app.services.agentic_shell import DatalogueAgenticShell
 from app.services.agentscope_runtime_driver import DatalogueAgentScopeRuntimeDriver
 from app.services.message_gateway import classify_turn_event
 from app.services.task_capsule import (
@@ -4450,6 +4451,51 @@ def _build_agentic_runtime_shadow_boundary(
         return None
 
 
+def _agentic_shell_context_from_chat_payload(payload: schemas.ChatRequest) -> dict[str, Any]:
+    """把 ChatRequest 投影成 Shell 入口上下文；只放业务句柄，不携带执行态 payload。"""
+
+    context = {
+        "conversation_id": payload.conversation_id,
+        "dataset_id": payload.dataset_id,
+        "thread_id": payload.thread_id,
+        "session_id": payload.session_id,
+        "checkpoint_ref": payload.retry_checkpoint_ref,
+    }
+    return {key: value for key, value in context.items() if value is not None}
+
+
+async def _stream_chat_singleturn_via_agentic_runtime(
+    payload: schemas.ChatRequest,
+    db: Session,
+    *,
+    settings: Any,
+    **singleturn_kwargs: Any,
+):
+    """PR1.1 兼容适配层；flag 开启时由 Agentic Shell 包裹 legacy singleturn 流。"""
+
+    if not bool(getattr(settings, "AS_R0_AGENTIC_RUNTIME_ENABLED", False)):
+        async for event in _stream_chat_singleturn(payload, db, **singleturn_kwargs):
+            yield event
+        return
+
+    async def stream_delegate():
+        async for event in _stream_chat_singleturn(payload, db, **singleturn_kwargs):
+            yield event
+
+    _log_chat_stream_checkpoint(
+        "agentic_runtime_adapter_enabled",
+        conversation_id=payload.conversation_id,
+        dataset_id=payload.dataset_id,
+        thread_id=payload.thread_id,
+    )
+    async for event in DatalogueAgenticShell().run_turn(
+        question=payload.question,
+        context=_agentic_shell_context_from_chat_payload(payload),
+        stream_delegate=stream_delegate,
+    ):
+        yield event
+
+
 def _begin_agentscope_chat_bridge(
     payload: schemas.ChatRequest,
     db: Session,
@@ -4626,7 +4672,11 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         final_seen = False
         bridge_closed = False
         try:
-            async for event in _stream_chat_singleturn(payload, db):
+            async for event in _stream_chat_singleturn_via_agentic_runtime(
+                payload,
+                db,
+                settings=settings,
+            ):
                 event, final_seen, bridge_closed = _mirror_agentscope_stream_event(
                     db=db,
                     context=agentscope_context,
@@ -4829,9 +4879,10 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             updates["dataset_id"] = int(pending_resolution["dataset_id"])
         effective_payload = payload.model_copy(update=updates)
     try:
-        async for event in _stream_chat_singleturn(
+        async for event in _stream_chat_singleturn_via_agentic_runtime(
             effective_payload,
             db,
+            settings=settings,
             multiturn_context=lead_multiturn_context,
             conversation_state=state,
             conversation_store=store,

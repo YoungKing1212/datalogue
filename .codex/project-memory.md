@@ -136,6 +136,7 @@
 - 验证覆盖后端 Workbench/ViewModel/retry/event/retry checkpoint pytest、前端 Workbench/route/chat/artifact/thread-list/workbench-api 测试、py_compile、lint/build 和 `git diff --check`。
 - C3-P2 Retry Completed 自动化 Harness 将手工浏览器 retry 复验固化为内部-only pytest：构造 `as_*` failed 会话和 checkpoint，驱动 `/api/workbench/actions/retry -> /api/chat/stream` checkpoint restore，并断言 Workbench completed、primary artifact、trace/checkpoint refs 和事件顺序。
 - C3-P2 PR2 补齐 Workbench 状态体验：空态、失败诊断、running 轮询提示、artifact drawer 内部 loading/404/无权限错误和 completed 产物重新打开；前端测试、lint/build 和真实浏览器扫描均通过。
+- C3-P2 PR2 Provider-neutral Observability Gate 将 `/api/observability/traces/{trace_id}` 收敛为 provider-neutral contract，统一断言 `workbench.retry_requested -> retry.started -> retry.checkpoint_restored -> dataset.query.completed -> answer.completed` 和关键 refs；自动化 harness 改为查询该 contract，不绑定 Langfuse 内部字段。
 
 ## 高价值判断
 
@@ -146,15 +147,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-30 18:32 · C3-P2 PR2 Provider-neutral Observability Gate
-
-- 涉及文件：`datalogue-api/app/services/observability/traces.py`、`datalogue-api/tests/test_observability.py`、`datalogue-api/tests/test_c3_workbench_acceptance.py`、`datalogue-api/tests/workbench_retry_harness.py`、`.codex/project-memory.md`
-- 关键改动：把原“API 级 Langfuse 闸门”收口为 provider-neutral observability contract；`GET /api/observability/traces/{trace_id}` 新增 `provider`、`local_events` 和 `observability_contract`，统一断言 `workbench.retry_requested -> retry.started -> retry.checkpoint_restored -> dataset.query.completed -> answer.completed` 以及 `thread_id/conversation_id/checkpoint_ref/artifact_ref`，不绑定 Langfuse 内部字段名，后续可由 OTel adapter 填同一契约。
-- harness 改动：C3-P2 browser retry completed harness 写入 `ObservabilityTraceIndex` 后直接查询 `/api/observability/traces/{trace_id}`，并断言 contract passed；模拟成功 retry 流补 `dataset.query.completed` trace-only envelope，保证自动化闸门证明数据查询阶段存在，而不是只看到最终回答。
-- TDD 记录：先新增 API contract 单测和 harness trace detail 断言，RED 分别为缺少 `provider` 响应字段、harness 结果缺少 `observability_detail`；实现后再暴露缺失 `dataset.query.completed`，补齐 trace-only event 后转 GREEN。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_observability.py::test_query_audit_trace_list_and_detail tests/test_observability.py::test_query_audit_trace_detail_exposes_provider_neutral_contract -q`，2 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py -q`，5 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/observability/traces.py tests/workbench_retry_harness.py tests/test_observability.py tests/test_c3_workbench_acceptance.py` 通过；执行 `git diff --check` 通过。
-- 残留风险：本次不要求浏览器登录 Langfuse UI；发布前 checklist 仍需保留 UI 人工核对项。若后续切换 OTel，应只替换 provider adapter，保持 `observability_contract` 响应和 harness 断言不变。
 
 ### 2026-07-01 09:16 · C3-P2 发布 Checklist 收口
 
@@ -233,3 +225,12 @@
 - TDD 记录：先跑矩阵 RED，暴露 SSE `raw_rows` 泄露、mirror 未拒绝 `blueprint_body/repair_patch`、Workbench 对污染 payload 未 fail-closed、trace_only 顶层 `node=query_plan` 泄露；随后补禁用键集合和顶层裁剪后转 GREEN。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，11 条通过、2 个既有 warning；扩大回归 `tests/test_as_r0_security_matrix.py tests/test_event_envelope.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_mirror_models.py tests/test_workbench_view_api.py tests/test_c3_workbench_acceptance.py -q`，61 条通过、12 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：PR0 已完成但仍未替换 `/chat/stream`、未接真实 AgentScope runner；下一步按正式计划进入 PR1.1 Runtime adapter 接管入口。
+
+### 2026-07-01 11:48 · AS-R0 PR1.1 Runtime adapter 接管入口
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/core/config.py`、`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/tests/test_agentscope_chat_bridge.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-1.md`、`.codex/project-memory.md`
+- 关键改动：新增默认关闭的 `AS_R0_AGENTIC_RUNTIME_ENABLED` feature flag；`/chat/stream` 单轮和多轮入口改为经 `_stream_chat_singleturn_via_agentic_runtime()` 进入，flag 开启时由 `DatalogueAgenticShell.run_turn()` 先生成 Shell turn contract，再委托既有 `_stream_chat_singleturn` 流，保持 HTTP/SSE final payload、AgentScope mirror 写入和 legacy 回退兼容。
+- 安全边界：ChatRequest 投影到 Shell 时只携带 `conversation_id`、`dataset_id`、`thread_id`、`session_id`、`checkpoint_ref` 等业务句柄，不携带 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body；PR1.1 不提前实现 DatasetAgent tool-call runtime，后者仍归 PR1.3。
+- TDD 记录：先新增 runtime adapter 委托测试并确认 RED 为 `app.api.chat` 缺少 `DatalogueAgenticShell` 接入点；实现配置、Shell `run_turn()` 和 chat 兼容 wrapper 后，定向测试转 GREEN。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py::test_chat_stream_agentic_runtime_adapter_delegates_to_shell_run_turn -q`，1 条通过；执行 AS-R0 runtime 相关回归 `tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_as_r0_security_matrix.py tests/test_event_envelope.py tests/test_agentscope_runtime_driver_contract.py -q`，42 条通过、4 个既有 warning；执行正式计划最小回归 `tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，36 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：当前只是 runtime ownership 的入口适配；BI LeadAgent capability routing、DatasetAgent tool-call runtime、checkpoint/retry writer 迁移和双路径灰度仍分别归 PR1.2 - PR1.5。
