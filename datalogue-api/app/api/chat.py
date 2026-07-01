@@ -13,12 +13,10 @@
 
 # 问数对话路由 — SSE 流式输出 + LangGraph Agent 工作流
 
-import asyncio
 import json
 import logging
 import re
 import time
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
@@ -91,6 +89,10 @@ from app.services.agentscope_chat_bridge import (
 )
 from app.services.agentic_shell import DatalogueAgenticShell
 from app.services.agentic_shell_writers import AgentScopeMirrorShellWriter
+from app.services.agentic_chat_runtime import (
+    DatalogueChatStreamRuntime,
+    DatalogueChatStreamRuntimeHooks,
+)
 from app.services.agentscope_runtime_driver import DatalogueAgentScopeRuntimeDriver
 from app.services.message_gateway import classify_turn_event
 from app.services.task_capsule import (
@@ -4664,338 +4666,40 @@ def _mirror_agentscope_stream_event(
     return event, final_seen, bridge_closed
 
 
+def _chat_stream_runtime_hooks() -> DatalogueChatStreamRuntimeHooks:
+    """P2.1 transport adapter hook 装配；chat.py 保留兼容 helper，生命周期交给 service。"""
+
+    return DatalogueChatStreamRuntimeHooks(
+        log_chat_stream_checkpoint=_log_chat_stream_checkpoint,
+        build_agentic_runtime_shadow_boundary=_build_agentic_runtime_shadow_boundary,
+        begin_agentscope_chat_bridge=_begin_agentscope_chat_bridge,
+        stream_singleturn_via_agentic_runtime=_stream_chat_singleturn_via_agentic_runtime,
+        mirror_agentscope_stream_event=_mirror_agentscope_stream_event,
+        interrupt_agentscope_chat_bridge=_interrupt_agentscope_chat_bridge,
+        fail_agentscope_chat_bridge=_fail_agentscope_chat_bridge,
+        complete_agentscope_chat_bridge=_complete_agentscope_chat_bridge,
+        record_agentscope_event_from_sse=_record_agentscope_event_from_sse,
+        attach_artifact_card_refs_to_final_payload=_attach_artifact_card_refs_to_final_payload,
+        sse_data=_sse_data,
+        with_event_envelope=_with_event_envelope,
+        retry_sse_event=_retry_sse_event,
+        summarize_conversation_state=_summarize_conversation_state,
+        chat_stream_log_summary=_chat_stream_log_summary,
+        persist_completed_turn=_persist_completed_turn,
+        get_observability_tracer=get_observability_tracer,
+    )
+
+
 async def _stream_chat(payload: schemas.ChatRequest, db: Session):
-    """多轮状态包装层。
+    """SSE transport adapter；业务 turn lifecycle 已迁入 DatalogueChatStreamRuntime。"""
 
-    默认 feature flag 关闭时直接走原单轮链路；开启后负责 session 锁和完成轮次写回。
-    """
-
-    settings = get_settings()
-    # wrapper_start 记录 feature flag 和 session 输入，先判断本轮是否会进入多轮状态包装。
-    _log_chat_stream_checkpoint(
-        "wrapper_start",
-        question_preview=payload.question[:80],
-        payload_dataset_id=payload.dataset_id,
-        conversation_id=payload.conversation_id,
-        session_id=payload.session_id,
-        multiturn_enabled=bool(settings.MULTITURN_ENABLED),
+    runtime = DatalogueChatStreamRuntime(
+        db=db,
+        settings=get_settings(),
+        hooks=_chat_stream_runtime_hooks(),
     )
-    agentic_runtime_boundary = _build_agentic_runtime_shadow_boundary(payload, settings=settings)
-    agentscope_context = _begin_agentscope_chat_bridge(
-        payload,
-        db,
-        agentic_runtime_boundary=agentic_runtime_boundary,
-    )
-    if not settings.MULTITURN_ENABLED:
-        # 关闭多轮时直接下钻单轮链路，后续不会出现锁和 ConversationState 写回日志。
-        _log_chat_stream_checkpoint(
-            "multiturn_disabled",
-            conversation_id=payload.conversation_id,
-            payload_dataset_id=payload.dataset_id,
-        )
-        final_seen = False
-        bridge_closed = False
-        try:
-            async for event in _stream_chat_singleturn_via_agentic_runtime(
-                payload,
-                db,
-                settings=settings,
-            ):
-                event, final_seen, bridge_closed = _mirror_agentscope_stream_event(
-                    db=db,
-                    context=agentscope_context,
-                    event=event,
-                    final_seen=final_seen,
-                    bridge_closed=bridge_closed,
-                )
-                yield event
-        except (asyncio.CancelledError, GeneratorExit):
-            if not bridge_closed:
-                bridge_closed = _interrupt_agentscope_chat_bridge(  # 客户端断开时不能留下 running lease。
-                    db,
-                    context=agentscope_context,
-                    reason="问数链路已中断，已保留可恢复状态。",
-                )
-            raise
-        except Exception as exc:
-            if not bridge_closed:
-                bridge_closed = _fail_agentscope_chat_bridge(
-                    db,
-                    context=agentscope_context,
-                    error_summary=f"问数链路异常：{exc}",
-                    payload={"checkpoint_ref": payload.retry_checkpoint_ref},
-                )
-            raise
-        finally:
-            if not bridge_closed:
-                _fail_agentscope_chat_bridge(
-                    db,
-                    context=agentscope_context,
-                    error_summary=(
-                        "问数链路未完成 AgentScope 收口。"
-                        if final_seen
-                        else "问数链路未返回完成事件。"
-                    ),
-                    payload={"checkpoint_ref": payload.retry_checkpoint_ref},
-                )
-        return
-
-    store = ConversationStore(db)
-    business_session_id = session_key(payload.session_id, payload.conversation_id)
-    if business_session_id == "conversation-new":
-        business_session_id = f"request-{uuid.uuid4().hex[:16]}"
-    user_id = "1"
-    lock_owner = f"chat-{uuid.uuid4().hex[:12]}"
-    state = store.load_or_create(session_id=business_session_id, user_id=user_id)
-    lead_multiturn_context = store.lead_multiturn_context(state)
-    logger.info(
-        "[ConversationState] 读取会话状态: session_id=%s, summary=%s",
-        business_session_id,
-        json.dumps(
-            _summarize_conversation_state(state, lead_context=lead_multiturn_context),
-            ensure_ascii=False,
-            default=str,
-        ),
-    )
-    if not store.acquire_turn_lock(
-        session_id=business_session_id,
-        lock_owner=lock_owner,
-        ttl_seconds=settings.MULTITURN_LOCK_TTL_SECONDS,
-    ):
-        # 锁冲突会直接返回 final，不进入单轮链路；这里记录 owner 和 TTL 便于排查并发请求。
-        _log_chat_stream_checkpoint(
-            "turn_lock_rejected",
-            business_session_id=business_session_id,
-            lock_owner=lock_owner,
-            ttl_seconds=settings.MULTITURN_LOCK_TTL_SECONDS,
-        )
-        lock_payload = {
-            "type": "final",
-            "sql": None,
-            "sql_list": [],
-            "answer": "同一会话已有一轮问数正在处理中，请稍后再试。",
-            "entry_intent": "multiturn_lock",
-            "entry_route": "turn_pending",
-            "conversation_id": payload.conversation_id,
-        }
-        _attach_artifact_card_refs_to_final_payload(lock_payload, include_card=False)
-        _ = _fail_agentscope_chat_bridge(  # 锁冲突不会进入单轮链路，也必须关闭 mirror 中的 running assistant message。
-            db,
-            context=agentscope_context,
-            error_summary=str(lock_payload["answer"]),
-            payload=lock_payload,
-        )
-        lock_payload["thread_id"] = agentscope_context.thread_id
-        lock_event = _sse_data(
-            _with_event_envelope(
-                lock_payload,
-                event_type="error.blocked",
-                visibility="user_visible",
-                payload_fields=("answer", "entry_route", "primary_ref", "related_refs", "task_id", "trace_id"),
-            )
-        )
-        _record_agentscope_event_from_sse(db, agentscope_context, lock_event)
-        yield lock_event
-        return
-    # 锁获取成功后才解析 pending clarification，保证同一 session 只有一轮在改状态。
-    _log_chat_stream_checkpoint(
-        "turn_lock_acquired",
-        business_session_id=business_session_id,
-        lock_owner=lock_owner,
-        ttl_seconds=settings.MULTITURN_LOCK_TTL_SECONDS,
-    )
-
-    final_payload: dict | None = None
-    conversation_state_persisted = False
-    bridge_closed = False
-    trace_context_sink: list = []
-    subagent_control_plane_sink: list = []
-    effective_payload = payload
-    retry_restore = None
-    if payload.retry_checkpoint_ref:
-        retry_event = _retry_sse_event(
-            "retry.started",
-            checkpoint_ref=payload.retry_checkpoint_ref,
-        )
-        _record_agentscope_event_from_sse(db, agentscope_context, retry_event)  # retry 早期事件不经过单轮循环，必须在 yield 前补 mirror。
-        yield retry_event
-        retry_restore = store.restore_retry_checkpoint(
-            payload.retry_checkpoint_ref,
-            user_id=user_id,
-            conversation_id=payload.conversation_id,
-        )
-        if retry_restore.retry_scope == "last_safe_checkpoint":
-            restored_context = retry_restore.context or {}
-            lead_multiturn_context = dict(lead_multiturn_context or {})
-            lead_multiturn_context["retry_checkpoint"] = {
-                "checkpoint_ref": retry_restore.checkpoint_ref,
-                "checkpoint_kind": retry_restore.checkpoint_kind,
-                "task_id": retry_restore.task_id,
-                "retry_scope": retry_restore.retry_scope,
-            }
-            effective_payload = payload.model_copy(
-                update={
-                    "question": retry_restore.question or payload.question,
-                    "dataset_id": retry_restore.dataset_id or payload.dataset_id,
-                    "clarification_response": None,
-                }
-            )
-            _log_chat_stream_checkpoint(  # retry 恢复只写业务上下文，不回放 SQL/schema/control_plane。
-                "retry_checkpoint_restored",
-                business_session_id=business_session_id,
-                checkpoint_ref=retry_restore.checkpoint_ref,
-                checkpoint_kind=retry_restore.checkpoint_kind,
-                restored_dataset_id=retry_restore.dataset_id,
-                restored_context_keys=sorted(restored_context.keys()),
-            )
-            retry_event = _retry_sse_event(
-                "retry.checkpoint_restored",
-                checkpoint_ref=payload.retry_checkpoint_ref,
-                retry_scope=retry_restore.retry_scope,
-            )
-            _record_agentscope_event_from_sse(db, agentscope_context, retry_event)  # checkpoint 恢复成功要和最终 answer 共用同一 thread 追踪。
-            yield retry_event
-        else:
-            _log_chat_stream_checkpoint(  # checkpoint 失效时显式降级整任务，避免客户端误以为恢复成功。
-                "retry_fallback_to_whole_task",
-                business_session_id=business_session_id,
-                checkpoint_ref=payload.retry_checkpoint_ref,
-                reason=retry_restore.fallback_reason,
-            )
-            retry_event = _retry_sse_event(
-                "retry.fallback_to_whole_task",
-                checkpoint_ref=payload.retry_checkpoint_ref,
-                retry_scope=retry_restore.retry_scope,
-                reason=retry_restore.fallback_reason,
-            )
-            _record_agentscope_event_from_sse(db, agentscope_context, retry_event)  # 降级整任务也要持久化，避免 Workbench 误判恢复成功。
-            yield retry_event
-    if retry_restore and retry_restore.retry_scope == "last_safe_checkpoint":
-        pending_resolution = {"status": "none", "reason": "retry_checkpoint_restored"}
-    else:
-        pending_resolution = store.resolve_pending_clarification(
-            state,
-            question=payload.question,
-            clarification_response=payload.clarification_response,
-        )
-    logger.info(
-        "[ConversationState] 澄清解析结果: session_id=%s, pending_resolution=%s",
-        business_session_id,
-        json.dumps(pending_resolution, ensure_ascii=False, default=str),
-    )
-    if (
-        pending_resolution.get("status") == "resolved"
-        and pending_resolution.get("type") == "dataset"
-    ):
-        effective_payload = payload.model_copy(
-            update={
-                "dataset_id": int(pending_resolution["dataset_id"]),
-                "clarification_response": None,
-            }
-        )
-    elif pending_resolution.get("status") == "inject" and pending_resolution.get("type") == "term":
-        updates = {
-            "clarification_response": pending_resolution.get("clarification_response") or {},
-        }
-        if pending_resolution.get("conversation_id") and payload.conversation_id is None:
-            updates["conversation_id"] = int(pending_resolution["conversation_id"])
-        if pending_resolution.get("dataset_id") and payload.dataset_id is None:
-            updates["dataset_id"] = int(pending_resolution["dataset_id"])
-        effective_payload = payload.model_copy(update=updates)
-    try:
-        async for event in _stream_chat_singleturn_via_agentic_runtime(
-            effective_payload,
-            db,
-            settings=settings,
-            multiturn_context=lead_multiturn_context,
-            conversation_state=state,
-            conversation_store=store,
-            pending_resolution=pending_resolution,
-            observability_session_id=business_session_id,
-            trace_context_sink=trace_context_sink,
-            subagent_control_plane_sink=subagent_control_plane_sink,
-            defer_trace_close=True,
-        ):
-            data = event.get("data") if isinstance(event, dict) else None
-            if data:
-                try:
-                    parsed = json.loads(data)
-                    if parsed.get("type") == "final":
-                        final_payload = parsed
-                        _log_chat_stream_checkpoint(  # yield final 前的多轮状态写回触发点。
-                            "wrapper_final_seen",
-                            business_session_id=business_session_id,
-                            summary=_chat_stream_log_summary(final_payload),
-                        )
-                        try:
-                            conversation_state_persisted = _persist_completed_turn(  # 必须在 yield final 前写库。
-                                store=store,
-                                state=state,
-                                user_id=user_id,
-                                business_session_id=business_session_id,
-                                effective_payload=effective_payload,
-                                final_payload=final_payload,
-                                pending_resolution=pending_resolution,
-                                payload_question=payload.question,
-                                trace_context_sink=trace_context_sink,
-                                subagent_control_plane=(
-                                    subagent_control_plane_sink[0]
-                                    if subagent_control_plane_sink
-                                    else None
-                                ),
-                            )
-                        except Exception as persist_exc:  # noqa: BLE001
-                            logger.exception("[_stream_chat] 写入多轮状态失败: %s", persist_exc)
-                        if payload.retry_checkpoint_ref:
-                            if parsed.get("error"):
-                                retry_event = _retry_sse_event(
-                                    "retry.failed",
-                                    checkpoint_ref=payload.retry_checkpoint_ref,
-                                    reason=str(parsed.get("error")),
-                                )
-                            else:
-                                retry_event = _retry_sse_event(
-                                    "retry.completed",
-                                    checkpoint_ref=payload.retry_checkpoint_ref,
-                                )
-                            _record_agentscope_event_from_sse(db, agentscope_context, retry_event)  # retry 终态先落 mirror，再落最终 answer 事件。
-                            yield retry_event
-                        bridge_closed = _complete_agentscope_chat_bridge(
-                            db,
-                            context=agentscope_context,
-                            final_payload=parsed,
-                        )
-                        parsed["thread_id"] = agentscope_context.thread_id
-                        event = _sse_data(parsed)
-                except json.JSONDecodeError:
-                    pass
-                except Exception as bridge_exc:  # noqa: BLE001
-                    logger.warning("[AgentScopeBridge] 事件投影失败，不中断主链: %s", bridge_exc)
-            _record_agentscope_event_from_sse(db, agentscope_context, event)
-            yield event
-    finally:
-        if conversation_state_persisted and trace_context_sink:
-            tracer = get_observability_tracer()
-            tracer.close_trace(trace_context_sink[0])
-        if not conversation_state_persisted:
-            _log_chat_stream_checkpoint(
-                "wrapper_incomplete",
-                business_session_id=business_session_id,
-                final_seen=final_payload is not None,
-            )
-        if not bridge_closed:
-            _interrupt_agentscope_chat_bridge(
-                db,
-                context=agentscope_context,
-                reason="问数链路已中断，已保留可恢复状态。",
-            )
-        _log_chat_stream_checkpoint(  # finally 中留锁释放日志，避免会话长期 pending 难查。
-            "turn_lock_released",
-            business_session_id=business_session_id,
-            lock_owner=lock_owner,
-            completed=conversation_state_persisted,
-        )
-        store.release_turn_lock(session_id=business_session_id, lock_owner=lock_owner)  # 客户端断开也必须释放锁。
+    async for event in runtime.stream(payload):
+        yield event
 
 
 @router.post("/stream")

@@ -276,6 +276,48 @@ async def test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trac
     assert assistant_payloads[0]["trace_ref"] == "trace-parity"
 
 
+@pytest.mark.asyncio
+async def test_chat_stream_transport_adapter_delegates_to_runtime_service(db_session, monkeypatch):
+    from app.api import chat as chat_api
+
+    calls: list[dict] = []
+
+    class Settings:
+        MULTITURN_ENABLED = False
+        AS_R0_AGENTIC_RUNTIME_ENABLED = False
+        AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED = False
+
+    class SpyRuntime:
+        def __init__(self, *, db, settings, hooks):
+            calls.append(
+                {
+                    "db": db,
+                    "settings": settings,
+                    "has_stream_hook": callable(hooks.stream_singleturn_via_agentic_runtime),
+                    "has_mirror_hook": callable(hooks.mirror_agentscope_stream_event),
+                }
+            )
+
+        async def stream(self, payload):
+            yield {"data": json.dumps({"type": "final", "answer": payload.question}, ensure_ascii=False)}
+
+    settings = Settings()
+    monkeypatch.setattr("app.api.chat.get_settings", lambda: settings)
+    monkeypatch.setattr(chat_api, "DatalogueChatStreamRuntime", SpyRuntime)
+
+    events = [event async for event in chat_api._stream_chat(ChatRequest(question="adapter"), db_session)]
+
+    assert json.loads(events[0]["data"]) == {"type": "final", "answer": "adapter"}
+    assert calls == [
+        {
+            "db": db_session,
+            "settings": settings,
+            "has_stream_hook": True,
+            "has_mirror_hook": True,
+        }
+    ]
+
+
 def test_chat_request_accepts_agentscope_thread_id():
     request = ChatRequest(
         question="继续查询",

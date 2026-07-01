@@ -108,6 +108,7 @@
 - AS-R0 P0 Agentic Shell 契约层骨架建立：`DatalogueAgenticShell` 固定只启用 `bi_lead_agent`，Report/Python/Audit 作为 disabled placeholder；新增 BI 业务能力名、工具白名单、上下文投影、输出清洗和 `BIAtomicToolProvider` 安全目录摘要骨架，保留 `/chat/stream` 主链不替换。
 - AS-R0 P0 Runtime 边界适配建立：`DatalogueAgentScopeRuntimeDriver` 将 Shell turn contract 投影成 Runtime 可见安全契约，只包含 projected context、BI atomic tool registry、业务能力、disabled tools/agents，不启动真实 AgentScope runner、不调用旧 `ask_bi`。
 - AS-R0 P1-prep Chat Stream Runtime Shadow 建立：新增默认关闭的 `AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED`，开启后只把 Shell/Runtime boundary 安全摘要写入 AgentScope mirror metadata，不改变 SSE 输出和现有主链执行。
+- AS-R0 正式 PR 计划口径收口：`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md` 成为 PR0.1-PR0.4、PR1.1-PR1.5、P2.1-P2.4 唯一执行口径；任何新增或移动 scope 必须先进入 `Proposed Plan Changes` 等待用户审核。
 
 ## 高价值判断
 
@@ -118,14 +119,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 10:54 · AS-R0 正式 PR 计划口径收口
-
-- 涉及文件：`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`.codex/project-memory.md`
-- 关键改动：新增 AS-R0 正式 PR 计划文档，按用户确认的 PR0.1-PR0.4、PR1.1-PR1.5、PR2.1-PR2.4 作为唯一执行口径；把今天已完成的 commits 重新映射为 PR0 partial 或 P1-prep，废弃“P0.1/P0.2/P0.3”临时小刀命名。
-- 计划治理：新增 Plan Governance 与 Change Request Template，明确任何新增 PR、移动 scope 或提前实现后续阶段能力，都必须先写入 `Proposed Plan Changes` 并保持 `Pending User Review`，说明理由、影响、风险和回滚，等待用户审核后才能执行。
-- 验证方式：执行 `git diff --check` 通过；文档检查确认当前没有新增正式计划，只有已有提前实现项被标注为 `P1-prep`，不计入 PR0 完成。
-- 残留风险：该文档是计划口径治理，不补 PR0.1 的 C3 架构文档正文；下一步应按该文档先执行 PR0.1，更新 C3 foundation 与 Shell ownership 边界。
 
 ### 2026-07-01 11:05 · AS-R0 PR0.1 架构文档与迁移闸门
 
@@ -205,3 +198,12 @@
 - 安全边界：PR1.5 不默认开启新 runtime，不替换 DatasetAgent 主链，不把 P2 legacy 收敛提前；只把 PR1.1 已有 wrapper 行为固化为正式灰度验收闸门。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py::test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trace_contract -q`，1 条通过、2 个既有 warning；执行 AS-R0/chat 回归 `tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，45 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：P1 已完成；下一步 P2.1 要把 `_stream_chat` 收缩为 transport adapter，并把业务 turn lifecycle 从 `chat.py` 迁出。
+
+### 2026-07-01 11:48 · AS-R0 P2.1 `/chat/stream` transport adapter 收缩
+
+- 涉及文件：`datalogue-api/app/services/agentic_chat_runtime.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_agentscope_chat_bridge.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-p2-1.md`、`.codex/project-memory.md`
+- 关键改动：新增 `DatalogueChatStreamRuntime` 和 `DatalogueChatStreamRuntimeHooks`，把 `_stream_chat` 的单轮/多轮 wrapper lifecycle 迁出 `chat.py`；`chat.py` 现在只负责 settings、hook 装配和 SSE event 转发。
+- 安全边界：P2.1 不改 DatasetAgent 主链，不改用户可见 SSE payload，不处理 legacy `AgentScopeShellAdapter + ask_bi`；现有 mirror/retry/checkpoint/conversation state/observability helper 均通过 hooks 复用。
+- TDD 记录：先新增 transport adapter 委托测试并确认 RED 为 `app.api.chat` 缺少 `DatalogueChatStreamRuntime`；实现 service 后转 GREEN；回归发现 final 重复 yield 后修复为只输出补 thread_id 后的 final，同时保留 retry 终态前置事件顺序。
+- 验证方式：adapter 定向测试 1 条通过、2 个既有 warning；AS-R0/chat 回归 46 条通过、4 个既有 warning；Workbench/retry/observability 回归 15 条通过、14 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：P2.2 要继续收敛 `AgentScopeShellAdapter + BIWorkbenchTool(ask_bi)` legacy compatibility，不能让旧 adapter 继续拥有业务 runtime ownership。

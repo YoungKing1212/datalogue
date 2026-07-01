@@ -210,18 +210,19 @@
 | PR1.3 | Complete | DatasetAgent tool-call runtime 最小编排 + `docs/test-reports/2026-07-01-as-r0-pr1-3.md` | 后续 PR1.4 迁移 checkpoint/retry writer |
 | PR1.4 | Complete | Shell writer 接管 Workbench retry action 与 Chat SSE event 写回 + `docs/test-reports/2026-07-01-as-r0-pr1-4.md` | 后续 PR1.5 做双路径灰度 parity |
 | PR1.5 | Complete | 双路径灰度 parity harness + `docs/test-reports/2026-07-01-as-r0-pr1-5.md` | P1 已完成；后续进入 P2 收敛 legacy runtime |
-| PR2.1 - PR2.4 | Not started | None | 下一步进入 P2.1 |
+| P2.1 | Complete | `_stream_chat` transport adapter 收缩 + `docs/test-reports/2026-07-01-as-r0-p2-1.md` | 后续 P2.2 收敛 legacy adapter / `ask_bi` |
+| P2.2 - P2.4 | Not started | None | 下一步进入 P2.2 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. P2.1：把 `_stream_chat` 收缩为 transport adapter，业务 turn lifecycle 从 `chat.py` 迁走。
+1. P2.2：把 `AgentScopeShellAdapter + BIWorkbenchTool(ask_bi)` 标记为 legacy compatibility，或改造成调用 Agentic Shell 的薄 wrapper。
 
 优先级建议：
 
-1. 先识别 `chat.py` 中 transport、AgentScope mirror、业务 lifecycle 的边界。
-2. 再做最小 adapter 抽取，不改变旧 `/chat`、`/workbench`、retry harness 和 trace contract。
+1. 先补 legacy compatibility 测试，明确旧 adapter 不再拥有业务 runtime ownership。
+2. 再把 `ask_bi` 路径收束为调用 Agentic Shell 的薄 wrapper，或显式标注 legacy compatibility。
 
 ## 5.1 Completed Task Reports
 
@@ -345,6 +346,19 @@
 - `docs/test-reports/2026-07-01-as-r0-pr1-5.md`
 
 **Result:** 新增 runtime parity harness，在 `AS_R0_AGENTIC_RUNTIME_ENABLED=false/true` 下用同一 `_stream_chat` 请求验证 final payload 完全一致，并校验 AgentScope assistant message 的 `artifact_ref` 与 `trace_ref` 保持一致。PR1.5 不默认开启新 runtime，不替换 DatasetAgent 主链，只把 PR1.1 已有的 Shell wrapper 灰度路径固化为正式验收闸门。
+
+### P2.1: `/chat/stream` transport adapter 收缩
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/services/agentic_chat_runtime.py`
+- `datalogue-api/app/api/chat.py`
+- `datalogue-api/tests/test_agentscope_chat_bridge.py`
+- `docs/test-reports/2026-07-01-as-r0-p2-1.md`
+
+**Result:** 新增 `DatalogueChatStreamRuntime` 与 hook contract，把 `_stream_chat` 中的单轮/多轮 wrapper lifecycle 迁入 service；`chat.py` 只保留 settings 读取、hook 装配和 SSE event 转发。底层问数执行、AgentScope mirror projection、retry/checkpoint、conversation state persistence 和 observability helper 仍通过 hooks 复用，避免 P2.1 提前重写 BI 主链。
 
 ## 6. Proposed Plan Changes
 
