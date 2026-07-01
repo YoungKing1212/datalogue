@@ -32,48 +32,12 @@
 - 建立 Dataset SubAgent Manifest、LeadAgent 控制面工具/Planner、渐进式披露、多轮 ConversationStore/capsule/澄清恢复、ChatBI 思考过程和 Prompt 批量创建基础。
 - 持续修复入口分类、SSE 序列化、历史会话数据集绑定、术语澄清早退、LangGraph noop、工作日志页面链路、Manifest 展示和 assistant-ui 会话映射等早期问题。
 
-### 2026-06-15
+### 2026-06-15 至 2026-06-18 SubAgent/多轮/DSL 基础收口
 
-- 建立 SubAgent 查询规划层 v1/v2，增强规划质量和 Langfuse Trace。
-- 修复模型 Think 标签关闭后的流式泄露。
-- 前端与 Trace 节点名统一为原始节点名。
-- LLM 调用统一到 LiteLLM SDK，优化慢节点和日志明细正确性。
-- 收窄明细查询空 DSL 错误提示，加入 DSL 语义层提示词渐进式披露。
-- 建立 Thread Memory 与 QueryTaskCapsule，并支持明细追问上下文承接与写回。
-
-### 2026-06-16
-
-- SubAgent 与 DSL 消费 QueryTaskCapsule。
-- Message Gateway 与 QueryTaskCapsule SSE 可观测落地。
-- 修复日志明细模板 fallback 和 LiteLLM 流式报告。
-- 修复 assistant-ui 本地线程与后端会话 ID 映射。
-- 数据集选择后可恢复上一轮原问题执行。
-- LeadAgent Planner 输入投影 M1 灰度接入，并修复审查问题。
-
-### 2026-06-17
-
-- 建立 Agent 上下文轻量入口，清理启动上下文冗余。
-- LeadAgent 渐进式语义资产注入 Phase 2/3 接入。
-- 历史对话恢复 SQL 与执行结果展示。
-- 蓝图步骤结构化视图 T1。
-- `last_success_task` 最小承接快照与跨轮状态瘦身。
-- SubAgent Tool Adapter 双层出参分离。
-- 多轮结果 artifact、快速路径、ArtifactStore、fan-out、A2A Runner 基础落地。
-- 修复 `query_artifact` Alembic 幂等升级和 SubAgent/A2A/Artifact 层 review 阻塞问题。
-
-### 2026-06-18
-
-- SubAgent Planner 资产详情受控循环。
-- 修复 `last_success_task` 重复 `result_ref` 启动错误。
-- 打通 `query_artifacts` 到 ArtifactStore 的 DB 兜底闭环。
-- `last_success_task` token 预算配置化，并补充多轮配置示例。
-- 将推荐配置项运行时接入 `Settings` 和调用点。
-- 修复日志数据集姓名过滤追问、蓝图缺参抢占明细查询。
-- 增加 ConversationState 多轮状态排查日志。
-- LeadAgent 多轮追问抽象槽位修复，并同步本地 Prompt 到 Langfuse。
-- 在 planner 截断或非法 JSON 时保留多轮追问槽位。
-- 修复内联产物结果表格渲染。
-- 撤销从当前自然语言硬猜人名的 fallback；姓名优先来自结构化槽位或上一轮已确认过滤，时间类低风险槽位可保守归一化。
+- 建立 SubAgent 查询规划层 v1/v2、语义资产渐进式披露、DSL 提示词和 Langfuse Trace，统一 LiteLLM SDK 并修复 Think 标签泄露、慢节点日志和空 DSL 错误提示。
+- 建立 Thread Memory、QueryTaskCapsule、ConversationState、多轮槽位承接与 `last_success_task` 最小快照，支持明细追问、数据集选择后恢复原问题和 planner 截断/非法 JSON 时保留槽位。
+- 打通 SubAgent/DSL 消费 QueryTaskCapsule、Message Gateway SSE 可观测、历史对话 SQL/结果展示、蓝图结构化视图、ArtifactStore/query_artifacts DB 兜底、fan-out 和 A2A Runner 基础。
+- 收口日志明细模板 fallback、LiteLLM 流式报告、assistant-ui 本地线程映射、日志数据集姓名过滤追问、蓝图缺参抢占明细查询、内联产物表格渲染；撤销从当前自然语言硬猜人名的 fallback。
 
 ### 2026-06-20
 
@@ -139,6 +103,10 @@
 - C3-P2 PR2 Provider-neutral Observability Gate 将 `/api/observability/traces/{trace_id}` 收敛为 provider-neutral contract，统一断言 `workbench.retry_requested -> retry.started -> retry.checkpoint_restored -> dataset.query.completed -> answer.completed` 和关键 refs；自动化 harness 改为查询该 contract，不绑定 Langfuse 内部字段。
 - C3-P2 发布 Checklist 收口覆盖数据源容器、本地端口、浏览器 retry、自动化 harness、旧会话只读、隐藏 Workbench route 和 provider-neutral observability 发布口径；Langfuse UI 登录核对保留为人工 checklist，不把后端 API 成功写成 UI 通过。
 
+### 2026-07-01 AS-R0 P0/P1 初始接入
+
+- AS-R0 P0 Agentic Shell 契约层骨架建立：`DatalogueAgenticShell` 固定只启用 `bi_lead_agent`，Report/Python/Audit 作为 disabled placeholder；新增 BI 业务能力名、工具白名单、上下文投影、输出清洗和 `BIAtomicToolProvider` 安全目录摘要骨架，保留 `/chat/stream` 主链不替换。
+
 ## 高价值判断
 
 - Datalogue 当前业务链路不依赖 Redis 保存多轮业务状态；`last_success_task`、`conversation_state.subagent_capsules` 和 query artifacts 的真相在数据库或应用 ArtifactStore 路径，Langfuse/BullMQ Redis key 不能当成业务状态依据。
@@ -148,15 +116,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 10:21 · AS-R0 P0 Agentic Shell 契约层骨架
-
-- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`.codex/project-memory.md`
-- 关键改动：新增 `DatalogueAgenticShell` AS-R0 契约层，固定 registry 只启用 `bi_lead_agent`，`report_agent/python_agent/audit_agent` 作为 disabled placeholder；新增 AS-R0 BI 业务能力名、当前可注册工具白名单、reserved/disabled 工具列表、上下文投影和 fail-closed 输出清洗；新增 `BIAtomicToolProvider` 安全骨架，提供 `get_dataset_status`、`list_candidate_assets`、artifact ref 写入与 artifact 摘要能力，其中 `list_candidate_assets` 第一阶段不使用 question 召回，只返回 blueprint/metric/dimension/metadata_schema_summary 安全目录摘要。
-- 安全边界：本阶段不替换 `/chat/stream`，不修改旧 `AgentScopeShellAdapter` 的 C3 外层验证线；SQL、schema 全量、raw rows、query_plan、repair_patch 和 blueprint 主体仍禁止进入 Agent 上下文，DatasetAgent 后续只能生成 DSL，不能让 Agent 直接生成最终可执行 SQL。
-- TDD 记录：先新增 `test_agentic_shell_contract.py` 并确认 RED 为 `ModuleNotFoundError: No module named 'app.services.agentic_bi_tools'`；实现契约后暴露 `ProjectedContext` 空字段 dump 和 blueprint 摘要被清洗的问题，分别补默认 `exclude_none` 与上下文/输出禁用键拆分后转 GREEN；review 后补 camelCase `queryPlan/repairPatch`、`rows`、`fields` 和物理字段串脱敏断言，并把未实现的 compile/execute/create artifact 从当前 runtime allowed tools 移到 reserved/disabled。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py -q`，4 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，5 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/agentic_shell.py app/services/agentic_bi_tools.py tests/test_agentic_shell_contract.py` 通过；执行 `git diff --check` 通过。
-- 残留风险：AS-R0 P0 当前只是契约层和安全 provider 骨架，尚未把 `/chat/stream` 主链迁到 AgentScope Runtime 驱动；`compile_dsl_to_sql`、`execute_compiled_query`、`repair_dsl` 等仍需在后续 P0/P1 中接入 DatasetAgent Runtime 的真实受控工具实现。
 
 ### 2026-07-01 10:31 · AS-R0 P0 Runtime 边界适配契约
 
@@ -236,3 +195,12 @@
 - TDD 记录：先写 Shell 能力路由测试并确认 RED 为 `DatalogueAgenticShell` 缺少 `route_agent_action`；实现 Shell action contract 后转 GREEN；再写 Runtime boundary action 测试并确认 RED 为缺少 `lead_agent_action` 字段，接入后转 GREEN。
 - 验证方式：执行 Shell 定向测试 2 条通过、driver 定向测试 2 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py -q`，33 条通过、4 个既有 warning；执行正式计划最小回归 `tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，38 条通过、4 个既有 warning；执行安全矩阵回归 `tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，11 条通过、2 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：PR1.2 只定义 LeadAgent action routing，不执行 DatasetAgent 原子工具链；`get_dataset_status -> list_candidate_assets -> DSL -> compile -> execute -> artifact summary` 编排留给 PR1.3。
+
+### 2026-07-01 11:48 · AS-R0 PR1.3 DatasetAgent tool-call runtime
+
+- 涉及文件：`datalogue-api/app/services/agentic_dataset_runtime.py`、`datalogue-api/tests/test_agentic_dataset_runtime.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-3.md`、`.codex/project-memory.md`
+- 关键改动：新增 `DatasetAgentToolCallRuntime`，固定串联 `get_dataset_status -> list_candidate_assets -> generate_dsl -> compile_dsl_to_sql -> execute_compiled_query -> get_artifact_summary`；DSL generator 通过注入提供结构化 `QueryPlan` 或 dict，后续可替换为真实 DatasetAgent DSL planner；Runtime 不新增 `plan_bi_query` 黑盒。
+- 安全边界：SQL 只在 `BIAtomicToolProvider` private compiled handle 和 execute 工具内部流转；execute 结果写入 ArtifactStore，Runtime 用户/Agent 可见响应只含 artifact ref、row/column count、artifact summary 和清洗后的 tool call 状态，不回传 SQL、schema、raw rows、query_plan、RepairPatch、blueprint body、物理表字段或结果行。
+- TDD 记录：先新增 PR1.3 runtime 测试并确认 RED 为缺少 `app.services.agentic_dataset_runtime`；实现最小编排后转 GREEN，覆盖成功链路和 compile 失败不调用 execute。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_dataset_runtime.py -q`，2 条通过、2 个既有 warning；执行 AS-R0 最小回归 `tests/test_agentic_dataset_runtime.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，40 条通过、4 个既有 warning；执行安全矩阵回归 `tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，11 条通过、2 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：PR1.3 尚未把 `/chat/stream` 最终灰度切到新 DatasetAgent runtime；checkpoint/retry writer 迁移和双路径 parity 分别留给 PR1.4、PR1.5。

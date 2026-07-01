@@ -207,19 +207,20 @@
 | PR0.4 | Complete | AS-R0 security matrix commit | PR0 已完成；后续在 P1 新 runtime 下继续沿用矩阵 |
 | PR1.1 | Complete | Runtime adapter 接管入口提交 + `docs/test-reports/2026-07-01-as-r0-pr1-1.md` | 后续 PR1.2 接入 BI LeadAgent Shell 能力路由 |
 | PR1.2 | Complete | Shell/Runtime boundary 均携带 BI LeadAgent action contract + `docs/test-reports/2026-07-01-as-r0-pr1-2.md` | 后续 PR1.3 用原子 tools 串 DatasetAgent tool-call runtime |
-| PR1.3 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.3 DatasetAgent tool-call runtime |
+| PR1.3 | Complete | DatasetAgent tool-call runtime 最小编排 + `docs/test-reports/2026-07-01-as-r0-pr1-3.md` | 后续 PR1.4 迁移 checkpoint/retry writer |
+| PR1.4 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.4 checkpoint/retry 迁移 |
 | PR2.1 - PR2.4 | Not started | None | 等 P1 验收后再进入 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. PR1.3：DatasetAgent tool-call runtime，用原子 tools 串起 `get_dataset_status -> list_candidate_assets -> DSL -> compile -> execute -> artifact summary`。
+1. PR1.4：checkpoint/retry 迁移，Workbench retry 调 Shell action，Shell 写 `retry.started/checkpoint_restored/dataset.query.completed/answer.completed`。
 
 优先级建议：
 
-1. 先补 tool-call runtime 的 contract 测试，证明链路只通过 BI atomic tools 流转。
-2. 再实现最小编排，不暴露 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body。
+1. 先补 Shell writer 与 Workbench retry 事件序列的 contract 测试。
+2. 再把 retry started/checkpoint restored/dataset completed/answer completed 写入 Shell writer，同时保持 provider-neutral observability contract。
 
 ## 5.1 Completed Task Reports
 
@@ -306,6 +307,18 @@
 - `docs/test-reports/2026-07-01-as-r0-pr1-2.md`
 
 **Result:** Shell 新增 `AgenticShellAction` 与 `route_agent_action()`，BI LeadAgent 只返回 `query_dataset` / `query_multiple_datasets` 两个能力路由；请求非白名单能力时返回 disabled action。ReportAgent、PythonAgent、AuditAgent 仍是 disabled placeholder，并显式返回 `agent_disabled_placeholder` action。AgentScope Runtime boundary 同步携带 `lead_agent_action`，让 P1 后续 runner 接入前能看到 ready/disabled 的统一 action contract。
+
+### PR1.3: DatasetAgent tool-call runtime
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/services/agentic_dataset_runtime.py`
+- `datalogue-api/tests/test_agentic_dataset_runtime.py`
+- `docs/test-reports/2026-07-01-as-r0-pr1-3.md`
+
+**Result:** 新增 `DatasetAgentToolCallRuntime`，按固定顺序串联 `get_dataset_status -> list_candidate_assets -> generate_dsl -> compile_dsl_to_sql -> execute_compiled_query -> get_artifact_summary`。DSL 由注入的 generator 产生结构化 `QueryPlan` 或 dict；SQL 只在 `BIAtomicToolProvider` 的 private compiled handle 内流转；execute 结果写 artifact，Runtime 返回 artifact ref、row/column count 和 artifact summary，不返回 SQL、schema、raw rows、query_plan 或字段明细。compile 失败时 fail-closed，不调用 execute。
 
 ## 6. Proposed Plan Changes
 
