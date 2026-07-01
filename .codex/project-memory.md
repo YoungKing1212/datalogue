@@ -212,3 +212,12 @@
 - 发布边界：自动化闸门以 `/api/observability/traces/{trace_id}` 的 `observability_contract` 为准，不绑定 Langfuse 内部字段名；Langfuse UI 登录核对保留为发布前人工 checklist，无权限时必须记录未完成，不能把后端 API 成功写成 UI 通过。
 - 验证方式：执行 `git diff --check` 通过；文档检查确认“最新详细记录”保持 10 条，较早 C3-P0 真实浏览器 E2E 记录已压缩进历史压缩记录。
 - 残留风险：本次是文档和项目记忆收口，不重新运行浏览器 retry 或自动化测试；发布前仍需按 checklist 逐项补 owner/status 和真实环境证据。
+
+### 2026-07-01 10:21 · AS-R0 P0 Agentic Shell 契约层骨架
+
+- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`.codex/project-memory.md`
+- 关键改动：新增 `DatalogueAgenticShell` AS-R0 契约层，固定 registry 只启用 `bi_lead_agent`，`report_agent/python_agent/audit_agent` 作为 disabled placeholder；新增 AS-R0 BI 业务能力名、当前可注册工具白名单、reserved/disabled 工具列表、上下文投影和 fail-closed 输出清洗；新增 `BIAtomicToolProvider` 安全骨架，提供 `get_dataset_status`、`list_candidate_assets`、artifact ref 写入与 artifact 摘要能力，其中 `list_candidate_assets` 第一阶段不使用 question 召回，只返回 blueprint/metric/dimension/metadata_schema_summary 安全目录摘要。
+- 安全边界：本阶段不替换 `/chat/stream`，不修改旧 `AgentScopeShellAdapter` 的 C3 外层验证线；SQL、schema 全量、raw rows、query_plan、repair_patch 和 blueprint 主体仍禁止进入 Agent 上下文，DatasetAgent 后续只能生成 DSL，不能让 Agent 直接生成最终可执行 SQL。
+- TDD 记录：先新增 `test_agentic_shell_contract.py` 并确认 RED 为 `ModuleNotFoundError: No module named 'app.services.agentic_bi_tools'`；实现契约后暴露 `ProjectedContext` 空字段 dump 和 blueprint 摘要被清洗的问题，分别补默认 `exclude_none` 与上下文/输出禁用键拆分后转 GREEN；review 后补 camelCase `queryPlan/repairPatch`、`rows`、`fields` 和物理字段串脱敏断言，并把未实现的 compile/execute/create artifact 从当前 runtime allowed tools 移到 reserved/disabled。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py -q`，4 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，5 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/agentic_shell.py app/services/agentic_bi_tools.py tests/test_agentic_shell_contract.py` 通过；执行 `git diff --check` 通过。
+- 残留风险：AS-R0 P0 当前只是契约层和安全 provider 骨架，尚未把 `/chat/stream` 主链迁到 AgentScope Runtime 驱动；`compile_dsl_to_sql`、`execute_compiled_query`、`repair_dsl` 等仍需在后续 P0/P1 中接入 DatasetAgent Runtime 的真实受控工具实现。
