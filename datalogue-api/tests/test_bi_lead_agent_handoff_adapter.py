@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from agentscope.message import Msg
 
 from app.schemas.bi_lead_agent import BILeadAgentHandoffRequest
 from app.services.bi_lead_agent.handoff_adapter import DatalogueBIHandoffAdapter
@@ -39,7 +40,9 @@ class FakeBridge:
         self.msg = msg
         self.session = session
         if self.fail:
-            raise RuntimeError("dataset agent exploded")
+            raise RuntimeError(
+                "dataset agent exploded: SELECT * FROM secret_orders schema_context compiled_query_ref raw_rows"
+            )
         return self.events
 
     async def run_direct_query(self, **_kwargs: Any) -> dict[str, Any]:
@@ -101,6 +104,8 @@ async def test_query_dataset_uses_run_reply_stream_and_never_direct_query() -> N
         "agent_name": "bi_lead_agent",
         "trace_id": "trace-bi-k1-handoff",
     }
+    assert isinstance(bridge.msg, Msg)
+    assert bridge.msg.name == "user"
     assert factory.sessions == [bridge.session]
     assert result.handoff_id.startswith("handoff-")
     assert result.child_run_id.startswith("dataset-run-")
@@ -189,4 +194,13 @@ async def test_query_dataset_returns_failed_result_when_agentscope_dataset_agent
     assert bridge.run_direct_query_called is False
     assert result.handoff_status == "failed"
     assert result.error_code == "AGENTSCOPE_DATASET_AGENT_FAILED"
-    assert "dataset agent exploded" in (result.error_summary or "")
+    assert result.error_summary == "DatasetAgent 执行失败，已停止 handoff。"
+    payload_json = result.model_dump_json()
+    for forbidden in (
+        "dataset agent exploded",
+        "SELECT * FROM secret_orders",
+        "schema_context",
+        "compiled_query_ref",
+        "raw_rows",
+    ):
+        assert forbidden not in payload_json

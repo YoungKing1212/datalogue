@@ -14,13 +14,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterable
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from agentscope.message import TextBlock, ToolResultBlock
+from agentscope.message import TextBlock, ToolResultBlock, UserMsg
 
 from app.schemas.bi_lead_agent import BILeadAgentHandoffRequest, BILeadAgentHandoffResult
 from app.services.agentic_shell import DatalogueAgenticShell
@@ -43,6 +44,9 @@ _ALLOWED_EVENT_FIELDS = {
 }
 _COMPLETED_STATUSES = {"completed", "ready"}
 _BLOCKED_STATUSES = {"blocked", "failed", "cancelled"}
+_SAFE_DATASET_AGENT_FAILURE_SUMMARY = "DatasetAgent 执行失败，已停止 handoff。"
+
+logger = logging.getLogger(__name__)
 
 
 def _new_prefixed_id(prefix: str) -> str:
@@ -109,7 +113,8 @@ class DatalogueBIHandoffAdapter:
                 error_code=self._safe_str(safe_payload.get("error_code")),
                 error_summary=self._safe_str(safe_payload.get("error_summary")),
             )
-        except Exception as exc:
+        except Exception:
+            logger.exception("BI LeadAgent handoff failed while running AgentScope DatasetAgent.")
             return BILeadAgentHandoffResult(
                 handoff_id=handoff_id,
                 child_run_id=child_run_id,
@@ -119,7 +124,7 @@ class DatalogueBIHandoffAdapter:
                 handoff_status="failed",
                 status_reason="agentscope_dataset_agent_failed",
                 error_code="AGENTSCOPE_DATASET_AGENT_FAILED",
-                error_summary=str(exc),
+                error_summary=_SAFE_DATASET_AGENT_FAILURE_SUMMARY,
             )
 
     @staticmethod
@@ -128,7 +133,7 @@ class DatalogueBIHandoffAdapter:
         request: BILeadAgentHandoffRequest,
         handoff_id: str,
         child_run_id: str,
-    ) -> dict[str, str]:
+    ) -> Any:
         content = (
             "请执行 BI LeadAgent 已确认的数据集任务。\n"
             f"handoff_id: {handoff_id}\n"
@@ -139,7 +144,7 @@ class DatalogueBIHandoffAdapter:
             f"routing_rationale: {request.routing_rationale}\n"
             "只能通过 external tools 完成查询，最终只返回安全摘要和引用字段。"
         )
-        return {"role": "user", "content": content}
+        return UserMsg(name="user", content=content)
 
     def _extract_safe_payload(self, *, events: list[Any], session: Any) -> dict[str, Any]:
         safe_payload: dict[str, Any] = {}
