@@ -1,10 +1,11 @@
 # ============================================================
 # File Name   : agentscope_shell_adapter.py
 # Description:
-#   AgentScope Shell Adapter 最小验证外壳。
+#   AgentScope Shell Adapter legacy compatibility 外壳。
 #
 # Responsibilities:
-#   - 固定第一阶段 AgentScope 可见工具白名单，只允许 ask_bi。
+#   - 标记旧 AgentScopeShellAdapter 为 legacy compatibility，不再声明主 Runtime ownership。
+#   - 固定兼容层 AgentScope 可见工具白名单，只允许 ask_bi。
 #   - 通过 BIWorkbenchTool 获取安全外层契约，不访问 schema、SQL、数据库或 control_plane。
 #   - 作为后端 service 内部验证线存在，不开放公开 API、不接前端入口、不启动 runner。
 #
@@ -25,6 +26,21 @@ from app.services.bi_workbench_tool import ask_bi
 
 
 ALLOWED_AGENTSCOPE_TOOLS = {"ask_bi"}
+LEGACY_COMPATIBILITY_MODE = "legacy_compatibility"
+AGENTIC_RUNTIME_OWNER = "datalogue_agentic_shell"
+
+
+class AgentScopeLegacyCompatibilityContract(BaseModel):
+    """P2.2 legacy adapter 标记；旧 ask_bi 外壳不再拥有业务 runtime。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    compatibility_mode: str = LEGACY_COMPATIBILITY_MODE
+    runtime_owner: str = AGENTIC_RUNTIME_OWNER
+    owns_business_runtime: bool = False
+    legacy_tool_name: str = "ask_bi"
+    allowed_tools: list[str] = Field(default_factory=lambda: ["ask_bi"])
+    replacement_boundary: str = "DatalogueAgenticShell + BI atomic tools"
 
 
 class AgentScopeShellResponse(BaseModel):
@@ -44,7 +60,7 @@ class AgentScopeShellResponse(BaseModel):
 
 
 class AgentScopeShellAdapter:
-    """AgentScope 外层 Shell 的最小验证入口；不导入或启动 AgentScope runtime。"""
+    """旧 AgentScope 外层 Shell 兼容入口；不导入或启动 AgentScope runtime。"""
 
     def __init__(
         self,
@@ -61,6 +77,11 @@ class AgentScopeShellAdapter:
             raise ValueError("AgentScope Shell first phase must expose exactly ['ask_bi']")
         self.ask_bi_func = ask_bi_func or ask_bi
         self.event_adapter = event_adapter or AgentScopeEventAdapter()
+
+    def compatibility_contract(self) -> AgentScopeLegacyCompatibilityContract:
+        """声明旧 adapter 只是兼容壳，真实 runtime ownership 已迁到 Agentic Shell。"""
+
+        return AgentScopeLegacyCompatibilityContract(allowed_tools=list(self.allowed_tools))
 
     async def run(
         self,

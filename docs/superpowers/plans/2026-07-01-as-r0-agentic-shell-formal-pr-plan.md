@@ -211,18 +211,19 @@
 | PR1.4 | Complete | Shell writer 接管 Workbench retry action 与 Chat SSE event 写回 + `docs/test-reports/2026-07-01-as-r0-pr1-4.md` | 后续 PR1.5 做双路径灰度 parity |
 | PR1.5 | Complete | 双路径灰度 parity harness + `docs/test-reports/2026-07-01-as-r0-pr1-5.md` | P1 已完成；后续进入 P2 收敛 legacy runtime |
 | P2.1 | Complete | `_stream_chat` transport adapter 收缩 + `docs/test-reports/2026-07-01-as-r0-p2-1.md` | 后续 P2.2 收敛 legacy adapter / `ask_bi` |
-| P2.2 - P2.4 | Not started | None | 下一步进入 P2.2 |
+| P2.2 | Complete | legacy adapter / `ask_bi` compatibility contract + `docs/test-reports/2026-07-01-as-r0-p2-2.md` | 后续 P2.3 接入 future tools disabled/admin-gated contract |
+| P2.3 - P2.4 | Not started | None | 下一步进入 P2.3 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. P2.2：把 `AgentScopeShellAdapter + BIWorkbenchTool(ask_bi)` 标记为 legacy compatibility，或改造成调用 Agentic Shell 的薄 wrapper。
+1. P2.3：接入后续 tools：`repair_dsl`、`classify_query_failure`、`create_report_from_artifact`、`run_sandboxed_analysis_on_artifact`，默认 disabled 或 admin-gated。
 
 优先级建议：
 
-1. 先补 legacy compatibility 测试，明确旧 adapter 不再拥有业务 runtime ownership。
-2. 再把 `ask_bi` 路径收束为调用 Agentic Shell 的薄 wrapper，或显式标注 legacy compatibility。
+1. 先补 future tool policy 测试，确认这些工具不会默认进入 AS-R0 allowed tool registry。
+2. 再补 disabled/admin-gated contract，避免未来工具被 Runtime 误执行。
 
 ## 5.1 Completed Task Reports
 
@@ -359,6 +360,24 @@
 - `docs/test-reports/2026-07-01-as-r0-p2-1.md`
 
 **Result:** 新增 `DatalogueChatStreamRuntime` 与 hook contract，把 `_stream_chat` 中的单轮/多轮 wrapper lifecycle 迁入 service；`chat.py` 只保留 settings 读取、hook 装配和 SSE event 转发。底层问数执行、AgentScope mirror projection、retry/checkpoint、conversation state persistence 和 observability helper 仍通过 hooks 复用，避免 P2.1 提前重写 BI 主链。
+
+### P2.2: legacy adapter / `ask_bi` compatibility 收敛
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/services/agentscope_shell_adapter.py`
+- `datalogue-api/app/services/bi_workbench_tool.py`
+- `datalogue-api/app/services/soul_contract_sync.py`
+- `datalogue-api/app/contracts/BI_SOUL.md`
+- `hermes-skills/datalogue/SOUL.md`
+- `datalogue-api/tests/test_agentscope_shell_adapter.py`
+- `datalogue-api/tests/test_bi_workbench_tool.py`
+- `datalogue-api/tests/test_bi_soul_contract.py`
+- `docs/test-reports/2026-07-01-as-r0-p2-2.md`
+
+**Result:** `AgentScopeShellAdapter` 与 `BIWorkbenchTool` 均新增 compatibility contract，显式声明 `compatibility_mode=legacy_compatibility`、`runtime_owner=datalogue_agentic_shell`、`owns_business_runtime=false`。BI_SOUL、Hermes SOUL 和渲染 policy 同步更新为 P2 口径：legacy `ask_bi` 只作为兼容入口，不再作为 AS-R0 新主链工具。
 
 ## 6. Proposed Plan Changes
 

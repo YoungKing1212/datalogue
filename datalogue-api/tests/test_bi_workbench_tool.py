@@ -16,7 +16,7 @@ import json
 import pytest
 
 from app.schemas.bi_workbench import AskBIRequest
-from app.services.bi_workbench_tool import ask_bi
+from app.services.bi_workbench_tool import BIWorkbenchTool, ask_bi
 
 
 def _sse(payload: dict):
@@ -112,3 +112,12 @@ async def test_ask_bi_maps_clarification_to_waiting_user_status():
     assert response.error is None
     assert response.event_envelope.event_type == "clarification.required"
     assert response.candidate_datasets == [{"dataset_id": 7, "name": "销售"}]
+
+
+def test_bi_workbench_tool_marks_ask_bi_as_legacy_compatibility():
+    contract = BIWorkbenchTool().compatibility_contract()
+
+    assert contract["compatibility_mode"] == "legacy_compatibility"
+    assert contract["runtime_owner"] == "datalogue_agentic_shell"
+    assert contract["owns_business_runtime"] is False
+    assert contract["tool_name"] == "ask_bi"

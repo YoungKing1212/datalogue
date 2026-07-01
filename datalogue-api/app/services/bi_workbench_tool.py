@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : bi_workbench_tool.py
 # Description:
-#   ask_bi / BIWorkbenchTool 最小稳定入口。
+#   ask_bi / BIWorkbenchTool legacy compatibility 入口。
 #
 # Responsibilities:
-#   - 为外层 Agentic Shell、ReportAgent、PythonAgent、AuditAgent 提供唯一 BI 调用入口。
-#   - 第一阶段复用现有 Chat / LeadAgent / DatasetAgent 主链，只做协议收敛和防泄露适配。
+#   - 标记 ask_bi 为旧外层兼容工具，不再声明 AS-R0 主 Runtime ownership。
+#   - 复用现有 Chat / LeadAgent / DatasetAgent 主链，只做协议收敛和防泄露适配。
 #   - 将 SQL、schema、capsule、control_plane 留在后端内部，不进入用户可见响应。
 #
 # Author      : yangkai
@@ -49,6 +49,8 @@ _WAITING_ROUTES = {
     "dataset_select",
     "turn_pending",
 }
+LEGACY_COMPATIBILITY_MODE = "legacy_compatibility"
+AGENTIC_RUNTIME_OWNER = "datalogue_agentic_shell"
 
 
 class BIWorkbenchTool:
@@ -115,6 +117,17 @@ class BIWorkbenchTool:
         from app.api.chat import _stream_chat
 
         return _stream_chat
+
+    def compatibility_contract(self) -> dict[str, Any]:
+        """声明 ask_bi 只保留为兼容工具；新主链 ownership 属于 Agentic Shell。"""
+
+        return {
+            "compatibility_mode": LEGACY_COMPATIBILITY_MODE,
+            "runtime_owner": AGENTIC_RUNTIME_OWNER,
+            "owns_business_runtime": False,
+            "tool_name": "ask_bi",
+            "replacement_boundary": "DatalogueAgenticShell + BI atomic tools",
+        }
 
     def _build_chat_request(self, request: AskBIRequest) -> ChatRequest:
         options = request.request_options if isinstance(request.request_options, dict) else {}

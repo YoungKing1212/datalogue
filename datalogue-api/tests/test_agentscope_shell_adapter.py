@@ -68,6 +68,18 @@ async def test_agentscope_shell_adapter_only_calls_ask_bi():
     assert "schema" not in dumped
 
 
+def test_agentscope_shell_adapter_is_legacy_compatibility_not_runtime_owner():
+    adapter = AgentScopeShellAdapter()
+
+    contract = adapter.compatibility_contract()
+
+    assert contract.compatibility_mode == "legacy_compatibility"
+    assert contract.runtime_owner == "datalogue_agentic_shell"
+    assert contract.owns_business_runtime is False
+    assert contract.legacy_tool_name == "ask_bi"
+    assert contract.allowed_tools == ["ask_bi"]
+
+
 def test_agentscope_shell_adapter_rejects_extra_tools():
     with pytest.raises(ValueError):
         AgentScopeShellAdapter(allowed_tools=["ask_bi", "schema"])

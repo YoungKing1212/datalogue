@@ -109,6 +109,7 @@
 - AS-R0 P0 Runtime 边界适配建立：`DatalogueAgentScopeRuntimeDriver` 将 Shell turn contract 投影成 Runtime 可见安全契约，只包含 projected context、BI atomic tool registry、业务能力、disabled tools/agents，不启动真实 AgentScope runner、不调用旧 `ask_bi`。
 - AS-R0 P1-prep Chat Stream Runtime Shadow 建立：新增默认关闭的 `AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED`，开启后只把 Shell/Runtime boundary 安全摘要写入 AgentScope mirror metadata，不改变 SSE 输出和现有主链执行。
 - AS-R0 正式 PR 计划口径收口：`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md` 成为 PR0.1-PR0.4、PR1.1-PR1.5、P2.1-P2.4 唯一执行口径；任何新增或移动 scope 必须先进入 `Proposed Plan Changes` 等待用户审核。
+- AS-R0 PR0.1 架构文档与迁移闸门完成：C3 Workbench / mirror 被明确标注为 AS-R0 foundation，不是 AgentScope Runtime ownership 完成态；P0/P1/P2 迁移闸门和禁暴露边界进入 C3 架构文档、spec、计划和验收记录。
 
 ## 高价值判断
 
@@ -119,14 +120,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 11:05 · AS-R0 PR0.1 架构文档与迁移闸门
-
-- 涉及文件：`docs/architecture/C3-AgentScope-Workbench-产品化设计.md`、`docs/superpowers/specs/2026-06-30-c3-agentscope-workbench-design.md`、`docs/superpowers/plans/2026-06-30-c3-agentscope-workbench-p0.md`、`docs/superpowers/plans/2026-06-30-c3-p2-workbench-productization.md`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr0-1.md`、`.codex/project-memory.md`
-- 关键改动：把 C3 Workbench / AgentScope-compatible mirror 明确标注为 AS-R0 foundation，而不是 AgentScope Runtime ownership 完成态；补充 AS-R0 迁移闸门，明确 P0 只做 Shell Contract 与 Tool Boundary，不替换 `/chat/stream`，P1 才开始 `DatalogueAgenticShell.run_turn()` runtime ownership 迁移，P2 才收敛 legacy runtime 和扩展业务 Agent。
-- 安全边界：文档明确 C3 mirror 只承接会话、消息、事件、refs、Workbench View Model、retry 回放和审计兜底；不启动 AgentScope runner，不让 AgentScope 生成 SQL，不让 AgentScope 读取 schema、raw rows、query_plan 或 trace-only metadata。
-- 验证方式：执行 PR0.1 文档口径扫描、AS-R0 最小 pytest/py_compile 和 `git diff --check`；测试报告记录在 `docs/test-reports/2026-07-01-as-r0-pr0-1.md`。
-- 残留风险：PR0.1 只收口文档与迁移闸门，不补 PR0.2 writer interface、PR0.3 atomic provider 真实工具缺口或 PR0.4 安全测试矩阵。
 
 ### 2026-07-01 11:18 · AS-R0 PR0.2 Agentic Shell Writer 接口
 
@@ -207,3 +200,12 @@
 - TDD 记录：先新增 transport adapter 委托测试并确认 RED 为 `app.api.chat` 缺少 `DatalogueChatStreamRuntime`；实现 service 后转 GREEN；回归发现 final 重复 yield 后修复为只输出补 thread_id 后的 final，同时保留 retry 终态前置事件顺序。
 - 验证方式：adapter 定向测试 1 条通过、2 个既有 warning；AS-R0/chat 回归 46 条通过、4 个既有 warning；Workbench/retry/observability 回归 15 条通过、14 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：P2.2 要继续收敛 `AgentScopeShellAdapter + BIWorkbenchTool(ask_bi)` legacy compatibility，不能让旧 adapter 继续拥有业务 runtime ownership。
+
+### 2026-07-01 11:48 · AS-R0 P2.2 legacy adapter / ask_bi compatibility 收敛
+
+- 涉及文件：`datalogue-api/app/services/agentscope_shell_adapter.py`、`datalogue-api/app/services/bi_workbench_tool.py`、`datalogue-api/app/services/soul_contract_sync.py`、`datalogue-api/app/contracts/BI_SOUL.md`、`hermes-skills/datalogue/SOUL.md`、`datalogue-api/tests/test_agentscope_shell_adapter.py`、`datalogue-api/tests/test_bi_workbench_tool.py`、`datalogue-api/tests/test_bi_soul_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-p2-2.md`、`.codex/project-memory.md`
+- 关键改动：`AgentScopeShellAdapter` 与 `BIWorkbenchTool` 新增 compatibility contract，显式声明 `compatibility_mode=legacy_compatibility`、`runtime_owner=datalogue_agentic_shell`、`owns_business_runtime=false`。
+- 安全边界：legacy `ask_bi` 不再作为 AS-R0 新主链工具，不加回 BI atomic tool whitelist；BI_SOUL、Hermes SOUL 和 AgentScope policy renderer 同步改为 legacy compatibility 口径。
+- TDD 记录：先新增 adapter/tool compatibility contract 测试并确认 RED 为缺少 `compatibility_contract()`；实现 contract 后转 GREEN，并同步更新 BI_SOUL 同步测试。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py tests/test_bi_soul_contract.py tests/test_agentscope_runtime_driver_contract.py -q`，14 条通过、2 个既有 warning；AS-R0 最小回归 42 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：P2.3 要接入 future tools disabled/admin-gated contract，避免 repair/report/python 类工具被 Runtime 误执行。
