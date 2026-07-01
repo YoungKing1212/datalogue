@@ -23,6 +23,7 @@ from app.schemas.bi_lead_agent import (
     CreateBILeadAgentRunRequest,
 )
 from app.services.bi_lead_agent.confirmation_service import BILeadAgentConfirmationService
+from app.services.bi_lead_agent.handoff_service import BIHandoffService
 from app.services.bi_lead_agent.run_service import BILeadAgentRunService
 
 router = APIRouter()
@@ -93,6 +94,20 @@ def get_bi_lead_agent_run(
     """读取 LeadAgent run 安全视图。"""
 
     try:
+        return BILeadAgentRunService(db).get_response(run_id)
+    except ValueError as exc:
+        _raise_http_error(exc)
+
+
+@router.post("/runs/{run_id}/handoff", response_model=BILeadAgentRunResponse)
+async def handoff_bi_lead_agent_run(
+    run_id: int,
+    db: Session = Depends(get_db),
+) -> BILeadAgentRunResponse:
+    """触发已确认 run 的 DatasetAgent handoff；API 层不直接接触 Dataset 原子工具。"""
+
+    try:
+        await BIHandoffService(db).query_dataset(run_id=run_id)
         return BILeadAgentRunService(db).get_response(run_id)
     except ValueError as exc:
         _raise_http_error(exc)
