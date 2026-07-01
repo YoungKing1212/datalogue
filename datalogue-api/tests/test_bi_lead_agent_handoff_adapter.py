@@ -22,6 +22,24 @@ from app.schemas.bi_lead_agent import BILeadAgentHandoffRequest
 from app.services.bi_lead_agent.handoff_adapter import DatalogueBIHandoffAdapter
 
 
+def assert_forbidden_dataset_context_absent(payload: Any) -> None:
+    text = str(payload).lower()
+    for forbidden in (
+        "select ",
+        "schema",
+        "raw_rows",
+        "dsl",
+        "compiled_query_ref",
+        "repair_patch",
+        "blueprint_body",
+        "field_mapping",
+        "candidate_assets",
+        "result_rows",
+        "schema_context",
+    ):
+        assert forbidden not in text
+
+
 class FakeBridge:
     def __init__(self, events: list[Any] | None = None, fail: bool = False) -> None:
         self.events = events or []
@@ -204,3 +222,39 @@ async def test_query_dataset_returns_failed_result_when_agentscope_dataset_agent
         "raw_rows",
     ):
         assert forbidden not in payload_json
+
+
+@pytest.mark.asyncio
+async def test_handoff_adapter_d2_result_keeps_only_safe_summary_and_refs() -> None:
+    bridge = FakeBridge(
+        events=[
+            {
+                "status": "completed",
+                "answer_summary": "订单金额汇总完成。",
+                "artifact_ref": "artifact-bi-k1-d2",
+                "checkpoint_ref": "checkpoint-bi-k1-d2",
+                "row_count": 10,
+                "column_count": 3,
+                "sql": "select * from secret_orders",
+                "schema": {"secret_orders": ["secret_amount"]},
+                "raw_rows": [{"secret_amount": 100}],
+                "dsl": {"metric": "secret_amount"},
+                "compiled_query_ref": "compiled-query-secret",
+                "repair_patch": {"op": "replace"},
+                "blueprint_body": {"query": "secret"},
+                "field_mapping": {"secret": "secret_amount"},
+                "candidate_assets": [{"name": "secret_amount"}],
+            }
+        ]
+    )
+    adapter = DatalogueBIHandoffAdapter(bridge=bridge, dataset_agent_factory=FakeDatasetAgentFactory())
+
+    result = await adapter.query_dataset(_handoff_request(), task_id="task-bi-k1-d2")
+    payload = result.model_dump()
+
+    assert payload["handoff_status"] == "completed"
+    assert payload["artifact_ref"] == "artifact-bi-k1-d2"
+    assert payload["checkpoint_ref"] == "checkpoint-bi-k1-d2"
+    assert payload["row_count"] == 10
+    assert payload["column_count"] == 3
+    assert_forbidden_dataset_context_absent(payload)
