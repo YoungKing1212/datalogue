@@ -37,10 +37,10 @@ class BILeadAgentRun(Base):
         server_default="created",
         index=True,
     )  # LeadAgent 总状态，只记录路由/确认/移交阶段，不承载 DatasetAgent 内部执行明细。
-    phase = Column(String(60), nullable=False, default="created", server_default="created", index=True)
+    phase = Column(String(60), nullable=False, default="route_run", server_default="route_run", index=True)
     question = Column(Text, nullable=False)
     task_id = Column(String(120), nullable=True, index=True)
-    trace_id = Column(String(120), nullable=True, unique=True, index=True)
+    trace_id = Column(String(120), nullable=False, index=True)
     status_reason = Column(Text, nullable=True)  # 给前端和重放链路看的状态原因，避免只靠枚举猜测失败边界。
     error_code = Column(String(80), nullable=True, index=True)
     error_summary = Column(Text, nullable=True)
@@ -70,11 +70,11 @@ class BILeadAgentConfirmation(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(Integer, ForeignKey("bi_lead_agent_run.id", ondelete="CASCADE"), nullable=False, index=True)
-    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=False, index=True)
     confirmed_question = Column(Text, nullable=False)
-    task_goal = Column(Text, nullable=True)
+    task_goal = Column(Text, nullable=False)
     capability_snapshot_json = Column(_json_type(), nullable=False, default=dict)
-    routing_rationale = Column(Text, nullable=True)
+    routing_rationale = Column(Text, nullable=False)
     risk_notice = Column(Text, nullable=True)
     user_decision = Column(
         String(40),
@@ -83,8 +83,8 @@ class BILeadAgentConfirmation(Base):
         server_default="pending",
         index=True,
     )  # 用户确认边界：pending/approved/rejected/expired，K1 只保存决策结果和路由级摘要。
-    trace_id = Column(String(120), nullable=True, index=True)
-    parent_run_id = Column(String(120), nullable=True, index=True)
+    trace_id = Column(String(120), nullable=False, index=True)
+    parent_run_id = Column(String(120), nullable=False, index=True)
     status_reason = Column(Text, nullable=True)
     error_code = Column(String(80), nullable=True, index=True)
     error_summary = Column(Text, nullable=True)
@@ -106,11 +106,17 @@ class BIAgentHandoff(Base):
     run_id = Column(Integer, ForeignKey("bi_lead_agent_run.id", ondelete="CASCADE"), nullable=False, index=True)
     handoff_id = Column(String(120), nullable=False, index=True)
     parent_agent = Column(String(80), nullable=False, default="bi_lead_agent", server_default="bi_lead_agent", index=True)
-    child_agent = Column(String(80), nullable=False, index=True)
+    child_agent = Column(
+        String(80),
+        nullable=False,
+        default="dataset_agent",
+        server_default="dataset_agent",
+        index=True,
+    )  # K1 固定移交 DatasetAgent；允许调用方省略，避免 Task 2/3 构造 handoff 时分叉。
     child_run_id = Column(String(120), nullable=True, index=True)
-    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=False, index=True)
     task_id = Column(String(120), nullable=True, index=True)
-    trace_id = Column(String(120), nullable=True, index=True)
+    trace_id = Column(String(120), nullable=False, index=True)
     checkpoint_ref = Column(String(200), nullable=True, index=True)
     artifact_ref = Column(String(200), nullable=True, index=True)
     handoff_status = Column(

@@ -50,7 +50,6 @@ def test_bi_lead_agent_models_persist_k1_contract(db_session):
         run_id=run.id,
         handoff_id="handoff-001",
         parent_agent="bi_lead_agent",
-        child_agent="dataset_agent",
         child_run_id="dataset-run-001",
         dataset_id=12,
         task_id="task-bi-001",
@@ -69,5 +68,6 @@ def test_bi_lead_agent_models_persist_k1_contract(db_session):
     assert saved.status == "waiting_confirmation"
     assert saved.phase == "confirm_run"
     assert saved.confirmation.dataset_id == 12
+    assert saved.handoff.child_agent == "dataset_agent"
     assert saved.handoff.handoff_status == "completed"
     assert "schema" not in saved.confirmation.capability_snapshot_json
