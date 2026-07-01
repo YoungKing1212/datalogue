@@ -12,7 +12,7 @@
 - conversation_id：
 - message_id：
 - task_id / result_artifact.result_ref：
-- trace_id：
+- trace_id（历史记录可填；当前可为空）：
 - artifact_ref：
 
 ## SSE 关键事件
@@ -26,23 +26,22 @@
 | checkpoint | 必须核对字段 | 实际值 |
 | --- | --- | --- |
 | wrapper_start | session_id / conversation_id / multiturn_enabled |  |
-| trace_context_created | trace_id / session_id / active |  |
+| runtime_context_created | session_id / thread_id / active |  |
 | lead_context_ready | route_decision / should_continue |  |
 | subagent_query_plan | query_plan_type / execution_strategy / planner_source |  |
 | assistant_message_saved | message_id / response_metadata_keys |  |
-| final_payload_ready | conversation_id / message_id / trace_id / artifact_ref |  |
+| final_payload_ready | conversation_id / message_id / artifact_ref / workbench_thread_id |  |
 
-## Langfuse / 本地 Trace
+## 运行证据
 
-- `observability_trace_index.langfuse_trace_id`：
-- `observability_trace_index.message_id`：
-- `observability_trace_index.status`：
-- Langfuse observation 名称：
-- Langfuse 不可用时的 no-op / 本地 trace 证据：
+- SSE step 顺序：
+- `response_metadata` 关键字段：
+- Workbench thread / event / ref：
+- 后端日志 checkpoint：
+- 历史 trace_id（如旧记录存在）：
 
 ## 数据库状态
 
-- `message.response_metadata.langfuse.trace_id`：
 - `message.step_trace` 是否包含关键 node：
 - `query_artifact.artifact_id`：
 - `query_artifact.message_id`：

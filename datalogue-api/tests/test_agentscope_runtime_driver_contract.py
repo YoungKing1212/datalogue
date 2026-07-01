@@ -54,12 +54,12 @@ def test_agentscope_runtime_driver_registers_bi_atomic_tools_without_ask_bi():
         "get_artifact_summary",
     ]
     assert [tool.provider for tool in runtime_contract.tool_registry] == [
-        "BIAtomicToolProvider",
-        "BIAtomicToolProvider",
-        "BIAtomicToolProvider",
-        "BIAtomicToolProvider",
-        "BIAtomicToolProvider",
-        "BIAtomicToolProvider",
+        "DatalogueBIAtomicToolkit",
+        "DatalogueBIAtomicToolkit",
+        "DatalogueBIAtomicToolkit",
+        "DatalogueBIAtomicToolkit",
+        "DatalogueBIAtomicToolkit",
+        "DatalogueBIAtomicToolkit",
     ]
     assert runtime_contract.business_capabilities == ["query_dataset", "query_multiple_datasets"]
     assert runtime_contract.lead_agent_action.status == "ready"
@@ -92,7 +92,6 @@ def test_agentscope_runtime_driver_exposes_future_tools_only_as_disabled_or_admi
     assert {
         tool.name: tool.status for tool in runtime_contract.disabled_tool_specs
     } == {
-        "repair_dsl": "admin_gated",
         "classify_query_failure": "disabled",
         "create_report_from_artifact": "admin_gated",
         "run_sandboxed_analysis_on_artifact": "admin_gated",

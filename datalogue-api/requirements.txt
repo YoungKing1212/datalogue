@@ -10,9 +10,10 @@ psycopg2-binary==2.9.9
 pymysql==1.2.0
 pgvector==0.2.5
 
-# Pydantic
-pydantic==2.7.4
-pydantic-settings==2.3.4
+# Pydantic / AgentScope 2.0
+pydantic>=2.11,<3
+pydantic-settings>=2.6,<3
+agentscope==2.0.3
 
 # LangChain / LangGraph
 langchain==0.2.0

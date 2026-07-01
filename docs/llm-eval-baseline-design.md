@@ -46,7 +46,7 @@
 ### 1.3 数据集 seed 策略
 
 1. **从真实对话日志提取（脱敏）**
-   - 来源：生产环境 Langfuse trace 中 `llm.lead_agent_tool_planner` 节点的输入输出
+   - 来源：历史 Langfuse trace 归档、当前后端结构化日志或可脱敏的 fixture 捕获结果中的 `llm.lead_agent_tool_planner` 输入输出
    - 筛选条件：
      - `tool_policy.locked_dataset_id` 不为空
      - 最终执行策略为 `blueprint_execute` 或 `query_graph` 的 case
@@ -81,7 +81,7 @@
 - **Fallback rate**：渐进式资产运行结果为 `clarify`/`reject`，但全量资产运行结果为 `blueprint_execute`/`query_graph`/`blueprint_as_reference` 的 case 占比。
 - **Clarification rate**：渐进式资产运行结果为 `clarify`，但全量资产运行结果为非 `clarify` 的 case 占比。
 - **SQL success rate**：对于最终进入 SubAgent 执行的 case，对比 SQL 执行是否成功（通过 mock DB 或实际数据源验证）。
-- **TTFT delta**：通过 Langfuse trace 或本地计时器测量 `llm.lead_agent_skill_selector` 和 `llm.lead_agent_tool_planner` 的首 token 返回时间差。
+- **TTFT delta**：通过本地计时器、后端结构化日志或历史 trace 归档测量 `llm.lead_agent_skill_selector` 和 `llm.lead_agent_tool_planner` 的首 token 返回时间差。
 
 ---
 
@@ -205,7 +205,7 @@ Failed cases:
 
 ### 5.1 从真实对话日志提取
 
-1. 查询 Langfuse trace 表：
+1. 从历史 Langfuse trace 归档或当前后端结构化日志中提取 planner 样本。旧 Langfuse 表可按以下 SQL 追溯；当前运行时不再写入这些表：
    ```sql
    SELECT
      t.id as trace_id,

@@ -100,6 +100,20 @@
 - SQL、schema 全量、物理字段明细、raw rows、query_plan 主体、RepairPatch 主体、blueprint 主体不进入 Agent context、SSE 用户可见层或 Workbench View Model。
 - 同一代表性 BI 问题在默认 Agentic Shell + atomic runtime path 下完成，并通过 trace/artifact/workbench harness。
 
+#### PR1.3-c: AgentScope 2.0 SDK Runtime Bridge
+
+**目标：** 按用户 2026-07-01 明确要求，把 DatasetAgent Runtime 补成 AgentScope 2.0 SDK 形态：ToolBase external tools、PermissionContext/Decision/Behavior、RequireExternalExecutionEvent、ToolResultBlock / ExternalExecutionResultEvent 和 agent.reply_stream loop。
+
+**计划归属：** PR1.3/PR1.3-b 的 SDK 形态补齐；不新增业务 Agent，不把 Report/Python/Audit 提前启用。
+
+**验收：**
+
+- 六个 BI 原子工具以 `ToolBase(is_external_tool=True)` 形态注册：`get_dataset_status`、`list_candidate_assets`、`compile_dsl_to_sql`、`execute_compiled_query`、`create_query_artifact`、`get_artifact_summary`。
+- Permission hook fail-closed：非 BI Agent 不能调 BI 工具；compile 前不能 execute；execute 只能接收当前会话的 `compiled_query_ref`；Agent 不能传 SQL/schema/raw rows/query_plan 等敏感入参。
+- Runtime 能监听 `RequireExternalExecutionEvent`，执行 Datalogue 受控工具层，并回填 `ExternalExecutionResultEvent(ToolResultBlock(...))`。
+- ToolResultBlock 只包含 `compiled_query_ref`、artifact ref、row/column count、error summary 等安全结果，不包含 SQL、raw rows、schema 全量、query_plan 主体或物理字段明细。
+- 提供 `agent.reply_stream(msg) -> RequireExternalExecutionEvent -> Datalogue execute -> agent.reply(ExternalExecutionResultEvent)` 的可测试 loop。
+
 #### PR1.4: checkpoint/retry 迁移
 
 **目标：** Workbench retry 调 Shell action，Shell 写 `retry.started/checkpoint_restored/dataset.query.completed/answer.completed`，并继续满足 provider-neutral observability contract。
@@ -223,6 +237,7 @@
 | PR1.2 | Complete | Shell/Runtime boundary 均携带 BI LeadAgent action contract + `docs/test-reports/2026-07-01-as-r0-pr1-2.md` | 后续 PR1.3 用原子 tools 串 DatasetAgent tool-call runtime |
 | PR1.3 | Complete (contract only) | DatasetAgent tool-call runtime 最小编排 + `docs/test-reports/2026-07-01-as-r0-pr1-3.md` | 已发现原目标“替代当前 DatasetSubAgent/LangGraph 执行核心”尚未完成，纳入 PR1.3-b |
 | PR1.3-b | Complete | 用户已明确要求去掉灰度开关；单数据集 BI 查询默认走 Agentic Shell + AgentScope 2.0 external-tool 风格的受控 atomic runtime；`docs/test-reports/2026-07-01-as-r0-pr1-3-b.md` 已记录 API、Workbench 和安全扫描证据 | 多数据集 fanout 迁出 legacy 需要新增已批准计划 |
+| PR1.3-c | Complete | 用户已明确要求按 AgentScope 2.0 SDK 五件套补齐 DatasetAgent Runtime；`docs/test-reports/2026-07-01-as-r0-pr1-3-c-agentscope-sdk-runtime.md` 已记录 ToolBase、Permission、ExternalExecutionEvent、ToolResultBlock 和 reply_stream loop 测试证据 | 真实 LLM DatasetAgent 实例接入生产流需要新增已批准计划 |
 | PR1.4 | Complete | Shell writer 接管 Workbench retry action 与 Chat SSE event 写回 + `docs/test-reports/2026-07-01-as-r0-pr1-4.md` | 后续 PR1.5 做双路径灰度 parity |
 | PR1.5 | Complete | 双路径灰度 parity harness + `docs/test-reports/2026-07-01-as-r0-pr1-5.md` | P1 已完成；后续进入 P2 收敛 legacy runtime |
 | P2.1 | Complete | `_stream_chat` transport adapter 收缩 + `docs/test-reports/2026-07-01-as-r0-p2-1.md` | 后续 P2.2 收敛 legacy adapter / `ask_bi` |
@@ -232,7 +247,7 @@
 
 ## 5. Next Allowed Work Without Plan Change
 
-当前正式 PR0/P1/P2 计划和已批准的 PR1.3-b 修正项均已完成。用户已在 2026-07-01 明确要求去掉灰度开关，当前 `/chat/stream` singleturn 已直接按 AgentScope 2.0 / Agentic Shell-first 方式进入受控 atomic runtime。
+当前正式 PR0/P1/P2 计划和已批准的 PR1.3-b/PR1.3-c 修正项均已完成。用户已在 2026-07-01 明确要求去掉灰度开关，并补齐 AgentScope 2.0 SDK 形态；当前 `/chat/stream` singleturn 已直接进入受控 atomic runtime，SDK bridge 已具备 ToolBase / Permission / ExternalExecutionEvent / ToolResultBlock / reply_stream loop。
 
 后续如果要实现真实 ReportAgent、PythonAgent、AuditAgent 业务执行器，或把多数据集 fanout 迁出 legacy LangGraph，仍必须先按 `6. Proposed Plan Changes` 提交变更说明并等待用户审核。
 

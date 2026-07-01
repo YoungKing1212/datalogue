@@ -27,11 +27,12 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ARCHIVE_DIR = ROOT / "docs" / "archive" / "2026-07-01-langfuse-removal"
 SOURCES = [
-    ROOT / "docs" / "Langfuse可观测能力需求设计文档.md",
-    ROOT / "docs" / "Langfuse可观测能力开发文档.md",
+    ARCHIVE_DIR / "Langfuse可观测能力需求设计文档.md",
+    ARCHIVE_DIR / "Langfuse可观测能力开发文档.md",
 ]
-OUTPUT = ROOT / "docs" / "Langfuse可观测能力需求与开发文档.docx"
+OUTPUT = ARCHIVE_DIR / "Langfuse可观测能力需求与开发文档.docx"
 
 PAGE_WIDTH_DXA = 9360
 TABLE_INDENT_DXA = 120
@@ -245,7 +246,11 @@ def add_cover(doc: Document):
         ("项目", "数语（智能问数）"),
         ("文档类型", "需求设计文档 + 开发文档"),
         ("生成时间", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        ("来源文件", "docs/Langfuse可观测能力需求设计文档.md；docs/Langfuse可观测能力开发文档.md"),
+        (
+            "来源文件",
+            "docs/archive/2026-07-01-langfuse-removal/Langfuse可观测能力需求设计文档.md；"
+            "docs/archive/2026-07-01-langfuse-removal/Langfuse可观测能力开发文档.md",
+        ),
     ]
     for row, (key, value) in zip(meta.rows, rows):
         row.cells[0].text = key

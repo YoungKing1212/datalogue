@@ -26,7 +26,14 @@ from app.services.agentic_shell import (
     DatalogueAgenticShell,
     TaskType,
 )
-from app.services.agentic_bi_tools import BIAtomicToolProvider
+from app.services.bi_tools import (
+    CompileDslToSqlTool,
+    CreateQueryArtifactTool,
+    ExecuteCompiledQueryTool,
+    GetArtifactSummaryTool,
+    GetDatasetStatusTool,
+    ListCandidateAssetsTool,
+)
 
 
 RuntimeToolStatus = Literal["available"]
@@ -112,12 +119,12 @@ class DatalogueAgentScopeRuntimeDriver:
     @staticmethod
     def _build_tool_registry(allowed_tools: list[str]) -> list[AgentScopeRuntimeToolSpec]:
         provider_specs = {
-            "get_dataset_status": ("BIAtomicToolProvider", BIAtomicToolProvider.get_dataset_status.__name__),
-            "list_candidate_assets": ("BIAtomicToolProvider", BIAtomicToolProvider.list_candidate_assets.__name__),
-            "compile_dsl_to_sql": ("BIAtomicToolProvider", BIAtomicToolProvider.compile_dsl_to_sql.__name__),
-            "execute_compiled_query": ("BIAtomicToolProvider", BIAtomicToolProvider.execute_compiled_query.__name__),
-            "create_query_artifact": ("BIAtomicToolProvider", BIAtomicToolProvider.create_query_artifact.__name__),
-            "get_artifact_summary": ("BIAtomicToolProvider", BIAtomicToolProvider.get_artifact_summary.__name__),
+            "get_dataset_status": ("DatalogueBIAtomicToolkit", GetDatasetStatusTool.__name__),
+            "list_candidate_assets": ("DatalogueBIAtomicToolkit", ListCandidateAssetsTool.__name__),
+            "compile_dsl_to_sql": ("DatalogueBIAtomicToolkit", CompileDslToSqlTool.__name__),
+            "execute_compiled_query": ("DatalogueBIAtomicToolkit", ExecuteCompiledQueryTool.__name__),
+            "create_query_artifact": ("DatalogueBIAtomicToolkit", CreateQueryArtifactTool.__name__),
+            "get_artifact_summary": ("DatalogueBIAtomicToolkit", GetArtifactSummaryTool.__name__),
             "create_report_from_artifact": ("AgenticOptionalToolProvider", "create_report_from_artifact"),
             "run_sandboxed_analysis_on_artifact": (
                 "AgenticOptionalToolProvider",

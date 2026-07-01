@@ -53,7 +53,6 @@ SCREENS = {
     "chat": SCREENSHOT_DIR / "02-chat-empty.png",
     "datasets": SCREENSHOT_DIR / "03-datasets-blueprints.png",
     "datasources": SCREENSHOT_DIR / "04-datasources.png",
-    "audit": SCREENSHOT_DIR / "05-audit-query.png",
     "settings": SCREENSHOT_DIR / "06-settings.png",
     "history": SCREENSHOT_DIR / "07-history.png",
     "apis": SCREENSHOT_DIR / "08-apis.png",
@@ -399,38 +398,10 @@ def build_manual() -> Document:
     ])
     doc.add_page_break()
 
-    add_heading(doc, "6. 查询审计：回看 Trace、SQL、成本和失败原因", 1)
-    add_para(doc, "查询审计页用于回看每一次问数的完整链路。它面向数据分析师、研发和运维人员，用于定位错误 SQL、错误路由、低置信度回答、成本异常和用户反馈。")
-    add_screenshot(doc, "audit", "截图 5：查询审计页")
-    add_heading(doc, "6.1 页面区域与功能", 2)
-    add_detail_table(doc, ["区域", "功能", "怎么用"], [
-        ("顶部指标", "查看查询总数、成功率、失败数、Token 和成本。", "先判断是否存在失败率升高、成本异常或 Token 暴涨。"),
-        ("Trace 列表", "按时间查看问数记录。", "点击一条记录，右侧会显示该 trace 的问题、状态和执行链路。"),
-        ("详情面板", "查看问题、回答预览、SQL、数据集、模型和入口路径。", "用于判断是问法问题、路由问题、SQL 问题还是执行问题。"),
-        ("Observation 瀑布", "展示 Agent 节点执行顺序。", "逐个展开节点，检查输入、输出、耗时、错误和元数据。"),
-        ("反馈与评分", "查看用户反馈、置信度和质量评分。", "把低分记录回流到语义词典、字段标注或蓝图测试用例。"),
-    ], [1500, 2900, 4960])
-    add_heading(doc, "6.2 常见排障动作", 2)
-    add_detail_table(doc, ["现象", "优先检查", "处理方向"], [
-        ("回答没有数据", "SQL 是否执行成功、过滤条件是否过窄、时间范围是否正确。", "放宽条件或修正时间字段，必要时补充维度和指标口径。"),
-        ("选错数据集", "入口意图、数据集描述、Manifest 样例问题和负向样例。", "更新 SubAgent Manifest，增加正反例并重新验证。"),
-        ("SQL 字段错误", "字段召回、字段标注、指标表达式、维度关联字段。", "回到数据集页修字段标注、指标或维度。"),
-        ("成本异常", "模型调用次数、上下文长度、分析深度、重试次数。", "降低分析深度，优化 Prompt 或模型角色绑定。"),
-        ("Langfuse 不可用", "页面是否展示本地 trace index 或 step_trace。", "使用本地回退链路继续排障，恢复 Langfuse 后再补查完整链路。"),
-    ], [1700, 3760, 3900])
-    add_heading(doc, "6.3 从聊天页跳转审计", 2)
-    add_steps(doc, [
-        "在对话问数页找到需要复核的回答。",
-        "点击回答下方的 trace 或“查看链路”入口。",
-        "系统带 trace_id 打开查询审计页。",
-        "核对数据集、SQL、执行结果、风险提示和最终回答是否一致。",
-    ])
-    doc.add_page_break()
-
-    add_heading(doc, "7. 查询历史：复用过往会话", 1)
+    add_heading(doc, "6. 查询历史：复用过往会话", 1)
     add_para(doc, "查询历史用于查找和继续过去的问数会话，适合复盘已完成分析、复用高频问题或继续多轮追问。页面会从后端实时拉取会话列表。")
     add_screenshot(doc, "history", "截图 6：查询历史页")
-    add_heading(doc, "7.1 页面功能", 2)
+    add_heading(doc, "6.1 页面功能", 2)
     add_detail_table(doc, ["功能", "在哪里", "怎么用"], [
         ("搜索", "顶部搜索框", "输入问题、答案或 SQL 关键词，快速定位历史会话。"),
         ("时间筛选", "工具栏“近30天”", "缩小会话范围，适合排查近期问题或复盘最近分析。"),
@@ -442,7 +413,7 @@ def build_manual() -> Document:
         ("删除", "行右侧删除按钮", "确认后删除会话；删除前应确认不再需要审计或复用。"),
         ("导出 / 新建文件夹", "页面右上角", "用于整理或外部分发历史分析材料。"),
     ], [1700, 3100, 4560])
-    add_heading(doc, "7.2 使用建议", 2)
+    add_heading(doc, "6.2 使用建议", 2)
     add_bullets(doc, [
         "继续追问同一业务主题时使用历史会话，系统能复用上下文。",
         "完全切换业务主题时新建会话，避免旧上下文影响数据集路由。",
@@ -450,10 +421,10 @@ def build_manual() -> Document:
     ])
     doc.add_page_break()
 
-    add_heading(doc, "8. API 接口：把问数能力发布给系统调用", 1)
+    add_heading(doc, "7. API 接口：把问数能力发布给系统调用", 1)
     add_para(doc, "API 接口页用于把稳定的问数能力发布给外部系统或业务流程调用。它把一次经过验证的问数会话固化为带参数、权限、日志和版本的服务接口。")
     add_screenshot(doc, "apis", "截图 7：API 接口页")
-    add_heading(doc, "8.1 列表与状态筛选", 2)
+    add_heading(doc, "7.1 列表与状态筛选", 2)
     add_detail_table(doc, ["区域", "功能", "怎么用"], [
         ("顶部 KPI", "查看已发布接口数、24h 调用量、P95 延迟和成功率。", "先判断接口服务是否稳定，成功率和延迟是否在 SLO 内。"),
         ("从会话发布", "从稳定问数会话创建新接口。", "点击后选择来源会话，配置接口名称、路径、参数、返回格式和权限。"),
@@ -461,7 +432,7 @@ def build_manual() -> Document:
         ("状态 Tab", "全部、已发布、测试中、草稿、已暂停。", "按接口生命周期筛选，重点关注测试中和已暂停接口。"),
         ("接口列表", "显示接口名称、路径、状态、版本、数据集和调用状态。", "点击某个接口后，右侧打开详情。"),
     ], [1600, 3200, 4560])
-    add_heading(doc, "8.2 接口详情 Tab", 2)
+    add_heading(doc, "7.2 接口详情 Tab", 2)
     add_detail_table(doc, ["详情 Tab", "功能", "用户需要检查什么"], [
         ("概览", "查看接口描述、来源问题、数据集、调用趋势、配额、成功率和延迟。", "确认接口仍然可用，调用量、失败率和配额没有异常。"),
         ("参数", "维护发布时识别出的变量。", "检查参数类型、默认值、枚举、必填项和业务说明是否清楚。"),
@@ -469,7 +440,7 @@ def build_manual() -> Document:
         ("调用日志", "查看调用时间、调用方、密钥、状态码、延迟和入参。", "排查外部调用失败、慢请求或权限问题。"),
         ("版本", "查看接口版本历史和变更说明。", "上线前确认是否有破坏性变更；必要时回滚到历史版本。"),
     ], [1450, 3000, 4910])
-    add_heading(doc, "8.2.1 接口详情 Tab 截图", 3)
+    add_heading(doc, "7.2.1 接口详情 Tab 截图", 3)
     add_screenshot_series(doc, [
         ("api_overview_tab", "截图 7-1：API 概览 Tab"),
         ("api_params_tab", "截图 7-2：参数 Tab"),
@@ -477,7 +448,7 @@ def build_manual() -> Document:
         ("api_logs_tab", "截图 7-4：调用日志 Tab"),
         ("api_versions_tab", "截图 7-5：版本 Tab"),
     ])
-    add_heading(doc, "8.3 发布前检查", 2)
+    add_heading(doc, "7.3 发布前检查", 2)
     add_bullets(doc, [
         "来源会话的 SQL 已在查询审计中复核。",
         "参数都有明确类型、默认值和业务含义。",
@@ -486,10 +457,10 @@ def build_manual() -> Document:
     ])
     doc.add_page_break()
 
-    add_heading(doc, "9. 系统设置：账号、安全、模型与集成配置", 1)
+    add_heading(doc, "8. 系统设置：账号、安全、模型与集成配置", 1)
     add_para(doc, "系统设置页用于维护个人资料、通知、外观、工作区、成员权限、用量计费、数据源、LLM 模型、业务词典、API 密钥、Webhooks 和审计日志。左侧菜单按个人、工作区、数据与模型、开发者分组。")
     add_screenshot(doc, "settings", "截图 8：系统设置页")
-    add_heading(doc, "9.1 个人设置", 2)
+    add_heading(doc, "8.1 个人设置", 2)
     add_detail_table(doc, ["菜单", "具体功能", "操作说明"], [
         ("账号与个人资料", "维护头像、姓名、邮箱、安全设置、密码、两步验证和活跃会话。", "个人信息变化后在这里更新；发现异常登录时先检查活跃会话并修改密码。"),
         ("通知", "配置邮件、站内、失败告警、周报等通知方式。", "管理员和分析师建议开启失败告警和高成本告警。"),
@@ -500,7 +471,7 @@ def build_manual() -> Document:
         ("settings_notifications", "截图 8-2：通知设置"),
         ("settings_appearance", "截图 8-3：外观设置"),
     ])
-    add_heading(doc, "9.2 工作区设置", 2)
+    add_heading(doc, "8.2 工作区设置", 2)
     add_detail_table(doc, ["菜单", "具体功能", "操作说明"], [
         ("工作区设置", "维护工作区名称、默认语言、默认时区和组织信息。", "影响团队成员看到的默认工作空间信息。"),
         ("成员与权限", "管理成员、角色、权限边界和数据集访问范围。", "新增成员后应分配最小必要权限，不要默认授予管理权限。"),
@@ -511,7 +482,7 @@ def build_manual() -> Document:
         ("settings_members_permissions", "截图 8-5：成员与权限"),
         ("settings_usage_billing", "截图 8-6：用量与计费"),
     ])
-    add_heading(doc, "9.3 数据与模型", 2)
+    add_heading(doc, "8.3 数据与模型", 2)
     add_detail_table(doc, ["菜单", "具体功能", "操作说明"], [
         ("数据源", "查看或跳转数据源配置。", "数据库连接、Schema 和 DDL 同步仍建议在“数据源”主页面完成。"),
         ("LLM 模型", "配置 OpenAI-compatible / LiteLLM Proxy 模型。", "填写模型名称、Base URL、API Key 和状态；保存后测试连通性。"),
@@ -523,7 +494,7 @@ def build_manual() -> Document:
         ("settings_llm_models", "截图 8-8：LLM 模型"),
         ("settings_business_dictionary", "截图 8-9：业务词典"),
     ])
-    add_heading(doc, "9.4 开发者设置", 2)
+    add_heading(doc, "8.4 开发者设置", 2)
     add_detail_table(doc, ["菜单", "具体功能", "操作说明"], [
         ("API 密钥", "生成、停用和轮换外部调用密钥。", "密钥只展示一次，应按调用方分发独立密钥并定期轮换。"),
         ("Webhooks", "配置事件推送地址。", "用于把接口调用、失败告警或审计事件推送到外部系统。"),
@@ -534,7 +505,7 @@ def build_manual() -> Document:
         ("settings_webhooks", "截图 8-11：Webhooks"),
         ("settings_audit_logs", "截图 8-12：审计日志"),
     ])
-    add_heading(doc, "9.5 保存与验证", 2)
+    add_heading(doc, "8.5 保存与验证", 2)
     add_bullets(doc, [
         "表单保存后应出现明确的成功或失败反馈。",
         "模型配置保存后要执行连通性测试，并用一条真实问数验证效果。",
@@ -543,22 +514,22 @@ def build_manual() -> Document:
     ])
     doc.add_page_break()
 
-    add_heading(doc, "10. 常见操作检查清单", 1)
-    add_heading(doc, "10.1 普通问数用户", 2)
+    add_heading(doc, "9. 常见操作检查清单", 1)
+    add_heading(doc, "9.1 普通问数用户", 2)
     add_bullets(doc, [
         "问题中包含对象、时间、指标和拆分维度。",
         "回答后检查 SQL、图表、结果表和风险提示。",
         "回答不可信时点击“查看链路”或请数据分析师从查询审计排查。",
         "需要继续分析时优先在同一会话追问；切换业务主题时新建对话。",
     ])
-    add_heading(doc, "10.2 数据分析师", 2)
+    add_heading(doc, "9.2 数据分析师", 2)
     add_bullets(doc, [
         "新数据源接入后先同步表结构，再创建或更新数据集。",
         "字段标注、指标、维度和语义词典需要人工复核。",
         "高频复杂分析应沉淀为分析蓝图，并维护触发词和测试用例。",
         "定期查看查询审计中的失败 trace，把问题回流到语义治理。 ",
     ])
-    add_heading(doc, "10.3 管理员/运维", 2)
+    add_heading(doc, "9.3 管理员/运维", 2)
     add_bullets(doc, [
         "确保数据源账号权限最小化，优先只读。",
         "确保 default、dsl、report 等核心模型角色已绑定可用模型。",

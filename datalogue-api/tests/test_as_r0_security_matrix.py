@@ -20,12 +20,12 @@ from fastapi.encoders import jsonable_encoder
 
 from app.api.chat import _with_event_envelope
 from app.models.agentscope_workbench import AgentScopeMessage, AgentScopeSession
-from app.services.agentic_bi_tools import BIAtomicToolProvider
 from app.services.agentic_shell import DatalogueAgenticShell
 from app.services.agentscope_mirror import (
     create_agentscope_session,
     record_agentscope_event,
 )
+from app.services.bi_tools import build_bi_atomic_toolkit
 from app.services.subagent_planning.contracts import CandidateAsset, QueryPlan
 from app.services.workbench_view_model import build_workbench_thread_view
 
@@ -83,7 +83,7 @@ def test_as_r0_agent_context_and_bi_tool_responses_hide_execution_payloads(
         },
     )
 
-    provider = BIAtomicToolProvider(
+    toolkit = build_bi_atomic_toolkit(
         db_session,
         query_executor=lambda _sql: {
             "columns": ["账号"],
@@ -91,7 +91,8 @@ def test_as_r0_agent_context_and_bi_tool_responses_hide_execution_payloads(
             "row_count": 1,
         },
     )
-    compiled = provider.compile_dsl_to_sql(
+    compiled = toolkit.execute_tool(
+        "compile_dsl_to_sql",
         dataset_id=sample_dataset.id,
         dsl=QueryPlan(
             query_type="detail_query",
@@ -106,11 +107,12 @@ def test_as_r0_agent_context_and_bi_tool_responses_hide_execution_payloads(
         dialect="sqlite",
         allowed_tables=["hidden_table"],
     )
-    executed = provider.execute_compiled_query(
+    executed = toolkit.execute_tool(
+        "execute_compiled_query",
         compiled_query_ref=compiled["compiled_query_ref"],
         dataset_id=sample_dataset.id,
     )
-    artifact_summary = provider.get_artifact_summary(executed["artifact_ref"])
+    artifact_summary = toolkit.execute_tool("get_artifact_summary", artifact_ref=executed["artifact_ref"])
 
     _assert_no_forbidden_visible_tokens(contract.model_dump(mode="json"))
     _assert_no_forbidden_visible_tokens(compiled)

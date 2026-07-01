@@ -136,7 +136,7 @@ describe('chat-adapter C-ready metadata', () => {
     expect(JSON.stringify(finalChunk.content)).not.toMatch(/SELECT|secret_col|hidden_table/i);
   });
 
-  it('maps final SSE observability and artifact refs without internal planning or raw result metadata', async () => {
+  it('maps final SSE artifact refs without internal planning, observability or raw result metadata', async () => {
     streamChatEvents.mockReturnValue(events([
       {
         type: 'step',
@@ -189,8 +189,8 @@ describe('chat-adapter C-ready metadata', () => {
     expect(final.status).toEqual({ type: 'complete', reason: 'stop' });
     expect(final.metadata.custom.resultRef).toBe('artifact:result-1');
     expect(final.metadata.custom.reportRef).toBe('artifact:report-1');
-    expect(final.metadata.custom.observabilityTraceId).toBe('trace-1');
-    expect(final.metadata.custom.observability).toEqual({ trace_id: 'trace-1', session_id: 'session-1' });
+    expect(final.metadata.custom.observabilityTraceId).toBeUndefined();
+    expect(final.metadata.custom.observability).toBeUndefined();
     expect(final.metadata.custom.stepTrace).toHaveLength(1);
     expect(JSON.stringify(final.metadata.custom)).not.toMatch(
       /SELECT|secret_col|hidden_table|raw_row_value|query_plan|queryPlan|candidate_assets|candidateAssets|query_plan_debug|queryPlanDebug|dsl|sqlResult|sqlDiagnosis|sqlAuditResult/i,
@@ -319,7 +319,7 @@ describe('chat-adapter C-ready metadata', () => {
     expect(custom.resultRef).toBeNull();
     expect(custom.reportRef).toBeNull();
     expect(custom.subagentToolResults).toBeNull();
-    expect(custom.observabilityTraceId).toBe('trace-old');
+    expect(custom.observabilityTraceId).toBeUndefined();
   });
 
   it('does not restore internal SQL, planning, DSL or raw rows into history message custom metadata', () => {

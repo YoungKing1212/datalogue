@@ -115,6 +115,15 @@
 - AS-R0 PR0.4 安全测试矩阵完成：覆盖 Shell context、BI tool response、SSE 用户可见 payload、trace_only 随流 payload、AgentScope mirror metadata/event 和 Workbench View Model，统一阻断 SQL/schema/raw rows/query_plan/RepairPatch/blueprint body 等禁区内容。
 - AS-R0 PR1.1 Runtime adapter 完成：`/chat/stream` 入口经 `DatalogueAgenticShell.run_turn()` 生成 Shell turn contract 后委托既有流式链路，保持 SSE final payload、mirror 写入和 legacy 回退兼容。
 - AS-R0 PR1.2 BI LeadAgent 接入 Shell：补齐 `AgenticShellAction`、LeadAgent action routing 和 Runtime `lead_agent_action` 投影；BI LeadAgent 只开放 `query_dataset/query_multiple_datasets`，Report/Python/Audit 继续 disabled placeholder。
+- AS-R0 PR1.3 DatasetAgent tool-call runtime 完成：新增固定 BI 原子工具序列和 `DatasetAgentToolCallRuntime`，SQL 通过 private compiled handle 与 ArtifactStore 流转，Agent/用户可见层只暴露状态、artifact ref 和摘要。
+- AS-R0 PR1.4 checkpoint/retry writer 迁移完成：`AgentScopeMirrorShellWriter` 接管 Workbench retry action 与 Chat SSE event projection，写回前统一经 Agentic Shell sanitizer 清洗。
+- AS-R0 PR1.5 双路径灰度 parity 完成：无论 Shell runtime wrapper 或 legacy path，`_stream_chat` 都保持相同 final payload、artifact refs 和 trace contract；该层只固化灰度验收，不默认开启新 runtime 或替换 DatasetAgent 主链。
+- AS-R0 P2.1 `/chat/stream` transport adapter 收缩完成：新增 `DatalogueChatStreamRuntime` 和 hooks，把单轮/多轮 wrapper lifecycle 从 `chat.py` 迁入 service，`chat.py` 只保留 settings、hook 装配和 SSE 转发。
+- AS-R0 P2.2 legacy adapter / ask_bi compatibility 收敛完成：`AgentScopeShellAdapter` 与 `BIWorkbenchTool` 标记为 legacy compatibility，`ask_bi` 不再作为 AS-R0 新主链工具，不加回 BI atomic whitelist。
+- AS-R0 P2.3 future tools disabled/admin-gated contract 完成：future tools 以结构化 disabled/admin-gated spec 透传到 Shell/Runtime 边界，不进入可执行 tool registry，为后续 optional agent gate 留出安全口径。
+- AS-R0 P2.4 业务 Agent 受控启用完成：Report/Python/Audit optional agents 默认 disabled，显式启用时只开放单一白名单工具，Runtime registry 只注册已启用业务 Agent。
+- DatasetAgent Runtime direct 测试入口建立：本地/测试环境新增 `POST /api/chat/dataset-runtime/direct`，用最小 routing/route_decision/lead_agent_context 直通受控 DatasetAgent Runtime，作为压测 Runtime 底座；production 禁用，后续仍需替换真正 DatasetAgent-owned planner。
+- AS-R0 PR1.3-b BI atomic runtime 直接接管执行核心完成：移除两个主链灰度开关，`/chat/stream` singleturn 默认进入 Agentic Shell，单数据集 BI 查询绕过 legacy `build_workflow(db)` 并由受控 DatasetAgent tool-call runtime 串起 compile、execute、artifact summary 和 final payload。
 
 ## 高价值判断
 
@@ -126,85 +135,15 @@
 
 ## 最新详细记录
 
-### 2026-07-01 11:48 · AS-R0 PR1.3 DatasetAgent tool-call runtime
+### 2026-07-01 15:44 · AS-R0 PR1.3-c AgentScope 2.0 SDK Runtime Bridge
 
-- 涉及文件：`datalogue-api/app/services/agentic_dataset_runtime.py`、`datalogue-api/tests/test_agentic_dataset_runtime.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-3.md`、`.codex/project-memory.md`
-- 关键改动：新增 `DatasetAgentToolCallRuntime`，固定串联 `get_dataset_status -> list_candidate_assets -> generate_dsl -> compile_dsl_to_sql -> execute_compiled_query -> get_artifact_summary`；DSL generator 通过注入提供结构化 `QueryPlan` 或 dict，后续可替换为真实 DatasetAgent DSL planner；Runtime 不新增 `plan_bi_query` 黑盒。
-- 安全边界：SQL 只在 `BIAtomicToolProvider` private compiled handle 和 execute 工具内部流转；execute 结果写入 ArtifactStore，Runtime 用户/Agent 可见响应只含 artifact ref、row/column count、artifact summary 和清洗后的 tool call 状态，不回传 SQL、schema、raw rows、query_plan、RepairPatch、blueprint body、物理表字段或结果行。
-- TDD 记录：先新增 PR1.3 runtime 测试并确认 RED 为缺少 `app.services.agentic_dataset_runtime`；实现最小编排后转 GREEN，覆盖成功链路和 compile 失败不调用 execute。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_dataset_runtime.py -q`，2 条通过、2 个既有 warning；执行 AS-R0 最小回归 `tests/test_agentic_dataset_runtime.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，40 条通过、4 个既有 warning；执行安全矩阵回归 `tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，11 条通过、2 个既有 warning；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：PR1.3 尚未把 `/chat/stream` 最终灰度切到新 DatasetAgent runtime；checkpoint/retry writer 迁移和双路径 parity 分别留给 PR1.4、PR1.5。
-
-### 2026-07-01 11:48 · AS-R0 PR1.4 checkpoint/retry 迁移
-
-- 涉及文件：`datalogue-api/app/services/agentic_shell_writers.py`、`datalogue-api/app/services/workbench_actions.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_agentic_shell_retry_writer.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-4.md`、`.codex/project-memory.md`
-- 关键改动：新增 `AgentScopeMirrorShellWriter`，Workbench retry request 改为通过 `DatalogueAgenticShell.record_action()` 写入 `workbench.retry_requested`；Chat SSE event projection 改为先经 `DatalogueAgenticShell.record_event()` 清洗，再由 writer 调用既有 `record_stream_event()` 投影到 AgentScope mirror。
-- 安全边界：Shell writer 只桥接 event/action/checkpoint 写回，不执行 BI 查询；`retry.started`、`retry.checkpoint_restored`、`dataset.query.completed`、`answer.completed` 等事件沿用原 envelope/Workbench projection，写回前继续阻断 SQL、schema、raw rows、query_plan 和内部执行载荷。
-- TDD 记录：先新增 PR1.4 writer 测试并确认 RED 为 Workbench action 没有 Shell 接入点、Chat SSE projection 没有调用 Shell `record_event()`；接入 writer 后转 GREEN。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_retry_writer.py -q`，2 条通过、2 个既有 warning；执行 `tests/test_agentic_shell_retry_writer.py tests/test_workbench_retry_actions.py tests/test_c3_workbench_acceptance.py -q`，13 条通过、10 个既有 warning；执行 observability/retry checkpoint 回归 4 条通过、6 个既有 warning；提交前 AS-R0 最小回归 42 条通过、4 个既有 warning，Workbench/observability/retry 回归 15 条通过、14 个既有 warning；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：PR1.4 完成 writer ownership 迁移，但新 Shell runtime 与 legacy direct stream 的 final payload/artifact refs/trace contract parity 仍留给 PR1.5。
-
-### 2026-07-01 11:48 · AS-R0 PR1.5 双路径灰度 parity
-
-- 涉及文件：`datalogue-api/tests/test_agentscope_chat_bridge.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-5.md`、`.codex/project-memory.md`
-- 关键改动：新增 `AS_R0_AGENTIC_RUNTIME_ENABLED=false/true` 双路径 parity harness，用同一 `_stream_chat` 请求验证 Shell runtime wrapper 与 legacy path 输出同一 final payload、同一 artifact refs 和同一 trace contract。
-- 安全边界：PR1.5 不默认开启新 runtime，不替换 DatasetAgent 主链，不把 P2 legacy 收敛提前；只把 PR1.1 已有 wrapper 行为固化为正式灰度验收闸门。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py::test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trace_contract -q`，1 条通过、2 个既有 warning；执行 AS-R0/chat 回归 `tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，45 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：P1 已完成；下一步 P2.1 要把 `_stream_chat` 收缩为 transport adapter，并把业务 turn lifecycle 从 `chat.py` 迁出。
-
-### 2026-07-01 11:48 · AS-R0 P2.1 `/chat/stream` transport adapter 收缩
-
-- 涉及文件：`datalogue-api/app/services/agentic_chat_runtime.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_agentscope_chat_bridge.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-p2-1.md`、`.codex/project-memory.md`
-- 关键改动：新增 `DatalogueChatStreamRuntime` 和 `DatalogueChatStreamRuntimeHooks`，把 `_stream_chat` 的单轮/多轮 wrapper lifecycle 迁出 `chat.py`；`chat.py` 现在只负责 settings、hook 装配和 SSE event 转发。
-- 安全边界：P2.1 不改 DatasetAgent 主链，不改用户可见 SSE payload，不处理 legacy `AgentScopeShellAdapter + ask_bi`；现有 mirror/retry/checkpoint/conversation state/observability helper 均通过 hooks 复用。
-- TDD 记录：先新增 transport adapter 委托测试并确认 RED 为 `app.api.chat` 缺少 `DatalogueChatStreamRuntime`；实现 service 后转 GREEN；回归发现 final 重复 yield 后修复为只输出补 thread_id 后的 final，同时保留 retry 终态前置事件顺序。
-- 验证方式：adapter 定向测试 1 条通过、2 个既有 warning；AS-R0/chat 回归 46 条通过、4 个既有 warning；Workbench/retry/observability 回归 15 条通过、14 个既有 warning；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：P2.2 要继续收敛 `AgentScopeShellAdapter + BIWorkbenchTool(ask_bi)` legacy compatibility，不能让旧 adapter 继续拥有业务 runtime ownership。
-
-### 2026-07-01 11:48 · AS-R0 P2.2 legacy adapter / ask_bi compatibility 收敛
-
-- 涉及文件：`datalogue-api/app/services/agentscope_shell_adapter.py`、`datalogue-api/app/services/bi_workbench_tool.py`、`datalogue-api/app/services/soul_contract_sync.py`、`datalogue-api/app/contracts/BI_SOUL.md`、`hermes-skills/datalogue/SOUL.md`、`datalogue-api/tests/test_agentscope_shell_adapter.py`、`datalogue-api/tests/test_bi_workbench_tool.py`、`datalogue-api/tests/test_bi_soul_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-p2-2.md`、`.codex/project-memory.md`
-- 关键改动：`AgentScopeShellAdapter` 与 `BIWorkbenchTool` 新增 compatibility contract，显式声明 `compatibility_mode=legacy_compatibility`、`runtime_owner=datalogue_agentic_shell`、`owns_business_runtime=false`。
-- 安全边界：legacy `ask_bi` 不再作为 AS-R0 新主链工具，不加回 BI atomic tool whitelist；BI_SOUL、Hermes SOUL 和 AgentScope policy renderer 同步改为 legacy compatibility 口径。
-- TDD 记录：先新增 adapter/tool compatibility contract 测试并确认 RED 为缺少 `compatibility_contract()`；实现 contract 后转 GREEN，并同步更新 BI_SOUL 同步测试。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py tests/test_bi_soul_contract.py tests/test_agentscope_runtime_driver_contract.py -q`，14 条通过、2 个既有 warning；AS-R0 最小回归 42 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：P2.3 要接入 future tools disabled/admin-gated contract，避免 repair/report/python 类工具被 Runtime 误执行。
-
-### 2026-07-01 11:48 · AS-R0 P2.3 future tools disabled/admin-gated contract
-
-- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-p2-3.md`、`.codex/project-memory.md`
-- 关键改动：新增 `AgenticDisabledToolSpec`，`AgenticToolPolicy` 和 `AgentScopeRuntimeBoundaryContract` 均透传 future tools 的结构化 disabled/admin-gated 状态。
-- 安全边界：`repair_dsl`、`create_report_from_artifact`、`run_sandboxed_analysis_on_artifact` 默认 `admin_gated/admin_only`；`classify_query_failure` 默认 `disabled/not_enabled`；这些工具不进入 Runtime executable `tool_registry`。
-- TDD 记录：先新增 Shell/Runtime future tool contract 测试并确认 RED 为缺少 `disabled_tool_specs`；实现结构化 spec 和 Runtime 透传后转 GREEN。
-- 验证方式：future tool 定向测试 2 条通过、2 个既有 warning；Shell/Runtime 契约回归 18 条通过、2 个既有 warning；AS-R0 最小回归 47 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：P2.4 要为 ReportAgent/PythonAgent/AuditAgent 做单独 enablement gate、单独白名单和单独验收。
-
-### 2026-07-01 12:43 · AS-R0 P2.4 业务 Agent 受控启用
-
-- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-p2-4.md`、`.codex/project-memory.md`
-- 关键改动：`DatalogueAgenticShell` 新增 `enabled_optional_agents` 受控启用入口；ReportAgent、PythonAgent、AuditAgent 默认仍是 disabled placeholder，显式启用时分别只开放 `create_report_from_artifact`、`run_sandboxed_analysis_on_artifact`、`classify_query_failure` 单一白名单；Runtime driver 只注册已启用 optional agent 的对应 tool spec。
-- 安全边界：未知 optional agent 配置 fail-closed；单个业务 Agent 启用不会连带启用其他 Agent 或 future tools；context projection 继续阻断 SQL、schema、raw rows、query_plan、RepairPatch、blueprint body 等禁区内容；P2.4 不实现真实业务执行器、不改变 `/chat/stream` 默认主链。
-- TDD 记录：先补三个 Shell enablement gate 测试和一个 Runtime registry 测试，确认 RED 为 `DatalogueAgenticShell.__init__()` 不支持 `enabled_optional_agents`；实现 registry gate、单 Agent whitelist 和 disabled spec 过滤后转 GREEN。
-- 验证方式：P2.4 定向测试 4 条通过、2 个既有 warning；Shell/Runtime 契约回归 22 条通过、2 个既有 warning；AS-R0 核心回归 51 条通过、4 个既有 warning；Workbench/retry/observability 回归 15 条通过、14 个既有 warning；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：AS-R0 P0/P1/P2 正式计划已完成；后续真实 Report/Python/Audit Agent 业务执行器或多数据集 fanout 迁出 legacy 需要新增已批准计划。
-
-### 2026-07-01 15:15 · AS-R0 PR1.3-b BI atomic runtime 直接接管执行核心
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/core/config.py`、`datalogue-api/app/services/agentic_dataset_runtime.py`、`datalogue-api/tests/test_agentic_dataset_runtime.py`、`datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py`、`datalogue-api/tests/test_agentscope_chat_bridge.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-3-b.md`、`.codex/project-memory.md`
-- 关键改动：正式计划追加已批准的 PR1.3-b，用于补齐 PR1.3 只建 runtime、不接 `/chat/stream` 执行核心的验收缺口；按用户新要求删除 `AS_R0_AGENTIC_RUNTIME_ENABLED` 与 `AS_R0_DATASET_ATOMIC_RUNTIME_ENABLED` 两个主链灰度开关，`/chat/stream` singleturn 默认进入 `DatalogueAgenticShell.run_turn()`，单数据集 BI 查询默认绕过 legacy `build_workflow(db)`，改用 `DatasetAgentToolCallRuntime + BIAtomicToolProvider` 串起 DSL compile、execute、artifact summary 和 final payload；同时新增 `DatasetAgentToolCallSession`、`DatasetAgentNextToolCall` 和 `handle_agent_tool_call()`，以 AgentScope 2.0 external tool event 模型承载“Agent 提出下一步 tool call，Datalogue Runtime 受控执行并回填结果”；后端日志改为 `dataset_agent.runtime.start/tool/result` 和 `chat.stream.dataset_agent_runtime_start/completed`，不再用 LangGraph / DatasetSubAgent 口径描述当前主链。
-- 安全边界：DatasetAgent 仍只能生成 DSL，SQL 只在 compile/execute tool 内部通过私有 handle 流转；compile 给 Agent 的可见响应只包含 `compiled_query_ref`，execute 只能接受同一会话内 compile 产生的 handle；Runtime fail-closed 校验工具白名单、固定调用顺序和敏感参数，明确阻断 SQL、sql_list、sql_result、schema、raw rows、query_plan、RepairPatch、blueprint body、物理字段明细进入 Agent context、SSE 用户可见层和 Workbench refs。
-- TDD 记录：先把 cutover 测试改为无 flag 场景并让 `build_workflow(db)` 抛错，确认 RED 暴露 `/chat/stream` 仍因开关缺失落回 legacy graph；再为 Agent next tool call、白名单、顺序、敏感参数和 forged compiled ref 增加 RED 测试；实现去灰度默认分支、受控会话状态机和 handle 绑定后转 GREEN；同步把 AgentScope chat bridge parity 测试从 flag on/off 改成无 flag 默认 Shell wrapper。
-- 验证方式：`cd datalogue-api && python3 -m pytest tests/test_agentic_dataset_runtime.py -q`，7 条通过、2 个既有 warning；`tests/test_as_r0_atomic_runtime_cutover.py` 1 条通过、2 个既有 warning；AS-R0 核心回归 `tests/test_agentic_dataset_runtime.py tests/test_as_r0_atomic_runtime_cutover.py tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_as_r0_security_matrix.py` 共 46 条通过、4 个既有 warning；`python3 -m compileall -q app/services/agentic_dataset_runtime.py app/api/chat.py app/core/config.py` 和 `git diff --check` 通过；去灰度后真实 `/api/chat/stream` 返回 `Atomic runtime 查询完成，共返回 0 行、0 列。`，Workbench mirror 线程 `as_b54341d8-2a07-4077-a514-3564a53910df` 状态为 completed，timeline 为 `dataset.selected -> dataset.query.completed -> answer.completed`，SSE/Workbench/后端日志扫描未命中 SQL/raw_rows/query_plan 等禁词。
-- 残留风险：多数据集 fanout 当前仍有 legacy `build_workflow(db)` 分支；`/chat/49` 右侧 Workbench Panel 按 `conv_49` 旧会话只读显示，`as_*` completed 状态通过 Workbench API 验证；`tests/test_bi_main_chain_acceptance.py` 中 2 条旧验收仍要求内部 `query_plan` 节点可见，和当前 provider-neutral/user-visible 安全口径存在存量漂移，未在本刀中改写。
-
-### 2026-07-01 15:32 · DatasetAgent Runtime 直通测试入口
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py`、`.codex/project-memory.md`
-- 关键改动：新增 `POST /api/chat/dataset-runtime/direct`，本地/测试环境可用 `question + dataset_id` 直接调用 `DatasetAgentToolCallRuntime + BIAtomicToolProvider`；入口构造最小 `routing/route_decision/lead_agent_context`，不调用 `build_lead_agent_context`、`route_query_intent` 或 legacy `build_workflow(db)`，用于单独压测 DatasetAgent Runtime 底座。
-- 安全边界：direct 入口在 `APP_ENV=production` 时返回 403；`dataset_id` 缺失返回 400，数据集不存在返回 404；仍复用 atomic runtime 的 SQL private handle、artifact ref 和输出清洗，不把 SQL/schema/raw rows/query_plan 暴露给调用方。
-- TDD 记录：先新增 `test_dataset_runtime_direct_entry_bypasses_lead_agent_and_legacy_graph`，确认 RED 为 `app.api.chat` 缺少 `dataset_runtime_direct`；实现 direct endpoint 后转 GREEN。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_as_r0_atomic_runtime_cutover.py::test_dataset_runtime_direct_entry_bypasses_lead_agent_and_legacy_graph -q`，1 条通过、2 个既有 warning；执行 `python3 -m compileall -q app/api/chat.py tests/test_as_r0_atomic_runtime_cutover.py` 通过。
-- 残留风险：direct 入口只是测试底座，不代表 `/chat/stream` 前置 LeadAgent 控制面已完全移除；当前 direct runtime 的 DSL generator 仍复用现有 `recall_candidate_assets + plan_query`，后续需要替换成真正 DatasetAgent-owned planner。整组 `tests/test_as_r0_atomic_runtime_cutover.py` 中既有 `/chat/stream` 测试在 observability disabled 时仍因 `trace_id` 为 `null` 断言失败，本次未扩大范围改写。
+- 涉及文件：`datalogue-api/app/services/agentscope_dataset_runtime.py`、`datalogue-api/app/services/agentscope_middlewares/`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`datalogue-api/pyproject.toml`、`datalogue-api/requirements.txt`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-3-c-agentscope-sdk-runtime.md`、`.codex/project-memory.md`
+- 关键改动：新增 `AgentScopeDatasetRuntimeBridge` 和 `DatasetAgentScopeExternalTool(ToolBase)`，六个 BI 原子工具以 `is_external_tool=True` 注册；bridge 监听 `RequireExternalExecutionEvent`，执行 Datalogue 受控 BI 工具层，并用 `ToolResultBlock/TextBlock/ToolResultState` 封装成 `ExternalExecutionResultEvent` 回填 AgentScope；新增 `run_reply_stream()` 驱动 `agent.reply_stream(msg) -> external execution -> agent.reply(external_event)`；`DatasetAgentScopeExternalTool` 通过 `ToolBase(middlewares=[...])` 默认挂载 `DatasetRuntimeToolLoggingMiddleware(ToolMiddlewareBase)`，工具调用日志不再散落在 Datalogue Runtime 编排代码里。
+- 安全边界：Permission hook 使用 `PermissionContext/PermissionDecision/PermissionBehavior` fail-closed 拦截非 BI Agent、未白名单工具、乱序调用、compile 前 execute、伪造 `compiled_query_ref` 和敏感入参；ToolResultBlock 只回填 `compiled_query_ref`、artifact ref、row/column count、error summary 等安全结果，不回填 SQL、schema、raw rows、query_plan 主体、物理字段明细、RepairPatch 或 blueprint body。
+- 依赖调整：新增 `agentscope==2.0.3`；因 AgentScope 2.0.3 经 `mcp` 依赖要求较新 Pydantic，后端依赖声明调整为 `pydantic>=2.11,<3`、`pydantic-settings>=2.6,<3`，避免 fresh install resolver 和 AgentScope SDK 冲突。
+- TDD 记录：先新增 AgentScope SDK bridge 测试并确认 RED 为缺少 `app.services.agentscope_dataset_runtime`；实现 ToolBase、permission、external event、ToolResultBlock 和 reply_stream loop 后转 GREEN；修正 DSL 中空 `sql_template` 占位不能被误判为 Agent 传 SQL。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_dataset_runtime_bridge.py -q`，7 条通过、2 个 warning；执行 AS-R0 宽回归 `tests/test_agentscope_dataset_runtime_bridge.py tests/test_agentic_dataset_runtime.py tests/test_as_r0_atomic_runtime_cutover.py tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_as_r0_security_matrix.py -q`，58 条通过、6 个 warning；官方 AgentScope 2.0 文档与本地 `agentscope==2.0.3` 签名确认 ToolBase、ToolMiddlewareBase、PermissionDecision、RequireExternalExecutionEvent、ExternalExecutionResultEvent、ToolResultBlock 接口可用；同步把 AS-R0 atomic cutover 测试调整为兼容 AgentScope bridge direct 入口。
+- 残留风险：当前 `/chat/stream` 生产主链仍使用 Datalogue direct atomic runtime；PR1.3-c 已补齐 AgentScope SDK bridge 和 fake agent loop，真实 LLM DatasetAgent 实例接入生产流仍需新增已批准计划。
 
 ### 2026-07-01 15:45 · 移除 Langfuse 技术栈并暂时关闭 Trace
 
@@ -214,3 +153,73 @@
 - TDD 记录：先新增 `test_runtime_stack_has_no_langfuse_references`，确认活动运行时/依赖/部署仍有 Langfuse 残留后 RED；移除依赖、配置、服务、API 挂载和前端入口后转 GREEN，并同步调整 observability/conversation 测试为 no Trace 语义。
 - 验证方式：`python3 -m pytest tests/test_remove_langfuse_stack.py tests/test_observability.py tests/test_conversation.py -q`，21 条通过、8 个既有 warning；`python3 -m compileall -q app` 通过；`npm run lint` 通过但保留 13 个既有 warning；`npm run build` 通过并保留 Vite chunk size warning；活动运行时/依赖/部署/前端源码 `rg -i langfuse` 无命中。
 - 残留风险：历史文档、项目记忆和旧迁移文件仍记录 Langfuse 作为历史事实，不属于运行时调用链；`tests/test_bi_main_chain_acceptance.py` 仍受 AS-R0 atomic runtime 接管和 trace index 下线影响失败，需另起任务重写旧五件套验收口径。
+
+### 2026-07-01 15:54 · DatasetAgent Runtime 字段缺失受控阻断
+
+- 涉及文件：`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`.codex/project-memory.md`
+- 关键改动：`BIAtomicToolProvider.execute_compiled_query()` 捕获 SQL preview 执行异常，将 MySQL `Unknown column`、SQLite `no such column` 和 PostgreSQL `undefined column` 统一收敛为 `FIELD_NOT_FOUND`，内部返回 `repair_required=true` 和固定摘要，不再让 DB 异常穿透到 DatasetAgent Runtime / AgentScope SDK bridge。
+- 安全边界：异常原文可能含表名、字段名或 SQL，provider 只返回错误分类和固定中文摘要；AgentScope bridge 经 Agentic Shell sanitizer 后只向 Agent 回填 `status=blocked/code=FIELD_NOT_FOUND`，不暴露 `project_manager.ZTGZL`、SQL、schema、raw rows 或 repair patch 主体。
+- TDD 记录：先新增 provider 和 AgentScope bridge 两个字段缺失回归测试，确认 RED 分别为 provider 直接抛 `RuntimeError`、bridge 输出 `ToolResultState.ERROR`；实现执行边界错误归一化后转 GREEN，并按 sanitizer 现有边界把 bridge 对外断言收紧为只看 `FIELD_NOT_FOUND`。
+- 验证方式：执行 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentic_shell_contract.py::test_bi_atomic_tool_provider_execute_field_missing_returns_repairable_block -q`，1 条通过、3 个既有 warning；执行 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py::test_agentscope_execute_field_missing_returns_blocked_repair_signal -q`，1 条通过、3 个既有 warning；执行相关回归 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentic_shell_contract.py datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py -q`，22 条通过、3 个既有 warning。
+- 残留风险：本次只补 DatasetAgent Runtime 的受控错误节点/repair 信号入口，尚未真正接入自动 RepairPatch 重写与重跑；`project_manager.ZTGZL` 的真实 schema 漂移仍需要后续 repair 节点或资产同步来完成自动修复。
+
+### 2026-07-01 15:58 · `/chat/stream` 单数据集直通 DatasetAgent Runtime
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py`、`.codex/project-memory.md`
+- 关键改动：在 message gateway 之后、LeadAgent span 之前新增单数据集直通分支；当请求显式携带 `dataset_id`、无澄清响应、无 pending clarification，且 gateway 判定为新查询时，直接构造最小 `routing/route_decision/lead_agent_context/initial_state` 并调用既有 `_stream_dataset_atomic_runtime_return()`，不再进入 `build_lead_agent_context()`、`route_query_intent()` 或 legacy `build_workflow(db)`。
+- 安全边界：直通路径只覆盖最窄的新查询；dataset select、clarify、pending clarification、interpret result 和多轮 refinement 继续走原控制面，避免跳过现有澄清/多轮保护；用户可见 SSE 仍复用 atomic runtime final、artifact ref 和清洗逻辑，不暴露 SQL、schema、raw rows 或 query_plan。
+- TDD 记录：先加严 `test_chat_stream_atomic_runtime_bypasses_legacy_graph_core_without_flag`，让 `build_lead_agent_context()` 与 `route_query_intent()` 被调用即失败，确认 RED 暴露主链仍进入 LeadAgent；新增直通判断和上下文构造后转 GREEN。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_as_r0_atomic_runtime_cutover.py -q`，2 条通过、2 个既有 warning；执行 `python3 -m compileall -q app/api/chat.py tests/test_as_r0_atomic_runtime_cutover.py` 通过；执行 `git diff --check -- datalogue-api/app/api/chat.py datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py` 通过；清理 `.DS_Store`、`__pycache__/`、`*.pyc` 缓存后排除 `.venv/node_modules/.worktrees/.git` 的缓存扫描为 0。
+- 残留风险：多数据集 fanout、澄清、多轮 refinement 和内部 subagent API 仍保留 legacy Graph/LeadAgent 分支；direct runtime 的 DSL generator 仍复用 `recall_candidate_assets + plan_query`，真正 DatasetAgent-owned planner 仍需后续替换。
+
+### 2026-07-01 16:08 · AgentScope DatasetAgent 暴露 `repair_dsl`
+
+- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/app/services/agentscope_dataset_runtime.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`.codex/project-memory.md`
+- 关键改动：`repair_dsl` 从 AS-R0 future disabled tools 移入 BI tool whitelist 和 AgentScope external tool 序列；`BIAtomicToolProvider` 保存私有 QueryPlan/编译上下文和字段缺失失败上下文，新增 `repair_dsl(compiled_query_ref)`，字段缺失后按同表同业务标签候选修复 DSL 并返回新的 private compiled handle；AgentScope bridge 动态状态机允许 `execute_compiled_query -> FIELD_NOT_FOUND -> repair_dsl -> execute_compiled_query`。
+- 安全边界：Agent 只能向 `repair_dsl` 传当前会话的 `compiled_query_ref`，不能传 RepairPatch body、schema、SQL 或字段候选；`repair_dsl` 仅在上一次 execute 返回 `FIELD_NOT_FOUND` 且本会话未修复过时允许调用一次；ToolResultBlock 只回填 `status=repaired`、新 `compiled_query_ref`、`agent_context` 和 `repair_count`，不暴露旧字段名、新字段名、SQL、schema、raw rows、query_plan 或 RepairPatch 主体。
+- TDD 记录：先把 Shell 白名单测试和 AgentScope bridge 字段缺失测试改成目标行为，确认 RED 分别为 `repair_dsl` 仍不在 allowed tools、bridge 对 `repair_dsl` 返回 DENIED；实现 provider 修复 handle、bridge permission/dynamic sequence 后转 GREEN；同步 Runtime driver disabled future tools 测试移除 `repair_dsl` 旧期望。
+- 验证方式：执行 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentic_shell_contract.py datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py -q`，22 条通过、3 个既有 warning；执行 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentscope_runtime_driver_contract.py datalogue-api/tests/test_as_r0_security_matrix.py datalogue-api/tests/test_agentic_dataset_runtime.py -q`，19 条通过、3 个既有 warning；执行 `datalogue-api/.venv/bin/python -m compileall -q datalogue-api/app/services/agentic_shell.py datalogue-api/app/services/agentic_bi_tools.py datalogue-api/app/services/agentscope_dataset_runtime.py datalogue-api/tests/test_agentic_shell_contract.py datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py` 通过；`git diff --check` 通过。
+- 残留风险：当前修复候选来自本次编译上下文中的同表同业务标签字段，尚未接入完整 `repair_patch.py` 的语义裁判、类型组兼容和持久化 patch/ref；真实 `project_manager.ZTGZL` 能否自动修复取决于 schema context 中是否已有同业务标签的替代字段。
+
+### 2026-07-01 16:31 · BI 原子工具 ToolBase/Toolkit 收口
+
+- 涉及文件：`datalogue-api/app/services/bi_tools/__init__.py`、`datalogue-api/app/services/bi_tools/atomic.py`、`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/app/services/agentic_dataset_runtime.py`、`datalogue-api/app/services/agentscope_dataset_runtime.py`、`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py`、`.codex/project-memory.md`
+- 关键改动：新增 `app.services.bi_tools` 包，`get_dataset_status/list_candidate_assets/compile_dsl_to_sql/execute_compiled_query/repair_dsl/create_query_artifact/get_artifact_summary` 均迁为 `ToolBase` 子类，并由 `DatalogueBIAtomicToolkit` / AgentScope `Toolkit` 容器统一暴露；`AgentScopeDatasetRuntimeBridge`、`DatasetAgentToolCallRuntime` 和 `/chat` 主链改为依赖 `toolkit=`；旧 `BIAtomicToolProvider` 仅保留为兼容门面并委托 Toolkit 执行。
+- 安全边界：compiled query 私有句柄、SQL、query_plan 主体、字段缺失 repair context 和 artifact 写入状态仍只保存在 Toolkit 受控上下文；ToolBase permission 继续 fail-closed 拦截未白名单工具、敏感入参、缺少 DSL 或伪造 compiled handle；Runtime registry 不再把 Provider 作为主工具提供方。
+- TDD 记录：先新增 `test_bi_atomic_tools_are_toolbase_classes_exposed_by_toolkit`，确认 RED 为缺少 `app.services.bi_tools`；实现独立工具包、Provider 兼容门面和 Runtime 依赖反转后转 GREEN，并同步 direct endpoint 与 runtime driver 测试口径。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_dataset_runtime_bridge.py tests/test_agentic_dataset_runtime.py tests/test_agentscope_runtime_driver_contract.py -q`，21 条通过、2 个既有 warning；执行 AS-R0 宽回归 `tests/test_agentic_shell_contract.py tests/test_as_r0_security_matrix.py tests/test_as_r0_atomic_runtime_cutover.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_dataset_runtime_bridge.py tests/test_agentic_dataset_runtime.py tests/test_agentscope_runtime_driver_contract.py -q`，64 条通过、6 个既有 warning；执行 `python3 -m compileall app/services/bi_tools app/services/agentic_bi_tools.py app/services/agentic_dataset_runtime.py app/services/agentscope_dataset_runtime.py app/services/agentscope_runtime_driver.py app/api/chat.py` 和 `git diff --check` 通过。
+- 残留风险：旧 `BIAtomicToolProvider` 名称仍因测试和部分兼容调用保留；确认外部调用已迁到 Toolkit 后，可另起清理 PR 删除 Provider 兼容门面并同步文档/测试中的历史命名。
+
+### 2026-07-01 16:44 · direct 入口接入 AgentScope repair_dsl 链路
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/agentscope_dataset_runtime.py`、`datalogue-api/app/services/agentscope_middlewares/dataset_tool_logging.py`、`datalogue-api/app/services/agentscope_middlewares/safe_log_summary.py`、`datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`.codex/project-memory.md`
+- 关键改动：`POST /api/chat/dataset-runtime/direct` 从旧 `DatasetAgentToolCallRuntime` 切到 `AgentScopeDatasetRuntimeBridge.run_direct_query()`；direct 入口仍复用现有 DSL generator，但 compile、execute、`FIELD_NOT_FOUND` 后的 `repair_dsl`、重跑、artifact summary 均通过 AgentScope external execution event 状态机执行；返回新增 `execution_path=agentscope_dataset_runtime_direct` 和 `tool_results`，同时保留 `tool_calls` 兼容别名；后端日志收敛为 ToolMiddlewareBase 层工具调用安全摘要，不再补 event-level `DatasetRuntimeLoggingMiddleware`。
+- 安全边界：direct 入口继续仅限非 production；`repair_dsl` 仍只能使用当前会话 `compiled_query_ref`，不能由调用方传 SQL/schema/query_plan/RepairPatch；ToolResult 只返回状态、refs、row/column count 和受控错误码；工具调用日志直接使用 AgentScope 2.0 `ToolMiddlewareBase` 和 `ToolBase(middlewares=...)`，事件回填层不再使用 AgentScope `MiddlewareBase` 单独打印。
+- TDD 记录：先新增 direct endpoint repair 测试并确认 RED 为旧 `execution_path=dataset_agent_runtime_direct` 且无 `repair_dsl`；实现 bridge direct 驱动和 route 接线后转 GREEN；同步修正旧 direct 旁路测试为新 helper 口径，并为 AgentScope SDK middleware API 差异补兼容测试。
+- 验证方式：执行 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py datalogue-api/tests/test_agentic_shell_contract.py datalogue-api/tests/test_agentscope_runtime_driver_contract.py -q`，33 条通过、5 个既有 warning。
+- 残留风险：`/chat/stream` 主链仍未切到 `AgentScopeDatasetRuntimeBridge`；direct endpoint 可用于你现在手工验证 repair_dsl，但生产流式问数要看到同样日志还需要后续把 stream atomic runtime 也切到 bridge。
+
+### 2026-07-01 16:49 · 删除 Dataset Runtime event-level Middleware 日志
+
+- 涉及文件：`datalogue-api/app/services/agentscope_middlewares/dataset_runtime_logging.py`、`datalogue-api/app/services/agentscope_middlewares/dataset_tool_logging.py`、`datalogue-api/app/services/agentscope_middlewares/safe_log_summary.py`、`datalogue-api/app/services/agentscope_middlewares/__init__.py`、`datalogue-api/app/services/agentic_dataset_runtime.py`、`datalogue-api/app/services/agentscope_dataset_runtime.py`、`datalogue-api/tests/test_agentic_dataset_runtime.py`、`docs/test-reports/2026-07-01-as-r0-pr1-3-b.md`、`docs/test-reports/2026-07-01-as-r0-pr1-3-c-agentscope-sdk-runtime.md`、`.codex/project-memory.md`
+- 关键改动：删除 `dataset_runtime_logging.py` 和 `DatasetRuntimeLoggingMiddleware(MiddlewareBase)`；旧固定 `DatasetAgentToolCallRuntime` 与 `AgentScopeDatasetRuntimeBridge` 不再为了日志构造/打印 `RequireExternalExecutionEvent` 与 `ExternalExecutionResultEvent`；新增 `safe_log_summary.py` 承接工具日志的安全摘要 helper，`DatasetRuntimeToolLoggingMiddleware(ToolMiddlewareBase)` 继续作为唯一 DatasetAgent Runtime 日志入口。
+- 安全边界：日志仍只输出安全计数与标志位，例如 `has_compiled_query_ref`、`has_artifact_ref`、`blocked_*_key_count`；不输出 SQL、schema、raw rows、物理字段、`query_plan` 主体、RepairPatch 主体或 blueprint 主体。
+- TDD 记录：先新增/改写测试，确认 RED 为 `DatasetRuntimeLoggingMiddleware` 仍导出且旧 runtime 仍打印 `[agentscope.dataset_runtime.*]`；移除导出、调用和文件本体后转 GREEN。
+- 验证方式：定向 RED/GREEN 测试 2 条通过、2 个既有 warning；`tests/test_agentscope_dataset_runtime_bridge.py tests/test_agentic_dataset_runtime.py -q` 16 条通过、2 个既有 warning。
+- 残留风险：真实 `agent.reply_stream()` 暂停/回填事件不再单独打印 event-level 日志；后续如要观察外部执行事件，应在 AgentScope SDK 标准 tracing/observability 层新增计划，而不是恢复 Datalogue 自研 Runtime 日志。
+
+### 2026-07-01 18:21 · 过期 Langfuse 文档清理
+
+- 涉及文件：`docs/archive/2026-07-01-langfuse-removal/`、`docs/上下文入口.md`、`docs/数语项目介绍手册.md`、`docs/数语系统设计方案.md`、`docs/main-chain-acceptance-record-template.md`、`docs/llm-eval-baseline-design.md`、`docs/golden-fixture-test-plan.md`、`scripts/export_langfuse_docs_to_docx.py`、`.codex/project-memory.md`
+- 关键改动：将 Langfuse 需求、开发、docx 和 metadata schema 专题文档移入归档目录并新增归档说明；当前入口、项目介绍、系统设计和五件套模板不再把 Langfuse、查询审计页、`/api/observability/*` 或 Trace 深链描述为现行能力；评估/fixture 文档改为使用历史 trace 归档、后端日志或 fixture 捕获结果作为样本来源。
+- 安全边界：历史验收记录和 C1/C2/C3 设计中的 Langfuse 描述保留为当时事实，不改写历史证据；新任务路由优先按 SSE step、response metadata、Workbench refs、数据库状态和后端日志核对当前链路。
+- 验证方式：执行 `rg` 扫描当前入口/手册/模板/脚本中的旧路径、`/audit-query`、`/api/observability`、`ObservabilityTraceIndex`、`langfuse_trace_id` 等引用；执行 `git diff --check` 通过。
+- 残留风险：部分历史架构、spec、计划和验收记录仍保留 Langfuse 作为历史上下文；如后续要彻底替换旧 C1/C2/C3 验收口径，需要另起任务按历史/当前边界分层改写。
+
+### 2026-07-01 18:40 · 过期代码第一/第二批清理
+
+- 涉及文件：`datalogue-api/app/api/observability.py`、`datalogue-api/app/services/observability/report.py`、`datalogue-api/app/services/observability/traces.py`、`datalogue-api/app/services/observability/prompt_registry.py`、`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/app/services/agentic_dataset_runtime.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_as_r0_security_matrix.py`、`datalogue-api/tests/workbench_retry_harness.py`、`datalogue-web/src/components/audit-query.jsx`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/styles.css`、`scripts/export_user_manual_docx.py`、`scripts/export_user_operation_manual_docx.py`、`.codex/project-memory.md`
+- 关键改动：删除未挂载的 `/api/observability` API 文件、报表/trace 服务、前端查询审计页组件和对应样式；消息卡片移除空 `TraceLinkCard` 与 observability 专属 metadata；`BIAtomicToolProvider` 兼容门面删除，测试改为直接使用 `build_bi_atomic_toolkit(...).execute_tool(...)`，`DatasetAgentToolCallRuntime` 构造函数只接受 `toolkit=`；Prompt Registry 收缩为本地 prompt 清单，移除远端同步函数和测试。
+- 安全边界：`ObservabilityTraceIndex` DB 模型与 `chat.py` 写入链暂保留，因为旧主链验收仍直接断言该表；Workbench retry harness 不再调用已下线 `/api/observability/traces/{trace_id}`，改为基于本次 stream/persisted events 组装 provider-neutral contract。
+- 验证方式：执行 `pytest datalogue-api/tests/test_agentic_shell_contract.py datalogue-api/tests/test_as_r0_security_matrix.py datalogue-api/tests/test_observability.py datalogue-api/tests/test_c3_workbench_acceptance.py -q`，40 条通过、11 个既有 warning；执行 `npm test -- --run src/assistant/chat-adapter.test.js`，12 条通过；执行 `npm run lint` 通过但保留 13 个既有 warning；执行 `npm run build` 通过并保留 Vite chunk size warning；执行残留 `rg` 扫描，当前代码和生成脚本不再引用已删 API、审计页组件、Provider 兼容壳或远端 prompt 同步函数。
+- 残留风险：第三批清理应单独处理 `ObservabilityTraceIndex` 模型、迁移、`chat.py` 写入链和旧五件套验收断言；这需要数据库/测试契约级迁移，不能和本次未挂载代码清理混在同一刀里。

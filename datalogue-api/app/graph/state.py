@@ -74,13 +74,13 @@ class AgentState(TypedDict):
     generation_mode: Optional[str]  # "semantic" | "inferred" — 供前端显示徽标
     term_normalization: Optional[dict]  # 业务术语归一化结果，含命中同义词和冲突澄清
     semantic_asset_resolution: Optional[dict]  # 术语/指标/维度/字段/蓝图统一资产解析结果
-    metric_resolution: Optional[dict]  # 指标/维度解析结果，供意图卡和审计
+    metric_resolution: Optional[dict]  # 指标/维度解析结果，供意图卡和内部排障
     candidate_assets: Optional[dict]  # SubAgent 统一候选资产召回结果，含 blueprint/metric/dimension/term/field/table
     query_plan: Optional[dict]  # SubAgent 查询规划结果，决定 blueprint_execute/query_graph/clarify 等执行策略
-    query_plan_debug: Optional[dict]  # 查询规划调试信息，供 trace 和审计页使用
-    query_plan_compilation: Optional[dict]  # 工具编译器产物，SQL 只允许作为执行/trace/artifact 元数据流转
+    query_plan_debug: Optional[dict]  # 查询规划调试信息，仅供内部排障和测试定位
+    query_plan_compilation: Optional[dict]  # 工具编译器产物，SQL 只允许作为执行/artifact 元数据流转
     control_plane: Optional[dict]  # 控制面执行元数据，不进入 LLM prompt
-    query_artifact: Optional[dict]  # 查询产物元数据，供多轮和审计引用
+    query_artifact: Optional[dict]  # 查询产物元数据，供多轮和结果回放引用
     # 数据集级 LLM 约束（硬性要求）— schema_recall_node 写入，report_generator 等
     # 不读 schema_context 的节点直接从这里取
     dataset_prompt_instructions: Optional[str]

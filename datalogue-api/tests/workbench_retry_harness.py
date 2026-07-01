@@ -254,26 +254,28 @@ async def run_workbench_retry_completed_harness(
         )
         ]
 
-    db_session.add(
-        models.ObservabilityTraceIndex(
-            trace_id=trace_id,
-            trace_session_id=session_id,
-            conversation_id=conversation.id,
-            message_id=None,
-            dataset_id=dataset_id,
-            entry_route="workbench_retry",
-            status="success",
-            total_tokens=0,
-            total_cost=0,
-            metadata_json={
+    required_events = [
+        "retry.checkpoint_restored",
+        "answer.completed",
+        "retry.completed",
+    ]
+    observed_event_types = set(event_types) | set(persisted_event_types)
+    missing_events = [event_type for event_type in required_events if event_type not in observed_event_types]
+    observability_detail = {
+        "found": True,
+        "trace_id": trace_id,
+        "source": "workbench_events",
+        "observability_contract": {
+            "passed": missing_events == [],
+            "required_events": required_events,
+            "missing_events": missing_events,
+            "attributes": {
                 "thread_id": session.thread_id,
                 "checkpoint_ref": checkpoint_ref,
                 "artifact_ref": primary_artifact_ref,
             },
-        )
-    )
-    db_session.commit()
-    observability_detail = client.get(f"/api/observability/traces/{trace_id}").json()
+        },
+    }
 
     return WorkbenchRetryCompletedHarnessResult(
         thread_id=session.thread_id,

@@ -86,7 +86,7 @@
 | `raw_response` / `raw_content` | LLM 原始输出可能有 token 级差异 |
 | `usage_metadata` / `token_count` | 投影开启后 prompt 长度不同，token 消耗必然不同 |
 | `prompt_version` / `prompt_source` | 可能因投影版本不同 |
-| `metadata` 中的 Langfuse 特定字段 | 观测系统内部字段 |
+| `metadata` 中的历史 Trace / 观测系统特定字段 | 观测系统内部字段，当前运行时不应作为等价性判定依据 |
 | `input_payload` 的原始长度 | 投影开启后输入被截断 |
 
 ---
@@ -127,7 +127,7 @@ def assert_planner_outputs_equivalent(off_plan: dict, on_plan: dict, fixture_nam
 
 ### 4.1 观测系统字段
 
-- Langfuse `trace_id`, `generation_id`, `span_id`
+- 历史 Trace `trace_id`, `generation_id`, `span_id`
 - `timestamp`, `created_at`, `updated_at`
 - `metadata` 中任何以 `_` 开头的内部字段
 

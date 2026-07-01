@@ -6,7 +6,7 @@
 # Responsibilities:
 #   - 验证 AS-R0 只启用 BI 主链 Agent，其他业务 Agent 作为 disabled placeholder。
 #   - 验证 Agentic Shell 的工具白名单、上下文投影和输出清洗安全边界。
-#   - 验证 BI atomic tool provider 第一阶段只暴露安全目录摘要，不泄露 SQL/schema/raw rows。
+#   - 验证 BI atomic toolkit 第一阶段只暴露安全目录摘要，不泄露 SQL/schema/raw rows。
 #
 # Author      : yangkai
 # Created On  : 2026-07-01
@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 from app.models.dataset import AnalysisBlueprint
 from app.services.artifact_store import ArtifactStore
-from app.services.agentic_bi_tools import BIAtomicToolProvider
 from app.services.agentic_shell import DatalogueAgenticShell, InMemoryAgenticShellWriter
+from app.services.bi_tools import build_bi_atomic_toolkit
 from app.services.subagent_planning import CandidateAsset, QueryPlan
 
 
@@ -56,18 +57,18 @@ def test_agentic_shell_as_r0_registry_enables_only_bi_main_chain():
         "list_candidate_assets",
         "compile_dsl_to_sql",
         "execute_compiled_query",
+        "repair_dsl",
         "create_query_artifact",
         "get_artifact_summary",
     ]
     assert contract.tool_policy.business_capabilities == ["query_dataset", "query_multiple_datasets"]
     assert "ask_bi" not in contract.tool_policy.allowed_tools
-    assert "repair_dsl" in contract.tool_policy.disabled_tools
+    assert "repair_dsl" not in contract.tool_policy.disabled_tools
     assert "create_report_from_artifact" in contract.tool_policy.disabled_tools
     future_tool_status = {
         tool.name: tool.status for tool in contract.tool_policy.disabled_tool_specs
     }
     assert future_tool_status == {
-        "repair_dsl": "admin_gated",
         "classify_query_failure": "disabled",
         "create_report_from_artifact": "admin_gated",
         "run_sandboxed_analysis_on_artifact": "admin_gated",
@@ -335,18 +336,19 @@ def test_agentic_shell_default_writer_is_noop_interface_only():
     assert record.payload == {"artifact_ref": "artifact:query:1"}
 
 
-def test_bi_atomic_tool_provider_and_runtime_driver_import_in_clean_process():
+def test_bi_atomic_toolkit_and_runtime_driver_import_in_clean_process():
     result = subprocess.run(
         [
             sys.executable,
             "-c",
             (
                 "import importlib;"
-                "importlib.import_module('app.services.agentic_bi_tools');"
+                "importlib.import_module('app.services.bi_tools');"
                 "importlib.import_module('app.services.agentscope_runtime_driver')"
             ),
         ],
         check=False,
+        cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
         text=True,
     )
@@ -354,7 +356,7 @@ def test_bi_atomic_tool_provider_and_runtime_driver_import_in_clean_process():
     assert result.returncode == 0, result.stderr
 
 
-def test_bi_atomic_tool_provider_exposes_safe_dataset_status_and_full_catalog(
+def test_bi_atomic_toolkit_exposes_safe_dataset_status_and_full_catalog(
     db_session,
     sample_dataset,
 ):
@@ -371,10 +373,14 @@ def test_bi_atomic_tool_provider_exposes_safe_dataset_status_and_full_catalog(
     db_session.commit()
     db_session.refresh(blueprint)
 
-    provider = BIAtomicToolProvider(db_session)
+    toolkit = build_bi_atomic_toolkit(db_session)
 
-    status = provider.get_dataset_status(sample_dataset.id)
-    catalog = provider.list_candidate_assets(sample_dataset.id, question="这个参数第一阶段保留但不参与召回")
+    status = toolkit.execute_tool("get_dataset_status", dataset_id=sample_dataset.id)
+    catalog = toolkit.execute_tool(
+        "list_candidate_assets",
+        dataset_id=sample_dataset.id,
+        question="这个参数第一阶段保留但不参与召回",
+    )
 
     assert status == {
         "dataset_id": sample_dataset.id,
@@ -404,11 +410,11 @@ def test_bi_atomic_tool_provider_exposes_safe_dataset_status_and_full_catalog(
         assert forbidden not in dumped
 
 
-def test_bi_atomic_tool_provider_compiles_dsl_to_private_handle_without_sql(
+def test_bi_atomic_toolkit_compiles_dsl_to_private_handle_without_sql(
     db_session,
     sample_dataset,
 ):
-    provider = BIAtomicToolProvider(db_session)
+    toolkit = build_bi_atomic_toolkit(db_session)
     dsl = QueryPlan(
         query_type="detail_query",
         execution_strategy="query_graph",
@@ -420,7 +426,8 @@ def test_bi_atomic_tool_provider_compiles_dsl_to_private_handle_without_sql(
         debug={"selected_main_table": "user_logs"},
     ).to_dict()
 
-    response = provider.compile_dsl_to_sql(
+    response = toolkit.execute_tool(
+        "compile_dsl_to_sql",
         dataset_id=sample_dataset.id,
         dsl=dsl,
         sql_generation_context={"table_schemas": [{"table_name": "user_logs"}]},
@@ -442,7 +449,7 @@ def test_bi_atomic_tool_provider_compiles_dsl_to_private_handle_without_sql(
         assert forbidden not in dumped.lower()
 
 
-def test_bi_atomic_tool_provider_executes_private_handle_to_artifact_without_rows_in_response(
+def test_bi_atomic_toolkit_executes_private_handle_to_artifact_without_rows_in_response(
     db_session,
     sample_dataset,
 ):
@@ -456,8 +463,9 @@ def test_bi_atomic_tool_provider_executes_private_handle_to_artifact_without_row
             "row_count": 1,
         }
 
-    provider = BIAtomicToolProvider(db_session, query_executor=fake_executor)
-    compiled = provider.compile_dsl_to_sql(
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=fake_executor)
+    compiled = toolkit.execute_tool(
+        "compile_dsl_to_sql",
         dataset_id=sample_dataset.id,
         dsl=QueryPlan(
             query_type="detail_query",
@@ -471,7 +479,8 @@ def test_bi_atomic_tool_provider_executes_private_handle_to_artifact_without_row
         allowed_tables=["user_logs"],
     )
 
-    response = provider.execute_compiled_query(
+    response = toolkit.execute_tool(
+        "execute_compiled_query",
         compiled_query_ref=compiled["compiled_query_ref"],
         dataset_id=sample_dataset.id,
         conversation_id=7,
@@ -496,10 +505,52 @@ def test_bi_atomic_tool_provider_executes_private_handle_to_artifact_without_row
     assert artifact.content_json["rows"] == [{"账号": "alice"}]
 
 
-def test_bi_atomic_tool_provider_executes_unknown_handle_fail_closed(db_session):
-    provider = BIAtomicToolProvider(db_session, query_executor=lambda _sql: {"rows": []})
+def test_bi_atomic_toolkit_execute_field_missing_returns_repairable_block(
+    db_session,
+    sample_dataset,
+):
+    def missing_field_executor(_sql: str):
+        raise RuntimeError(
+            '(pymysql.err.OperationalError) (1054, "Unknown column '
+            "'project_manager.ZTGZL' in 'field list'\")"
+        )
 
-    response = provider.execute_compiled_query(compiled_query_ref="compiled_query:missing")
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=missing_field_executor)
+    compiled = toolkit.execute_tool(
+        "compile_dsl_to_sql",
+        dataset_id=sample_dataset.id,
+        dsl=QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.86,
+            selected_assets=[_field_asset("项目总体工作量", "project_manager", "ZTGZL")],
+            debug={"selected_main_table": "project_manager"},
+        ),
+        sql_generation_context={"table_schemas": [{"table_name": "project_manager"}]},
+        dialect="mysql",
+        allowed_tables=["project_manager"],
+    )
+
+    response = toolkit.execute_tool(
+        "execute_compiled_query",
+        compiled_query_ref=compiled["compiled_query_ref"],
+        dataset_id=sample_dataset.id,
+    )
+
+    assert response == {
+        "status": "blocked",
+        "code": "FIELD_NOT_FOUND",
+        "repair_required": True,
+        "error_summary": "执行查询时发现字段不存在，已阻断本次执行并等待修复节点处理。",
+        "compiled_query_ref": compiled["compiled_query_ref"],
+        "artifact_ref": None,
+    }
+
+
+def test_bi_atomic_toolkit_executes_unknown_handle_fail_closed(db_session):
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=lambda _sql: {"rows": []})
+
+    response = toolkit.execute_tool("execute_compiled_query", compiled_query_ref="compiled_query:missing")
 
     assert response == {
         "status": "not_found",
@@ -508,7 +559,7 @@ def test_bi_atomic_tool_provider_executes_unknown_handle_fail_closed(db_session)
     }
 
 
-def test_bi_atomic_tool_provider_execute_rejects_dataset_mismatch_without_executor(
+def test_bi_atomic_toolkit_execute_rejects_dataset_mismatch_without_executor(
     db_session,
     sample_dataset,
 ):
@@ -518,8 +569,9 @@ def test_bi_atomic_tool_provider_execute_rejects_dataset_mismatch_without_execut
         executed_sql.append(sql)
         return {"rows": [{"账号": "alice"}]}
 
-    provider = BIAtomicToolProvider(db_session, query_executor=fake_executor)
-    compiled = provider.compile_dsl_to_sql(
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=fake_executor)
+    compiled = toolkit.execute_tool(
+        "compile_dsl_to_sql",
         dataset_id=sample_dataset.id,
         dsl=QueryPlan(
             query_type="detail_query",
@@ -533,7 +585,8 @@ def test_bi_atomic_tool_provider_execute_rejects_dataset_mismatch_without_execut
         allowed_tables=["user_logs"],
     )
 
-    response = provider.execute_compiled_query(
+    response = toolkit.execute_tool(
+        "execute_compiled_query",
         compiled_query_ref=compiled["compiled_query_ref"],
         dataset_id=sample_dataset.id + 999,
     )

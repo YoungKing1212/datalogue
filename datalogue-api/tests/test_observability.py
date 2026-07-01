@@ -25,7 +25,6 @@ from app.services.observability.masking import sanitize_payload, sanitize_sql, s
 from app.services.observability.prompt_registry import (
     RegisteredPrompt,
     get_registered_prompts,
-    sync_registered_prompts,
 )
 from app.services.observability.tracer import (
     DatalogueTracer,
@@ -123,7 +122,7 @@ def test_token_usage_estimates_when_provider_usage_missing():
 
 
 def test_prompt_registry_contains_runtime_prompt_names():
-    """脚本应覆盖运行期已在 Observability 拉取的 prompt 名称。"""
+    """本地注册表应覆盖运行期 prompt 名称。"""
 
     names = {item.name for item in get_registered_prompts()}
 
@@ -135,68 +134,25 @@ def test_prompt_registry_contains_runtime_prompt_names():
     assert "dsl_generate_real_schema" in names
 
 
-def test_sync_registered_prompts_skips_unchanged_and_creates_changed():
-    """同步脚本应避免未变化 prompt 反复创建版本，除非显式 force。"""
+def test_registered_prompt_config_is_stable_for_local_audit():
+    """本地 Prompt 清单仍提供稳定配置，供离线审计和版本比对使用。"""
 
-    created = []
-
-    class RemotePrompt:
-        def __init__(self, prompt, config=None):
-            self.prompt = prompt
-            self.version = 7
-            self.config = config or {}
-
-    class FakeClient:
-        def get_prompt(self, name, **_kwargs):
-            if name == "same_prompt":
-                return RemotePrompt(
-                    "same",
-                    {
-                        "display_name": "相同 Prompt",
-                        "chinese_name": "相同 Prompt",
-                        "chinese_description": "相同",
-                        "description": "相同",
-                        "variables": [],
-                        "prompt_pack_version": "2026-06-12-current",
-                    },
-                )
-            return RemotePrompt("old")
-
-        def create_prompt(self, **kwargs):
-            created.append(kwargs)
-            return type("CreatedPrompt", (), {"version": 8})()
-
-    prompts = [
-        RegisteredPrompt(
-            name="same_prompt",
-            display_name="相同 Prompt",
-            prompt="same",
-            description="相同",
-        ),
-        RegisteredPrompt(
-            name="changed_prompt",
-            display_name="变化 Prompt",
-            prompt="changed",
-            description="变化",
-        ),
-    ]
-
-    results = sync_registered_prompts(
-        FakeClient(),
-        prompts=prompts,
-        label="production",
-        apply=True,
+    prompt = RegisteredPrompt(
+        name="local_prompt",
+        display_name="本地 Prompt",
+        prompt="content",
+        description="本地说明",
+        variables=("question",),
     )
 
-    assert results[0]["action"] == "skipped"
-    assert results[0]["version"] == 7
-    assert results[1]["action"] == "created"
-    assert results[1]["display_name"] == "变化 Prompt"
-    assert results[1]["description"] == "变化"
-    assert created[0]["name"] == "changed_prompt"
-    assert created[0]["labels"] == ["production"]
-    assert created[0]["config"]["chinese_name"] == "变化 Prompt"
-    assert created[0]["config"]["chinese_description"] == "变化"
+    assert prompt.observability_config() == {
+        "display_name": "本地 Prompt",
+        "chinese_name": "本地 Prompt",
+        "chinese_description": "本地说明",
+        "description": "本地说明",
+        "variables": ["question"],
+        "prompt_pack_version": "2026-06-12-current",
+    }
 
 
 def test_tracer_methods_do_not_call_external_client():

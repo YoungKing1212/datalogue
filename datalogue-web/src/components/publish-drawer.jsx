@@ -277,7 +277,7 @@ function PdLimits({ form, update }) {
         <PdInlineRow label="鉴权方式" right={<span className="mono text-2">Bearer Token (API Key)</span>} />
         <PdInlineRow label="IP 白名单" hint="留空表示不限制" right={<input className="st-input small mono" placeholder="10.0.0.0/8, 192.168.0.0/16" />} />
         <PdInlineRow label="对返回数据进行脱敏" hint="自动掩码手机号、身份证、邮箱" right={<PdToggle defaultValue={true} />} />
-        <PdInlineRow label="启用审计日志" hint="所有调用记录到审计页" right={<PdToggle defaultValue={true} />} />
+        <PdInlineRow label="启用调用日志" hint="所有调用记录到后端日志和接口调用记录" right={<PdToggle defaultValue={true} />} />
       </div>
     </div>
   );

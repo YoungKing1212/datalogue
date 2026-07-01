@@ -485,7 +485,6 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
           traceId: ev.trace_id || null,
           sessionId: ev.trace_session_id || null,
           messageId: ev.message_id || null,
-          observability: ev.observability || null,
         });
         if (ev.sql_result) {
           setSqlResult({

@@ -419,9 +419,6 @@ export function buildHistoryMessageCustom(message, traces = []) {
     routePayload: null,
     clarification: safeClarification(metadata.clarification, metadata.route_payload),
     messageId: message?.id || null,
-    observabilityTraceId: metadata.observability?.trace_id || null,
-    observabilitySessionId: metadata.observability?.session_id || null,
-    observability: metadata.observability || metadata.observability || null,
     stepTrace: safeTraces,
     feedback: metadata.feedback || null,
   };

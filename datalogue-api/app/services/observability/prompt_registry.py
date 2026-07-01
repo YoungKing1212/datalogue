@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : prompt_registry.py
 # Description:
-#   Datalogue 需要纳入 Observability Prompt Manager 的 Prompt 注册表。
+#   Datalogue 本地 Prompt 注册表。
 #
 # Responsibilities:
 #   - 汇总当前代码内 Prompt 的名称、模板内容和变量声明。
-#   - 为运行期拉取和 Observability 种子脚本提供同一份 Prompt 清单。
+#   - 为运行期 prompt 基线、测试和离线审计提供同一份本地 Prompt 清单。
 #
 # Author      : yangkai
 # Created On  : 2026-06-12
@@ -60,7 +60,7 @@ DATALOGUE_COMPACTION_FALLBACK_PROMPT = """你是 Datalogue 多轮问数会话压
 
 @dataclass(frozen=True)
 class RegisteredPrompt:
-    """Observability Prompt Manager 中的一条 text prompt 定义。"""
+    """本地注册表中的一条 text prompt 定义。"""
 
     name: str
     display_name: str
@@ -71,7 +71,7 @@ class RegisteredPrompt:
     config: dict[str, Any] = field(default_factory=dict)
 
     def observability_config(self) -> dict[str, Any]:
-        """生成写入 Observability 的结构化配置。"""
+        """生成用于本地审计和版本比对的结构化配置。"""
 
         return {
             "display_name": self.display_name,
@@ -93,7 +93,7 @@ def build_dataset_prompt_block(dataset_prompt: str | None) -> str:
 
 
 def get_registered_prompts() -> list[RegisteredPrompt]:
-    """返回当前代码版本需要创建到 Observability 的 Prompt 清单。"""
+    """返回当前代码版本的本地 Prompt 清单。"""
 
     return [
         RegisteredPrompt(
@@ -211,75 +211,3 @@ def prompt_registry_by_name() -> dict[str, RegisteredPrompt]:
     """按 prompt name 索引注册表。"""
 
     return {item.name: item for item in get_registered_prompts()}
-
-
-def extract_prompt_content(remote_prompt: Any) -> str:
-    """兼容 Observability text/chat prompt client 的内容读取。"""
-
-    content = getattr(remote_prompt, "prompt", None) or getattr(remote_prompt, "content", None)
-    if isinstance(content, list):
-        return "\n".join(
-            str(item.get("content", item)) if isinstance(item, dict) else str(item)
-            for item in content
-        )
-    return str(content or "")
-
-
-def extract_prompt_config(remote_prompt: Any) -> dict[str, Any]:
-    """读取 Observability prompt config，失败时返回空对象。"""
-
-    config = getattr(remote_prompt, "config", None)
-    if isinstance(config, dict):
-        return config
-    return {}
-
-
-def sync_registered_prompts(
-    client: Any,
-    *,
-    prompts: list[RegisteredPrompt] | None = None,
-    label: str = "production",
-    apply: bool = False,
-    skip_unchanged: bool = True,
-) -> list[dict[str, Any]]:
-    """将注册表同步到 Observability；默认只返回 dry-run 结果。"""
-
-    results: list[dict[str, Any]] = []
-    for item in prompts or get_registered_prompts():
-        result = {
-            "name": item.name,
-            "display_name": item.display_name,
-            "description": item.description,
-            "label": label,
-            "action": "dry_run",
-            "version": None,
-            "reason": None,
-        }
-        if apply and skip_unchanged:
-            try:
-                remote = client.get_prompt(item.name, label=label, type="text")
-                if (
-                    extract_prompt_content(remote) == item.prompt
-                    and extract_prompt_config(remote) == item.observability_config()
-                ):
-                    result["action"] = "skipped"
-                    result["version"] = getattr(remote, "version", None)
-                    result["reason"] = "unchanged"
-                    results.append(result)
-                    continue
-            except Exception:
-                pass
-        if apply:
-            created = client.create_prompt(
-                name=item.name,
-                prompt=item.prompt,
-                labels=[label],
-                tags=list(item.tags),
-                type="text",
-                config=item.observability_config(),
-                commit_message=f"Seed Datalogue prompt pack {PROMPT_PACK_VERSION}",
-            )
-            result["action"] = "created"
-            result["version"] = getattr(created, "version", None)
-        results.append(result)
-    return results

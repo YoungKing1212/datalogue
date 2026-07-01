@@ -12,7 +12,7 @@ import { Icon } from './icons';
 //   metricResolution {metrics, dimensions, all_matched, unresolved} 指标解析结果
 //   generationMode   'semantic'|'inferred'|null  DSL 生成模式
 //   sqlResult        {rows, columns, elapsed_ms}  执行摘要（null = 未就绪）
-//   traceMeta        {traceId, sessionId, messageId, observability} Observability 观测元数据
+//   traceMeta        {traceId, sessionId, messageId} 本轮执行完成元数据
 // 普通 Chat 用户可见面板只展示业务级执行摘要，不展示 SQL 文本或复制入口。
 
 const BUSINESS_STEP_NAMES = {

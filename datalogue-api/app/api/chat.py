@@ -13,6 +13,7 @@
 
 # 问数对话路由 — SSE transport + Agentic Shell / DatasetAgent Runtime 主链
 
+import asyncio
 import json
 import logging
 import re
@@ -93,9 +94,10 @@ from app.services.agentic_chat_runtime import (
     DatalogueChatStreamRuntime,
     DatalogueChatStreamRuntimeHooks,
 )
-from app.services.agentic_bi_tools import BIAtomicToolProvider
 from app.services.agentic_dataset_runtime import DatasetAgentToolCallRuntime
+from app.services.agentscope_dataset_runtime import AgentScopeDatasetRuntimeBridge
 from app.services.agentscope_runtime_driver import DatalogueAgentScopeRuntimeDriver
+from app.services.bi_tools import build_bi_atomic_toolkit
 from app.services.message_gateway import classify_turn_event
 from app.services.task_capsule import (
     build_query_task_capsule,
@@ -1847,6 +1849,169 @@ def _should_use_dataset_atomic_runtime(
     }
 
 
+def _should_bypass_lead_agent_for_dataset_runtime(
+    *,
+    payload: schemas.ChatRequest,
+    effective_dataset_id: int | None,
+    turn_event: dict,
+    pending_resolution: dict | None,
+    multiturn_context: dict | None,
+) -> bool:
+    """判断 /chat/stream 是否可直接进入 DatasetAgent Runtime，绕过 LeadAgent planner。"""
+
+    if payload.dataset_id is None or effective_dataset_id is None:
+        return False
+    if payload.clarification_response is not None:
+        return False
+    if pending_resolution:
+        return False
+    if (multiturn_context or {}).get("pending_clarification"):
+        return False
+    # 只让明确的新查询直通；澄清、数据集选择、结果解释和多轮 refinement 暂时继续走原控制面。
+    return turn_event.get("event_type") in {"new_query", "query"} and bool(
+        turn_event.get("should_enter_graph", True)
+    )
+
+
+def _build_dataset_runtime_direct_stream_context(
+    *,
+    db: Session,
+    payload: schemas.ChatRequest,
+    effective_dataset_id: int,
+    turn_event: dict,
+    last_success_task_status: dict,
+    multiturn_context: dict | None,
+    query_task_capsule: dict,
+) -> tuple[dict, dict, dict, dict]:
+    """构造 DatasetAgent Runtime 直通主链上下文；显式记录 LeadAgent 已被旁路。"""
+
+    dataset = db.get(models.SemanticDataset, effective_dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    route_decision = {
+        "decision": "selected",
+        "dataset_id": effective_dataset_id,
+        "dataset_name": dataset.name,
+        "score": 1.0,
+        "reason": "dataset_agent_runtime_direct_main_chain",
+    }
+    schema_status = {
+        "status": "ok",
+        "stale": False,
+        "dataset_id": effective_dataset_id,
+        "reason": "dataset_agent_runtime_direct_main_chain",
+    }
+    routing = {
+        "intent": "detail_query",
+        "entities": {},
+        "entry_intent": "detail_query",
+        "entry_route": "query_graph",
+        "entry_reason": "dataset_agent_runtime_direct_main_chain",
+        "route_payload": {
+            "kind": "dataset_agent_runtime_direct",
+            "turn_event": turn_event,
+            "lead_agent_bypassed": True,
+        },
+    }
+    lead_agent_context = {
+        "tool_policy": {"mode": "dataset_agent_runtime_direct"},
+        "skills": [],
+        "selected_skills": [],
+        "planned_tool_calls": [],
+        "executed_tool_calls": [
+            {
+                "tool": "dataset_agent_runtime_direct",
+                "reason": "请求已显式携带 dataset_id，单数据集 BI 查询直接交给 DatasetAgent Runtime。",
+            }
+        ],
+        "system_inferred_tool_calls": [],
+        "policy_violations": [],
+        "progressive_disclosure": False,
+        "disclosed_tools": [],
+        "skill_selection_reasoning_summary": None,
+        "tool_planning_reasoning_summary": None,
+        "planner_fallback": False,
+        "fallback_reason": None,
+        "planner_reasoning_summary": "LeadAgent planner 已旁路，DatasetAgent Runtime 直接接管单数据集查询。",
+        "original_question": payload.question,
+        "resolved_question": payload.question,
+        "multiturn_context": multiturn_context or {},
+        "multiturn_classification": {"intent": "new_query", "source": "message_gateway"},
+        "multiturn_refinement": {},
+        "active_dataset_id": effective_dataset_id,
+        "inheritance_summary": None,
+        "time_context": {},
+        "thread_context": multiturn_context or {},
+        "route_decision": route_decision,
+        "schema_status": schema_status,
+        "manifest_guard": {"status": "ok", "reason": "dataset_agent_runtime_direct_main_chain"},
+        "clarification": None,
+        "dispatch": {"dataset_id": effective_dataset_id, "source": "dataset_agent_runtime_direct"},
+        "audit_trace": [],
+        "should_continue": True,
+        "effective_dataset_id": effective_dataset_id,
+        "lead_agent_bypassed": True,
+    }
+    initial_state = {
+        "question": payload.question,
+        "original_question": payload.question,
+        "resolved_question": payload.question,
+        "dataset_id": effective_dataset_id,
+        "manifest_version": None,
+        "bound_schema_version": None,
+        "time_context": {},
+        "thread_context": multiturn_context or {},
+        "route_decision": route_decision,
+        "schema_status": schema_status,
+        "lead_agent_context": lead_agent_context,
+        "skip_subagent_report": True,
+        "report_owner": "dataset_agent_runtime",
+        "subagent_report_skipped": True,
+        "lead_agent_report": None,
+        "history": [],
+        "clarification_response": None,
+        "prior_capsule": None,
+        "prior_capsule_status": {
+            "status": "disabled",
+            "reason": "dataset_agent_runtime_direct_main_chain",
+        },
+        "last_success_task_status": last_success_task_status,
+        "multiturn_fast_path": {
+            "status": "disabled",
+            "reason": "dataset_agent_runtime_direct_main_chain",
+        },
+        "out_capsule": None,
+        "multiturn_context": multiturn_context or {},
+        "turn_type": "new_query",
+        "merge_debug": {"dataset_agent_runtime_direct": True},
+        "intent": "detail_query",
+        "entities": {},
+        "entry_intent": routing["entry_intent"],
+        "entry_route": routing["entry_route"],
+        "entry_reason": routing["entry_reason"],
+        "route_payload": routing["route_payload"],
+        "query_constraints": None,
+        "candidate_assets": None,
+        "query_plan": None,
+        "query_plan_debug": None,
+        "dsl": None,
+        "dsl_valid": False,
+        "sql": None,
+        "sql_result": None,
+        "answer": None,
+        "sql_list": [],
+        "error": None,
+        "retry_count": 0,
+        "max_retry_count": 3,
+        "should_retry": False,
+        "sql_retry_trace": [],
+        "token_usage": None,
+        "turn_event": turn_event,
+        "query_task_capsule": query_task_capsule,
+    }
+    return routing, route_decision, lead_agent_context, initial_state
+
+
 def _atomic_allowed_tables_and_sql_context(
     dataset: models.SemanticDataset,
 ) -> tuple[list[str], dict[str, Any]]:
@@ -1975,14 +2140,6 @@ async def _stream_dataset_atomic_runtime_return(
         getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "sqlite"
     )
     started_at = time.monotonic()
-    _log_chat_stream_checkpoint(
-        "dataset_agent_runtime_start",
-        conversation_id=conv_id,
-        dataset_id=effective_dataset_id,
-        trace_id=trace_context.trace_id,
-        entry_route=routing.get("entry_route"),
-        entry_intent=routing.get("entry_intent"),
-    )
     running_payload = {
         "type": "step",
         "node": "dataset_atomic_runtime",
@@ -2011,7 +2168,7 @@ async def _stream_dataset_atomic_runtime_return(
         trace_tags=["as-r0", "atomic-runtime"],
     )
 
-    provider = BIAtomicToolProvider(
+    toolkit = build_bi_atomic_toolkit(
         db,
         query_executor=_build_atomic_query_executor(
             db=db,
@@ -2020,7 +2177,7 @@ async def _stream_dataset_atomic_runtime_return(
         ),
     )
     runtime = DatasetAgentToolCallRuntime(
-        provider=provider,
+        toolkit=toolkit,
         dsl_generator=_build_atomic_dsl_generator(
             db=db,
             dataset_id=effective_dataset_id,
@@ -2045,19 +2202,6 @@ async def _stream_dataset_atomic_runtime_return(
     status = str(atomic_result.get("status") or "blocked")
     row_count = atomic_result.get("row_count") if status == "completed" else None
     column_count = atomic_result.get("column_count") if status == "completed" else None
-    _log_chat_stream_checkpoint(
-        "dataset_agent_runtime_completed",
-        conversation_id=conv_id,
-        dataset_id=effective_dataset_id,
-        trace_id=trace_context.trace_id,
-        status=status,
-        elapsed_ms=elapsed_ms,
-        row_count=row_count or 0,
-        column_count=column_count or 0,
-        artifact_ref=atomic_result.get("artifact_ref"),
-        tool_count=len(atomic_result.get("tool_calls") or []),
-        error_code=atomic_result.get("code") if status != "completed" else None,
-    )
     done_payload = {
         "type": "step",
         "node": "dataset_atomic_runtime",
@@ -2495,6 +2639,96 @@ async def _stream_chat_singleturn(
         turn_event=turn_event,
         last_success_task_status=last_success_task_status,
     )
+    if _should_bypass_lead_agent_for_dataset_runtime(
+        payload=payload,
+        effective_dataset_id=effective_dataset_id,
+        turn_event=turn_event,
+        pending_resolution=pending_resolution,
+        multiturn_context=multiturn_context,
+    ):
+        direct_query_task_capsule = build_query_task_capsule(
+            question=payload.question,
+            turn_event=turn_event,
+            active_dataset_id=effective_dataset_id,
+            last_success_task=thread_last_success_task,
+            last_success_task_status=last_success_task_status,
+        )
+        trace_query_task_capsule = _safe_query_task_capsule_for_trace(direct_query_task_capsule)
+        routing, route_decision, lead_agent_context, initial_state = (
+            _build_dataset_runtime_direct_stream_context(
+                db=db,
+                payload=payload,
+                effective_dataset_id=int(effective_dataset_id),
+                turn_event=turn_event,
+                last_success_task_status=last_success_task_status,
+                multiturn_context=multiturn_context,
+                query_task_capsule=direct_query_task_capsule,
+            )
+        )
+        gateway_step_payload = {
+            "type": "step",
+            "node": "message_gateway",
+            "display_name": _NODE_DISPLAY_NAMES["message_gateway"],
+            "status": "done",
+            "turn_event": turn_event,
+            "query_task_capsule": trace_query_task_capsule,
+            "payload": {
+                "turn_event": turn_event,
+                "query_task_capsule": trace_query_task_capsule,
+                "last_success_task_status": last_success_task_status,
+                "dataset_agent_runtime_direct": True,
+            },
+        }
+        step_traces = [gateway_step_payload]
+        _log_chat_stream_checkpoint(
+            "dataset_runtime_direct_main_chain_selected",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            entry_route=routing.get("entry_route"),
+            entry_intent=routing.get("entry_intent"),
+        )
+        yield _sse_data(
+            _with_event_envelope(
+                gateway_step_payload,
+                event_type="route.started",
+                visibility="trace_only",
+                payload_fields=("node", "status", "turn_event"),
+                metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+            )
+        )
+        yield _sse_data(
+            _with_event_envelope(
+                _route_decision_event(route_decision),
+                event_type=_route_decision_event_type(route_decision),
+                visibility="user_visible",
+                payload_fields=("decision", "dataset_id", "dataset_name", "reason", "candidates"),
+                metadata={"conversation_id": conv_id},
+            )
+        )
+        async for sse_event in _stream_dataset_atomic_runtime_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=int(effective_dataset_id),
+            routing=routing,
+            route_decision=route_decision,
+            lead_agent_context=lead_agent_context,
+            initial_state=initial_state,
+            step_traces=step_traces,
+            trace_context=trace_context,
+            tracer=tracer,
+            obs_context_manager=obs_context_manager,
+            settings=get_settings(),
+            query_artifact_store=ArtifactStore(db),
+            conversation_store=conversation_store,
+            conversation_state=conversation_state,
+            observability_session_id=observability_session_id,
+            defer_trace_close=defer_trace_close,
+            subagent_control_plane_sink=subagent_control_plane_sink,
+            multiturn_context=multiturn_context,
+        ):
+            yield sse_event
+        return
     tracer.start_span(
         trace_context,
         node="message-gateway",
@@ -5228,6 +5462,54 @@ def chat_stream(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
     return EventSourceResponse(_stream_chat(payload, db))
 
 
+def _run_agentscope_dataset_runtime_direct(
+    *,
+    db: Session,
+    payload: schemas.ChatRequest,
+    dataset: models.SemanticDataset,
+    dataset_id: int,
+    routing: dict,
+    route_decision: dict,
+    lead_agent_context: dict,
+    allowed_tables: list[str],
+    sql_generation_context: dict[str, Any],
+    datasource_dialect: str,
+) -> dict[str, Any]:
+    """驱动 AgentScope DatasetAgent bridge，供 direct HTTP 入口做本地链路验证。"""
+
+    dsl_generator = _build_atomic_dsl_generator(
+        db=db,
+        dataset_id=dataset_id,
+        routing=routing,
+        route_decision=route_decision,
+        lead_agent_context=lead_agent_context,
+        multiturn_context=None,
+    )
+    dsl = dsl_generator(question=payload.question, dataset_status={}, candidate_assets={})
+    toolkit = build_bi_atomic_toolkit(
+        db,
+        query_executor=_build_atomic_query_executor(
+            db=db,
+            dataset=dataset,
+            question=payload.question,
+        ),
+    )
+    bridge = AgentScopeDatasetRuntimeBridge(toolkit=toolkit)
+    session = bridge.start_session(
+        dataset_id=dataset_id,
+        question=payload.question,
+        sql_generation_context=sql_generation_context,
+        dialect=datasource_dialect,
+        current_datasource_dialect=datasource_dialect,
+        query_constraints=getattr(dataset, "query_constraints", None) or {},
+        allowed_tables=allowed_tables,
+        conversation_id=payload.conversation_id,
+        trace_id=None,
+    )
+    # direct 入口是同步 HTTP 调试接口；内部 bridge 仍按 AgentScope async event 协议执行。
+    return asyncio.run(bridge.run_direct_query(session=session, dsl=dsl))
+
+
 @router.post("/dataset-runtime/direct")
 def dataset_runtime_direct(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
     """DatasetAgent Runtime 直通测试入口；用于验证底座，不经过 LeadAgent 控制面。"""
@@ -5272,38 +5554,21 @@ def dataset_runtime_direct(payload: schemas.ChatRequest, db: Session = Depends(g
     datasource_dialect = (
         getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "sqlite"
     )
-    provider = BIAtomicToolProvider(
-        db,
-        query_executor=_build_atomic_query_executor(
-            db=db,
-            dataset=dataset,
-            question=payload.question,
-        ),
-    )
-    runtime = DatasetAgentToolCallRuntime(
-        provider=provider,
-        dsl_generator=_build_atomic_dsl_generator(
-            db=db,
-            dataset_id=dataset_id,
-            routing=routing,
-            route_decision=route_decision,
-            lead_agent_context=lead_agent_context,
-            multiturn_context=None,
-        ),
-    )
-    result = runtime.run_query(
+    result = _run_agentscope_dataset_runtime_direct(
+        db=db,
+        payload=payload,
+        dataset=dataset,
         dataset_id=dataset_id,
-        question=payload.question,
-        sql_generation_context=sql_generation_context,
-        dialect=datasource_dialect,
-        current_datasource_dialect=datasource_dialect,
-        query_constraints=getattr(dataset, "query_constraints", None) or {},
+        routing=routing,
+        route_decision=route_decision,
+        lead_agent_context=lead_agent_context,
         allowed_tables=allowed_tables,
-        conversation_id=payload.conversation_id,
-        trace_id=None,
+        sql_generation_context=sql_generation_context,
+        datasource_dialect=datasource_dialect,
     )
-    result["execution_path"] = "dataset_agent_runtime_direct"
+    result["execution_path"] = "agentscope_dataset_runtime_direct"
     result["lead_agent_bypassed"] = True
+    result["tool_calls"] = result.get("tool_results", [])
     return result
 
 
@@ -5374,7 +5639,7 @@ def _early_trace_metadata(
 
 
 def _early_observability_payload(trace_context: Any) -> dict:
-    """提取前端和审计页需要的 Observability trace 信息。"""
+    """提取早期 trace 兼容字段，供反馈和历史 metadata 回放使用。"""
     return {
         "trace_id": trace_context.trace_id,
         "session_id": trace_context.session_id,

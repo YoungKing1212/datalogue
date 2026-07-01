@@ -34,6 +34,7 @@ AS_R0_ALLOWED_BI_TOOLS = [
     "list_candidate_assets",
     "compile_dsl_to_sql",
     "execute_compiled_query",
+    "repair_dsl",
     "create_query_artifact",
     "get_artifact_summary",
 ]
@@ -46,7 +47,6 @@ AS_R0_BI_CAPABILITIES = [
 AS_R0_RESERVED_DATASET_TOOLS: list[str] = []
 
 AS_R0_DISABLED_FUTURE_TOOLS = [
-    "repair_dsl",
     "classify_query_failure",
     "create_report_from_artifact",
     "run_sandboxed_analysis_on_artifact",

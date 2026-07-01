@@ -342,14 +342,14 @@ def add_cover(doc: Document) -> None:
              align=WD_ALIGN_PARAGRAPH.CENTER, before=72, after=18)
     add_para(doc, "数语多智能体产品用户手册", size=28, bold=True, color=DARK_BLUE,
              align=WD_ALIGN_PARAGRAPH.CENTER, after=8)
-    add_para(doc, "AI 原生智能问数、语义治理、分析蓝图与查询审计使用指南", size=14,
+    add_para(doc, "AI 原生智能问数、语义治理、分析蓝图与执行过程使用指南", size=14,
              color=MUTED, align=WD_ALIGN_PARAGRAPH.CENTER, after=36)
 
     table = doc.add_table(rows=4, cols=2)
     rows = [
         ("适用对象", "终端问数用户、数据分析师、数据管理员、交付和运维人员"),
         ("适用版本", "以 2026-06-12 本地多智能体工作区能力为基准"),
-        ("产品范围", "LeadAgent 控制面、Dataset SubAgent 数据面、数据源、数据集、分析蓝图、审计和模型设置"),
+        ("产品范围", "LeadAgent 控制面、Dataset SubAgent 数据面、数据源、数据集、分析蓝图、执行过程和模型设置"),
         ("输出格式", "Microsoft Word DOCX"),
     ]
     for row, (label, value) in zip(table.rows, rows):
@@ -378,11 +378,10 @@ def add_toc(doc: Document) -> None:
         "5. 数据集与语义治理",
         "6. 分析蓝图工作台",
         "7. 对话问数与多轮分析",
-        "8. 查询审计与链路回看",
-        "9. 系统设置与模型配置",
-        "10. 常见问题与排障",
-        "11. 术语表",
-        "12. 附录：上线前检查清单",
+        "8. 系统设置与模型配置",
+        "9. 常见问题与排障",
+        "10. 术语表",
+        "11. 附录：上线前检查清单",
     ]
     for item in sections:
         p = doc.add_paragraph()
@@ -401,7 +400,7 @@ def add_role_table(doc: Document) -> None:
         ("终端问数用户", "用自然语言查询数据并获得解释", "对话问数、历史、收藏", "回答、SQL、图表、追问建议"),
         ("数据分析师", "维护指标、维度、术语和蓝图", "数据集 & 指标、分析蓝图、语义验证", "可复用语义资产、验证用例"),
         ("数据管理员", "接入数据源并控制可见范围", "数据源、数据集、权限", "连接配置、表结构、权限策略"),
-        ("运维/研发", "定位失败链路、成本和质量问题", "查询审计、系统设置、Langfuse Trace", "Trace、token、失败原因、反馈记录"),
+        ("运维/研发", "定位失败链路和质量问题", "右侧执行过程、Workbench、系统设置、后端日志", "事件、产物引用、失败原因、反馈记录"),
     ]
     for row in rows:
         cells = table.add_row().cells
@@ -423,7 +422,7 @@ def build_manual() -> Document:
     add_bullets(doc, [
         "面向自然语言问数：支持普通指标查询、明细查询、分析蓝图命中、澄清追问和拒答保护。",
         "面向语义治理：通过数据表、字段标注、指标、维度、业务术语、Manifest 和验证用例提高问数质量。",
-        "面向生产审计：通过查询审计、Trace、Scores、token 和成本信息回看每次问数链路。",
+        "面向生产排障：通过右侧执行过程、Workbench 事件、后端日志和产物引用回看每次问数链路。",
         "面向多轮交互：通过 ConversationStore 和 Capsule 记录当前会话的数据集、查询上下文和结果摘要，支撑继续追问、切换主题和结果解释。",
     ])
 
@@ -443,7 +442,7 @@ def build_manual() -> Document:
         "在“数据集 & 指标”选择物理表，完成字段标注、指标、维度和语义词典维护。",
         "对高频复杂分析创建分析蓝图，审核触发词、参数、输出列和业务步骤。",
         "在“语义验证”中用真实问法验证路由、资产召回、DSL 和 SQL 生成结果。",
-        "在“查询审计”中查看低分、失败或高成本 trace，反向补齐术语、指标、维度和蓝图。",
+        "结合用户反馈、执行过程和后端日志定位失败链路，反向补齐术语、指标、维度和蓝图。",
     ])
 
     add_heading(doc, "3. 登录后界面导航", 1)
@@ -455,7 +454,6 @@ def build_manual() -> Document:
         ("对话问数", "自然语言问数、多轮追问、查看推理过程、发布接口。", "高"),
         ("数据集 & 指标", "维护表资产、字段标注、指标、维度、蓝图、Manifest、术语、权限和版本。", "高"),
         ("数据源", "新增数据库连接、测试连接、同步 Schema、预览表结构。", "中"),
-        ("查询审计", "查看 trace 列表、成功率、失败数、token、成本和 observation 瀑布。", "中"),
         ("系统设置", "维护 LLM 模型配置、角色绑定和环境兜底。", "低到中"),
     ]
     for row in rows:
@@ -558,31 +556,10 @@ def build_manual() -> Document:
         "SQL：用于核对系统实际查询了什么。",
         "结果表或图表：用于核对行数、维度和数值范围。",
         "推理过程：用于查看 DSL 校验、SQL 编译、SQL 执行和报告生成状态。",
-        "Trace ID：用于进入查询审计页回看完整链路。",
         "置信度和风险提示：用于识别口径不确定、数据质量不足或结果需要人工复核的情况。",
     ])
 
-    add_heading(doc, "8. 查询审计与链路回看", 1)
-    add_para(doc, "查询审计用于把每次问数从用户问题、数据集、路由、Prompt、LLM 调用、DSL、SQL、执行结果、最终回答到用户反馈串起来。当前产品优先在 Datalogue 内部渲染 trace，不要求客户外跳 Langfuse 控制台。")
-    add_heading(doc, "8.1 审计页指标", 2)
-    add_bullets(doc, [
-        "查询总数：当前范围内记录的 trace 数量。",
-        "成功率和失败数：用于发现近期质量波动。",
-        "Token 和成本：用于观察模型调用规模和成本趋势。",
-        "Trace 列表：显示问题、答案预览、SQL 预览、入口路径和创建时间。",
-        "Observation 瀑布：展开每个节点的输入、输出、元数据、耗时和模型信息。",
-        "Scores：展示用户反馈或自动评测分数。",
-    ])
-    add_heading(doc, "8.2 失败排查顺序", 2)
-    add_steps(doc, [
-        "先看失败节点：是路由失败、DSL 校验失败、SQL 编译失败、SQL 执行失败，还是报告生成失败。",
-        "再看输入上下文：数据集是否正确、时间范围是否继承、术语是否命中。",
-        "核对 SQL：是否访问了错误表、字段、指标、维度或时间条件。",
-        "检查数据源状态和权限：连接是否可用、账号是否有读权限、Schema 是否已经同步。",
-        "把根因反馈到治理资产：补术语、补指标维度、修蓝图、加语义验证用例或调整查询约束。",
-    ])
-
-    add_heading(doc, "9. 系统设置与模型配置", 1)
+    add_heading(doc, "8. 系统设置与模型配置", 1)
     add_para(doc, "系统支持 OpenAI-compatible 协议的模型配置，也可以通过 LiteLLM Proxy 或私有模型网关接入不同供应商模型。模型配置优先级为：前端系统设置中的角色绑定模型、default 角色绑定模型、`.env` 兜底配置。")
     table = doc.add_table(rows=1, cols=3)
     for idx, text in enumerate(["模型角色", "用途", "配置建议"]):
@@ -603,13 +580,13 @@ def build_manual() -> Document:
     style_table(table, [1800, 3400, 4160])
     add_callout(doc, "密钥保护", "前端写入的 API Key 会由后端加密保存，接口响应只返回是否已设置，不回传明文。编辑模型时 API Key 留空不会覆盖旧密钥。", BLUE_GRAY_FILL)
 
-    add_heading(doc, "10. 常见问题与排障", 1)
+    add_heading(doc, "9. 常见问题与排障", 1)
     faq = [
-        ("问数没有结果", "先确认数据源连接正常、数据集已选择表、字段已标注，再进入查询审计查看失败节点和 SQL 错误。"),
+        ("问数没有结果", "先确认数据源连接正常、数据集已选择表、字段已标注，再查看右侧执行过程和后端错误。"),
         ("系统要求选择数据集", "说明 LeadAgent 无法稳定判断业务域。请选择候选数据集，随后建议补充 Manifest 路由问法和语义验证用例。"),
         ("回答数值不对", "核对 SQL、指标口径、时间范围和维度拆分；若字段已被召回但 SQL 仍错，优先检查字段映射和 DSL 编译消费路径。"),
         ("蓝图发布后执行失败", "发布不等于测试通过。进入蓝图详情的测试页核对参数、SQL 预览、只读限制和数据库错误。"),
-        ("Trace 明细不完整", "Langfuse 未启用或不可用时，系统会降级显示本地索引和 step_trace；完整 observation、token 和 cost 依赖有效 Langfuse 配置。"),
+        ("执行过程不完整", "先确认本轮是否仍在生成，再核对后端日志、Workbench 事件和产物引用是否完整。"),
         ("多轮追问继承错了数据集", "明确说出新的业务域或数据集，必要时新建会话；数据团队应补充 Manifest 自检样例并复核 active dataset 状态。"),
     ]
     table = doc.add_table(rows=1, cols=2)
@@ -621,7 +598,7 @@ def build_manual() -> Document:
         cells[1].text = a
     style_table(table, [2500, 6860])
 
-    add_heading(doc, "11. 术语表", 1)
+    add_heading(doc, "10. 术语表", 1)
     terms = [
         ("LeadAgent", "多智能体控制面，负责理解问题、澄清、路由、工具选择、多轮状态和最终叙述。"),
         ("Dataset SubAgent", "数据集内部执行智能体，负责语义召回、DSL/SQL、执行和结果摘要。"),
@@ -630,7 +607,7 @@ def build_manual() -> Document:
         ("Manifest", "数据集被 LeadAgent 识别和选择的契约，包含路由问法、自检样例、版本和审核状态。"),
         ("分析蓝图", "将复杂分析路径固化为可复用问数能力的资产，可以来自 SQL 或业务场景描述。"),
         ("DSL", "面向语义层的结构化查询表达，连接自然语言、语义资产和最终 SQL。"),
-        ("Trace", "一次问数的全链路记录，包含节点、Prompt、LLM、SQL、结果、成本和反馈。"),
+        ("执行过程", "一次问数在页面和 Workbench 中展示的用户可见节点、结果产物和状态摘要。"),
         ("Score", "用户反馈或自动评测分数，用于质量闭环。"),
     ]
     table = doc.add_table(rows=1, cols=2)
@@ -642,7 +619,7 @@ def build_manual() -> Document:
         cells[1].text = desc
     style_table(table, [2200, 7160])
 
-    add_heading(doc, "12. 附录：上线前检查清单", 1)
+    add_heading(doc, "11. 附录：上线前检查清单", 1)
     checklist = [
         "数据源连接测试通过，账号为只读或受控权限。",
         "目标数据集已选择必要表，移除了无关或敏感表。",
@@ -650,7 +627,7 @@ def build_manual() -> Document:
         "高频复杂问题已沉淀为分析蓝图，并完成至少一次试运行。",
         "Manifest 路由问法和语义验证用例覆盖主要业务场景。",
         "系统设置中 default、dsl、report 等核心模型角色已绑定。",
-        "查询审计页能看到真实 trace 列表和详情，失败时有本地 fallback。",
+        "右侧执行过程、Workbench 事件、后端日志和产物引用能互相对齐。",
         "用户反馈入口可用，点踩问题有后续治理流程。",
         "多轮功能开启前已验证 continue、switch、interpret 和 chitchat 的边界。",
     ]

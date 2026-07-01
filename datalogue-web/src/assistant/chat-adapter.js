@@ -941,9 +941,6 @@ export function makeChatAdapter({ datasetIdRef }) {
               routePayload: null,
               clarification: safeClarification(finalPayload.clarification, finalPayload.route_payload),
               messageId: finalPayload.message_id || null,
-              observabilityTraceId: finalPayload.trace_id || null,
-              observabilitySessionId: finalPayload.trace_session_id || null,
-              observability: finalPayload.observability || null,
               stepTrace,
               // C-ready 数据结构
               taskTimeline,

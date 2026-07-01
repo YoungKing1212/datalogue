@@ -686,10 +686,6 @@ function RepairPlanCard({ repairPlan }) {
   );
 }
 
-function TraceLinkCard() {
-  return null;
-}
-
 function artifactEntries({ resultRef, reportRef, subagentToolResults }) {
   const entries = [];
   const seen = new Set();
@@ -821,10 +817,6 @@ export function AIMessage() {
   const routePayload = custom.routePayload || null;
   const clarification = custom.clarification || null;
   const messageId = custom.messageId || null;
-  const observabilityTraceId = custom.observabilityTraceId || null;
-  const observabilitySessionId = custom.observabilitySessionId || null;
-  const observability = custom.observability || null;
-  const stepTrace = custom.stepTrace || [];
   const savedFeedback = custom.feedback || null;
   const resultRef = custom.resultRef || null;
   const reportRef = custom.reportRef || null;
@@ -871,7 +863,6 @@ export function AIMessage() {
     try {
       await submitMessageFeedback(messageId, {
         action,
-        trace_id: observabilityTraceId,
       });
       setFeedbackState(action === 'approve' ? '已点赞' : '已点踩');
     } catch (_e) {
@@ -932,13 +923,6 @@ export function AIMessage() {
       <CandidateDatasetCard candidateDatasets={candidateDatasets} />
 
       <RepairPlanCard repairPlan={repairPlan} />
-
-      <TraceLinkCard
-        traceId={observabilityTraceId}
-        sessionId={observabilitySessionId}
-        observability={observability}
-        stepTrace={stepTrace}
-      />
 
       <ArtifactAccessCard
         resultRef={resultRef}
