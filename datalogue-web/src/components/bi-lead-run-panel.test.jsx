@@ -77,6 +77,57 @@ describe('BILeadRunPanel', () => {
     expect(screen.queryByText(/hidden rows/i)).not.toBeInTheDocument();
   });
 
+  it('falls back for failed runs when the summary only contains SQL DDL', () => {
+    render(
+      <BILeadRunPanel
+        run={{
+          run_id: 10,
+          status: 'failed',
+          phase: 'handoff_run',
+          error_summary: 'SQL: DROP TABLE secret_orders',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('查询失败，请稍后重试。')).toBeInTheDocument();
+    expect(screen.queryByText(/SQL/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/DROP TABLE/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_orders/i)).not.toBeInTheDocument();
+  });
+
+  it('falls back for blocked runs when every summary line is sensitive', () => {
+    const { rerender } = render(
+      <BILeadRunPanel
+        run={{
+          run_id: 11,
+          status: 'blocked',
+          phase: 'confirm_run',
+          error_summary: 'schema: private',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('需要补充查询条件。')).toBeInTheDocument();
+    expect(screen.queryByText(/schema/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/private/i)).not.toBeInTheDocument();
+
+    rerender(
+      <BILeadRunPanel
+        run={{
+          run_id: 12,
+          status: 'blocked',
+          phase: 'confirm_run',
+          error_summary: 'SQL: SELECT * FROM private',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('需要补充查询条件。')).toBeInTheDocument();
+    expect(screen.queryByText(/SQL/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/SELECT/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/private/i)).not.toBeInTheDocument();
+  });
+
   it('renders null without a run', () => {
     const { container } = render(<BILeadRunPanel run={null} />);
     expect(container.firstChild).toBeNull();

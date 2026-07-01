@@ -25,7 +25,10 @@ function statusTitle(status) {
 }
 
 function isSensitiveLine(line) {
-  return /traceback|stack trace|\bselect\b|\bfrom\b|\bschema\b|\bdsl\b|raw[_\s-]*rows?/i.test(line);
+  return (
+    /traceback|stack trace|\bsql\b|\bselect\b|\bfrom\b|\bdrop\b|\bdelete\b|\binsert\b|\bupdate\b|\balter\b|create\s+table|\bschema\b|\bdsl\b|raw[_\s-]*rows?/i
+      .test(line)
+  );
 }
 
 function safeSummary(value) {
@@ -39,6 +42,12 @@ function safeSummary(value) {
 
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== '');
+}
+
+function summaryFallback(status) {
+  if (status === 'blocked') return '需要补充查询条件。';
+  if (status === 'failed') return '查询失败，请稍后重试。';
+  return 'BI LeadAgent 正在处理本次查询。';
 }
 
 function resultShape(handoff = {}, run = {}) {
@@ -68,8 +77,9 @@ export function BILeadRunPanel({ run }) {
   if (!run) return null;
 
   const handoff = run.handoff || {};
+  const status = run.status || 'running';
   const summary = safeSummary(firstValue(handoff.answer_summary, run.error_summary))
-    || 'BI LeadAgent 正在处理本次查询。';
+    || summaryFallback(status); // 敏感摘要被全部过滤后，按状态给业务兜底，避免失败/阻塞态误显示为仍在处理。
   const artifactRef = firstValue(handoff.artifact_ref, handoff.artifactRef, run.artifact_ref, run.artifactRef);
   const checkpointRef = firstValue(
     handoff.checkpoint_ref,
@@ -78,7 +88,6 @@ export function BILeadRunPanel({ run }) {
     run.checkpointRef,
   );
   const shape = resultShape(handoff, run);
-  const status = run.status || 'running';
 
   return (
     <section className={`bi-lead-run-panel bi-lead-run-panel--${status}`} aria-label="BI LeadAgent 运行状态">
