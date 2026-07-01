@@ -15,8 +15,23 @@
 from __future__ import annotations
 
 from app.models.dataset import AnalysisBlueprint
+from app.services.artifact_store import ArtifactStore
 from app.services.agentic_bi_tools import BIAtomicToolProvider
 from app.services.agentic_shell import DatalogueAgenticShell, InMemoryAgenticShellWriter
+from app.services.subagent_planning import CandidateAsset, QueryPlan
+
+
+def _field_asset(name: str, table_name: str, column_name: str) -> CandidateAsset:
+    return CandidateAsset(
+        asset_type="field",
+        asset_id=f"{table_name}.{column_name}",
+        name=name,
+        display_name=name,
+        source="schema",
+        confidence=0.9,
+        metadata={"table_name": table_name, "column_name": column_name},
+        usage="selected",
+    )
 
 
 def test_agentic_shell_as_r0_registry_enables_only_bi_main_chain():
@@ -36,13 +51,13 @@ def test_agentic_shell_as_r0_registry_enables_only_bi_main_chain():
     assert contract.tool_policy.allowed_tools == [
         "get_dataset_status",
         "list_candidate_assets",
+        "compile_dsl_to_sql",
+        "execute_compiled_query",
+        "create_query_artifact",
         "get_artifact_summary",
     ]
     assert contract.tool_policy.business_capabilities == ["query_dataset", "query_multiple_datasets"]
     assert "ask_bi" not in contract.tool_policy.allowed_tools
-    assert "compile_dsl_to_sql" in contract.tool_policy.disabled_tools
-    assert "execute_compiled_query" in contract.tool_policy.disabled_tools
-    assert "create_query_artifact" in contract.tool_policy.disabled_tools
     assert "repair_dsl" in contract.tool_policy.disabled_tools
     assert "create_report_from_artifact" in contract.tool_policy.disabled_tools
 
@@ -228,3 +243,107 @@ def test_bi_atomic_tool_provider_exposes_safe_dataset_status_and_full_catalog(
     dumped = repr(catalog) + repr(status)
     for forbidden in ("raw_sql", "select *", "schema_context", "raw_rows", "orders.amount"):
         assert forbidden not in dumped
+
+
+def test_bi_atomic_tool_provider_compiles_dsl_to_private_handle_without_sql(
+    db_session,
+    sample_dataset,
+):
+    provider = BIAtomicToolProvider(db_session)
+    dsl = QueryPlan(
+        query_type="detail_query",
+        execution_strategy="query_graph",
+        confidence=0.86,
+        selected_assets=[
+            _field_asset("日志ID", "user_logs", "id"),
+            _field_asset("账号", "user_logs", "account"),
+        ],
+        debug={"selected_main_table": "user_logs"},
+    ).to_dict()
+
+    response = provider.compile_dsl_to_sql(
+        dataset_id=sample_dataset.id,
+        dsl=dsl,
+        sql_generation_context={"table_schemas": [{"table_name": "user_logs"}]},
+        dialect="sqlite",
+        query_constraints={"enabled": True, "default_limit": 10, "max_limit": 100},
+        allowed_tables=["user_logs"],
+    )
+
+    assert response["status"] == "compiled"
+    assert response["compiled_query_ref"].startswith("compiled_query:")
+    assert response["dataset_id"] == sample_dataset.id
+    assert response["execution_source"] == "tool_compiler"
+    assert response["execution_guard"]["ok"] is True
+    assert response["execution_guard"]["warning_count"] == response["warning_count"]
+    assert isinstance(response["warning_count"], int)
+
+    dumped = repr(response)
+    for forbidden in ("select ", "user_logs", "account", "query_plan", "sql_generation_context", "sql_guard"):
+        assert forbidden not in dumped.lower()
+
+
+def test_bi_atomic_tool_provider_executes_private_handle_to_artifact_without_rows_in_response(
+    db_session,
+    sample_dataset,
+):
+    executed_sql: list[str] = []
+
+    def fake_executor(sql: str):
+        executed_sql.append(sql)
+        return {
+            "columns": ["账号"],
+            "rows": [{"账号": "alice"}],
+            "row_count": 1,
+        }
+
+    provider = BIAtomicToolProvider(db_session, query_executor=fake_executor)
+    compiled = provider.compile_dsl_to_sql(
+        dataset_id=sample_dataset.id,
+        dsl=QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.86,
+            selected_assets=[_field_asset("账号", "user_logs", "account")],
+            debug={"selected_main_table": "user_logs"},
+        ),
+        sql_generation_context={"table_schemas": [{"table_name": "user_logs"}]},
+        dialect="sqlite",
+        allowed_tables=["user_logs"],
+    )
+
+    response = provider.execute_compiled_query(
+        compiled_query_ref=compiled["compiled_query_ref"],
+        dataset_id=sample_dataset.id,
+        conversation_id=7,
+        trace_id="trace-pr0-3",
+    )
+
+    assert executed_sql and "SELECT" in executed_sql[0]
+    assert response["status"] == "completed"
+    assert response["row_count"] == 1
+    assert response["column_count"] == 1
+    assert response["artifact_ref"].startswith("artifact:")
+
+    dumped_response = repr(response)
+    for forbidden in ("SELECT", "user_logs", "alice", "rows", "sql"):
+        assert forbidden.lower() not in dumped_response.lower()
+
+    artifact = ArtifactStore(db_session).get(response["artifact_ref"])
+    assert artifact is not None
+    assert artifact.dataset_id == sample_dataset.id
+    assert artifact.conversation_id == 7
+    assert artifact.trace_id == "trace-pr0-3"
+    assert artifact.content_json["rows"] == [{"账号": "alice"}]
+
+
+def test_bi_atomic_tool_provider_executes_unknown_handle_fail_closed(db_session):
+    provider = BIAtomicToolProvider(db_session, query_executor=lambda _sql: {"rows": []})
+
+    response = provider.execute_compiled_query(compiled_query_ref="compiled_query:missing")
+
+    assert response == {
+        "status": "not_found",
+        "compiled_query_ref": "compiled_query:missing",
+        "artifact_ref": None,
+    }

@@ -102,6 +102,9 @@ class DatalogueAgentScopeRuntimeDriver:
         provider_methods = {
             "get_dataset_status": BIAtomicToolProvider.get_dataset_status,
             "list_candidate_assets": BIAtomicToolProvider.list_candidate_assets,
+            "compile_dsl_to_sql": BIAtomicToolProvider.compile_dsl_to_sql,
+            "execute_compiled_query": BIAtomicToolProvider.execute_compiled_query,
+            "create_query_artifact": BIAtomicToolProvider.create_query_artifact,
             "get_artifact_summary": BIAtomicToolProvider.get_artifact_summary,
         }
         registry: list[AgentScopeRuntimeToolSpec] = []

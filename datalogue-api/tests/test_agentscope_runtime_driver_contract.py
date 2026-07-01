@@ -48,9 +48,15 @@ def test_agentscope_runtime_driver_registers_bi_atomic_tools_without_ask_bi():
     assert [tool.name for tool in runtime_contract.tool_registry] == [
         "get_dataset_status",
         "list_candidate_assets",
+        "compile_dsl_to_sql",
+        "execute_compiled_query",
+        "create_query_artifact",
         "get_artifact_summary",
     ]
     assert [tool.provider for tool in runtime_contract.tool_registry] == [
+        "BIAtomicToolProvider",
+        "BIAtomicToolProvider",
+        "BIAtomicToolProvider",
         "BIAtomicToolProvider",
         "BIAtomicToolProvider",
         "BIAtomicToolProvider",

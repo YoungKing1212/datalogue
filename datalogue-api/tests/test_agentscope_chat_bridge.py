@@ -95,6 +95,9 @@ async def test_chat_stream_shadow_runtime_boundary_records_safe_contract(db_sess
     assert [tool["name"] for tool in boundary["tool_registry"]] == [
         "get_dataset_status",
         "list_candidate_assets",
+        "compile_dsl_to_sql",
+        "execute_compiled_query",
+        "create_query_artifact",
         "get_artifact_summary",
     ]
     dumped = repr(boundary)

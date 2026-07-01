@@ -134,6 +134,7 @@
 - C3-P2 PR1 浏览器验收闸门补证修复 artifact detail ownership gate，真实 `as_*` completed thread 和隐藏 Workbench route 可打开同一脱敏产物；旧 `/chat/44` 仍只读，页面扫描未命中 raw rows、query_plan、field_patch、direct_sql、llm_sql 或 SELECT 泄露。
 - C3-P2 PR1 真实浏览器 retry completed 复验确认 `/api/workbench/actions/retry -> /api/chat/stream -> Workbench Panel completed` 跑通，refs、checkpoint、trace 和 mirror events 对齐。
 - 验证覆盖后端 Workbench/ViewModel/retry/event/retry checkpoint pytest、前端 Workbench/route/chat/artifact/thread-list/workbench-api 测试、py_compile、lint/build 和 `git diff --check`。
+- C3-P2 Retry Completed 自动化 Harness 将手工浏览器 retry 复验固化为内部-only pytest：构造 `as_*` failed 会话和 checkpoint，驱动 `/api/workbench/actions/retry -> /api/chat/stream` checkpoint restore，并断言 Workbench completed、primary artifact、trace/checkpoint refs 和事件顺序。
 
 ## 高价值判断
 
@@ -144,14 +145,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-30 17:35 · C3-P2 Retry Completed 自动化 Harness
-
-- 涉及文件：`datalogue-api/tests/test_c3_workbench_acceptance.py`、`datalogue-api/tests/workbench_retry_harness.py`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
-- 关键改动：新增内部-only `run_workbench_retry_completed_harness()`，把手工浏览器复验动作固化为 pytest 可复现流程：构造 `as_*` failed 会话和 retry checkpoint，调用 `POST /api/workbench/actions/retry`，用返回的业务级 `run_request` 驱动 `/chat/stream` checkpoint restore，再拉取 Workbench View Model 断言 completed、primary artifact、trace/checkpoint refs 和事件顺序。
-- TDD 记录：先新增 `test_browser_retry_completed_harness_replays_workbench_click_to_completed` 并确认 RED 失败为 `ModuleNotFoundError: No module named 'workbench_retry_harness'`；随后实现 harness，单测转 GREEN。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py::test_browser_retry_completed_harness_replays_workbench_click_to_completed -q`，1 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py -q`，5 条通过。
-- 残留风险：该 harness 复刻浏览器点击后的 API/stream/Workbench 状态闭环，但不启动真实浏览器、不连接真实 MySQL；真实浏览器和真实数据源复验仍按发布前手工闸门保留。
 
 ### 2026-06-30 18:19 · C3-P2 PR2 Workbench 状态体验补齐
 
@@ -229,3 +222,12 @@
 - TDD 记录：先新增 writer 测试并确认 RED 为 `ImportError: cannot import name 'InMemoryAgenticShellWriter'`；实现最小接口后定向测试转 GREEN。
 - 验证方式：writer 定向测试 `2 passed, 2 warnings`；AS-R0 最小回归 `30 passed, 4 warnings`；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：PR0.2 仍只是接口层；真实 event/action/checkpoint 写回到 Workbench/mirror 要等 P1 runtime adapter 迁移时接入。
+
+### 2026-07-01 11:34 · AS-R0 PR0.3 BI Atomic Tool Provider
+
+- 涉及文件：`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr0-3.md`、`.codex/project-memory.md`
+- 关键改动：补齐 `BIAtomicToolProvider.compile_dsl_to_sql()` 和 `execute_compiled_query()`，用私有 `compiled_query_ref` 在 compile/execute 工具内部流转 SQL；执行结果写入 `ArtifactStore`，Agent 可见响应只返回状态、句柄、artifact ref、row/column 计数；Shell whitelist 和 Runtime registry 同步开放六个 BI 原子工具。
+- 安全边界：DatasetAgent 只能提交结构化 DSL / `QueryPlan`，不能直接给出最终可执行 SQL；tool response 不暴露 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body；artifact 内部可保存查询结果，PR0.4 再扩大用户可见层安全矩阵。
+- TDD 记录：先新增 compile/execute/unknown handle 测试并确认 RED 为 `NotImplementedError` 和 `query_executor` 参数缺失；实现私有句柄、executor 注入、artifact 写入和 unknown handle fail-closed 后转 GREEN。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py -q`，13 条通过、2 个既有 warning；执行 AS-R0 最小回归 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，33 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：PR0.3 不替换 `/chat/stream`，不接真实 AgentScope runner；下一步按正式计划进入 PR0.4 安全测试矩阵。
