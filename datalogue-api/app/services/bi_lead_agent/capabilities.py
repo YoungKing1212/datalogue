@@ -18,29 +18,50 @@ from typing import Any
 
 from app.schemas.bi_lead_agent import BILeadAgentCapability, DatasetCapabilitySummary
 
+SAFE_MAPPING_LABEL_KEYS = ("display_name", "name", "title", "question")
+
 
 def _optional_text(value: Any) -> str | None:
     text = str(value).strip() if value is not None else ""
     return text or None
 
 
-def _string_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    values: Iterable[Any]
-    if isinstance(value, str):
-        values = [value]
-    elif isinstance(value, Iterable) and not isinstance(value, Mapping):
-        values = value
-    else:
-        values = [value]
+def _safe_mapping_label(value: Mapping[str, Any]) -> str | None:
+    for key in SAFE_MAPPING_LABEL_KEYS:
+        label = value.get(key)
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+    return None
 
+
+def _append_safe_text(items: list[str], value: Any) -> None:
+    if value is None or isinstance(value, bytes):
+        return
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            items.append(text)
+        return
+    if isinstance(value, Mapping):
+        # Mapping 只允许提取明确的安全显示字段，禁止把 schema/sql/result_rows 等内部上下文整体字符串化。
+        label = _safe_mapping_label(value)
+        if label:
+            items.append(label)
+        return
+    if isinstance(value, Iterable):
+        # 嵌套列表/集合只展开成员；复杂成员仍走同一白名单规则，避免内部结构通过 repr 泄露。
+        for item in value:
+            _append_safe_text(items, item)
+        return
+    if isinstance(value, (int, float, bool)):
+        text = _optional_text(value)
+        if text is not None:
+            items.append(text)
+
+
+def _string_list(value: Any) -> list[str]:
     items: list[str] = []
-    for item in values:
-        text = _optional_text(item)
-        if text is None:
-            continue
-        items.append(text)
+    _append_safe_text(items, value)
     return items
 
 

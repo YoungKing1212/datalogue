@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 BILeadAgentCapabilityStatus = Literal["enabled", "disabled"]
@@ -50,6 +50,21 @@ class BILeadAgentCapability(BaseModel):
     status: BILeadAgentCapabilityStatus
     disabled_reason: str | None = None
     replacement: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_status_metadata(self) -> "BILeadAgentCapability":
+        if self.status == "disabled":
+            # disabled 能力必须带 UI 可解释的禁用原因和替代能力，避免前端只看到不可操作的死项。
+            if not (self.disabled_reason and self.disabled_reason.strip()):
+                raise ValueError("disabled capability requires disabled_reason")
+            if not (self.replacement and self.replacement.strip()):
+                raise ValueError("disabled capability requires replacement")
+            return self
+
+        # enabled 能力不得携带 disabled 语义字段，避免后续 manifest 消费方出现状态漂移。
+        if self.disabled_reason is not None or self.replacement is not None:
+            raise ValueError("enabled capability cannot include disabled metadata")
+        return self
 
 
 class DatasetCapabilitySummary(BaseModel):

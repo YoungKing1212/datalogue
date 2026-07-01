@@ -11,6 +11,10 @@
 # Created On  : 2026-07-01
 # ============================================================
 
+import pytest
+from pydantic import ValidationError
+
+from app.schemas.bi_lead_agent import BILeadAgentCapability
 from app.services.bi_lead_agent.capabilities import (
     build_bi_lead_agent_capabilities,
     sanitize_dataset_capability,
@@ -61,3 +65,48 @@ def test_dataset_capability_summary_strips_dataset_internal_context():
         "freshness": "T+1",
         "availability": "ready",
     }
+
+
+def test_dataset_capability_summary_drops_complex_internal_items_and_keeps_safe_labels():
+    summary = sanitize_dataset_capability(
+        {
+            "dataset_id": 12,
+            "name": "订单数据集",
+            "supported_questions": [
+                {"raw_rows": [{"secret": "x"}]},
+                {"question": "订单金额趋势"},
+            ],
+            "key_metrics": [
+                {"result_rows": ["secret_order"]},
+                {"name": "订单金额"},
+            ],
+            "key_dimensions": [
+                {"sql": "select * from secret"},
+                {"display_name": "月份"},
+            ],
+        }
+    )
+
+    payload = summary.model_dump_json()
+    assert "raw_rows" not in payload
+    assert "secret" not in payload
+    assert "result_rows" not in payload
+    assert "secret_order" not in payload
+    assert "select * from secret" not in payload
+    assert summary.supported_questions == ["订单金额趋势"]
+    assert summary.key_metrics == ["订单金额"]
+    assert summary.key_dimensions == ["月份"]
+
+
+def test_bi_lead_agent_capability_requires_disabled_reason_and_replacement():
+    with pytest.raises(ValidationError):
+        BILeadAgentCapability(name="query_multiple_datasets", status="disabled")
+
+
+def test_bi_lead_agent_capability_rejects_disabled_metadata_when_enabled():
+    with pytest.raises(ValidationError):
+        BILeadAgentCapability(
+            name="query_dataset",
+            status="enabled",
+            disabled_reason="不应出现在 enabled 能力上",
+        )
