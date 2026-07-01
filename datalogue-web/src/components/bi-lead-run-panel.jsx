@@ -50,16 +50,10 @@ function summaryFallback(status) {
   return 'BI LeadAgent 正在处理本次查询。';
 }
 
-function resultShape(handoff = {}, run = {}) {
-  const rowCount = firstValue(handoff.row_count, handoff.rows_count, handoff.result_rows, run.row_count, run.rows_count);
-  const columnCount = firstValue(
-    handoff.column_count,
-    handoff.columns_count,
-    handoff.result_columns,
-    run.column_count,
-    run.columns_count,
-  );
-  if (rowCount === undefined || columnCount === undefined) return null;
+function resultShape(handoff = {}) {
+  const rowCount = handoff.row_count;
+  const columnCount = handoff.column_count;
+  if (!Number.isFinite(rowCount) || !Number.isFinite(columnCount)) return null; // 结果规模只信任 K1/K2 数字契约字段，避免数组/兼容字段把原始行列内容带到 UI。
   return `${rowCount} 行 / ${columnCount} 列`;
 }
 
@@ -87,7 +81,7 @@ export function BILeadRunPanel({ run }) {
     run.checkpoint_ref,
     run.checkpointRef,
   );
-  const shape = resultShape(handoff, run);
+  const shape = resultShape(handoff);
 
   return (
     <section className={`bi-lead-run-panel bi-lead-run-panel--${status}`} aria-label="BI LeadAgent 运行状态">

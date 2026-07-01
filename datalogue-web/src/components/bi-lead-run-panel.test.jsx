@@ -128,6 +128,49 @@ describe('BILeadRunPanel', () => {
     expect(screen.queryByText(/private/i)).not.toBeInTheDocument();
   });
 
+  it('does not render result shape from non-contract or non-numeric fields', () => {
+    const { rerender } = render(
+      <BILeadRunPanel
+        run={{
+          run_id: 13,
+          status: 'completed',
+          phase: 'summarize_run',
+          handoff: {
+            answer_summary: '已生成安全摘要。',
+            result_rows: ['secret_order'],
+            result_columns: ['secret_col'],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('已生成安全摘要。')).toBeInTheDocument();
+    expect(screen.queryByText(/secret_order/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_order 行/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/结果规模/)).not.toBeInTheDocument();
+
+    rerender(
+      <BILeadRunPanel
+        run={{
+          run_id: 14,
+          status: 'completed',
+          phase: 'summarize_run',
+          handoff: {
+            answer_summary: '已生成安全摘要。',
+            row_count: ['secret_order'],
+            column_count: 3,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.queryByText(/secret_order/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_order 行/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/3 列/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/结果规模/)).not.toBeInTheDocument();
+  });
+
   it('renders null without a run', () => {
     const { container } = render(<BILeadRunPanel run={null} />);
     expect(container.firstChild).toBeNull();
