@@ -44,6 +44,7 @@ _EVENT_STATUS_MAP: dict[str, BIHandoffStatus] = {
     "agent.child.failed": "failed",
     "agent.child.cancelled": "cancelled",
 }
+_TRANSITIONAL_HANDOFF_STATUSES = {"created", "accepted", "running", "waiting_child"}
 _SAFE_NATIVE_FAILURE_SUMMARY = "AgentScope native DatasetAgent 执行失败，已停止 handoff。"
 
 
@@ -96,11 +97,12 @@ def collect_native_handoff_payload(
 
     if fallback_artifact_ref:
         payload.setdefault("artifact_ref", fallback_artifact_ref)
-        payload.setdefault("handoff_status", "completed")
+        if payload.get("handoff_status") in {None, *_TRANSITIONAL_HANDOFF_STATUSES}:
+            payload["handoff_status"] = "completed"  # session artifact_ref 是终态证据，必须覆盖 accepted/running 过渡事件。
 
     if fallback_error:
         error_payload = map_native_handoff_event(_fallback_error_payload(fallback_error))
-        payload.setdefault("handoff_status", "blocked")
+        payload["handoff_status"] = error_payload.get("handoff_status") or "blocked"  # last_error 是阻断终态证据，不能被 running 保留。
         payload.setdefault("error_code", error_payload.get("error_code"))
         payload.setdefault("error_summary", error_payload.get("error_summary"))
 
@@ -163,7 +165,11 @@ def _payload_from_text(text: str | None) -> Iterable[dict[str, Any]]:
 
 def _fallback_error_payload(error: Any) -> dict[str, Any]:
     if isinstance(error, dict):
-        return error
+        payload = dict(error)
+        payload.setdefault("event_type", "agent.child.blocked")
+        if payload.get("code") and not payload.get("error_code"):
+            payload["error_code"] = payload.get("code")  # Dataset runtime 常用 code 字段，native handoff 对外统一成 error_code。
+        return payload
     return {
         "event_type": "agent.child.blocked",
         "error_code": getattr(error, "code", None) or "DATASET_AGENT_BLOCKED",

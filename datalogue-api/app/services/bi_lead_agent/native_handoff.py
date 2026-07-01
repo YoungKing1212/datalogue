@@ -113,7 +113,7 @@ class AgentScopeNativeBIHandoff:
         request: BILeadAgentHandoffRequest,
         handoff_id: str,
         child_run_id: str,
-    ) -> UserMsg:
+    ) -> Any:
         content = (
             "AgentScope native handoff: 请作为 DatasetAgent 子运行执行已确认任务。\n"
             f"handoff_id: {handoff_id}\n"

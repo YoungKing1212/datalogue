@@ -28,7 +28,7 @@ python3 -m pytest \
   -q
 ```
 
-结果：`35 passed, 2 warnings in 0.20s`。
+结果：`59 passed, 2 warnings in 0.27s`。
 
 ## 残留风险
 

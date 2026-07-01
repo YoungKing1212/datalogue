@@ -115,6 +115,36 @@ def test_collect_native_handoff_payload_uses_final_safe_event():
     assert "sql" not in payload
 
 
+def test_collect_native_handoff_payload_promotes_session_artifact_to_completed():
+    payload = collect_native_handoff_payload(
+        [
+            {"event_type": "agent.child.accepted", "child_run_id": "dataset-native-001"},
+            {"event_type": "agent.child.running", "child_run_id": "dataset-native-001"},
+        ],
+        fallback_artifact_ref="artifact-native-fallback",
+    )
+
+    assert payload["handoff_status"] == "completed"
+    assert payload["artifact_ref"] == "artifact-native-fallback"
+
+
+def test_collect_native_handoff_payload_promotes_session_error_to_blocked():
+    payload = collect_native_handoff_payload(
+        [{"event_type": "agent.child.running", "child_run_id": "dataset-native-001"}],
+        fallback_error={
+            "status": "blocked",
+            "code": "FIELD_NOT_FOUND",
+            "error_summary": "字段缺失，需要修复后重试。",
+            "sql": "SELECT * FROM secret_orders",
+        },
+    )
+
+    assert payload["handoff_status"] == "blocked"
+    assert payload["error_code"] == "FIELD_NOT_FOUND"
+    assert payload["error_summary"] == "字段缺失，需要修复后重试。"
+    assert "sql" not in payload
+
+
 @pytest.mark.asyncio
 async def test_agentscope_native_handoff_returns_safe_d2_result():
     events = [
@@ -152,6 +182,44 @@ async def test_agentscope_native_handoff_returns_safe_d2_result():
     assert "raw_rows" not in result.model_dump()
     assert factory.sessions == [bridge.session]
     assert bridge.calls[0]["kwargs"]["agent_name"] == "bi_lead_agent"
+
+
+@pytest.mark.asyncio
+async def test_agentscope_native_handoff_uses_session_artifact_when_final_event_is_missing():
+    bridge = FakeBridge(
+        events=[],
+        session=SimpleNamespace(artifact_ref="artifact-session-fallback", last_error=None),
+    )
+    native = AgentScopeNativeBIHandoff(bridge=bridge, dataset_agent_factory=FakeFactory())
+
+    result = await native.query_dataset(_handoff_request(), task_id="task-native")
+
+    assert result.handoff_status == "completed"
+    assert result.artifact_ref == "artifact-session-fallback"
+
+
+@pytest.mark.asyncio
+async def test_agentscope_native_handoff_uses_session_error_when_final_event_is_missing():
+    bridge = FakeBridge(
+        events=[],
+        session=SimpleNamespace(
+            artifact_ref=None,
+            last_error={
+                "status": "blocked",
+                "code": "FIELD_NOT_FOUND",
+                "error_summary": "字段缺失，需要修复后重试。",
+                "schema": {"orders": ["secret"]},
+            },
+        ),
+    )
+    native = AgentScopeNativeBIHandoff(bridge=bridge, dataset_agent_factory=FakeFactory())
+
+    result = await native.query_dataset(_handoff_request(), task_id="task-native")
+
+    assert result.handoff_status == "blocked"
+    assert result.error_code == "FIELD_NOT_FOUND"
+    assert result.error_summary == "字段缺失，需要修复后重试。"
+    assert "schema" not in result.model_dump()
 
 
 @pytest.mark.asyncio
