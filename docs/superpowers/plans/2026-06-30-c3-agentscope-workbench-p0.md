@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 C3-P0 从设计推进到可合并的 stacked PR：新会话以 AgentScope Session 为真相源，Datalogue 主链继续负责真实 BI 执行，Chat 右侧 Workbench Panel 承接业务级工作台视图，并保留隐藏 Workbench 路由与受控 retry 能力。
+**Goal:** 把 C3-P0 从设计推进到可合并的 stacked PR：新会话以 Datalogue 本地 AgentScope-compatible mirror 作为会话、消息、事件和 refs 的回放与审计真相源，Datalogue 主链继续负责真实 BI 执行，Chat 右侧 Workbench Panel 承接业务级工作台视图，并保留隐藏 Workbench 路由与受控 retry 能力。
 
-**Architecture:** 新增 Datalogue 本地 AgentScope mirror 四表作为 C3 会话/消息/事件/引用层；`/chat/stream` 对新 `as_*` 线程先写入 AgentScope user message 和 assistant running message，再运行既有 Datalogue 主链，并把 event envelope 投影到 `agentscope_event`；Workbench View Model API 从 mirror、conversation_state、query_artifact 和 refs 聚合只读业务级视图；前端仍以 Chat 为入口，新增右侧 Panel 和隐藏 `/workbench/:threadId/:artifactRef?` 路由。
+**Architecture:** 新增 Datalogue 本地 AgentScope-compatible mirror 四表作为 C3 会话/消息/事件/引用层；`/chat/stream` 对新 `as_*` 线程先写入 mirror user message 和 assistant running message，再运行既有 Datalogue 主链，并把 event envelope 投影到 `agentscope_event`；Workbench View Model API 从 mirror、conversation_state、query_artifact 和 refs 聚合只读业务级视图；前端仍以 Chat 为入口，新增右侧 Panel 和隐藏 `/workbench/:threadId/:artifactRef?` 路由。
+
+**AS-R0 Handoff Note:** 本计划是 C3 foundation 计划，不是 AgentScope Runtime ownership 完成计划。正式 AS-R0 迁移以后续 `2026-07-01-as-r0-agentic-shell-formal-pr-plan.md` 为准：P0 只做 Shell Contract 与 Tool Boundary；P1 才让 AgentScope Runtime 驱动 BI 主链；P2 再收敛 legacy runtime 和扩展业务 Agent。
 
 **Tech Stack:** FastAPI, SQLAlchemy, Alembic, Pydantic, pytest, React, Vite, Vitest, Testing Library, existing SSE event envelope, existing ArtifactCard/TaskTimeline, local Langfuse/no-op observability.
 
@@ -14,9 +16,9 @@
 
 C3-P0 只做 C3 的最小产品化主链：
 
-- 新会话真相源：AgentScope mirror session/message/event/ref。
+- 新会话回放与审计真相源：AgentScope-compatible mirror session/message/event/ref。
 - 旧会话策略：`conv_*` 只读回放，不迁移，不伪造 AgentScope session。
-- 主链策略：双主路径，AgentScope 管会话流和消息流，Datalogue 主链管能力路由、QueryGraph、SQL 执行、RepairPlan/RepairPatch、Artifact。
+- 主链策略：双主路径，本地 AgentScope-compatible mirror 管会话流和消息流，Datalogue 主链管能力路由、QueryGraph、SQL 执行、RepairPlan/RepairPatch、Artifact。
 - Workbench 入口：Chat 右侧 Panel + 隐藏 route 预留。
 - Workbench 数据：后端提供 View Model API，前端不拼内部 schema、SQL、raw rows、query plan。
 - Action 范围：只读 + 受控 retry，不启动 ReportAgent/PythonAgent/AuditAgent。
@@ -25,6 +27,8 @@ C3-P0 只做 C3 的最小产品化主链：
 
 - 独立 BI Workbench 页面正式入口。
 - AgentScope runner 接管 Datalogue 主链。
+- AgentScope Runtime ownership 迁移。
+- Datalogue Agentic Shell 接管 `/chat/stream`。
 - 旧会话迁移。
 - 管理员字段级 patch UI。
 - 公开 schema、SQL、raw result、QueryGraph 主体。
@@ -52,7 +56,7 @@ C3-P0 只做 C3 的最小产品化主链：
 
 ### Thread ID
 
-- `as_<uuid>`：C3 新会话，AgentScope mirror 是真相源。
+- `as_<uuid>`：C3 新会话，AgentScope-compatible mirror 是会话、消息、事件和 refs 的回放与审计真相源。
 - `conv_<id>`：历史会话，只读回放。
 - `/chat/:number`：继续解析成 `conv_<number>`。
 - `/chat/:threadId`：当 `threadId` 已带 `as_` 或 `conv_` 前缀时直接使用。
@@ -247,7 +251,7 @@ C3-P0 只做 C3 的最小产品化主链：
 
   关键分支补中文注释：
 
-  - 创建新会话时说明 `as_*` 是 C3 新会话真相源。
+  - 创建新会话时说明 `as_*` 是本地 AgentScope-compatible mirror 的回放与审计来源，不改变 Datalogue runtime ownership。
   - 处理旧会话时说明 `conv_*` 不写 mirror session。
   - 写入用户可见 payload 前说明必须先脱敏。
   - 标记失败/中断时说明 retry 只使用 checkpoint/ref，不使用 SQL。
@@ -361,7 +365,7 @@ C3-P0 只做 C3 的最小产品化主链：
   - exception path 调用 `fail_chat_turn`。
   - 旧 `conversation_id` 行为继续保留；新增 `thread_id` 支持时兼容旧请求。
 
-  必须补中文注释解释：AgentScope 只接管 C3 新会话的消息真相源，不替换 Datalogue 主链。
+  必须补中文注释解释：本地 AgentScope-compatible mirror 只承接 C3 session/message/event/ref 的回放与审计来源；真正 AgentScope runtime ownership 从 AS-R0 P1 开始。
 
 - [ ] 若现有请求 schema 没有 `thread_id`，修改 [datalogue-api/app/schemas/bi_workbench.py](/Users/yangkai/code_place/study/python/Datalogue/datalogue-api/app/schemas/bi_workbench.py) 或对应 chat schema，新增可选 `thread_id: str | None`。
 
@@ -831,12 +835,14 @@ C3-P0 只做 C3 的最小产品化主链：
 - 旧会话必须迁移才能满足前端回放。
 - Workbench Panel 需要读取内部字段级 patch 才能展示普通用户视图。
 - AgentScope runner 被要求接管 `/chat/stream` 主链。
+- 任何实现要求把 C3 mirror 当作 AgentScope Runtime ownership 完成态。
 
 ## Review Checklist
 
 - [ ] 新会话走 `as_*`，旧会话走 `conv_*`。
 - [ ] `agentscope_session/message/event/ref` 四表存在且有迁移。
-- [ ] `/chat/stream` 先写 AgentScope message，再运行 Datalogue 主链。
+- [ ] `/chat/stream` 先写 AgentScope-compatible mirror message，再运行 Datalogue 主链。
+- [ ] C3 只完成 mirror / Workbench foundation，不声明 AgentScope Runtime 已接管 Datalogue 主链。
 - [ ] Workbench API 返回后端 View Model，前端不拼内部细节。
 - [ ] Chat 右侧 Panel 和隐藏 route 可用。
 - [ ] Legacy `/chat/25` 只读回放。

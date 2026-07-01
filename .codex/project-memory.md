@@ -131,6 +131,7 @@
 
 - C3-P2 PR1 启动 Workbench 产品化状态模型：后端新增 `WorkbenchStatusSummary`，统一表达 `empty/running/completed/failed/interrupted/read_only`、actionable、primary artifact、retry checkpoint 和 trace ref。
 - Workbench Panel 使用后端 `status_summary` 渲染状态卡、空态、失败诊断摘要、Artifact 详情抽屉和 retry 后主产物自动聚焦；artifact detail 增加 thread ownership scope，用户可见层继续禁止 SQL/schema/raw rows/query_plan/field_patch。
+- C3-P2 PR1 浏览器验收闸门补证修复 artifact detail ownership gate，真实 `as_*` completed thread 和隐藏 Workbench route 可打开同一脱敏产物；旧 `/chat/44` 仍只读，页面扫描未命中 raw rows、query_plan、field_patch、direct_sql、llm_sql 或 SELECT 泄露。
 - 验证覆盖后端 Workbench/ViewModel/retry/event/retry checkpoint pytest、前端 Workbench/route/chat/artifact/thread-list/workbench-api 测试、py_compile、lint/build 和 `git diff --check`。
 
 ## 高价值判断
@@ -142,15 +143,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-30 16:24 · C3-P2 PR1 浏览器验收闸门补证
-
-- 涉及文件：`datalogue-api/app/services/workbench_view_model.py`、`datalogue-api/tests/test_workbench_view_api.py`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
-- 关键改动：真实浏览器打开成功 `as_*` 线程时发现 `GET /api/workbench/artifact/{artifact_ref}?thread_id=as_*` 返回 404，导致 Panel 显示 `工作台暂不可用`；修复 ownership gate 只认 `ref_type="artifact"` 的过窄判断，改为按 `thread_id + ref_value == artifact:<uuid>` 精确校验，兼容真实业务 ref_type 为 `result/report` 的 artifact refs。
-- 浏览器验收：`/chat/as_c63b713b-06c7-41be-8961-c49b37f88709` 显示 completed 状态、Artifact Drawer 脱敏摘要和主产物 ref；隐藏 `/workbench/as_c63b713b-06c7-41be-8961-c49b37f88709/artifact%3A8abdec61952740248e21a49a45517afd` 可打开同一产物；`/chat/44` 旧会话显示只读 notice，不展示可执行 retry；三条页面扫描均未命中 raw rows、query_plan、field_patch、direct_sql、llm_sql 或 SELECT 泄露。
-- retry 闸门：临时 `as_8829d210-687c-4ccd-a88e-d5e94b046b15` 点击 Workbench `重试` 能触发 `/api/workbench/actions/retry` 200 并返回 `accepted=true` 与业务级 `run_request`，随后进入 `/api/chat/stream` 并记录 `workbench.retry_requested -> retry.started -> retry.fallback_to_whole_task -> dataset.query.completed`；完整 `answer.completed` 未重新声称通过，因为第一次验收脚本刷新页面打断 SSE，第二次点击时本地 Postgres 已停止监听 `localhost:5432`。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_workbench_view_api.py tests/test_workbench_retry_actions.py -q`，14 条通过；执行 `cd datalogue-web && npm run test -- src/components/workbench-panel.test.jsx src/components/workbench-route.test.jsx src/assistant/workbench-api.test.js`，13 条通过；`GET /api/workbench/artifact/artifact%3A8abdec61952740248e21a49a45517afd?thread_id=as_c63b713b-06c7-41be-8961-c49b37f88709` 从 404 修复为 200。
-- 残留风险：当前本地 Postgres/OrbStack 未运行，无法继续做 C3-P2 retry 完整完成态的真实浏览器复验；完整 `retry.checkpoint_restored -> answer.completed` 仍以 C3-P1 真实浏览器记录和 C3-P2 自动化闸门作为当前证据，恢复数据库服务后应再补一次页面点击到 completed 的复验。
 
 ### 2026-06-30 17:05 · C3-P2 PR1 真实浏览器 Retry Completed 复验
 
@@ -228,3 +220,11 @@
 - 计划治理：新增 Plan Governance 与 Change Request Template，明确任何新增 PR、移动 scope 或提前实现后续阶段能力，都必须先写入 `Proposed Plan Changes` 并保持 `Pending User Review`，说明理由、影响、风险和回滚，等待用户审核后才能执行。
 - 验证方式：执行 `git diff --check` 通过；文档检查确认当前没有新增正式计划，只有已有提前实现项被标注为 `P1-prep`，不计入 PR0 完成。
 - 残留风险：该文档是计划口径治理，不补 PR0.1 的 C3 架构文档正文；下一步应按该文档先执行 PR0.1，更新 C3 foundation 与 Shell ownership 边界。
+
+### 2026-07-01 11:05 · AS-R0 PR0.1 架构文档与迁移闸门
+
+- 涉及文件：`docs/architecture/C3-AgentScope-Workbench-产品化设计.md`、`docs/superpowers/specs/2026-06-30-c3-agentscope-workbench-design.md`、`docs/superpowers/plans/2026-06-30-c3-agentscope-workbench-p0.md`、`docs/superpowers/plans/2026-06-30-c3-p2-workbench-productization.md`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr0-1.md`、`.codex/project-memory.md`
+- 关键改动：把 C3 Workbench / AgentScope-compatible mirror 明确标注为 AS-R0 foundation，而不是 AgentScope Runtime ownership 完成态；补充 AS-R0 迁移闸门，明确 P0 只做 Shell Contract 与 Tool Boundary，不替换 `/chat/stream`，P1 才开始 `DatalogueAgenticShell.run_turn()` runtime ownership 迁移，P2 才收敛 legacy runtime 和扩展业务 Agent。
+- 安全边界：文档明确 C3 mirror 只承接会话、消息、事件、refs、Workbench View Model、retry 回放和审计兜底；不启动 AgentScope runner，不让 AgentScope 生成 SQL，不让 AgentScope 读取 schema、raw rows、query_plan 或 trace-only metadata。
+- 验证方式：执行 PR0.1 文档口径扫描、AS-R0 最小 pytest/py_compile 和 `git diff --check`；测试报告记录在 `docs/test-reports/2026-07-01-as-r0-pr0-1.md`。
+- 残留风险：PR0.1 只收口文档与迁移闸门，不补 PR0.2 writer interface、PR0.3 atomic provider 真实工具缺口或 PR0.4 安全测试矩阵。

@@ -4,7 +4,7 @@
 
 **Goal:** 把 C3 Workbench 从“Chat 右侧 Panel 可用”推进到“可长期承载 BI 工作台”的产品化第一阶段，同时把 C3-P1 的真实链路验收作为发布闸门嵌入。
 
-**Architecture:** C3-P2 PR1 继续保持双主路径：AgentScope mirror / Workbench View Model 负责会话、消息、事件和引用视图；Datalogue Chat 主链负责真实 BI 执行和 retry checkpoint 恢复。后端只输出业务级状态摘要、Artifact preview 和 refs；前端只消费 View Model，不拼接 SQL、schema、raw rows、query_plan 或字段级 patch。
+**Architecture:** C3-P2 PR1 继续保持双主路径：AgentScope-compatible mirror / Workbench View Model 负责会话、消息、事件和引用视图；Datalogue Chat 主链负责真实 BI 执行和 retry checkpoint 恢复。这里的双主路径是 C3 foundation 口径，不表示 AgentScope Runtime ownership 已完成；AS-R0 P1 才开始让 AgentScope Runtime 驱动 BI 主链。后端只输出业务级状态摘要、Artifact preview 和 refs；前端只消费 View Model，不拼接 SQL、schema、raw rows、query_plan 或字段级 patch。
 
 **Tech Stack:** FastAPI、SQLAlchemy、Pydantic、pytest、React、Vitest、Testing Library、Vite。
 
@@ -25,6 +25,7 @@ C3-P2 PR1 做方案 1，并把方案 2 作为验收闸门：
 - 独立 Workbench 正式入口。
 - ReportAgent / PythonAgent / AuditAgent 动作链路。
 - AgentScope runner 接管 Datalogue BI 主链。
+- Datalogue Agentic Shell 接管 `/chat/stream`。
 - 管理员字段级调试 UI。
 
 ## Multi-Agent Coordination

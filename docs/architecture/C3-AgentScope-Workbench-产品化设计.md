@@ -4,11 +4,13 @@
 
 C3 的目标是把 B-first / C-ready 智能问数能力推进到可感知的 BI 工作台产品形态。
 
-第一阶段不替换现有 Chat 入口，而是在 Chat 内增加 Workbench 右侧详情面板，并预留独立 `/workbench` 页面路由。新 Chat 会话开始使用 AgentScope-compatible Session / Message / Event 模型作为会话流、消息流和工作台事件流的真相源；Datalogue 继续负责 QueryGraph、RepairPatch、Artifact、权限、审计和 SQL 编译执行。
+第一阶段不替换现有 Chat 入口，而是在 Chat 内增加 Workbench 右侧详情面板，并预留独立 `/workbench` 页面路由。新 Chat 会话开始使用 Datalogue 本地 AgentScope-compatible Session / Message / Event mirror 作为会话流、消息流和工作台事件流的回放与审计真相源；Datalogue 继续负责 QueryGraph、RepairPatch、Artifact、权限、审计和 SQL 编译执行。
 
 阶段定位：
 
-> AgentScope 管新会话和工作台运行时外壳，Datalogue 管问数业务内核和业务真相源。
+> C3 Workbench / mirror 是 AS-R0 的 foundation，不是 AgentScope Runtime ownership 完成态。C3 由本地 AgentScope-compatible mirror 管新会话、消息、事件和回放外壳；Datalogue 仍管问数业务 runtime、业务裁决和业务真相源。
+
+AS-R0 的后续迁移会由 Datalogue Agentic Shell 接管主链 Runtime：P0 只建立 Shell Contract 与 Tool Boundary，不替换 `/chat/stream`；P1 才开始让 AgentScope Runtime 驱动 BI 主链；P2 再收敛 legacy runtime 和扩展其他业务 Agent。
 
 ## 2. 已确认决策
 
@@ -28,9 +30,9 @@ C3 主线选择 BI 工作台产品化。
 
 ### 2.3 AgentScope 接入深度
 
-采用 AgentScope Session / Message Bridge。
+采用 Datalogue 本地 AgentScope-compatible Session / Message Bridge。
 
-AgentScope-compatible 模型承接：
+AgentScope-compatible mirror 模型承接：
 
 - 新会话 session。
 - 新消息流。
@@ -38,15 +40,26 @@ AgentScope-compatible 模型承接：
 - Workbench Panel 回放。
 - 未来 AgentScope runtime / runner 的接入口。
 
-本阶段不让 AgentScope 生成 SQL，不让 AgentScope 读取 schema、raw result、query_plan 或 trace-only metadata。
+本阶段不启动 AgentScope runner，不让 AgentScope 接管 `/chat/stream` 主链，不让 AgentScope 生成 SQL，不让 AgentScope 读取 schema、raw result、query_plan 或 trace-only metadata。
 
-### 2.4 新会话真相源
+### 2.4 新会话回放与审计来源
 
-新 Chat 会话以 AgentScope Session 为 session/message/event 真相源。
+新 Chat 会话以本地 AgentScope-compatible mirror 为 session/message/event 的回放与审计真相源。
 
-旧 Datalogue conversation 不再作为新会话消息主源，只作为旧会话回放、兼容镜像和业务执行快照的承接位置。
+这只改变 C3 会话、消息、事件和 Workbench 视图的持久化外壳，不改变 Datalogue 主链 Runtime ownership。旧 Datalogue conversation 不再作为新会话消息主源，只作为旧会话回放、兼容镜像和业务执行快照的承接位置。
 
-### 2.5 旧会话策略
+### 2.5 AS-R0 迁移闸门
+
+C3 到 AS-R0 的迁移必须满足以下闸门：
+
+- P0 阶段只能新增 Datalogue Agentic Shell 契约、Agent Registry、Policy / Tool Whitelist、Context Projection、Output Sanitizer 和 BI atomic tool provider 边界。
+- P0 不替换 `/chat/stream` 主链，不把 Workbench retry 改为 Shell action，不启动真实 AgentScope runner。
+- P1 才允许把 `/chat/stream` 收缩为 HTTP/SSE 兼容壳，并委托 `DatalogueAgenticShell.run_turn()`。
+- P1 的 DatasetAgent 只能生成 DSL，最终 SQL 只能在 `compile_dsl_to_sql` / `execute_compiled_query` 等受控 tool 内部流转。
+- P2 才收敛 legacy `_stream_chat`、`AgentScopeShellAdapter` 和 `BIWorkbenchTool(ask_bi)`，并逐个启用 ReportAgent / PythonAgent / AuditAgent。
+- 未经正式计划文档审核，不允许把 P1/P2 能力提前计入 P0 完成。
+
+### 2.6 旧会话策略
 
 旧会话只读回放作为 smoke path：
 
@@ -76,7 +89,7 @@ AgentScope-compatible 模型承接：
 User
   -> Chat page
       -> thread_id resolver
-          -> as_* : AgentScope mirror session
+          -> as_* : AgentScope-compatible mirror session
           -> conv_* : legacy conversation readonly replay
       -> Workbench Panel
           -> Workbench View Model API
@@ -116,7 +129,7 @@ as_<agentscope_session_id>    新 AgentScope-compatible session
 
 ## 5. 本地 AgentScope Mirror 数据模型
 
-C3-P0 新增四张本地 mirror 表。它们是 AgentScope-compatible session/message/event/ref 的本地实现，也是后续接真实 AgentScope runtime 的审计、回放和兜底层。
+C3-P0 新增四张本地 mirror 表。它们是 AgentScope-compatible session/message/event/ref 的本地实现，也是后续接真实 AgentScope runtime 的审计、回放和兜底层。它们不保存主链执行权，也不表示 AgentScope 已经接管 Datalogue Runtime。
 
 ### 5.1 agentscope_session
 
@@ -233,7 +246,7 @@ metadata_internal
 
 ## 6. 写入顺序
 
-新 Chat 消息采用“先写 AgentScope message，再执行 Datalogue 主链”。
+新 Chat 消息采用“先写本地 AgentScope-compatible mirror message，再执行 Datalogue 主链”。
 
 流程：
 
@@ -242,7 +255,7 @@ metadata_internal
 3. 写入 `agentscope_message(role=user, status=completed)`。
 4. 写入 `agentscope_message(role=assistant, status=running)`。
 5. 写入 `agentscope_event(type=message.received)`。
-6. 调用 Datalogue 主链。
+6. 调用 Datalogue 主链。C3 阶段这里仍是 legacy Datalogue runtime，不是 AgentScope Runtime。
 7. 主链阶段事件投影为 `agentscope_event`。
 8. Artifact、trace、repair、checkpoint refs 写入 `agentscope_ref`。
 9. 成功时 assistant message 更新为 `completed`。
@@ -264,7 +277,7 @@ Datalogue 主链指当前智能问数业务执行链：
 - DatalogueEventEnvelope。
 - Langfuse observation 和后端 checkpoint 日志。
 
-C3 不重写这条业务执行链。AgentScope Session 只成为新会话和工作台运行时真相源。
+C3 不重写这条业务执行链。AgentScope-compatible mirror 只成为新会话、消息、事件、refs 和工作台回放的审计真相源。
 
 ## 8. Lease / Timeout
 
@@ -532,7 +545,9 @@ C3-P0 动作范围是只读 + 受控 retry。
 - 旧 ArtifactCard 和历史消息照常回放。
 - 旧会话继续追问提示转为新工作台会话。
 
-## 15. P0 / P1 / P2 拆分
+## 15. 历史 C3 产品化拆分
+
+以下 P0 / P1 / P2 是 C3 Workbench 产品化历史拆分，不作为 AS-R0 正式 PR plan 的分期依据。AS-R0 以后续正式计划为准：PR0 做 Shell Contract 与 Tool Boundary，PR1 才进入 AgentScope Runtime 驱动 BI 主链，PR2 收敛 legacy runtime 并扩展业务 Agent。
 
 ### P0：AgentScope Mirror + Chat Workbench Panel
 
@@ -554,9 +569,9 @@ C3-P0 动作范围是只读 + 受控 retry。
 - 补真实页面 retry 验收。
 - 加强 action state 可视化。
 
-### P2：AgentScope Runtime 深接入
+### C3 后续：AgentScope Runtime 接入准备
 
-- 接真实 AgentScope runtime / runner。
+- 为正式 AS-R0 P1 接真实 AgentScope runtime / runner 做准备。
 - mirror 表作为审计、回放和兜底层。
 - 评估 DatasetAgent / ReportAgent 的受控 runner 接入。
 - 保持 Datalogue 业务内核真相源不变。

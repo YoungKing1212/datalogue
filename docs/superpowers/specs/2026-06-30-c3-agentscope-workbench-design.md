@@ -4,17 +4,20 @@
 
 B 阶段已经完成 capability manifest、event envelope、ask_bi、Artifact refs、候选确认、C-ready Chat Shell 和五件套验收基础。C1/C2 进一步完成 RepairPlan / RepairPatch 主链，当前 Datalogue 已具备可观测、可追溯、可受控修复的智能问数内核。
 
-C3 的目标是把这些能力推进到更完整的 BI 工作台产品形态，同时开始真实引入 AgentScope Session / Message / Event 模型，承接新会话流和工作台事件流。
+C3 的目标是把这些能力推进到更完整的 BI 工作台产品形态，同时开始真实引入 Datalogue 本地 AgentScope-compatible Session / Message / Event mirror，承接新会话流和工作台事件流。
 
 ## 2. 阶段定位
 
 C3 P0 定义为：
 
-> AgentScope-compatible 新会话真相源 + Chat 内 Workbench Panel 产品化。
+> AgentScope-compatible 本地 mirror foundation + Chat 内 Workbench Panel 产品化。
+
+这里的 foundation 只覆盖会话、消息、事件、refs、Workbench View Model、retry 回放和审计兜底，不表示 AgentScope Runtime 已接管 Datalogue 主链。AS-R0 的 runtime ownership 迁移由后续 Agentic Shell-first 计划承接：P0 只做 Shell Contract 与 Tool Boundary；P1 才开始让 `/chat/stream` 委托 `DatalogueAgenticShell.run_turn()`；P2 再收敛 legacy runtime。
 
 本阶段不做：
 
 - 不让 AgentScope runner 接管 QueryGraph、RepairPatch 或 SQL 执行。
+- 不让 AgentScope runner 接管 `/chat/stream` 主链。
 - 不开放 ReportAgent / PythonAgent / AuditAgent 真实链路。
 - 不开放自由编辑 SQL。
 - 不迁移旧会话。
@@ -37,11 +40,11 @@ C3 P0 定义为：
 
 ### 3.3 AgentScope 接入
 
-采用 Session / Message Bridge。
+采用本地 AgentScope-compatible Session / Message Bridge。
 
-### 3.4 新会话真相源
+### 3.4 新会话回放与审计来源
 
-新 Chat 会话使用 AgentScope Session 作为 session / message / event 真相源。
+新 Chat 会话使用本地 AgentScope-compatible mirror 作为 session / message / event 的回放与审计真相源。Datalogue 主链 Runtime ownership 不在 C3 阶段迁移。
 
 ### 3.5 旧会话策略
 
@@ -91,7 +94,7 @@ assistant running message 使用 Lease / timeout。
 
 ### 4.1 AgentScope Session
 
-C3 的 AgentScope Session 是 Datalogue 本地实现的 AgentScope-compatible mirror。它是新 Chat 会话的 session/message/event 真相源，也是后续接真实 AgentScope runtime 的桥。
+C3 的 AgentScope Session 是 Datalogue 本地实现的 AgentScope-compatible mirror。它是新 Chat 会话的 session/message/event 回放与审计来源，也是后续接真实 AgentScope runtime 的桥。它不是 AS-R0 runtime ownership 的完成态。
 
 ### 4.2 Datalogue 主链
 
@@ -461,16 +464,24 @@ Panel 消费：
 
 ## 12. 后续阶段
 
-### P1
+### AS-R0 迁移闸门
+
+- C3 Workbench / mirror 只能作为 AS-R0 foundation。
+- P0 只允许新增 Datalogue Agentic Shell 契约、Agent Registry、Policy / Tool Whitelist、Context Projection、Output Sanitizer 和 BI atomic tool provider 边界。
+- P0 不替换 `/chat/stream`，不把 Workbench retry 改成 Shell action，不启动真实 AgentScope runner。
+- P1 才允许接入 AgentScope runtime adapter，并把 `/chat/stream` 收缩为 HTTP/SSE 兼容壳。
+- P2 才收敛 legacy `_stream_chat`、`AgentScopeShellAdapter` 和 `BIWorkbenchTool(ask_bi)`。
+
+### C3 后续产品化
 
 - 正式开放独立 Workbench 页面。
 - 强化 Artifact 详情。
 - 补真实页面 retry E2E。
 - 增加 action execution state。
 
-### P2
+### AS-R0 后续
 
-- 接真实 AgentScope runtime。
+- 按正式 AS-R0 PR plan 接真实 AgentScope runtime。
 - mirror 作为审计和回放兜底。
 - 评估 DatasetAgent / ReportAgent 受控 runner。
 - 保持 Datalogue 业务内核裁决权。

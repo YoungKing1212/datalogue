@@ -78,7 +78,7 @@ npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-pa
 - SSE/event envelope：由 `_stream_chat` stub 事件进入真实 AgentScope bridge，覆盖 `task.started -> answer.completed`。
 - 后端日志/checkpoint：真实浏览器 E2E 通过 DB 状态补证，`conversation_id=31`、`thread_id=as_60b44ad7-cd95-4b2e-a765-c2e82e189c2d`、`trace_id=22b163778f0bbdb422c691997ae6eb60`、`checkpoint_ref=checkpoint://conv-31-msg-74/query_context_ready`。
 - Langfuse：本次未打开 Langfuse UI；C3-P0 只验证 mirror 与 Workbench，不新增 Langfuse observation 语义。
-- query_artifact / conversation_state / AgentScope mirror：真实浏览器 E2E 生成 `primary_ref=artifact:e1c094ea0d2242a681345f70a2404284`、`report_ref=artifact:5d40ec7b33b04ab199b8d3dc3b46f53f`，AgentScope mirror refs 中记录 result/report/trace/checkpoint；C3 新真相源以 `agentscope_session/message/event/ref` 为准。
+- query_artifact / conversation_state / AgentScope mirror：真实浏览器 E2E 生成 `primary_ref=artifact:e1c094ea0d2242a681345f70a2404284`、`report_ref=artifact:5d40ec7b33b04ab199b8d3dc3b46f53f`，AgentScope mirror refs 中记录 result/report/trace/checkpoint；C3 的 `agentscope_session/message/event/ref` 是 Workbench/mirror 视图和审计真相源，不是 BI runtime ownership。
 
 ## 真实浏览器补证
 
@@ -105,7 +105,7 @@ npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-pa
 
 ## C3-P1 PR1：Retry 主链恢复契约补证
 
-- 范围：Workbench 受控 retry 不直接执行 SQL，也不把 QueryGraph/字段/schema 等执行面 payload 带回前端；后端只生成 `run_request`，前端通过 assistant-ui `thread.append()` 发起普通 Chat run，`chat-adapter` 将 `retry_checkpoint_ref` 交给现有 `/chat/stream` 恢复链路。
+- 范围：Workbench 受控 retry 不直接执行 SQL，也不把 QueryGraph/字段/schema 等执行面 payload 带回前端；后端只生成业务级 `run_request`，前端通过 Chat shell / `streamChatEvents` 发起普通 Chat run，`chat-adapter` 将 `retry_checkpoint_ref` 交给现有 `/chat/stream` 恢复链路。
 - 后端证据：`POST /api/workbench/actions/retry` 对 `as_*` failed/interrupted message 返回 `accepted=true`、新的 running mirror message、`workbench.retry_requested` event 和业务级 `run_request`；`conv_*` 仍返回只读禁用态且 `run_request=null`。
 - 前端证据：Workbench Panel 收到 accepted retry response 后调用 Chat shell；pending retry request 只消费一次，发送给 `/chat/stream` 的 payload 包含 `question/conversation_id/thread_id/dataset_id/retry_checkpoint_ref`，并清空 `window.__DATALOGUE_PENDING_WORKBENCH_RETRY__`。
 - 安全证据：`run_request` 和前端回调序列化扫描未命中 `select/schema/raw_rows/query_plan` 等执行面字段；真实恢复上下文仍由后端 checkpoint ref 读取。
