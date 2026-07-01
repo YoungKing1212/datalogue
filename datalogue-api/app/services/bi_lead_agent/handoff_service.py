@@ -17,10 +17,12 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.bi_lead_agent import BIAgentHandoff, BILeadAgentRun
 from app.schemas.bi_lead_agent import BILeadAgentHandoffRequest, BILeadAgentHandoffResult
 from app.services.bi_lead_agent.confirmation_service import BILeadAgentConfirmationService
 from app.services.bi_lead_agent.handoff_adapter import DatalogueBIHandoffAdapter
+from app.services.bi_lead_agent.handoff_port import BIHandoffPort
 from app.services.bi_lead_agent.run_service import BILeadAgentRunService
 
 
@@ -39,10 +41,10 @@ class BIHandoffService:
         self,
         db: Session,
         *,
-        adapter: DatalogueBIHandoffAdapter | None = None,
+        adapter: BIHandoffPort | None = None,
     ) -> None:
         self.db = db
-        self.adapter = adapter or DatalogueBIHandoffAdapter.from_db(db)
+        self.adapter = adapter or _default_handoff_port(db)
         self.run_service = BILeadAgentRunService(db)
         self.confirmation_service = BILeadAgentConfirmationService(db)
 
@@ -106,3 +108,12 @@ class BIHandoffService:
         if run.status in {"completed", "blocked", "failed", "cancelled"}:
             run.completed_at = datetime.now(timezone.utc)
         self.db.add(run)  # run 只表达外层阶段和终态；DatasetAgent 细节通过 refs 回看。
+
+
+def _default_handoff_port(db: Session) -> BIHandoffPort:
+    settings = get_settings()
+    if settings.BI_LEAD_AGENT_HANDOFF_MODE == "agentscope_native":
+        from app.services.bi_lead_agent.native_handoff import AgentScopeNativeBIHandoff
+
+        return AgentScopeNativeBIHandoff.from_db(db)
+    return DatalogueBIHandoffAdapter.from_db(db)

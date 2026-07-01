@@ -83,6 +83,11 @@
 
 - 删除 Langfuse Python 依赖、Docker Compose 服务、观测 API 挂载、prompt/feedback 外部同步和前端 Trace/查询审计入口；`DatalogueTracer` 改为本地 no-op 兼容壳，运行时代码/依赖/部署/前端源码不再包含 Langfuse 调用链。
 - 验证覆盖 Langfuse 残留扫描、observability/conversation pytest、后端 compileall、前端 lint/build；历史文档保留 Langfuse 作为历史事实，当前链路改以后端日志、Workbench refs、SSE 和 DB 状态为主。
+
+### 2026-07-01 15:54 DatasetAgent Runtime 字段缺失受控阻断
+
+- `BIAtomicToolProvider.execute_compiled_query()` 将 MySQL/SQLite/PostgreSQL 字段缺失异常统一收敛为 `FIELD_NOT_FOUND`，AgentScope bridge 只回填 `status=blocked/code=FIELD_NOT_FOUND` 和固定安全摘要。
+- 验证覆盖 provider 与 AgentScope bridge 字段缺失回归，确保 DB 异常原文、SQL、schema、raw rows 和 repair patch 主体不穿透到 DatasetAgent Runtime / AgentScope SDK bridge。
 - C3-P0 PR2 完成 Chat Session Bridge：`/chat/stream` 接入 AgentScope mirror 但不替换 Datalogue 主链，新增 `thread_id`、新 `as_*` session/message/event/ref 投影、final payload 回写线程和异常/取消/无 final 收口；验证覆盖 chat bridge、event projection、mirror、thread resolver 和 chat pytest。
 - C3-P0 PR3 完成 Workbench View Model API：新增 `/api/workbench/thread/{thread_id}` 和 artifact view，支持 `as_*` mirror 视图、`conv_*` 旧会话只读回放、artifact refs 脱敏摘要和用户可见层禁止 SQL/schema/raw rows/query_plan/field_patch。
 - C3-P0 PR4 完成 Controlled Retry And Lease Recovery：`POST /api/workbench/actions/retry` 白名单化接收 thread/message/checkpoint/action，过期 running message 收口为 interrupted 并生成可恢复 checkpoint，旧 `conv_*` 只读禁用 retry。
@@ -140,15 +145,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 15:54 · DatasetAgent Runtime 字段缺失受控阻断
-
-- 涉及文件：`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`.codex/project-memory.md`
-- 关键改动：`BIAtomicToolProvider.execute_compiled_query()` 捕获 SQL preview 执行异常，将 MySQL `Unknown column`、SQLite `no such column` 和 PostgreSQL `undefined column` 统一收敛为 `FIELD_NOT_FOUND`，内部返回 `repair_required=true` 和固定摘要，不再让 DB 异常穿透到 DatasetAgent Runtime / AgentScope SDK bridge。
-- 安全边界：异常原文可能含表名、字段名或 SQL，provider 只返回错误分类和固定中文摘要；AgentScope bridge 经 Agentic Shell sanitizer 后只向 Agent 回填 `status=blocked/code=FIELD_NOT_FOUND`，不暴露 `project_manager.ZTGZL`、SQL、schema、raw rows 或 repair patch 主体。
-- TDD 记录：先新增 provider 和 AgentScope bridge 两个字段缺失回归测试，确认 RED 分别为 provider 直接抛 `RuntimeError`、bridge 输出 `ToolResultState.ERROR`；实现执行边界错误归一化后转 GREEN，并按 sanitizer 现有边界把 bridge 对外断言收紧为只看 `FIELD_NOT_FOUND`。
-- 验证方式：执行 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentic_shell_contract.py::test_bi_atomic_tool_provider_execute_field_missing_returns_repairable_block -q`，1 条通过、3 个既有 warning；执行 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py::test_agentscope_execute_field_missing_returns_blocked_repair_signal -q`，1 条通过、3 个既有 warning；执行相关回归 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentic_shell_contract.py datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py -q`，22 条通过、3 个既有 warning。
-- 残留风险：本次只补 DatasetAgent Runtime 的受控错误节点/repair 信号入口，尚未真正接入自动 RepairPatch 重写与重跑；`project_manager.ZTGZL` 的真实 schema 漂移仍需要后续 repair 节点或资产同步来完成自动修复。
 
 ### 2026-07-01 15:58 · `/chat/stream` 单数据集直通 DatasetAgent Runtime
 
@@ -226,3 +222,11 @@
 - 安全边界：确认 payload 只取数据集能力摘要，不携带 schema/sql/dsl/raw rows；运行面板只展示 answer summary、artifact/checkpoint refs 和数字结果规模；后端 E2E 仅替换 DatasetAgent runtime adapter，仍走真实 endpoint、service、DB 写入和 response DTO。
 - 验证方式：后端 `tests/test_bi_lead_agent_models.py tests/test_bi_lead_agent_capabilities.py tests/test_bi_lead_agent_services.py tests/test_bi_lead_agent_handoff_adapter.py tests/test_bi_lead_agent_api.py tests/test_bi_lead_agent_e2e_contract.py tests/test_agentscope_dataset_runtime_bridge.py tests/test_as_r0_security_matrix.py -q`，47 条通过、2 个既有 warning；前端相关 vitest 5 个文件 42 条通过；`npm run lint` 通过但保留 13 个既有 warning；`npm run build` 通过并保留 Vite chunk size warning；只读 code review 未发现阻断问题。
 - 残留风险：K2 仍是页面原型闭环，尚未做真实浏览器截图验收；真实 LLM DatasetAgent live handoff 需要凭据后单独 smoke；多数据集 capability 仍保持 disabled。
+
+### 2026-07-01 20:40 · BI LeadAgent K3 AgentScope native handoff 演进
+
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/services/bi_lead_agent/handoff_port.py`、`datalogue-api/app/services/bi_lead_agent/handoff_service.py`、`datalogue-api/app/services/bi_lead_agent/handoff_events.py`、`datalogue-api/app/services/bi_lead_agent/native_handoff.py`、`datalogue-api/tests/test_bi_lead_agent_handoff_port.py`、`datalogue-api/tests/test_bi_lead_agent_native_handoff.py`、`datalogue-api/tests/test_bi_lead_agent_handoff_parity.py`、`docs/test-reports/2026-07-01-bi-lead-agent-k3.md`、`.codex/project-memory.md`
+- 关键改动：新增 `BIHandoffPort`，`BIHandoffService` 改为依赖可替换 handoff port；新增 `BI_LEAD_AGENT_HANDOFF_MODE=host_adapter|agentscope_native` 且默认保持 `host_adapter`；新增 `AgentScopeNativeBIHandoff`，通过 AgentScope 2.0 DatasetAgent 子运行执行 handoff，并把 native child-run 事件投影为 Datalogue `BILeadAgentHandoffResult`；session artifact/error fallback 会覆盖 accepted/running 过渡态，避免终态 handoff 被持久化为 running。
+- 安全边界：K3 不让 AgentScope session/event 取代 Datalogue DB 真相源；native event 映射只保留 handoff 状态、child_run_id、artifact/checkpoint refs、安全摘要和结果规模，继续过滤 SQL/schema/DSL/raw rows/result internals；BI LeadAgent 仍不直接调用 Dataset 原子工具。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_lead_agent_models.py tests/test_bi_lead_agent_capabilities.py tests/test_bi_lead_agent_services.py tests/test_bi_lead_agent_handoff_adapter.py tests/test_bi_lead_agent_api.py tests/test_bi_lead_agent_handoff_port.py tests/test_bi_lead_agent_native_handoff.py tests/test_bi_lead_agent_handoff_parity.py tests/test_agentscope_dataset_runtime_bridge.py tests/test_as_r0_security_matrix.py -q`，59 条通过、2 个既有 warning。
+- 残留风险：`agentscope_native` 默认不启用，生产切换前还需要真实凭据和 live smoke；完整 F3 长生命周期会话 Agent、Report/Python/Audit 可选 Agent 和多数据集 native handoff 仍是后续任务。
