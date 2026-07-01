@@ -573,7 +573,7 @@ def test_tool_planner_fast_path_avoids_multiturn_continue(monkeypatch, db_sessio
     assert plan["fallback_reason"] == "lead_agent_llm_not_configured"
 
 
-def test_planner_records_langfuse_generation(monkeypatch, db_session):
+def test_planner_records_observability_generation(monkeypatch, db_session):
     """LeadAgent Planner 应按 Skill -> Tool 两阶段渐进式披露并记录 generation。"""
 
     class FakePrompt:
@@ -1086,7 +1086,7 @@ def test_planner_projection_disabled_keeps_raw_payload(monkeypatch, db_session):
 
 
 def test_planner_projection_disabled_does_not_record_projection_metadata(monkeypatch, db_session):
-    """关闭时 Langfuse metadata 不应携带 projection_metrics/schema_version。"""
+    """关闭时 Observability metadata 不应携带 projection_metrics/schema_version。"""
 
     _, tracer = _run_plan_with_projection(monkeypatch, db_session, use_projection=False)
 
@@ -1301,8 +1301,8 @@ def test_planner_projection_enabled_redacts_raw_context(monkeypatch, db_session)
         ), f"tool payload leaked {forbidden}: {tool_payload_text}"
 
 
-def test_planner_projection_records_langfuse_metadata(monkeypatch, db_session):
-    """开启时 Langfuse metadata 应记录 projection_enabled 和 schema version。"""
+def test_planner_projection_records_observability_metadata(monkeypatch, db_session):
+    """开启时 Observability metadata 应记录 projection_enabled 和 schema version。"""
 
     plan, tracer = _run_plan_with_projection(monkeypatch, db_session, use_projection=True)
 

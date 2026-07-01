@@ -227,7 +227,7 @@ function DetailPanel({ detail, loading }) {
           <div className="audit-detail-meta">
             <span>{item.trace_id}</span>
             <span>{formatTime(item.created_at || trace.timestamp)}</span>
-            <span>{detail.source === 'langfuse' ? 'Langfuse + 本地索引' : '本地 fallback'}</span>
+            <span>{detail.source === 'observability' ? 'Observability + 本地索引' : '本地 fallback'}</span>
           </div>
         </div>
         <span className={`audit-status ${STATUS_CLASS[item.status] || 'unknown'}`}>
@@ -235,10 +235,10 @@ function DetailPanel({ detail, loading }) {
         </span>
       </div>
 
-      {detail.langfuse_error && (
+      {detail.observability_error && (
         <div className="audit-warning">
           <Icon name="warn" />
-          <span>Langfuse trace 拉取失败，当前展示本地 fallback：{detail.langfuse_error}</span>
+          <span>Observability trace 拉取失败，当前展示本地 fallback：{detail.observability_error}</span>
         </div>
       )}
 
@@ -351,7 +351,7 @@ function AuditQueryScreen() {
       <div className="audit-page-head">
         <div>
           <h1>查询审计</h1>
-          <p>在 Datalogue 内查看问数链路、Langfuse observations、scores、SQL 与本地 fallback。</p>
+          <p>在 Datalogue 内查看问数链路、Observability observations、scores、SQL 与本地 fallback。</p>
         </div>
         <button className="btn ghost" type="button" onClick={() => window.location.reload()}>
           <Icon name="refresh" />

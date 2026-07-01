@@ -482,8 +482,8 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
       } else if (ev.type === 'final') {
         syncSelectedDataset(ev.route_decision || ev.response_metadata?.route_decision);
         setTraceMeta({
-          traceId: ev.langfuse_trace_id || null,
-          sessionId: ev.langfuse_session_id || null,
+          traceId: ev.trace_id || null,
+          sessionId: ev.trace_session_id || null,
           messageId: ev.message_id || null,
           observability: ev.observability || null,
         });

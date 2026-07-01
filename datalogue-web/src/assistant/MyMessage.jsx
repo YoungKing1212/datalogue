@@ -686,74 +686,8 @@ function RepairPlanCard({ repairPlan }) {
   );
 }
 
-function TraceLinkCard({ traceId, sessionId, observability, stepTrace = [] }) {
-  if (!traceId && !sessionId) return null;
-
-  const baseUrl = observability?.base_url || observability?.baseUrl || null;
-  const projectId = observability?.project_id || observability?.projectId || null;
-  const traceUrl = observability?.trace_url || observability?.traceUrl || (
-    baseUrl && projectId && traceId
-      ? `${baseUrl.replace(/\/$/, '')}/project/${encodeURIComponent(projectId)}/traces/${encodeURIComponent(traceId)}`
-      : null
-  );
-  const enabled = observability?.enabled;
-  const active = observability?.active;
-  const statusText = enabled === false ? '未启用' : active === false ? '本地记录' : '可追踪';
-  const environment = observability?.environment || '—';
-  const release = observability?.release || '—';
-
-  const copyTrace = (event) => {
-    event.stopPropagation();
-    if (!traceId) return;
-    navigator.clipboard.writeText(traceId).catch(console.error);
-  };
-  const openAuditPage = (event) => {
-    event.stopPropagation();
-    if (!traceId) return;
-    window.location.href = `/audit-query?trace_id=${encodeURIComponent(traceId)}`;
-  };
-  const showInPanel = () => {
-    const panelObservability = observability
-      ? { ...observability, trace_url: traceUrl || observability.trace_url || observability.traceUrl || null }
-      : { trace_url: traceUrl, base_url: baseUrl, project_id: projectId };
-    window.dispatchEvent(new CustomEvent('datalogue:run-start'));
-    if (Array.isArray(stepTrace)) {
-      for (const step of stepTrace) {
-        if (step && typeof step === 'object') {
-          window.dispatchEvent(new CustomEvent('datalogue:trace', {
-            detail: { ...step, type: 'step' },
-          }));
-        }
-      }
-    }
-    const detail = {
-      type: 'final',
-      langfuse_trace_id: traceId || null,
-      langfuse_session_id: sessionId || null,
-      observability: panelObservability,
-    };
-    window.dispatchEvent(new CustomEvent('datalogue:trace', { detail }));
-    window.dispatchEvent(new CustomEvent('datalogue:trace-panel-open', { detail }));
-  };
-
-  return (
-    <div className="message-trace-link">
-      <button type="button" className="message-trace-main" onClick={openAuditPage}>
-        <Icon name="trace" />
-        <span>查看链路</span>
-        <em>{statusText} · {environment} · {release}</em>
-      </button>
-      <code title={traceId || sessionId}>{traceId || sessionId}</code>
-      {traceId && (
-        <button type="button" className="message-trace-btn" onClick={copyTrace} title="复制 Trace ID">
-          <Icon name="copy" />
-        </button>
-      )}
-      <button type="button" className="message-trace-btn" onClick={showInPanel} title="在右侧面板查看">
-        <Icon name="branch" />
-      </button>
-    </div>
-  );
+function TraceLinkCard() {
+  return null;
 }
 
 function artifactEntries({ resultRef, reportRef, subagentToolResults }) {
@@ -887,8 +821,8 @@ export function AIMessage() {
   const routePayload = custom.routePayload || null;
   const clarification = custom.clarification || null;
   const messageId = custom.messageId || null;
-  const langfuseTraceId = custom.langfuseTraceId || null;
-  const langfuseSessionId = custom.langfuseSessionId || null;
+  const observabilityTraceId = custom.observabilityTraceId || null;
+  const observabilitySessionId = custom.observabilitySessionId || null;
   const observability = custom.observability || null;
   const stepTrace = custom.stepTrace || [];
   const savedFeedback = custom.feedback || null;
@@ -937,7 +871,7 @@ export function AIMessage() {
     try {
       await submitMessageFeedback(messageId, {
         action,
-        trace_id: langfuseTraceId,
+        trace_id: observabilityTraceId,
       });
       setFeedbackState(action === 'approve' ? '已点赞' : '已点踩');
     } catch (_e) {
@@ -1000,8 +934,8 @@ export function AIMessage() {
       <RepairPlanCard repairPlan={repairPlan} />
 
       <TraceLinkCard
-        traceId={langfuseTraceId}
-        sessionId={langfuseSessionId}
+        traceId={observabilityTraceId}
+        sessionId={observabilitySessionId}
         observability={observability}
         stepTrace={stepTrace}
       />

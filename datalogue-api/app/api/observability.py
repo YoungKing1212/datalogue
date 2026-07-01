@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : observability.py
 # Description:
-#   Langfuse 可观测报表 API。
+#   Observability 可观测报表 API。
 #
 # Responsibilities:
 #   - 暴露 trace、成本、质量和失败统计。
@@ -91,6 +91,6 @@ def observability_trace_detail(
     trace_id: str,
     db: Session = Depends(get_db),
 ):
-    """获取单条 trace 详情，包含 Langfuse 数据和本地 fallback。"""
+    """获取单条 trace 详情，包含 Observability 数据和本地 fallback。"""
 
     return get_query_audit_trace(db, trace_id=trace_id)

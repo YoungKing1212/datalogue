@@ -4,7 +4,7 @@
 #   查询审计 Trace 聚合服务。
 #
 # Responsibilities:
-#   - 汇总本地 trace 索引、消息历史和 Langfuse 远端 trace。
+#   - 汇总历史本地索引和消息步骤。
 #   - 为 Datalogue 自有查询审计页提供可渲染的链路详情。
 #
 # Author      : yangkai
@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from datetime import datetime
 from typing import Any
@@ -22,10 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import models
-from app.core.config import get_settings
-from app.services.observability.tracer import build_langfuse_trace_url
-
-logger = logging.getLogger(__name__)
+from app.services.observability.tracer import build_observability_trace_url
 
 WORKBENCH_RETRY_REQUIRED_EVENTS = [
     "workbench.retry_requested",
@@ -66,11 +62,11 @@ def list_query_audit_traces(
 
 
 def get_query_audit_trace(db: Session, *, trace_id: str) -> dict[str, Any]:
-    """返回单条查询审计详情，Langfuse 不可用时使用本地 fallback。"""
+    """返回单条查询审计详情，Observability 不可用时使用本地 fallback。"""
 
     index = (
         db.query(models.ObservabilityTraceIndex)
-        .filter(models.ObservabilityTraceIndex.langfuse_trace_id == trace_id)
+        .filter(models.ObservabilityTraceIndex.trace_id == trace_id)
         .order_by(models.ObservabilityTraceIndex.created_at.desc())
         .first()
     )
@@ -80,7 +76,7 @@ def get_query_audit_trace(db: Session, *, trace_id: str) -> dict[str, Any]:
             "trace_id": trace_id,
             "source": "missing",
             "provider": {"name": "missing", "available": False, "error": "trace index not found"},
-            "langfuse_error": "trace index not found",
+            "observability_error": "trace index not found",
             "item": None,
             "trace": None,
             "observations": [],
@@ -99,12 +95,12 @@ def get_query_audit_trace(db: Session, *, trace_id: str) -> dict[str, Any]:
 
     item = _trace_index_item(db, index)
     message = db.get(models.Message, index.message_id) if index.message_id else None
-    langfuse_trace, langfuse_error = _fetch_langfuse_trace(trace_id)
-    observations = _normalize_observations(langfuse_trace)
-    scores = _normalize_scores(langfuse_trace)
+    observability_trace, observability_error = _fetch_observability_trace(trace_id)
+    observations = _normalize_observations(observability_trace)
+    scores = _normalize_scores(observability_trace)
     fallback_steps = _fallback_steps(message)
     local_events = _local_agentscope_events(db, trace_id=trace_id, metadata=index.metadata_json or {})
-    source = "langfuse" if langfuse_trace else "local"
+    source = "observability" if observability_trace else "local"
 
     return {
         "found": True,
@@ -112,12 +108,12 @@ def get_query_audit_trace(db: Session, *, trace_id: str) -> dict[str, Any]:
         "source": source,
         "provider": {
             "name": source,
-            "available": bool(langfuse_trace) or bool(local_events or fallback_steps),
-            "error": langfuse_error,
+            "available": bool(observability_trace) or bool(local_events or fallback_steps),
+            "error": observability_error,
         },
-        "langfuse_error": langfuse_error,
+        "observability_error": observability_error,
         "item": item,
-        "trace": _normalize_trace(langfuse_trace) if langfuse_trace else _local_trace(message, item),
+        "trace": _normalize_trace(observability_trace) if observability_trace else _local_trace(message, item),
         "observations": observations,
         "scores": scores,
         "fallback_steps": fallback_steps,
@@ -156,22 +152,18 @@ def _trace_index_item(db: Session, index: models.ObservabilityTraceIndex) -> dic
     conversation = db.get(models.Conversation, index.conversation_id) if index.conversation_id else None
     metadata = index.metadata_json or {}
     response_metadata = message.response_metadata or {} if message else {}
-    langfuse = response_metadata.get("langfuse") or {}
-    observability = response_metadata.get("observability") or langfuse
+    observability = response_metadata.get("observability") or {}
+    observability = response_metadata.get("observability") or observability
     question = metadata.get("question") or _latest_user_question(db, index.conversation_id)
     sql_list = message.sql_list or [] if message else []
     error_text = _extract_error(response_metadata, index.metadata_json)
 
     return {
         "id": index.id,
-        "trace_id": index.langfuse_trace_id,
-        "session_id": index.langfuse_session_id,
+        "trace_id": index.trace_id,
+        "session_id": index.trace_session_id,
         "trace_url": observability.get("trace_url")
-        or build_langfuse_trace_url(
-            base_url=observability.get("base_url") or get_settings().LANGFUSE_BASE_URL,
-            project_id=observability.get("project_id") or get_settings().LANGFUSE_PROJECT_ID,
-            trace_id=index.langfuse_trace_id,
-        ),
+        or build_observability_trace_url(base_url=None, project_id=None, trace_id=index.trace_id),
         "conversation_id": index.conversation_id,
         "message_id": index.message_id,
         "dataset_id": index.dataset_id,
@@ -200,29 +192,8 @@ def _latest_user_question(db: Session, conversation_id: int | None) -> str | Non
     return msg.content if msg else None
 
 
-def _fetch_langfuse_trace(trace_id: str) -> Any | None:
-    settings = get_settings()
-    if not settings.LANGFUSE_ENABLED:
-        return None, "Langfuse disabled"
-    try:
-        from langfuse import Langfuse  # noqa: PLC0415
-
-        client = Langfuse(
-            public_key=settings.LANGFUSE_PUBLIC_KEY,
-            secret_key=settings.LANGFUSE_SECRET_KEY,
-            base_url=settings.LANGFUSE_BASE_URL or settings.LANGFUSE_HOST,
-        )
-        if hasattr(client, "api") and hasattr(client.api, "trace"):
-            return client.api.trace.get(
-                trace_id=trace_id,
-                fields="core,io,scores,observations,metrics",
-            ), None
-        if hasattr(client, "fetch_trace"):
-            return client.fetch_trace(trace_id), None
-        return None, "Langfuse SDK does not expose trace fetch API"
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Langfuse trace 拉取失败 trace_id=%s: %s", trace_id, exc)
-        return None, str(exc)
+def _fetch_observability_trace(trace_id: str) -> Any | None:
+    return None, "Trace disabled"
 
 
 def _normalize_trace(trace: Any) -> dict[str, Any]:
@@ -329,7 +300,7 @@ def _build_observability_contract(
     fallback_steps: list[dict[str, Any]],
     local_events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    # 契约只关心业务事件和 refs，不绑定 Langfuse/OTel 的内部字段名。
+    # 契约只关心业务事件和 refs，不绑定 Observability/OTel 的内部字段名。
     event_sources = [*observations, *fallback_steps, *local_events]
     matched_events = _matched_contract_events(event_sources)
     missing_events = [event for event in WORKBENCH_RETRY_REQUIRED_EVENTS if event not in matched_events]

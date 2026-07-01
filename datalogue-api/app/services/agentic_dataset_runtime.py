@@ -14,7 +14,10 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.agentic_bi_tools import BIAtomicToolProvider
@@ -24,9 +27,65 @@ from app.services.subagent_planning.contracts import QueryPlan
 
 DatasetDslGenerator = Callable[..., QueryPlan | dict[str, Any]]
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DatasetAgentNextToolCall:
+    """AgentScope external tool event 投影；Agent 只能提出下一步工具名和受限参数。"""
+
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DatasetAgentToolCallSession:
+    """DatasetAgent 单次查询的受控状态机上下文；内部状态不直接暴露给 Agent。"""
+
+    dataset_id: int
+    question: str
+    sql_generation_context: dict[str, Any] | None = None
+    dialect: str | None = "sqlite"
+    current_datasource_dialect: str | None = None
+    query_constraints: dict[str, Any] | None = None
+    allowed_tables: list[str] | None = None
+    conversation_id: int | None = None
+    trace_id: str | None = None
+    expected_tool_index: int = 0
+    status: str = "running"
+    dataset_status: dict[str, Any] | None = None
+    candidate_assets: dict[str, Any] | None = None
+    dsl: QueryPlan | dict[str, Any] | None = None
+    compiled_query_ref: str | None = None
+    artifact_ref: str | None = None
+    last_error: dict[str, Any] | None = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
 
 class DatasetAgentToolCallRuntime:
     """DatasetAgent 的受控 tool-call 编排；不提供大而全 plan_bi_query 黑盒。"""
+
+    TOOL_SEQUENCE = (
+        "get_dataset_status",
+        "list_candidate_assets",
+        "generate_dsl",
+        "compile_dsl_to_sql",
+        "execute_compiled_query",
+        "get_artifact_summary",
+    )
+    ALLOWED_TOOLS = set(TOOL_SEQUENCE)
+    FORBIDDEN_AGENT_ARGUMENT_KEYS = {
+        "sql",
+        "raw_sql",
+        "llm_sql",
+        "direct_sql",
+        "schema",
+        "schema_context",
+        "raw_rows",
+        "query_plan",
+        "repair_patch",
+        "blueprint_body",
+    }
 
     def __init__(
         self,
@@ -51,83 +110,308 @@ class DatasetAgentToolCallRuntime:
         conversation_id: int | None = None,
         trace_id: str | None = None,
     ) -> dict[str, Any]:
-        """按 PR1.3 固定顺序串联 atomic tools，返回 Agent 可见的安全摘要。"""
+        """兼容入口：按 Runtime 状态机自动提交下一步 tool call。"""
 
-        tool_calls: list[dict[str, Any]] = []
-
-        dataset_status = self.provider.get_dataset_status(dataset_id)
-        self._append_tool_call(tool_calls, "get_dataset_status", dataset_status.get("status") or "ready")
-        if dataset_status.get("status") in {"not_found", "disabled", "inactive"}:
-            return self._final_result(
-                status="blocked",
-                tool_calls=tool_calls,
-                code="DATASET_NOT_AVAILABLE",
-            )
-
-        candidate_assets = self.provider.list_candidate_assets(dataset_id, question=question)
-        self._append_tool_call(tool_calls, "list_candidate_assets", candidate_assets.get("status") or "ready")
-
-        try:
-            dsl = self.dsl_generator(
-                question=question,
-                dataset_status=dataset_status,
-                candidate_assets=candidate_assets,
-            )
-        except Exception as exc:  # pragma: no cover - 具体异常类型由后续 DSL generator 决定。
-            self._append_tool_call(tool_calls, "generate_dsl", "blocked", {"code": "DSL_GENERATION_FAILED"})
-            return self._final_result(
-                status="blocked",
-                tool_calls=tool_calls,
-                code="DSL_GENERATION_FAILED",
-                error_summary=str(exc),
-            )
-
-        self._append_tool_call(tool_calls, "generate_dsl", "generated", self._safe_dsl_summary(dsl))
-
-        compiled = self.provider.compile_dsl_to_sql(
+        session = self.start_tool_call_session(
             dataset_id=dataset_id,
-            dsl=dsl,
+            question=question,
             sql_generation_context=sql_generation_context,
             dialect=dialect,
             current_datasource_dialect=current_datasource_dialect,
             query_constraints=query_constraints,
             allowed_tables=allowed_tables,
-        )
-        self._append_tool_call(tool_calls, "compile_dsl_to_sql", compiled.get("status") or "blocked", compiled)
-        if compiled.get("status") != "compiled":
-            return self._final_result(
-                status="blocked",
-                tool_calls=tool_calls,
-                code=str(compiled.get("code") or "COMPILE_BLOCKED"),
-                error_summary=compiled.get("error_summary"),
-            )
-
-        executed = self.provider.execute_compiled_query(
-            compiled_query_ref=str(compiled["compiled_query_ref"]),
-            dataset_id=dataset_id,
             conversation_id=conversation_id,
             trace_id=trace_id,
         )
-        self._append_tool_call(tool_calls, "execute_compiled_query", executed.get("status") or "blocked", executed)
-        if executed.get("status") != "completed":
-            return self._final_result(
-                status="blocked",
-                tool_calls=tool_calls,
-                code=str(executed.get("code") or executed.get("status") or "EXECUTE_BLOCKED"),
+        self._log_runtime_checkpoint(
+            "start",
+            dataset_id=session.dataset_id,
+            conversation_id=session.conversation_id,
+            trace_id=session.trace_id,
+            tool_sequence=list(self.TOOL_SEQUENCE),
+        )
+        executed: dict[str, Any] | None = None
+        artifact_summary: dict[str, Any] | None = None
+        for tool_name in self.TOOL_SEQUENCE:
+            arguments: dict[str, Any] = {}
+            if tool_name == "execute_compiled_query":
+                arguments["compiled_query_ref"] = str(session.compiled_query_ref or "")
+            output = self.handle_agent_tool_call(
+                session,
+                DatasetAgentNextToolCall(name=tool_name, arguments=arguments),
             )
+            if output.get("status") == "blocked":
+                self._log_runtime_checkpoint(
+                    "result",
+                    dataset_id=session.dataset_id,
+                    conversation_id=session.conversation_id,
+                    trace_id=session.trace_id,
+                    status="blocked",
+                    code=output.get("code"),
+                    failed_tool=tool_name,
+                    tool_count=len(session.tool_calls),
+                )
+                return self._final_result(
+                    status="blocked",
+                    tool_calls=session.tool_calls,
+                    code=str(output.get("code") or "RUNTIME_BLOCKED"),
+                    error_summary=output.get("error_summary"),
+                )
+            if tool_name == "execute_compiled_query":
+                executed = output
+            elif tool_name == "get_artifact_summary":
+                artifact_summary = output
 
-        artifact_ref = str(executed["artifact_ref"])
-        artifact_summary = self.provider.get_artifact_summary(artifact_ref)
-        self._append_tool_call(tool_calls, "get_artifact_summary", artifact_summary.get("status") or "ready")
-
+        executed = executed or {}
+        artifact_summary = artifact_summary or {}
+        self._log_runtime_checkpoint(
+            "result",
+            dataset_id=session.dataset_id,
+            conversation_id=session.conversation_id,
+            trace_id=session.trace_id,
+            status="completed",
+            artifact_ref=session.artifact_ref,
+            row_count=executed.get("row_count"),
+            column_count=executed.get("column_count"),
+            tool_count=len(session.tool_calls),
+        )
         return self._final_result(
             status="completed",
-            tool_calls=tool_calls,
-            artifact_ref=artifact_ref,
+            tool_calls=session.tool_calls,
+            artifact_ref=session.artifact_ref,
             artifact_summary=artifact_summary,
             row_count=executed.get("row_count"),
             column_count=executed.get("column_count"),
         )
+
+    def start_tool_call_session(
+        self,
+        *,
+        dataset_id: int,
+        question: str,
+        sql_generation_context: dict[str, Any] | None = None,
+        dialect: str | None = "sqlite",
+        current_datasource_dialect: str | None = None,
+        query_constraints: dict[str, Any] | None = None,
+        allowed_tables: list[str] | None = None,
+        conversation_id: int | None = None,
+        trace_id: str | None = None,
+    ) -> DatasetAgentToolCallSession:
+        """创建单次 Runtime 会话；后续每一步由 Agent 提议、Runtime 校验并执行。"""
+
+        return DatasetAgentToolCallSession(
+            dataset_id=dataset_id,
+            question=question,
+            sql_generation_context=sql_generation_context,
+            dialect=dialect,
+            current_datasource_dialect=current_datasource_dialect,
+            query_constraints=query_constraints,
+            allowed_tables=allowed_tables,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+        )
+
+    def handle_agent_tool_call(
+        self,
+        session: DatasetAgentToolCallSession,
+        tool_call: DatasetAgentNextToolCall,
+    ) -> dict[str, Any]:
+        """执行 Agent 提议的下一步工具调用；安全顺序和敏感入参由 Runtime 强制校验。"""
+
+        if tool_call.name not in self.ALLOWED_TOOLS:
+            return self._blocked_tool_call(session, tool_call.name, "TOOL_NOT_WHITELISTED")
+        if self._contains_forbidden_agent_argument(tool_call.arguments):
+            return self._blocked_tool_call(session, tool_call.name, "SENSITIVE_TOOL_ARGUMENT")
+        expected = self.TOOL_SEQUENCE[session.expected_tool_index] if session.expected_tool_index < len(self.TOOL_SEQUENCE) else None
+        if tool_call.name != expected:
+            return self._blocked_tool_call(session, tool_call.name, "TOOL_ORDER_VIOLATION")
+
+        handler = {
+            "get_dataset_status": self._run_get_dataset_status,
+            "list_candidate_assets": self._run_list_candidate_assets,
+            "generate_dsl": self._run_generate_dsl,
+            "compile_dsl_to_sql": self._run_compile_dsl_to_sql,
+            "execute_compiled_query": self._run_execute_compiled_query,
+            "get_artifact_summary": self._run_get_artifact_summary,
+        }[tool_call.name]
+        output = handler(session, tool_call.arguments)
+        if output.get("status") == "blocked":
+            session.status = "blocked"
+            session.last_error = output
+            self._log_tool_checkpoint(session, tool_call.name, output)
+            return output
+        session.expected_tool_index += 1
+        if session.expected_tool_index >= len(self.TOOL_SEQUENCE):
+            session.status = "completed"
+        self._log_tool_checkpoint(session, tool_call.name, output)
+        return output
+
+    def _run_get_dataset_status(
+        self,
+        session: DatasetAgentToolCallSession,
+        _arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        dataset_status = self.provider.get_dataset_status(session.dataset_id)
+        session.dataset_status = dataset_status
+        self._append_tool_call(
+            session.tool_calls,
+            "get_dataset_status",
+            dataset_status.get("status") or "ready",
+        )
+        if dataset_status.get("status") in {"not_found", "disabled", "inactive"}:
+            return self._blocked_tool_call(session, "get_dataset_status", "DATASET_NOT_AVAILABLE")
+        return self._safe_agent_tool_output(
+            {
+                "status": dataset_status.get("status") or "ready",
+                "dataset_id": session.dataset_id,
+            }
+        )
+
+    def _run_list_candidate_assets(
+        self,
+        session: DatasetAgentToolCallSession,
+        _arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        candidate_assets = self.provider.list_candidate_assets(session.dataset_id, question=session.question)
+        session.candidate_assets = candidate_assets
+        self._append_tool_call(
+            session.tool_calls,
+            "list_candidate_assets",
+            candidate_assets.get("status") or "ready",
+        )
+        return self._safe_agent_tool_output(
+            {
+                "status": candidate_assets.get("status") or "ready",
+                "question_used": candidate_assets.get("question_used") is True,
+                "asset_group_count": len(
+                    [
+                        key
+                        for key in ("blueprint", "metric", "dimension")
+                        if candidate_assets.get(key)
+                    ]
+                ),
+            }
+        )
+
+    def _run_generate_dsl(
+        self,
+        session: DatasetAgentToolCallSession,
+        _arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            dsl = self.dsl_generator(
+                question=session.question,
+                dataset_status=session.dataset_status or {},
+                candidate_assets=session.candidate_assets or {},
+            )
+        except Exception as exc:  # pragma: no cover - 具体异常类型由后续 DSL generator 决定。
+            return self._blocked_tool_call(
+                session,
+                "generate_dsl",
+                "DSL_GENERATION_FAILED",
+                error_summary=str(exc),
+            )
+        session.dsl = dsl
+        safe_summary = self._safe_dsl_summary(dsl)
+        self._append_tool_call(session.tool_calls, "generate_dsl", "generated", safe_summary)
+        return self._safe_agent_tool_output({"status": "generated", **safe_summary})
+
+    def _run_compile_dsl_to_sql(
+        self,
+        session: DatasetAgentToolCallSession,
+        _arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        compiled = self.provider.compile_dsl_to_sql(
+            dataset_id=session.dataset_id,
+            dsl=session.dsl or {},
+            sql_generation_context=session.sql_generation_context,
+            dialect=session.dialect,
+            current_datasource_dialect=session.current_datasource_dialect,
+            query_constraints=session.query_constraints,
+            allowed_tables=session.allowed_tables,
+        )
+        self._append_tool_call(
+            session.tool_calls,
+            "compile_dsl_to_sql",
+            compiled.get("status") or "blocked",
+            compiled,
+        )
+        if compiled.get("status") != "compiled":
+            return self._blocked_tool_call(
+                session,
+                "compile_dsl_to_sql",
+                str(compiled.get("code") or "COMPILE_BLOCKED"),
+                error_summary=compiled.get("error_summary"),
+                append=False,
+            )
+        session.compiled_query_ref = str(compiled["compiled_query_ref"])
+        return self._safe_agent_tool_output(
+            {
+                "status": "compiled",
+                "compiled_query_ref": session.compiled_query_ref,
+                "agent_context": {"compiled_query_ref": session.compiled_query_ref},
+            }
+        )
+
+    def _run_execute_compiled_query(
+        self,
+        session: DatasetAgentToolCallSession,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        compiled_query_ref = str(arguments.get("compiled_query_ref") or "")
+        if not session.compiled_query_ref or compiled_query_ref != session.compiled_query_ref:
+            return self._blocked_tool_call(
+                session,
+                "execute_compiled_query",
+                "COMPILED_QUERY_REF_MISMATCH",
+            )
+        executed = self.provider.execute_compiled_query(
+            compiled_query_ref=session.compiled_query_ref,
+            dataset_id=session.dataset_id,
+            conversation_id=session.conversation_id,
+            trace_id=session.trace_id,
+        )
+        self._append_tool_call(
+            session.tool_calls,
+            "execute_compiled_query",
+            executed.get("status") or "blocked",
+            executed,
+        )
+        if executed.get("status") != "completed":
+            return self._blocked_tool_call(
+                session,
+                "execute_compiled_query",
+                str(executed.get("code") or executed.get("status") or "EXECUTE_BLOCKED"),
+                append=False,
+            )
+        session.artifact_ref = str(executed["artifact_ref"])
+        return self._safe_agent_tool_output(
+            {
+                "status": "completed",
+                "artifact_ref": session.artifact_ref,
+                "row_count": executed.get("row_count"),
+                "column_count": executed.get("column_count"),
+            }
+        )
+
+    def _run_get_artifact_summary(
+        self,
+        session: DatasetAgentToolCallSession,
+        _arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not session.artifact_ref:
+            return self._blocked_tool_call(
+                session,
+                "get_artifact_summary",
+                "ARTIFACT_REF_MISSING",
+            )
+        artifact_summary = self.provider.get_artifact_summary(session.artifact_ref)
+        self._append_tool_call(
+            session.tool_calls,
+            "get_artifact_summary",
+            artifact_summary.get("status") or "ready",
+        )
+        return self._safe_agent_tool_output({"status": artifact_summary.get("status") or "ready", **artifact_summary})
 
     def _append_tool_call(
         self,
@@ -143,6 +427,26 @@ class DatasetAgentToolCallRuntime:
             if isinstance(safe_payload, dict):
                 record["payload"] = safe_payload
         tool_calls.append(record)
+
+    def _blocked_tool_call(
+        self,
+        session: DatasetAgentToolCallSession,
+        name: str,
+        code: str,
+        *,
+        error_summary: str | None = None,
+        append: bool = True,
+    ) -> dict[str, Any]:
+        session.status = "blocked"
+        payload = {"status": "blocked", "code": code}
+        if error_summary:
+            payload["error_summary"] = error_summary
+        if append:
+            self._append_tool_call(session.tool_calls, name, "blocked", payload)
+        safe_payload = self._safe_agent_tool_output(payload)
+        session.last_error = safe_payload
+        self._log_tool_checkpoint(session, name, safe_payload)
+        return safe_payload
 
     @staticmethod
     def _safe_dsl_summary(dsl: QueryPlan | dict[str, Any]) -> dict[str, Any]:
@@ -160,6 +464,60 @@ class DatasetAgentToolCallRuntime:
             }
         return {}
 
+    def _safe_agent_tool_output(self, payload: dict[str, Any]) -> dict[str, Any]:
+        safe_payload = self._sanitizer.sanitize_output(payload)
+        return safe_payload if isinstance(safe_payload, dict) else {"status": "blocked"}
+
+    @classmethod
+    def _contains_forbidden_agent_argument(cls, value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                key_text = str(key).lower()
+                if key_text in cls.FORBIDDEN_AGENT_ARGUMENT_KEYS or "sql" in key_text:
+                    return True
+                if cls._contains_forbidden_agent_argument(nested):
+                    return True
+        elif isinstance(value, list):
+            return any(cls._contains_forbidden_agent_argument(item) for item in value)
+        elif isinstance(value, str):
+            lowered = value.lower()
+            return "select " in lowered or " from " in lowered or "drop table" in lowered
+        return False
+
     def _final_result(self, **payload: Any) -> dict[str, Any]:
         safe_payload = self._sanitizer.sanitize_output(payload)
         return safe_payload if isinstance(safe_payload, dict) else {"status": "blocked"}
+
+    def _log_tool_checkpoint(
+        self,
+        session: DatasetAgentToolCallSession,
+        tool_name: str,
+        output: dict[str, Any],
+    ) -> None:
+        """记录 DatasetAgent Runtime 工具步进日志；只写安全摘要，不写 SQL/schema/raw rows。"""
+
+        self._log_runtime_checkpoint(
+            "tool",
+            dataset_id=session.dataset_id,
+            conversation_id=session.conversation_id,
+            trace_id=session.trace_id,
+            tool=tool_name,
+            status=output.get("status"),
+            code=output.get("code"),
+            artifact_ref=output.get("artifact_ref"),
+            row_count=output.get("row_count"),
+            column_count=output.get("column_count"),
+            has_compiled_query_ref=bool(output.get("compiled_query_ref")),
+            next_tool_index=session.expected_tool_index,
+        )
+
+    @staticmethod
+    def _log_runtime_checkpoint(checkpoint: str, **fields: Any) -> None:
+        """统一 DatasetAgent Runtime 后端日志格式，便于从 app.log 跟踪受控工具链。"""
+
+        safe_fields = {key: value for key, value in fields.items() if value is not None}
+        logger.info(
+            "[dataset_agent.runtime.%s] %s",
+            checkpoint,
+            json.dumps(safe_fields, ensure_ascii=False, default=str),
+        )

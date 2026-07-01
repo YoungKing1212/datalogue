@@ -404,7 +404,7 @@ def test_single_dataset_success_cross_checks_five_evidence_sets(
     publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
     monkeypatch.setattr(
         "app.api.chat.get_settings",
-        lambda: Settings(MULTITURN_ENABLED=True, LANGFUSE_ENABLED=False),
+        lambda: Settings(MULTITURN_ENABLED=True),
     )
     monkeypatch.setattr(
         "app.api.chat.build_lead_agent_context",
@@ -447,8 +447,8 @@ def test_single_dataset_success_cross_checks_five_evidence_sets(
 
     assert final["conversation_id"] == assistant.conversation_id == trace_index.conversation_id
     assert final["message_id"] == assistant.id == trace_index.message_id
-    assert final["langfuse_trace_id"] == metadata["langfuse"]["trace_id"]
-    assert trace_index.langfuse_trace_id == final["langfuse_trace_id"]
+    assert final["trace_id"] == metadata["observability"]["trace_id"]
+    assert trace_index.trace_id == final["trace_id"]
     assert "query_plan" not in final
     assert "candidate_assets" not in final
     assert metadata["query_plan"] == trace_index.metadata_json["query_plan"]
@@ -469,7 +469,7 @@ def test_repair_plan_success_cross_checks_five_evidence_sets(
     publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
     monkeypatch.setattr(
         "app.api.chat.get_settings",
-        lambda: Settings(MULTITURN_ENABLED=True, LANGFUSE_ENABLED=False),
+        lambda: Settings(MULTITURN_ENABLED=True),
     )
     monkeypatch.setattr(
         "app.api.chat.build_lead_agent_context",
@@ -546,7 +546,7 @@ def test_repair_plan_blocked_emits_repair_events_without_artifact_ref(
     publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
     monkeypatch.setattr(
         "app.api.chat.get_settings",
-        lambda: Settings(MULTITURN_ENABLED=True, LANGFUSE_ENABLED=False),
+        lambda: Settings(MULTITURN_ENABLED=True),
     )
     monkeypatch.setattr(
         "app.api.chat.build_lead_agent_context",

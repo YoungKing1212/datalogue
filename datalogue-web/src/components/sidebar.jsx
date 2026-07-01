@@ -47,7 +47,6 @@ function Sidebar() {
     {
       label: '系统管理',
       items: [
-        { id: 'audit-query', label: '查询审计', icon: 'log', isNew: true },
         { id: 'settings',    label: '系统设置', icon: 'cog' },
       ],
     },

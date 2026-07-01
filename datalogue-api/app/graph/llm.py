@@ -255,7 +255,7 @@ def get_llm(
 
     数据库模型配置优先；未配置或未传入 db 时回退到 .env 中的 OpenAI-compatible
     配置。所有角色统一通过 LiteLLM SDK 调用，保留 invoke/stream 接口以兼容
-    现有 LangGraph / Langfuse 链路。
+    现有 LangGraph / Observability 链路。
     """
     config = resolve_llm_config(_settings, role=role, db=db)
     logger.info(

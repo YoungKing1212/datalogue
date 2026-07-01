@@ -256,8 +256,8 @@ async def run_workbench_retry_completed_harness(
 
     db_session.add(
         models.ObservabilityTraceIndex(
-            langfuse_trace_id=trace_id,
-            langfuse_session_id=session_id,
+            trace_id=trace_id,
+            trace_session_id=session_id,
             conversation_id=conversation.id,
             message_id=None,
             dataset_id=dataset_id,

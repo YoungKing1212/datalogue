@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Fragment } from 'react';
-import { BrowserRouter, Routes, Route, useLocation, useNavigate, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation, Link } from 'react-router-dom';
 import { Icon } from './components/icons';
 import { Sidebar } from './components/sidebar';
 import { Workspace } from './components/workspace';
@@ -15,7 +15,6 @@ import { NotificationsPopover, bellCount } from './components/notifications';
 import { useTweaks, TweaksPanel, TweakSection, TweakColor, TweakRadio, TweakToggle, TweakSelect, TweakButton } from './components/tweaks-panel';
 import { DatasourcesScreen } from './components/datasources';
 import { KnowledgeScreen } from './components/knowledge';
-import { AuditQueryScreen } from './components/audit-query';
 import { EditorModalHost } from './components/editor-modal';
 import WorkbenchRoute from './components/workbench-route';
 
@@ -46,6 +45,7 @@ const ACCENT_SOFT = {
   "#6366f1": "oklch(0.55 0.17 270 / 0.10)",
   "#0d9488": "oklch(0.55 0.10 195 / 0.10)",
 };
+const noopTraceToggle = () => {};
 
 // 路径到面包屑的映射
 const CRUMBS_MAP = {
@@ -60,11 +60,10 @@ const CRUMBS_MAP = {
   '/knowledge':    { crumb: ['数语', '语义治理', '知识库'], title: '知识库' },
   '/review':       { crumb: ['数语', '语义治理', '审核队列'], title: '审核队列' },
   '/datasources':  { crumb: ['数语', '数据连接', '数据源管理'], title: '数据源' },
-  '/audit-query':  { crumb: ['数语', '系统管理', '查询审计'], title: '查询审计' },
   '/settings':     { crumb: ['数语', '系统管理', '设置'], title: '系统设置' },
 };
 
-function TopBar({ traceOpen, setTraceOpen, onPublish }) {
+function TopBar({ onPublish }) {
   const [notifOpen, setNotifOpen] = useState(false);
   const location = useLocation();
   const count = bellCount();
@@ -86,14 +85,6 @@ function TopBar({ traceOpen, setTraceOpen, onPublish }) {
         ))}
       </div>
       <div className="topbar-actions">
-        {showTrace && (
-          <button className={'btn ghost ' + (traceOpen ? 'active' : '')}
-                  style={traceOpen ? {color: 'var(--accent)', background: 'var(--accent-soft)'} : {}}
-                  onClick={() => setTraceOpen(!traceOpen)}>
-            <Icon name="trace" />
-            推理过程
-          </button>
-        )}
         {showTrace && (
           <>
             <Link to="/dashboard" className="btn ghost">
@@ -120,10 +111,8 @@ function TopBar({ traceOpen, setTraceOpen, onPublish }) {
   );
 }
 
-function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
+function AppInner({ t, setTweak }) {
   const [publishOpen, setPublishOpen] = useState(false);
-  const location = useLocation();
-  const path = location.pathname;
 
   // Apply accent CSS variable
   useEffect(() => {
@@ -142,12 +131,12 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
     <div className="app">
       <Sidebar />
       <div className="main">
-        <TopBar traceOpen={traceOpen} setTraceOpen={setTraceOpen} onPublish={() => setPublishOpen(true)} />
+        <TopBar onPublish={() => setPublishOpen(true)} />
         <div className="content">
           <Routes>
             <Route path="/" element={<Workspace />} />
-            <Route path="/chat" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
-            <Route path="/chat/:id" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat" element={<ChatPage traceOpen={false} setTraceOpen={noopTraceToggle} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat/:id" element={<ChatPage traceOpen={false} setTraceOpen={noopTraceToggle} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
             <Route path="/workbench/:threadId" element={<WorkbenchRoute />} />
             <Route path="/workbench/:threadId/:artifactRef" element={<WorkbenchRoute />} />
             <Route path="/datasets" element={<DatasetsScreen />} />
@@ -158,7 +147,6 @@ function AppInner({ traceOpen, setTraceOpen, t, setTweak }) {
             <Route path="/knowledge" element={<KnowledgeScreen key="kb-sql" initialTab="sql" />} />
             <Route path="/review" element={<KnowledgeScreen key="kb-queue" initialTab="queue" />} />
             <Route path="/datasources" element={<DatasourcesScreen />} />
-            <Route path="/audit-query" element={<AuditQueryScreen />} />
             <Route path="/settings" element={<SettingsScreen />} />
           </Routes>
         </div>
@@ -227,13 +215,12 @@ class ErrorBoundary extends React.Component {
 }
 
 export default function App() {
-  const [traceOpen, setTraceOpen] = useState(false);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   return (
     <BrowserRouter>
       <ErrorBoundary>
-        <AppInner traceOpen={traceOpen} setTraceOpen={setTraceOpen} t={t} setTweak={setTweak} />
+        <AppInner t={t} setTweak={setTweak} />
       </ErrorBoundary>
     </BrowserRouter>
   );

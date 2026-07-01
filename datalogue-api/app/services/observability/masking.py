@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : masking.py
 # Description:
-#   Langfuse 上报前的数据脱敏与截断。
+#   Observability 上报前的数据脱敏与截断。
 #
 # Responsibilities:
 #   - 过滤连接串、密钥、手机号、身份证号等敏感内容。

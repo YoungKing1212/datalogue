@@ -17,9 +17,7 @@ from typing import Any, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.core.database import get_db
-from app.services.observability.tracer import build_langfuse_trace_url
 from app import schemas, models
 
 router = APIRouter()
@@ -221,7 +219,7 @@ def _safe_artifact_card(card: Any) -> dict[str, Any] | None:
 
 
 def _safe_observability_metadata(metadata: dict[str, Any], key: str) -> dict[str, Any] | None:
-    """Langfuse/observability 只暴露定位 trace 所需的公开索引。"""
+    """Observability/observability 只暴露定位 trace 所需的公开索引。"""
 
     source = metadata.get(key)
     if not isinstance(source, dict):
@@ -301,7 +299,7 @@ def _public_response_metadata(metadata: Any) -> dict[str, Any] | None:
         ]
         if safe_results:
             safe["subagent_tool_results"] = safe_results
-    for key in ("langfuse", "observability"):
+    for key in ("observability", "observability"):
         trace_payload = _safe_observability_metadata(metadata, key)
         if trace_payload:
             safe[key] = trace_payload
@@ -357,49 +355,19 @@ def _public_message(message: models.Message) -> dict[str, Any]:
 
 
 def _with_observability_links(message: models.Message) -> models.Message:
-    """为历史消息动态补齐 Langfuse trace 深链，不回写数据库。"""
+    """保留历史 metadata，但不再为 Trace 生成外部跳转地址。"""
 
     metadata = dict(message.response_metadata or {})
-    langfuse = dict(metadata.get("langfuse") or {})
-    trace_id = langfuse.get("trace_id")
+    observability = dict(metadata.get("observability") or {})
+    trace_id = observability.get("trace_id")
     if not trace_id:
         return message
 
-    settings = get_settings()
-    base_url = (
-        langfuse.get("base_url")
-        or metadata.get("observability", {}).get("base_url")
-        or settings.LANGFUSE_BASE_URL
-        or settings.LANGFUSE_HOST
-    )
-    project_id = (
-        langfuse.get("project_id")
-        or metadata.get("observability", {}).get("project_id")
-        or settings.LANGFUSE_PROJECT_ID
-    )
-    trace_url = (
-        langfuse.get("trace_url")
-        or metadata.get("observability", {}).get("trace_url")
-        or build_langfuse_trace_url(
-            base_url=base_url,
-            project_id=project_id,
-            trace_id=trace_id,
-        )
-    )
-    langfuse.update({
-        "base_url": base_url,
-        "project_id": project_id,
-        "trace_url": trace_url,
-    })
-    metadata["langfuse"] = langfuse
-    observability = dict(metadata.get("observability") or {})
+    # Trace 技术栈已下线，历史记录只暴露可识别的 trace_id/session_id，不拼接不可用外链。
     observability.update({
-        "base_url": base_url,
-        "project_id": project_id,
-        "trace_url": trace_url,
-        "environment": observability.get("environment") or langfuse.get("environment"),
-        "release": observability.get("release") or langfuse.get("release"),
-        "prompt_label": observability.get("prompt_label") or langfuse.get("prompt_label"),
+        "base_url": None,
+        "project_id": None,
+        "trace_url": None,
     })
     metadata["observability"] = observability
     message.response_metadata = metadata

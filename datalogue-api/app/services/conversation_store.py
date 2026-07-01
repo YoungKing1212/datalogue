@@ -128,7 +128,7 @@ class RetryCheckpointRestore:
 
 
 def session_key(payload_session_id: str | None, conversation_id: int | None) -> str:
-    """生成业务多轮 session_id，避免与 Langfuse session_id 混用。"""
+    """生成业务多轮 session_id，避免与 Observability session_id 混用。"""
 
     if payload_session_id and payload_session_id.strip():
         return payload_session_id.strip()[:120]
@@ -785,7 +785,7 @@ def _compact_old_messages(
     existing_summary: str | None,
     old_messages: list[dict[str, Any]],
 ) -> str:
-    """调用 Langfuse Prompt Management 中的 datalogue-compaction prompt 压缩旧轮次。"""
+    """调用 Observability Prompt Management 中的 datalogue-compaction prompt 压缩旧轮次。"""
 
     prompt = get_prompt_manager().get_text_prompt(
         DATALOGUE_COMPACTION_PROMPT_NAME,

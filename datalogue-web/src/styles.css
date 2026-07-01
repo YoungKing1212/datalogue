@@ -1578,7 +1578,7 @@ input:focus, textarea:focus, button:focus { outline: none; }
   margin-bottom: 8px;
 }
 
-/* Langfuse Trace 概览 */
+/* Observability Trace 概览 */
 .trace-summary {
   border: 1px solid var(--hairline);
   border-radius: 6px;

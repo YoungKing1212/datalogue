@@ -67,20 +67,10 @@ class TestConversationAPI:
         except Exception:
             pytest.skip("SSE stream not fully supported in sync TestClient")
 
-    def test_conversation_detail_structure(self, client, sample_dataset, monkeypatch):
+    def test_conversation_detail_structure(self, client, sample_dataset):
         """验证对话详情返回结构"""
         # 创建对话
         from app.models.conversation import Conversation, Message
-        from app.core.config import Settings
-
-        monkeypatch.setattr(
-            "app.api.conversation.get_settings",
-            lambda: Settings(
-                LANGFUSE_BASE_URL="http://localhost:3000",
-                LANGFUSE_PROJECT_ID="project-test",
-            ),
-        )
-
         # 使用 override 的 db_session
         db = None
         for dep in client.app.dependency_overrides.values():
@@ -143,7 +133,7 @@ class TestConversationAPI:
                 },
                 "primary_ref": "artifact:result-1",
                 "related_refs": ["artifact:report-1", "trace:trace-test"],
-                "langfuse": {"trace_id": "trace-test", "session_id": "session-test"},
+                "observability": {"trace_id": "trace-test", "session_id": "session-test"},
             },
         )
         db.add(msg1)
@@ -181,11 +171,6 @@ class TestConversationAPI:
         assert data["messages"][1]["response_metadata"]["answer_explanation"]["confidence"][
             "level"
         ] == "high"
-        assert (
-            data["messages"][1]["response_metadata"]["langfuse"]["trace_url"]
-            == "http://localhost:3000/project/project-test/traces/trace-test"
-        )
-        assert (
-            data["messages"][1]["response_metadata"]["observability"]["trace_url"]
-            == "http://localhost:3000/project/project-test/traces/trace-test"
-        )
+        observability = data["messages"][1]["response_metadata"]["observability"]
+        assert observability["trace_id"] == "trace-test"
+        assert "trace_url" not in observability

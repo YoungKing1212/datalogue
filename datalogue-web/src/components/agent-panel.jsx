@@ -12,7 +12,7 @@ import { Icon } from './icons';
 //   metricResolution {metrics, dimensions, all_matched, unresolved} 指标解析结果
 //   generationMode   'semantic'|'inferred'|null  DSL 生成模式
 //   sqlResult        {rows, columns, elapsed_ms}  执行摘要（null = 未就绪）
-//   traceMeta        {traceId, sessionId, messageId, observability} Langfuse 观测元数据
+//   traceMeta        {traceId, sessionId, messageId, observability} Observability 观测元数据
 // 普通 Chat 用户可见面板只展示业务级执行摘要，不展示 SQL 文本或复制入口。
 
 const BUSINESS_STEP_NAMES = {
@@ -236,70 +236,6 @@ function StepList({ steps, compact = false, sqlResult = null }) {
   );
 }
 
-// ── Langfuse Trace 概览 ───────────────────────────────────
-function TraceSummary({ traceMeta }) {
-  if (!traceMeta) return null;
-
-  const observability = traceMeta.observability || {};
-  const hasTrace = Boolean(traceMeta.traceId || traceMeta.sessionId);
-  const disabled = observability.enabled === false;
-  const active = observability.active === true;
-  const statusText = disabled ? '未启用' : active ? '已上报' : hasTrace ? '可追踪' : '本地记录';
-  const statusClass = disabled ? 'disabled' : active ? 'active' : 'local';
-
-  const copy = (value) => {
-    if (!value) return;
-    navigator.clipboard.writeText(value).catch(console.error);
-  };
-  const openAuditTrace = () => {
-    if (!traceMeta.traceId) return;
-    window.location.href = `/audit-query?trace_id=${encodeURIComponent(traceMeta.traceId)}`;
-  };
-
-  return (
-    <div>
-      <div className="agent-section-label">Langfuse Trace</div>
-      <div className="trace-summary">
-        <div className="trace-summary-head">
-          <span className={`trace-status ${statusClass}`}>{statusText}</span>
-          {traceMeta.traceId && (
-            <button className="trace-action" type="button" onClick={openAuditTrace} title="打开查询审计">
-              <Icon name="log" />
-            </button>
-          )}
-        </div>
-
-        <div className="trace-kv">
-          <span>环境</span>
-          <strong>{observability.environment || '—'}</strong>
-        </div>
-        <div className="trace-kv">
-          <span>版本</span>
-          <strong>{observability.release || '—'}</strong>
-        </div>
-        <div className="trace-id-row">
-          <span>Trace ID</span>
-          <code>{traceMeta.traceId || '—'}</code>
-          {traceMeta.traceId && (
-            <button className="trace-action" type="button" onClick={() => copy(traceMeta.traceId)} title="复制 Trace ID">
-              <Icon name="copy" />
-            </button>
-          )}
-        </div>
-        <div className="trace-id-row">
-          <span>Session</span>
-          <code>{traceMeta.sessionId || '—'}</code>
-          {traceMeta.sessionId && (
-            <button className="trace-action" type="button" onClick={() => copy(traceMeta.sessionId)} title="复制 Session ID">
-              <Icon name="copy" />
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── 意图卡片 ──────────────────────────────────────────────
 function IntentCard({ intent, metricResolution, generationMode }) {
   if (!intent) return null;
@@ -432,7 +368,6 @@ function AgentPanel({
         </button>
       </div>
       <div className="agent-panel-body">
-        <TraceSummary traceMeta={traceMeta} />
         <StepList steps={steps} compact={executionSettled} sqlResult={sqlResult} />
         {executionSettled && <GatewayContext steps={steps} />}
         <IntentCard intent={intent} metricResolution={metricResolution} generationMode={generationMode} />

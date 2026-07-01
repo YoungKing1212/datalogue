@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : fallback.py
 # Description:
-#   Langfuse 不可用时的降级对象。
+#   Observability 不可用时的降级对象。
 #
 # Responsibilities:
 #   - 提供 no-op trace/span/generation 句柄。
@@ -33,7 +33,7 @@ class FallbackTraceHandle:
 
 
 @dataclass
-class LangfuseHealthCheck:
+class ObservabilityHealthCheck:
     """轻量熔断状态，避免持续失败时反复打外部服务。"""
 
     threshold: int = 10

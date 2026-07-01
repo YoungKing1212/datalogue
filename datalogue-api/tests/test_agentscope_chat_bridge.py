@@ -139,7 +139,6 @@ async def test_chat_stream_agentic_runtime_adapter_delegates_to_shell_run_turn(d
 
     class Settings:
         MULTITURN_ENABLED = False
-        AS_R0_AGENTIC_RUNTIME_ENABLED = True
         AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED = False
 
     class SpyShell:
@@ -184,7 +183,7 @@ async def test_chat_stream_agentic_runtime_adapter_delegates_to_shell_run_turn(d
 
 
 @pytest.mark.asyncio
-async def test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trace_contract(
+async def test_agentic_runtime_preserves_final_payload_refs_and_trace_contract_without_flag(
     db_session, monkeypatch
 ):
     from app.api import chat as chat_api
@@ -195,11 +194,11 @@ async def test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trac
         "result_ref": "artifact:query-result",
         "primary_ref": {"ref_id": "artifact:query-result", "ref_type": "query_result", "label": "查询结果"},
         "related_refs": [
-            {"ref_id": "trace:trace-parity", "ref_type": "trace", "label": "Langfuse Trace"}
+            {"ref_id": "trace:trace-parity", "ref_type": "trace", "label": "Observability Trace"}
         ],
         "task_id": "task-parity",
         "trace_id": "trace-parity",
-        "langfuse_trace_id": "trace-parity",
+        "trace_id": "trace-parity",
         "response_metadata": {
             "task_id": "task-parity",
             "trace_id": "trace-parity",
@@ -216,7 +215,7 @@ async def test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trac
                     "label": "查询结果",
                 },
                 "related_refs": [
-                    {"ref_id": "trace:trace-parity", "ref_type": "trace", "label": "Langfuse Trace"}
+                    {"ref_id": "trace:trace-parity", "ref_type": "trace", "label": "Observability Trace"}
                 ],
                 "task_id": "task-parity",
                 "trace_id": "trace-parity",
@@ -227,41 +226,30 @@ async def test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trac
     }
 
     async def successful_singleturn(*args, **kwargs):
-        # 双路径灰度的核心约束：legacy singleturn 产出的 final payload 不能被 Shell wrapper 改写。
+        # AgentScope-owned 入口只负责 Shell 回合接管，不能改写底层 final payload。
         yield {"data": json.dumps(final_payload, ensure_ascii=False)}
 
-    class SettingsOff:
+    class Settings:
         MULTITURN_ENABLED = False
-        AS_R0_AGENTIC_RUNTIME_ENABLED = False
         AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED = False
 
-    class SettingsOn:
-        MULTITURN_ENABLED = False
-        AS_R0_AGENTIC_RUNTIME_ENABLED = True
-        AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED = False
-
-    async def run_once(settings):
-        monkeypatch.setattr("app.api.chat.get_settings", lambda: settings)
-        events = [
-            event
-            async for event in chat_api._stream_chat(
-                ChatRequest(
-                    question="查询 GMV",
-                    dataset_id=12,
-                    conversation_id=7,
-                    thread_id="as_13131313-1313-1313-1313-131313131313",
-                ),
-                db_session,
-            )
-        ]
-        return [json.loads(event["data"]) for event in events]
-
+    monkeypatch.setattr("app.api.chat.get_settings", lambda: Settings())
     monkeypatch.setattr(chat_api, "_stream_chat_singleturn", successful_singleturn)
 
-    legacy_events = await run_once(SettingsOff())
-    agentic_events = await run_once(SettingsOn())
+    events = [
+        event
+        async for event in chat_api._stream_chat(
+            ChatRequest(
+                question="查询 GMV",
+                dataset_id=12,
+                conversation_id=7,
+                thread_id="as_13131313-1313-1313-1313-131313131313",
+            ),
+            db_session,
+        )
+    ]
+    agentic_events = [json.loads(event["data"]) for event in events]
 
-    assert agentic_events == legacy_events
     assert agentic_events == [{**final_payload, "thread_id": "as_13131313-1313-1313-1313-131313131313"}]
     assistant_payloads = [
         message.business_payload_json
@@ -270,8 +258,7 @@ async def test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trac
         .order_by(AgentScopeMessage.id.asc())
         .all()
     ]
-    assert len(assistant_payloads) == 2
-    assert assistant_payloads[0] == assistant_payloads[1]
+    assert len(assistant_payloads) == 1
     assert assistant_payloads[0]["artifact_ref"] == "artifact:query-result"
     assert assistant_payloads[0]["trace_ref"] == "trace-parity"
 
@@ -284,7 +271,6 @@ async def test_chat_stream_transport_adapter_delegates_to_runtime_service(db_ses
 
     class Settings:
         MULTITURN_ENABLED = False
-        AS_R0_AGENTIC_RUNTIME_ENABLED = False
         AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED = False
 
     class SpyRuntime:

@@ -138,8 +138,8 @@ class TestChatAPI:
                 "message_id": 34,
                 "result_ref": "artifact:result-1",
                 "report_ref": "artifact:report-1",
-                "langfuse_trace_id": "trace-1",
-                "langfuse_session_id": "session-1",
+                "trace_id": "trace-1",
+                "trace_session_id": "session-1",
                 "query_plan": {
                     "query_type": "unsupported",
                     "planner_source": "fallback",
@@ -154,8 +154,8 @@ class TestChatAPI:
             "message_id": 34,
             "result_ref": "artifact:result-1",
             "report_ref": "artifact:report-1",
-            "langfuse_trace_id": "trace-1",
-            "langfuse_session_id": "session-1",
+            "trace_id": "trace-1",
+            "trace_session_id": "session-1",
             "entry_route": "reject",
             "entry_reason": "no_query_target",
             "query_plan_type": "unsupported",
@@ -385,7 +385,7 @@ class TestChatAPI:
             role="assistant",
             content="回答内容",
             response_metadata={
-                "langfuse": {"trace_id": "trace-test", "session_id": "session-test"}
+                "observability": {"trace_id": "trace-test", "session_id": "session-test"}
             },
         )
         db_session.add(msg)
@@ -4522,7 +4522,7 @@ class TestChatStreamEvents:
         assert final["entry_route"] == "direct_answer"
         assert "query_task_capsule" not in gateway_step
         assert "query_task_capsule" not in final
-        assert final["langfuse_trace_id"]
+        assert final["trace_id"]
         trace_index = db_session.query(models.ObservabilityTraceIndex).one()
         assert trace_index.status == "success"
         assert trace_index.entry_route == "direct_answer"
@@ -4530,7 +4530,7 @@ class TestChatStreamEvents:
         assistant_message = db_session.get(models.Message, final["message_id"])
         assert assistant_message is not None
         assert assistant_message.response_metadata["query_task_capsule"]["dataset_id"] == sample_dataset.id
-        assert assistant_message.response_metadata["langfuse"]["trace_id"] == final["langfuse_trace_id"]
+        assert assistant_message.response_metadata["observability"]["trace_id"] == final["trace_id"]
         assert assistant_message.response_metadata["observability"]
         assert any(
             step.get("node") == "message_gateway" for step in assistant_message.step_trace or []

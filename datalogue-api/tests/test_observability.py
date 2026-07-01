@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : test_observability.py
 # Description:
-#   Langfuse 可观测封装和反馈接口测试。
+#   Observability 可观测封装和反馈接口测试。
 #
 # Responsibilities:
 #   - 验证 no-op/异常降级、脱敏和本地报表聚合。
@@ -30,7 +30,7 @@ from app.services.observability.prompt_registry import (
 from app.services.observability.tracer import (
     DatalogueTracer,
     ObservabilityTraceContext,
-    build_langfuse_trace_url,
+    build_observability_trace_url,
 )
 from app.services.runner import DatasetSubAgentRequest, InProcessDatasetSubAgentRunner
 from app.utils.token import extract_token_usage
@@ -46,13 +46,7 @@ def test_masking_hides_sensitive_values():
 
 
 def test_tracer_disabled_returns_noop_context():
-    tracer = DatalogueTracer(
-        Settings(
-            LANGFUSE_ENABLED=False,
-            LANGFUSE_BASE_URL="http://localhost:3000",
-            LANGFUSE_PROJECT_ID="project-1",
-        )
-    )
+    tracer = DatalogueTracer(Settings())
     ctx = tracer.create_trace_context(
         conversation_id=1,
         dataset_id=2,
@@ -62,14 +56,15 @@ def test_tracer_disabled_returns_noop_context():
     )
     assert ctx.enabled is False
     assert ctx.active is False
-    assert ctx.trace_id
-    assert ctx.trace_url == f"http://localhost:3000/project/project-1/traces/{ctx.trace_id}"
+    assert ctx.trace_id is None
+    assert ctx.trace_url is None
+    assert ctx.observability_payload()["enabled"] is False
 
 
 def test_trace_context_accepts_business_session_id():
-    """Langfuse session_id 应可使用业务 session_id，而不是只能用 conversation_id。"""
+    """Observability session_id 应可使用业务 session_id，而不是只能用 conversation_id。"""
 
-    tracer = DatalogueTracer(Settings(LANGFUSE_ENABLED=False))
+    tracer = DatalogueTracer(Settings())
     ctx = tracer.create_trace_context(
         conversation_id=1,
         dataset_id=2,
@@ -82,16 +77,13 @@ def test_trace_context_accepts_business_session_id():
     assert ctx.session_id == "business-session-1"
 
 
-def test_langfuse_trace_url_builder():
-    assert (
-        build_langfuse_trace_url(
-            base_url="http://localhost:3000/",
-            project_id="project 1",
-            trace_id="trace/1",
-        )
-        == "http://localhost:3000/project/project%201/traces/trace%2F1"
-    )
-    assert build_langfuse_trace_url(base_url="http://localhost:3000", project_id=None, trace_id="t") is None
+def test_observability_trace_url_builder():
+    assert build_observability_trace_url(
+        base_url="http://localhost:3000/",
+        project_id="project 1",
+        trace_id="trace/1",
+    ) is None
+    assert build_observability_trace_url(base_url="http://localhost:3000", project_id=None, trace_id="t") is None
 
 
 def test_set_observability_context_tolerates_cross_context_reset():
@@ -131,7 +123,7 @@ def test_token_usage_estimates_when_provider_usage_missing():
 
 
 def test_prompt_registry_contains_runtime_prompt_names():
-    """脚本应覆盖运行期已在 Langfuse 拉取的 prompt 名称。"""
+    """脚本应覆盖运行期已在 Observability 拉取的 prompt 名称。"""
 
     names = {item.name for item in get_registered_prompts()}
 
@@ -207,8 +199,8 @@ def test_sync_registered_prompts_skips_unchanged_and_creates_changed():
     assert created[0]["config"]["chinese_description"] == "变化"
 
 
-def test_langfuse_observation_names_are_chinese():
-    """Langfuse 展示名用中文，内部技术名保留在 metadata。"""
+def test_tracer_methods_do_not_call_external_client():
+    """暂不建设 Trace 时，tracer 方法不得调用外部 client。"""
 
     calls = []
     updates = []
@@ -233,10 +225,7 @@ def test_langfuse_observation_names_are_chinese():
         def start_as_current_observation(self, **kwargs):
             return DummyManager(kwargs)
 
-    tracer = DatalogueTracer(
-        Settings(LANGFUSE_ENABLED=True),
-        client=DummyClient(),
-    )
+    tracer = DatalogueTracer(Settings(), client=DummyClient())
     ctx = ObservabilityTraceContext(
         trace_id="trace-1",
         session_id="session-1",
@@ -259,18 +248,12 @@ def test_langfuse_observation_names_are_chinese():
         metadata={"path": "sql_audit", "latency_ms": 1200, "ttft_ms": 300, "tps": 12.5},
     )
 
-    assert calls[0]["name"] == "DSL 生成"
-    assert calls[0]["metadata"]["technical_name"] == "node.dsl_generate"
-    assert calls[1]["name"] == "llm.sql_audit"
-    assert calls[1]["metadata"]["technical_name"] == "llm.sql_audit"
-    assert updates[0]["usage_details"] == {"input": 11, "output": 7, "total": 18}
-    assert updates[0]["metadata"]["usage_source"] == "provider"
-    assert updates[0]["metadata"]["ttft_ms"] == 300
-    assert updates[0]["metadata"]["tps"] == 12.5
+    assert calls == []
+    assert updates == []
 
 
-def test_trace_tags_mark_lead_and_subagent():
-    """根 Trace 标记 lead，SubAgent span 可追加 sub/dataset 标签。"""
+def test_trace_tags_are_ignored_while_trace_is_disabled():
+    """暂不建设 Trace 时，根标签和 span 标签都不写出。"""
 
     observations = []
     trace_updates = []
@@ -298,14 +281,7 @@ def test_trace_tags_mark_lead_and_subagent():
         def start_as_current_observation(self, **kwargs):
             return DummyManager(kwargs)
 
-    tracer = DatalogueTracer(
-        Settings(
-            LANGFUSE_ENABLED=True,
-            LANGFUSE_ENVIRONMENT="test",
-            LANGFUSE_RELEASE="r1",
-        ),
-        client=DummyClient(),
-    )
+    tracer = DatalogueTracer(Settings(), client=DummyClient())
 
     ctx = tracer.create_trace_context(
         conversation_id=1,
@@ -321,16 +297,8 @@ def test_trace_tags_mark_lead_and_subagent():
         trace_tags=["sub", "dataset:7"],
     )
 
-    assert trace_updates[0]["tags"] == ["tenant:default", "env:test", "release:r1", "lead"]
-    assert trace_updates[1]["tags"] == [
-        "tenant:default",
-        "env:test",
-        "release:r1",
-        "lead",
-        "sub",
-        "dataset:7",
-    ]
-    assert observations[1]["metadata"]["technical_name"] == "node.subagent.7"
+    assert trace_updates == []
+    assert observations == []
 
 
 def test_in_process_subagent_runner_wraps_graph_span(monkeypatch):
@@ -458,16 +426,7 @@ def test_in_process_subagent_runner_records_delta_merge_span(monkeypatch):
     assert delta_end[0][1]["output_payload"]["multiturn_context"]["delta_type"] == "drill"
 
 
-def test_message_feedback_updates_metadata(client, db_session, monkeypatch):
-    class DummyTracer:
-        def score_trace(self, **_kwargs):
-            return False
-
-    monkeypatch.setattr(
-        "app.services.observability.feedback.get_observability_tracer",
-        lambda: DummyTracer(),
-    )
-
+def test_message_feedback_updates_metadata(client, db_session):
     conv = models.Conversation(title="反馈测试", thread_id="feedback-test", user_id=1)
     db_session.add(conv)
     db_session.commit()
@@ -476,7 +435,7 @@ def test_message_feedback_updates_metadata(client, db_session, monkeypatch):
         conversation_id=conv.id,
         role="assistant",
         content="回答内容",
-        response_metadata={"langfuse": {"trace_id": "trace-test", "session_id": "session-test"}},
+        response_metadata={"observability": {"trace_id": "trace-test", "session_id": "session-test"}},
     )
     db_session.add(msg)
     db_session.commit()
@@ -490,244 +449,14 @@ def test_message_feedback_updates_metadata(client, db_session, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["ok"] is True
-    assert data["partial_success"] is True
+    assert data["partial_success"] is False
+    assert data["observability_synced"] is False
     db_session.refresh(msg)
     assert msg.response_metadata["feedback"]["action"] == "reject"
 
 
-def test_observability_report_api(client, db_session, sample_dataset):
-    conv = models.Conversation(title="观测测试", thread_id="obs-test", user_id=1)
-    db_session.add(conv)
-    db_session.commit()
-    db_session.refresh(conv)
-    msg = models.Message(conversation_id=conv.id, role="assistant", content="回答内容")
-    db_session.add(msg)
-    db_session.commit()
-    db_session.refresh(msg)
-    db_session.add(
-        models.ObservabilityTraceIndex(
-            langfuse_trace_id="trace-1",
-            langfuse_session_id="session-1",
-            conversation_id=conv.id,
-            message_id=msg.id,
-            dataset_id=sample_dataset.id,
-            entry_route="query_graph",
-            status="success",
-            total_tokens=42,
-            total_cost=0.01,
-        )
-    )
-    db_session.commit()
+def test_observability_api_is_not_mounted(client):
+    """暂不建设 Trace 时，查询审计 API 不再对外挂载。"""
 
-    summary = client.get(f"/api/observability/summary?dataset_id={sample_dataset.id}").json()
-    costs = client.get(f"/api/observability/costs?dataset_id={sample_dataset.id}").json()
-
-    assert summary["total_traces"] == 1
-    assert summary["success_rate"] == 1
-    assert costs["total_tokens"] == 42
-
-
-def test_query_audit_trace_list_and_detail(client, db_session, sample_dataset, monkeypatch):
-    class DummyTrace:
-        def model_dump(self):
-            return {
-                "id": "trace-audit",
-                "name": "user_query",
-                "input": "GMV是多少",
-                "output": "GMV 为 100",
-                "observations": [
-                    {
-                        "id": "obs-1",
-                        "name": "node.sql_execute",
-                        "type": "SPAN",
-                        "startTime": "2026-06-11T12:00:00Z",
-                        "endTime": "2026-06-11T12:00:01Z",
-                        "metadata": {"node": "sql_execute"},
-                    }
-                ],
-                "scores": [
-                    {"id": "score-1", "name": "user_feedback", "value": 1, "dataType": "NUMERIC"}
-                ],
-                "metrics": {"latency": 1},
-            }
-
-    monkeypatch.setattr(
-        "app.services.observability.traces._fetch_langfuse_trace",
-        lambda trace_id: (DummyTrace(), None),
-    )
-
-    conv = models.Conversation(title="审计测试", thread_id="audit-test", user_id=1)
-    db_session.add(conv)
-    db_session.commit()
-    db_session.refresh(conv)
-    user_msg = models.Message(conversation_id=conv.id, role="user", content="GMV是多少")
-    assistant_msg = models.Message(
-        conversation_id=conv.id,
-        role="assistant",
-        content="GMV 为 100",
-        sql_list=["select sum(amount) from orders"],
-        step_trace=[
-            {
-                "type": "step",
-                "node": "sql_execute",
-                "display_name": "SQL 执行",
-                "status": "done",
-                "elapsed_ms": 42,
-            }
-        ],
-        response_metadata={
-            "observability": {
-                "trace_url": "http://localhost:3000/project/p/traces/trace-audit",
-                "environment": "dev",
-            }
-        },
-    )
-    db_session.add_all([user_msg, assistant_msg])
-    db_session.commit()
-    db_session.refresh(assistant_msg)
-    db_session.add(
-        models.ObservabilityTraceIndex(
-            langfuse_trace_id="trace-audit",
-            langfuse_session_id="session-audit",
-            conversation_id=conv.id,
-            message_id=assistant_msg.id,
-            dataset_id=sample_dataset.id,
-            entry_route="query_graph",
-            status="success",
-            total_tokens=12,
-            total_cost=0,
-        )
-    )
-    db_session.commit()
-
-    listing = client.get("/api/observability/traces?limit=10").json()
-    assert listing["summary"]["total_traces"] >= 1
-    assert any(item["trace_id"] == "trace-audit" for item in listing["items"])
-
-    detail = client.get("/api/observability/traces/trace-audit").json()
-    assert detail["found"] is True
-    assert detail["source"] == "langfuse"
-    assert detail["trace"]["id"] == "trace-audit"
-    assert detail["observations"][0]["name"] == "node.sql_execute"
-    assert detail["scores"][0]["name"] == "user_feedback"
-    assert detail["fallback_steps"][0]["name"] == "SQL 执行"
-
-
-def test_query_audit_trace_detail_exposes_provider_neutral_contract(
-    client,
-    db_session,
-    sample_dataset,
-    monkeypatch,
-):
-    class DummyTrace:
-        def model_dump(self):
-            return {
-                "id": "trace-contract",
-                "name": "workbench retry",
-                "observations": [
-                    {
-                        "id": "obs-requested",
-                        "name": "workbench.retry_requested",
-                        "type": "SPAN",
-                        "startTime": "2026-06-30T10:00:00Z",
-                        "metadata": {
-                            "thread_id": "as_contract",
-                            "checkpoint_ref": "checkpoint://contract",
-                        },
-                    },
-                    {
-                        "id": "obs-started",
-                        "name": "retry.started",
-                        "type": "SPAN",
-                        "startTime": "2026-06-30T10:00:01Z",
-                        "metadata": {"thread_id": "as_contract"},
-                    },
-                    {
-                        "id": "obs-restored",
-                        "name": "retry.checkpoint_restored",
-                        "type": "SPAN",
-                        "startTime": "2026-06-30T10:00:02Z",
-                        "metadata": {"checkpoint_ref": "checkpoint://contract"},
-                    },
-                    {
-                        "id": "obs-query",
-                        "name": "dataset.query.completed",
-                        "type": "SPAN",
-                        "startTime": "2026-06-30T10:00:03Z",
-                        "metadata": {"artifact_ref": "artifact:contract"},
-                    },
-                    {
-                        "id": "obs-answer",
-                        "name": "answer.completed",
-                        "type": "SPAN",
-                        "startTime": "2026-06-30T10:00:04Z",
-                        "metadata": {
-                            "thread_id": "as_contract",
-                            "artifact_ref": "artifact:contract",
-                        },
-                    },
-                ],
-            }
-
-    monkeypatch.setattr(
-        "app.services.observability.traces._fetch_langfuse_trace",
-        lambda trace_id: (DummyTrace(), None),
-    )
-
-    conv = models.Conversation(title="观测契约测试", thread_id="obs-contract", user_id=1)
-    db_session.add(conv)
-    db_session.commit()
-    db_session.refresh(conv)
-    msg = models.Message(
-        conversation_id=conv.id,
-        role="assistant",
-        content="已完成 Workbench retry",
-        response_metadata={
-            "observability": {
-                "trace_url": "http://localhost:3000/project/p/traces/trace-contract",
-            }
-        },
-    )
-    db_session.add(msg)
-    db_session.commit()
-    db_session.refresh(msg)
-    db_session.add(
-        models.ObservabilityTraceIndex(
-            langfuse_trace_id="trace-contract",
-            langfuse_session_id="session-contract",
-            conversation_id=conv.id,
-            message_id=msg.id,
-            dataset_id=sample_dataset.id,
-            entry_route="workbench_retry",
-            status="success",
-            total_tokens=0,
-            total_cost=0,
-            metadata_json={
-                "thread_id": "as_contract",
-                "checkpoint_ref": "checkpoint://contract",
-                "artifact_ref": "artifact:contract",
-            },
-        )
-    )
-    db_session.commit()
-
-    detail = client.get("/api/observability/traces/trace-contract").json()
-
-    assert detail["provider"]["name"] == "langfuse"
-    assert detail["provider"]["available"] is True
-    contract = detail["observability_contract"]
-    assert contract["name"] == "workbench_retry_v1"
-    assert contract["passed"] is True
-    assert contract["missing_events"] == []
-    assert contract["required_events"] == [
-        "workbench.retry_requested",
-        "retry.started",
-        "retry.checkpoint_restored",
-        "dataset.query.completed",
-        "answer.completed",
-    ]
-    assert set(contract["matched_events"]) >= set(contract["required_events"])
-    assert contract["attributes"]["thread_id"] == "as_contract"
-    assert contract["attributes"]["conversation_id"] == conv.id
-    assert contract["attributes"]["checkpoint_ref"] == "checkpoint://contract"
-    assert contract["attributes"]["artifact_ref"] == "artifact:contract"
+    assert client.get("/api/observability/summary").status_code == 404
+    assert client.get("/api/observability/traces").status_code == 404

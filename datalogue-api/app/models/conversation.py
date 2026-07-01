@@ -97,8 +97,8 @@ class ObservabilityTraceIndex(Base):
     __tablename__ = "observability_trace_index"
 
     id = Column(Integer, primary_key=True, index=True)
-    langfuse_trace_id = Column(String(120), nullable=False, index=True)
-    langfuse_session_id = Column(String(120), nullable=False, index=True)
+    trace_id = Column(String(120), nullable=False, index=True)
+    trace_session_id = Column(String(120), nullable=False, index=True)
     conversation_id = Column(Integer, ForeignKey("conversation.id"), nullable=True, index=True)
     message_id = Column(Integer, ForeignKey("message.id"), nullable=True, index=True)
     dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)
@@ -114,7 +114,7 @@ class TraceAnnotationCandidate(Base):
     __tablename__ = "trace_annotation_candidate"
 
     id = Column(Integer, primary_key=True, index=True)
-    langfuse_trace_id = Column(String(120), nullable=False, index=True)
+    trace_id = Column(String(120), nullable=False, index=True)
     conversation_id = Column(Integer, ForeignKey("conversation.id"), nullable=True, index=True)
     message_id = Column(Integer, ForeignKey("message.id"), nullable=True, index=True)
     dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=True, index=True)

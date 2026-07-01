@@ -307,7 +307,7 @@ def plan_tool_calls_with_llm(
     if deterministic_plan:
         if tracer is not None and trace_context is not None:
             try:
-                tracer.start_span(  # 跳过 LLM 也写同名 observation，便于 Langfuse 对比路径。
+                tracer.start_span(  # 跳过 LLM 也写同名 observation，便于 Observability 对比路径。
                     trace_context,
                     node="llm.lead_agent_tool_planner",
                     display_name="llm.lead_agent_tool_planner",
@@ -1206,7 +1206,7 @@ def build_audit_trace(
     planner_fallback: bool = False,
     manifest_guard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """AuditTraceTool：输出 LeadAgent 工具调用摘要，便于 Langfuse/消息审计保存。"""
+    """AuditTraceTool：输出 LeadAgent 工具调用摘要，便于 Observability/消息审计保存。"""
 
     return {
         "tool": "audit_trace",

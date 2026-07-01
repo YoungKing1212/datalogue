@@ -97,7 +97,7 @@ def _llm_perf_metadata(
     first_token_at: float | None = None,
     usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """生成 LLM 性能观测指标，供 Langfuse metadata 展示。"""
+    """生成 LLM 性能观测指标，供 Observability metadata 展示。"""
 
     latency_ms = max(0, int((ended_at - started_at) * 1000))
     output_tokens = int((usage or {}).get("completion_tokens") or (usage or {}).get("output_tokens") or 0)

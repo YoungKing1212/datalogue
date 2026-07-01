@@ -38,20 +38,6 @@ class Settings(BaseSettings):
     # 保留的轮转文件份数
     LOG_BACKUP_COUNT: int = 7
 
-    LANGFUSE_ENABLED: bool = False
-    # Langfuse Python SDK v4 使用 base_url；保留 HOST 兼容旧配置和文档。
-    LANGFUSE_BASE_URL: Optional[str] = "http://localhost:3000"
-    LANGFUSE_HOST: Optional[str] = None
-    LANGFUSE_PROJECT_ID: Optional[str] = None
-    LANGFUSE_PUBLIC_KEY: Optional[str] = None
-    LANGFUSE_SECRET_KEY: Optional[str] = None
-    LANGFUSE_ENVIRONMENT: str = "dev"
-    LANGFUSE_RELEASE: str = "local"
-    LANGFUSE_PROMPT_LABEL: str = "production"
-    LANGFUSE_SAMPLE_RATE: float = 1.0
-    LANGFUSE_FLUSH_AT_END: bool = True
-    LANGFUSE_MAX_TEXT_LENGTH: int = 4000
-
     MULTITURN_ENABLED: bool = False
     MULTITURN_LOCK_TTL_SECONDS: int = 300
     MULTITURN_COMPACTION_ENABLED: bool = False
@@ -67,8 +53,6 @@ class Settings(BaseSettings):
     LEAD_AGENT_ENABLE_DATASET_FANOUT: bool = False
     # AS-R0 影子路径开关：只生成 Agentic Shell -> Runtime driver 边界契约，不替换真实 /chat/stream 主链。
     AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED: bool = False
-    # PR1.1 runtime adapter 开关：打开后 /chat/stream 兼容壳先委托 DatalogueAgenticShell.run_turn()。
-    AS_R0_AGENTIC_RUNTIME_ENABLED: bool = False
 
     QUERY_ARTIFACT_TTL_SECONDS: int = 7 * 24 * 60 * 60
     QUERY_ARTIFACT_MAX_BYTES: int = 2 * 1024 * 1024

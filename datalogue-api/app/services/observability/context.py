@@ -5,7 +5,7 @@
 #
 # Responsibilities:
 #   - 通过 contextvars 在 Chat 流程和节点之间传递 trace 上下文。
-#   - 避免业务函数层层增加 Langfuse 参数。
+#   - 避免业务函数层层增加 Observability 参数。
 #
 # Author      : yangkai
 # Created On  : 2026-06-11

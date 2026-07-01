@@ -1,7 +1,7 @@
 // ChatModelAdapter — 把后端 SSE 流式响应包成 assistant-ui 能消费的 async generator
 // assistant-ui 通过 unstable_threadId 传入当前 thread 标识。不同版本/阶段可能传 remoteId
 //（后端 conversation_id），也可能传本地 thread id；因此这里显式生成业务 session_id，
-// 让后端 ConversationStore 不依赖 Langfuse session 或一次性 request id。
+// 让后端 ConversationStore 不依赖 Observability session 或一次性 request id。
 //
 // 数据流：
 //   token 事件          → 累积到 accText（TextMessagePart）
@@ -941,8 +941,8 @@ export function makeChatAdapter({ datasetIdRef }) {
               routePayload: null,
               clarification: safeClarification(finalPayload.clarification, finalPayload.route_payload),
               messageId: finalPayload.message_id || null,
-              langfuseTraceId: finalPayload.langfuse_trace_id || null,
-              langfuseSessionId: finalPayload.langfuse_session_id || null,
+              observabilityTraceId: finalPayload.trace_id || null,
+              observabilitySessionId: finalPayload.trace_session_id || null,
               observability: finalPayload.observability || null,
               stepTrace,
               // C-ready 数据结构

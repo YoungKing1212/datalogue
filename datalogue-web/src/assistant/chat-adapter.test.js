@@ -173,8 +173,8 @@ describe('chat-adapter C-ready metadata', () => {
         report_ref: 'artifact:report-1',
         message_id: 42,
         conversation_id: 7,
-        langfuse_trace_id: 'trace-1',
-        langfuse_session_id: 'session-1',
+        trace_id: 'trace-1',
+        trace_session_id: 'session-1',
         observability: { trace_id: 'trace-1', session_id: 'session-1' },
       },
     ]));
@@ -189,7 +189,7 @@ describe('chat-adapter C-ready metadata', () => {
     expect(final.status).toEqual({ type: 'complete', reason: 'stop' });
     expect(final.metadata.custom.resultRef).toBe('artifact:result-1');
     expect(final.metadata.custom.reportRef).toBe('artifact:report-1');
-    expect(final.metadata.custom.langfuseTraceId).toBe('trace-1');
+    expect(final.metadata.custom.observabilityTraceId).toBe('trace-1');
     expect(final.metadata.custom.observability).toEqual({ trace_id: 'trace-1', session_id: 'session-1' });
     expect(final.metadata.custom.stepTrace).toHaveLength(1);
     expect(JSON.stringify(final.metadata.custom)).not.toMatch(
@@ -312,14 +312,14 @@ describe('chat-adapter C-ready metadata', () => {
       id: 99,
       response_metadata: {
         query_plan: { query_type: 'metric_query' },
-        langfuse: { trace_id: 'trace-old', session_id: 'session-old' },
+        observability: { trace_id: 'trace-old', session_id: 'session-old' },
       },
     });
 
     expect(custom.resultRef).toBeNull();
     expect(custom.reportRef).toBeNull();
     expect(custom.subagentToolResults).toBeNull();
-    expect(custom.langfuseTraceId).toBe('trace-old');
+    expect(custom.observabilityTraceId).toBe('trace-old');
   });
 
   it('does not restore internal SQL, planning, DSL or raw rows into history message custom metadata', () => {

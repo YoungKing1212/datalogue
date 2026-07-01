@@ -11,7 +11,7 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-# 问数对话路由 — SSE 流式输出 + LangGraph Agent 工作流
+# 问数对话路由 — SSE transport + Agentic Shell / DatasetAgent Runtime 主链
 
 import json
 import logging
@@ -93,6 +93,8 @@ from app.services.agentic_chat_runtime import (
     DatalogueChatStreamRuntime,
     DatalogueChatStreamRuntimeHooks,
 )
+from app.services.agentic_bi_tools import BIAtomicToolProvider
+from app.services.agentic_dataset_runtime import DatasetAgentToolCallRuntime
 from app.services.agentscope_runtime_driver import DatalogueAgentScopeRuntimeDriver
 from app.services.message_gateway import classify_turn_event
 from app.services.task_capsule import (
@@ -109,6 +111,12 @@ from app.services.multiturn.query_artifacts import (
     evaluate_query_artifact,
 )
 from app.services.multiturn.refinement_fast_path import plan_refinement_fast_path
+from app.services.sql_preview import preview_dataset_sql
+from app.services.subagent_planning import (
+    build_query_plan_compiler_context,
+    plan_query,
+    recall_candidate_assets,
+)
 from app.utils.think import (
     filter_think_stream_chunk,
     flush_think_stream_state,
@@ -147,7 +155,7 @@ _NODE_DISPLAY_NAMES = {
 
 
 def _public_graph_node_name(node_name: str) -> str:
-    """把内部 LangGraph 节点名映射为稳定的用户可见业务节点名。"""
+    """把内部执行节点名映射为稳定的用户可见业务节点名。"""
 
     if node_name == "repair_patch_step":
         return "repair_patch"
@@ -394,8 +402,8 @@ def _event_metadata_from_payload(payload: dict) -> dict[str, Any]:
         "message_id",
         "entry_route",
         "entry_reason",
-        "langfuse_trace_id",
-        "langfuse_session_id",
+        "trace_id",
+        "trace_session_id",
     ):
         if payload.get(key) is not None:
             metadata[key] = payload[key]
@@ -445,7 +453,7 @@ def _with_event_envelope(
         conversation_id=payload.get("conversation_id") or envelope_metadata.get("conversation_id"),
         trace_id=(
             payload.get("trace_id")
-            or payload.get("langfuse_trace_id")
+            or payload.get("trace_id")
             or envelope_metadata.get("trace_id")
         ),
     )
@@ -556,11 +564,11 @@ def _build_related_artifact_refs(final_payload: dict, primary_ref: dict | None) 
     ]
     trace_id = (
         final_payload.get("trace_id")
-        or final_payload.get("langfuse_trace_id")
+        or final_payload.get("trace_id")
         or (final_payload.get("response_metadata") or {}).get("trace_id")
     )
     if trace_id:
-        trace_ref = _artifact_ref_dict(f"trace:{trace_id}", ref_type="trace", label="Langfuse Trace")
+        trace_ref = _artifact_ref_dict(f"trace:{trace_id}", ref_type="trace", label="Observability Trace")
         if trace_ref:
             related.append(trace_ref)
     checkpoint_ref = _checkpoint_ref_from_payload(final_payload)
@@ -731,7 +739,7 @@ def _attach_artifact_card_refs_to_final_payload(
     """把 final payload 补齐 C-ready refs；没有查询产物时不伪造 ArtifactCard。"""
 
     task_id = _final_payload_task_id(final_payload)
-    trace_id = final_payload.get("trace_id") or final_payload.get("langfuse_trace_id")
+    trace_id = final_payload.get("trace_id") or final_payload.get("trace_id")
     final_payload["task_id"] = task_id
     final_payload["trace_id"] = trace_id
     result_refs = _iter_result_refs_from_payload(final_payload)
@@ -882,7 +890,7 @@ def _chat_stream_log_summary(payload: dict | None) -> dict[str, Any]:
     """提取 /chat/stream 排障日志中的稳定关键字段，避免日志被完整 payload 淹没。"""
 
     payload = payload or {}
-    # final / subagent result payload 很大，只保留能对齐 Network、Langfuse 和后端状态的字段。
+    # final / subagent result payload 很大，只保留能对齐 Network、Observability 和后端状态的字段。
     query_plan = payload.get("query_plan") if isinstance(payload.get("query_plan"), dict) else {}
     sql_list = payload.get("sql_list") if isinstance(payload.get("sql_list"), list) else []
     answer = payload.get("answer")
@@ -893,8 +901,8 @@ def _chat_stream_log_summary(payload: dict | None) -> dict[str, Any]:
         "message_id": payload.get("message_id"),
         "result_ref": payload.get("result_ref"),
         "report_ref": payload.get("report_ref"),
-        "langfuse_trace_id": payload.get("langfuse_trace_id"),
-        "langfuse_session_id": payload.get("langfuse_session_id"),
+        "trace_id": payload.get("trace_id"),
+        "trace_session_id": payload.get("trace_session_id"),
         "entry_route": payload.get("entry_route"),
         "entry_reason": payload.get("entry_reason"),
         "query_plan_type": query_plan.get("query_type"),
@@ -1822,6 +1830,477 @@ def _save_route_block_message(
     return assistant_message
 
 
+def _should_use_dataset_atomic_runtime(
+    *,
+    routing: dict,
+    effective_dataset_id: int | None,
+    fanout_invocations: list[Any],
+) -> bool:
+    """判断本轮是否进入 AgentScope-owned DatasetAgent atomic runtime。"""
+
+    if effective_dataset_id is None or fanout_invocations:
+        return False
+    # 单数据集 BI 查询主链必须由 Agentic Shell / DatasetAgent atomic runtime 接管；非 BI 早退分支已在上游收口。
+    return routing.get("entry_route") == "query_graph" and routing.get("entry_intent") in {
+        "detail_query",
+        "metric_query",
+    }
+
+
+def _atomic_allowed_tables_and_sql_context(
+    dataset: models.SemanticDataset,
+) -> tuple[list[str], dict[str, Any]]:
+    """为 atomic 编译器提供最小 schema context；该上下文只在工具内部使用，不进入 SSE final。"""
+
+    allowed_tables: list[str] = []
+    table_schemas: list[dict[str, Any]] = []
+    for link in dataset.selected_tables or []:
+        source_table = getattr(link, "source_table", None)
+        if source_table is None:
+            continue
+        schema_name = str(getattr(source_table, "schema_name", "") or "").strip()
+        table_name = str(getattr(source_table, "table_name", "") or "").strip()
+        if not table_name:
+            continue
+        allowed_tables.append(table_name)
+        if schema_name:
+            allowed_tables.append(f"{schema_name}.{table_name}")
+        fields = []
+        for column in source_table.columns or []:
+            column_name = str(getattr(column, "column_name", "") or "").strip()
+            if not column_name:
+                continue
+            # 编译器只需要字段名和业务标签；不把物理 schema 明细透传给 Agent 上下文。
+            fields.append(
+                {
+                    "name": column_name,
+                    "column_name": column_name,
+                    "display_name": getattr(column, "effective_desc", None)
+                    or getattr(column, "user_description", None)
+                    or getattr(column, "ai_description", None)
+                    or getattr(column, "column_comment", None)
+                    or column_name,
+                }
+            )
+        table_schemas.append(
+            {
+                "name": table_name,
+                "table_name": table_name,
+                "fields": fields,
+            }
+        )
+    return sorted(set(allowed_tables)), build_query_plan_compiler_context(
+        {"table_schemas": table_schemas}
+    )
+
+
+def _build_atomic_dsl_generator(
+    *,
+    db: Session,
+    dataset_id: int,
+    routing: dict,
+    route_decision: dict,
+    lead_agent_context: dict,
+    multiturn_context: dict | None,
+) -> Any:
+    """把现有 SubAgent planner 作为 DSL generator 注入 atomic runtime。"""
+
+    def _generate(question: str, **_: Any) -> Any:
+        # atomic runtime 仍复用现有 planner 生成 DSL，但 SQL 只能由 compile tool 内部产出。
+        candidate_assets = recall_candidate_assets(
+            db,
+            dataset_id=dataset_id,
+            question=question,
+            manifest_version=route_decision.get("manifest_version"),
+            bound_schema_version=route_decision.get("bound_schema_version"),
+        )
+        return plan_query(
+            db=db,
+            question=question,
+            routing=routing,
+            candidate_assets=candidate_assets,
+            multiturn_context=multiturn_context,
+            lead_agent_context=lead_agent_context,
+        )
+
+    return _generate
+
+
+def _build_atomic_query_executor(
+    *,
+    db: Session,
+    dataset: models.SemanticDataset,
+    question: str,
+) -> Any:
+    """构造 execute_compiled_query 内部使用的 SQL 执行器；SQL 不返回给 Agent。"""
+
+    def _execute(sql: str) -> dict[str, Any]:
+        return preview_dataset_sql(db, dataset=dataset, sql=sql, question=question)
+
+    return _execute
+
+
+async def _stream_dataset_atomic_runtime_return(
+    *,
+    db: Session,
+    conv: models.Conversation,
+    payload: schemas.ChatRequest,
+    effective_dataset_id: int,
+    routing: dict,
+    route_decision: dict,
+    lead_agent_context: dict,
+    initial_state: dict,
+    step_traces: list[dict],
+    trace_context: Any,
+    tracer: Any,
+    obs_context_manager: Any,
+    settings: Any,
+    query_artifact_store: ArtifactStore,
+    conversation_store: ConversationStore | None,
+    conversation_state: models.ConversationState | None,
+    observability_session_id: str | None,
+    defer_trace_close: bool,
+    subagent_control_plane_sink: list | None,
+    multiturn_context: dict | None,
+):
+    """PR1.3-b：用 BI atomic tools 替换单 dataset 查询执行核心并直接收口 final。"""
+
+    conv_id = int(conv.id)
+    dataset = db.get(models.SemanticDataset, effective_dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    allowed_tables, sql_generation_context = _atomic_allowed_tables_and_sql_context(dataset)
+    datasource = db.get(models.Datasource, dataset.datasource_id)
+    datasource_dialect = (
+        getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "sqlite"
+    )
+    started_at = time.monotonic()
+    _log_chat_stream_checkpoint(
+        "dataset_agent_runtime_start",
+        conversation_id=conv_id,
+        dataset_id=effective_dataset_id,
+        trace_id=trace_context.trace_id,
+        entry_route=routing.get("entry_route"),
+        entry_intent=routing.get("entry_intent"),
+    )
+    running_payload = {
+        "type": "step",
+        "node": "dataset_atomic_runtime",
+        "display_name": "dataset.atomic_runtime",
+        "status": "running",
+    }
+    step_traces.append(running_payload)
+    yield _sse_data(
+        _with_event_envelope(
+            running_payload,
+            event_type="dataset.query.started",
+            visibility="trace_only",
+            payload_fields=("node", "status"),
+            metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+        )
+    )
+    tracer.start_span(
+        trace_context,
+        node="dataset.atomic_runtime",
+        display_name="dataset.atomic_runtime",
+        input_payload={
+            "dataset_id": effective_dataset_id,
+            "entry_route": routing.get("entry_route"),
+            "entry_intent": routing.get("entry_intent"),
+        },
+        trace_tags=["as-r0", "atomic-runtime"],
+    )
+
+    provider = BIAtomicToolProvider(
+        db,
+        query_executor=_build_atomic_query_executor(
+            db=db,
+            dataset=dataset,
+            question=initial_state.get("question") or payload.question,
+        ),
+    )
+    runtime = DatasetAgentToolCallRuntime(
+        provider=provider,
+        dsl_generator=_build_atomic_dsl_generator(
+            db=db,
+            dataset_id=effective_dataset_id,
+            routing=routing,
+            route_decision=route_decision,
+            lead_agent_context=lead_agent_context,
+            multiturn_context=multiturn_context,
+        ),
+    )
+    atomic_result = runtime.run_query(
+        dataset_id=effective_dataset_id,
+        question=initial_state.get("question") or payload.question,
+        sql_generation_context=sql_generation_context,
+        dialect=datasource_dialect,
+        current_datasource_dialect=datasource_dialect,
+        query_constraints=getattr(dataset, "query_constraints", None) or {},
+        allowed_tables=allowed_tables,
+        conversation_id=conv_id,
+        trace_id=trace_context.trace_id,
+    )
+    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+    status = str(atomic_result.get("status") or "blocked")
+    row_count = atomic_result.get("row_count") if status == "completed" else None
+    column_count = atomic_result.get("column_count") if status == "completed" else None
+    _log_chat_stream_checkpoint(
+        "dataset_agent_runtime_completed",
+        conversation_id=conv_id,
+        dataset_id=effective_dataset_id,
+        trace_id=trace_context.trace_id,
+        status=status,
+        elapsed_ms=elapsed_ms,
+        row_count=row_count or 0,
+        column_count=column_count or 0,
+        artifact_ref=atomic_result.get("artifact_ref"),
+        tool_count=len(atomic_result.get("tool_calls") or []),
+        error_code=atomic_result.get("code") if status != "completed" else None,
+    )
+    done_payload = {
+        "type": "step",
+        "node": "dataset_atomic_runtime",
+        "display_name": "dataset.atomic_runtime",
+        "status": "done" if status == "completed" else "blocked",
+        "elapsed_ms": elapsed_ms,
+        "row_count": row_count or 0,
+        "column_count": column_count or 0,
+    }
+    step_traces.append(done_payload)
+    tracer.end_span(
+        trace_context,
+        node="dataset.atomic_runtime",
+        output_payload=done_payload,
+        elapsed_ms=elapsed_ms,
+        error=atomic_result.get("error_summary") if status != "completed" else None,
+    )
+    yield _sse_data(
+        _with_event_envelope(
+            done_payload,
+            event_type="dataset.query.completed" if status == "completed" else "error.blocked",
+            visibility="user_visible",
+            payload_fields=("node", "status", "elapsed_ms", "row_count", "column_count"),
+            metadata={"conversation_id": conv_id, "dataset_id": effective_dataset_id},
+        )
+    )
+
+    answer = (
+        f"Atomic runtime 查询完成，共返回 {int(row_count or 0)} 行、{int(column_count or 0)} 列。"
+        if status == "completed"
+        else f"Atomic runtime 查询被阻断：{atomic_result.get('code') or 'EXECUTE_BLOCKED'}"
+    )
+    final_state = dict(initial_state)
+    final_state.update(
+        {
+            "answer": answer,
+            "error": None if status == "completed" else atomic_result.get("code") or status,
+            "entry_route": routing.get("entry_route"),
+            "entry_intent": routing.get("entry_intent"),
+            "entry_reason": routing.get("entry_reason"),
+            "generation_mode": "agentic_atomic_runtime",
+            "sql": None,
+            "sql_list": [],
+            "sql_result": {
+                "columns": [],
+                "rows": [],
+                "row_count": int(row_count or 0),
+            }
+            if status == "completed"
+            else None,
+            "result_ref": atomic_result.get("artifact_ref"),
+            "atomic_runtime": {
+                "status": status,
+                "tool_calls": atomic_result.get("tool_calls") or [],
+                "artifact_summary": atomic_result.get("artifact_summary") or {},
+            },
+        }
+    )
+    result_artifact = None
+    if status == "completed":
+        result_artifact = build_query_result_artifact(
+            question=final_state.get("resolved_question") or payload.question,
+            dataset_id=effective_dataset_id,
+            sql=None,
+            sql_result=final_state.get("sql_result"),
+            answer=answer,
+            schema_version=route_decision.get("bound_schema_version"),
+            manifest_version=route_decision.get("manifest_version"),
+            ttl_seconds=int(getattr(settings, "MULTITURN_ARTIFACT_CACHE_TTL_SECONDS", 1800) or 1800),
+            artifact_store=query_artifact_store,
+            conversation_id=conv_id,
+            trace_id=trace_context.trace_id,
+        )
+        if result_artifact:
+            final_state["result_artifact"] = result_artifact
+    answer_explanation = jsonable_encoder(build_answer_explanation(final_state))
+    final_state["answer_explanation"] = answer_explanation
+    query_profile = _build_query_profile(
+        final_state=final_state,
+        lead_agent_context=lead_agent_context,
+        route_decision=route_decision,
+        step_traces=step_traces,
+        sql=None,
+        sql_list=[],
+        execution_path="agentic_atomic_runtime",
+        effective_dataset_id=effective_dataset_id,
+    )
+    explainability = _build_explainability(
+        query_profile=query_profile,
+        answer_explanation=answer_explanation,
+    )
+    response_metadata = jsonable_encoder(
+        {
+            "answer_explanation": answer_explanation,
+            "original_question": payload.question,
+            "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+            "route_decision": route_decision,
+            "schema_status": lead_agent_context.get("schema_status"),
+            "atomic_runtime": final_state["atomic_runtime"],
+            "result_artifact": result_artifact,
+            "query_profile": query_profile,
+            "explainability": explainability,
+            "observability": {
+                "trace_id": trace_context.trace_id,
+                "session_id": trace_context.session_id,
+                "release": trace_context.release,
+                "environment": trace_context.environment,
+                "prompt_label": trace_context.prompt_label,
+                "base_url": trace_context.base_url,
+                "project_id": trace_context.project_id,
+                "trace_url": trace_context.trace_url,
+                "enabled": trace_context.enabled,
+                "active": trace_context.active,
+                "prompt_versions": trace_context.prompt_versions,
+            },
+            "observability": trace_context.observability_payload(),
+        }
+    )
+    assistant_message = models.Message(
+        conversation_id=conv_id,
+        role="assistant",
+        content=answer,
+        sql_list=[],
+        step_trace=jsonable_encoder(step_traces),
+        response_metadata=response_metadata,
+    )
+    db.add(assistant_message)
+    db.commit()
+    db.refresh(assistant_message)
+    if subagent_control_plane_sink is not None:
+        subagent_control_plane_sink.clear()
+        subagent_control_plane_sink.append(
+            {
+                "status": status,
+                "result_ref": atomic_result.get("artifact_ref"),
+                "execution_path": "agentic_atomic_runtime",
+            }
+        )
+    trace_metadata = {
+        "status": "success" if status == "completed" else "failed",
+        "execution_path": "agentic_atomic_runtime",
+        "original_question": payload.question,
+        "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+        "entry_intent": routing.get("entry_intent"),
+        "entry_route": routing.get("entry_route"),
+        "route_decision": route_decision,
+        "atomic_runtime": final_state["atomic_runtime"],
+        "query_profile": query_profile,
+        "explainability": explainability,
+        "prompt_versions": trace_context.prompt_versions,
+    }
+    tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
+    if trace_context.trace_id:
+        db.add(
+            models.ObservabilityTraceIndex(
+                trace_id=trace_context.trace_id,
+                trace_session_id=trace_context.session_id,
+                conversation_id=conv_id,
+                message_id=assistant_message.id,
+                dataset_id=effective_dataset_id,
+                entry_route="agentic_atomic_runtime",
+                status="success" if status == "completed" else "failed",
+                total_tokens=0,
+                total_cost=0,
+                metadata_json=jsonable_encoder(trace_metadata),
+            )
+        )
+        db.commit()
+
+    final_payload = {
+        "type": "final",
+        "sql": None,
+        "sql_list": [],
+        "answer": answer,
+        "entry_intent": routing.get("entry_intent"),
+        "entry_route": routing.get("entry_route"),
+        "entry_reason": routing.get("entry_reason"),
+        "original_question": payload.question,
+        "resolved_question": lead_agent_context.get("resolved_question") or payload.question,
+        "route_decision": route_decision,
+        "schema_status": lead_agent_context.get("schema_status"),
+        "generation_mode": "agentic_atomic_runtime",
+        "sql_result": None,
+        "result_ref": atomic_result.get("artifact_ref"),
+        "report_ref": None,
+        "result_artifact": result_artifact,
+        "answer_explanation": answer_explanation,
+        "query_profile": query_profile,
+        "explainability": explainability,
+        "response_metadata": response_metadata,
+        "conversation_id": conv_id,
+        "message_id": assistant_message.id,
+        "task_id": f"conv-{conv_id}-msg-{assistant_message.id}",
+        "trace_id": trace_context.trace_id,
+        "title": conv.title,
+        "trace_id": trace_context.trace_id,
+        "trace_session_id": trace_context.session_id,
+        "observability": trace_context.observability_payload(),
+    }
+    _attach_retry_checkpoint_to_final_payload(
+        final_payload,
+        conversation_store=conversation_store,
+        business_session_id=observability_session_id,
+        user_id=str(conv.user_id or 1),
+        conversation_id=conv_id,
+        message_id=assistant_message.id,
+    )
+    _attach_artifact_card_refs_to_final_payload(final_payload)
+    _sync_artifact_metadata_to_assistant_message(
+        db=db,
+        assistant_message=assistant_message,
+        final_payload=final_payload,
+    )
+    query_artifact_store.attach_message_id(
+        _artifact_refs_for_query_artifact(final_payload),
+        message_id=int(assistant_message.id),
+    )
+    _log_chat_stream_checkpoint("atomic_runtime_final_payload_ready", **_chat_stream_log_summary(final_payload))
+    yield _sse_data(
+        _with_event_envelope(
+            final_payload,
+            event_type="answer.completed" if status == "completed" else "error.blocked",
+            visibility="user_visible",
+            payload_fields=(
+                "answer",
+                "entry_route",
+                "entry_reason",
+                "result_ref",
+                "report_ref",
+                "artifact_card",
+                "primary_ref",
+                "related_refs",
+                "task_id",
+                "trace_id",
+                "retry_checkpoint",
+            ),
+        )
+    )
+    if not defer_trace_close:
+        tracer.close_trace(trace_context)
+    obs_context_manager.__exit__(None, None, None)
+
+
 async def _stream_chat_singleturn(
     payload: schemas.ChatRequest,
     db: Session,
@@ -1835,7 +2314,7 @@ async def _stream_chat_singleturn(
     subagent_control_plane_sink: list | None = None,
     defer_trace_close: bool = False,
 ):
-    """SSE 流式问数：驱动 LangGraph 工作流，逐步发送节点进度事件。"""
+    """SSE 流式问数 transport 入口；当前单数据集 BI 主链由 Agentic Shell/Runtime 接管。"""
     _log_chat_stream_checkpoint(  # 单轮链路入口，后续 checkpoint 都以此为起点。
         "singleturn_start",
         question_preview=payload.question[:80],
@@ -1932,7 +2411,7 @@ async def _stream_chat_singleturn(
             )
 
     tracer = get_observability_tracer()
-    trace_context = tracer.create_trace_context(  # 创建 Langfuse/session 上下文，后续 span 共享。
+    trace_context = tracer.create_trace_context(  # 创建 Observability/session 上下文，后续 span 共享。
         conversation_id=conv_id,
         dataset_id=effective_dataset_id,
         user_id=str(conv.user_id or 1),
@@ -1950,7 +2429,7 @@ async def _stream_chat_singleturn(
         trace_context_sink.append(trace_context)
     obs_context_manager = set_observability_context(trace_context.request_context())
     obs_context_manager.__enter__()
-    _log_chat_stream_checkpoint(  # 记录 trace/session，便于从 app.log 反查 Langfuse。
+    _log_chat_stream_checkpoint(  # 记录 trace/session，便于从 app.log 反查 Observability。
         "trace_context_created",
         conversation_id=conv_id,
         effective_dataset_id=effective_dataset_id,
@@ -2218,8 +2697,8 @@ async def _stream_chat_singleturn(
         if trace_context.trace_id:
             db.add(
                 models.ObservabilityTraceIndex(
-                    langfuse_trace_id=trace_context.trace_id,
-                    langfuse_session_id=trace_context.session_id,
+                    trace_id=trace_context.trace_id,
+                    trace_session_id=trace_context.session_id,
                     conversation_id=conv_id,
                     message_id=assistant_message.id,
                     dataset_id=effective_dataset_id,
@@ -2810,7 +3289,7 @@ async def _stream_chat_singleturn(
                 "schema_status": lead_agent_context.get("schema_status"),
                 "subagent_tool_results": subagent_tool_results,
                 "fanout_trace": fanout_result.trace_metadata,
-                "langfuse": {
+                "observability": {
                     "trace_id": trace_context.trace_id,
                     "session_id": trace_context.session_id,
                     "release": trace_context.release,
@@ -2848,8 +3327,8 @@ async def _stream_chat_singleturn(
         if trace_context.trace_id:
             db.add(
                 models.ObservabilityTraceIndex(
-                    langfuse_trace_id=trace_context.trace_id,
-                    langfuse_session_id=trace_context.session_id,
+                    trace_id=trace_context.trace_id,
+                    trace_session_id=trace_context.session_id,
                     conversation_id=conv_id,
                     message_id=assistant_message.id,
                     dataset_id=effective_dataset_id,
@@ -2883,8 +3362,8 @@ async def _stream_chat_singleturn(
             "task_id": f"conv-{conv_id}-msg-{assistant_message.id}",
             "trace_id": trace_context.trace_id,
             "title": conv.title,
-            "langfuse_trace_id": trace_context.trace_id,
-            "langfuse_session_id": trace_context.session_id,
+            "trace_id": trace_context.trace_id,
+            "trace_session_id": trace_context.session_id,
             "observability": trace_context.observability_payload(),
         }
         _attach_artifact_card_refs_to_final_payload(final_payload)  # fanout 也只暴露多数据集产物引用，不携带结果 body。
@@ -2920,6 +3399,44 @@ async def _stream_chat_singleturn(
         if not defer_trace_close:
             tracer.close_trace(trace_context)
         obs_context_manager.__exit__(None, None, None)
+        return
+
+    if _should_use_dataset_atomic_runtime(
+        routing=routing,
+        effective_dataset_id=effective_dataset_id,
+        fanout_invocations=fanout_invocations,
+    ):
+        # AgentScope-owned runtime 接管单 dataset BI 查询核心，legacy graph 不再执行。
+        _log_chat_stream_checkpoint(
+            "atomic_runtime_selected",
+            conversation_id=conv_id,
+            effective_dataset_id=effective_dataset_id,
+            entry_route=routing.get("entry_route"),
+            entry_intent=routing.get("entry_intent"),
+        )
+        async for sse_event in _stream_dataset_atomic_runtime_return(
+            db=db,
+            conv=conv,
+            payload=payload,
+            effective_dataset_id=int(effective_dataset_id),
+            routing=routing,
+            route_decision=route_decision,
+            lead_agent_context=lead_agent_context,
+            initial_state=initial_state,
+            step_traces=step_traces,
+            trace_context=trace_context,
+            tracer=tracer,
+            obs_context_manager=obs_context_manager,
+            settings=settings,
+            query_artifact_store=query_artifact_store,
+            conversation_store=conversation_store,
+            conversation_state=conversation_state,
+            observability_session_id=observability_session_id,
+            defer_trace_close=defer_trace_close,
+            subagent_control_plane_sink=subagent_control_plane_sink,
+            multiturn_context=merge_decision.multiturn_context,
+        ):
+            yield sse_event
         return
 
     # 构建并运行工作流
@@ -3749,7 +4266,7 @@ async def _stream_chat_singleturn(
             "clarification_resolution": final_state.get("clarification_resolution_result"),
             "query_profile": query_profile,
             "explainability": explainability,
-            "langfuse": {
+            "observability": {
                 "trace_id": trace_context.trace_id,
                 "session_id": trace_context.session_id,
                 "release": trace_context.release,
@@ -3793,8 +4310,8 @@ async def _stream_chat_singleturn(
     if trace_context.trace_id:
         db.add(
             models.ObservabilityTraceIndex(
-                langfuse_trace_id=trace_context.trace_id,
-                langfuse_session_id=trace_context.session_id,
+                trace_id=trace_context.trace_id,
+                trace_session_id=trace_context.session_id,
                 conversation_id=conv_id,
                 message_id=assistant_message.id,
                 dataset_id=effective_dataset_id,
@@ -3808,7 +4325,7 @@ async def _stream_chat_singleturn(
         if error or sql_retry_trace:
             db.add(
                 models.TraceAnnotationCandidate(
-                    langfuse_trace_id=trace_context.trace_id,
+                    trace_id=trace_context.trace_id,
                     conversation_id=conv_id,
                     message_id=assistant_message.id,
                     dataset_id=effective_dataset_id,
@@ -3894,8 +4411,8 @@ async def _stream_chat_singleturn(
         "task_id": f"conv-{conv_id}-msg-{assistant_message.id}",
         "trace_id": trace_context.trace_id,
         "title": conv.title,
-        "langfuse_trace_id": trace_context.trace_id,
-        "langfuse_session_id": trace_context.session_id,
+        "trace_id": trace_context.trace_id,
+        "trace_session_id": trace_context.session_id,
         "observability": trace_context.observability_payload(),
         "multiturn_observability_metrics": multiturn_observability_metrics,
     }
@@ -4004,7 +4521,7 @@ def _persist_artifact_refs_fact(
         "kind": "artifact_refs",
         "task_id": task_id,
         "message_id": final_payload.get("message_id"),
-        "trace_id": final_payload.get("trace_id") or final_payload.get("langfuse_trace_id"),
+        "trace_id": final_payload.get("trace_id") or final_payload.get("trace_id"),
         "primary_ref": primary_ref,
         "related_refs": related_refs,
     }
@@ -4040,7 +4557,7 @@ def _persist_repair_plan_fact(
         "kind": "repair_plan",
         "task_id": task_id,
         "message_id": final_payload.get("message_id"),
-        "trace_id": final_payload.get("trace_id") or final_payload.get("langfuse_trace_id"),
+        "trace_id": final_payload.get("trace_id") or final_payload.get("trace_id"),
         "repair_plan_ref": repair_plan_ref,
         "failure_class": final_payload.get("repair_failure_class"),
         "repair_status": final_payload.get("repair_status"),
@@ -4474,12 +4991,7 @@ async def _stream_chat_singleturn_via_agentic_runtime(
     settings: Any,
     **singleturn_kwargs: Any,
 ):
-    """PR1.1 兼容适配层；flag 开启时由 Agentic Shell 包裹 legacy singleturn 流。"""
-
-    if not bool(getattr(settings, "AS_R0_AGENTIC_RUNTIME_ENABLED", False)):
-        async for event in _stream_chat_singleturn(payload, db, **singleturn_kwargs):
-            yield event
-        return
+    """AgentScope 2.0 入口适配层；所有 singleturn 都先进入 Agentic Shell。"""
 
     async def stream_delegate():
         async for event in _stream_chat_singleturn(payload, db, **singleturn_kwargs):
@@ -4581,7 +5093,7 @@ def _complete_agentscope_chat_bridge(
                 "artifact_ref": final_payload.get("result_ref") or final_payload.get("primary_ref"),
                 "checkpoint_ref": final_payload.get("retry_checkpoint_ref"),
                 "repair_plan_ref": final_payload.get("repair_plan_ref"),
-                "trace_ref": final_payload.get("trace_id") or final_payload.get("langfuse_trace_id"),
+                "trace_ref": final_payload.get("trace_id") or final_payload.get("trace_id"),
                 "thread_id": context.thread_id,
             },
         )
@@ -4614,7 +5126,7 @@ def _fail_agentscope_chat_bridge(
             error_summary=error_summary,
             error_payload={
                 "checkpoint_ref": payload.get("checkpoint_ref") or payload.get("retry_checkpoint_ref"),
-                "trace_ref": payload.get("trace_id") or payload.get("langfuse_trace_id"),
+                "trace_ref": payload.get("trace_id") or payload.get("trace_id"),
                 "error": error_summary,
             },
         )
@@ -4716,6 +5228,85 @@ def chat_stream(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
     return EventSourceResponse(_stream_chat(payload, db))
 
 
+@router.post("/dataset-runtime/direct")
+def dataset_runtime_direct(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
+    """DatasetAgent Runtime 直通测试入口；用于验证底座，不经过 LeadAgent 控制面。"""
+
+    settings = get_settings()
+    if str(getattr(settings, "APP_ENV", "development")).lower() == "production":
+        # 该入口故意绕过 LeadAgent 的控制面规划，只允许本地/测试环境压测 Runtime 底座。
+        raise HTTPException(status_code=403, detail="DatasetAgent Runtime direct entry is disabled")
+    if payload.dataset_id is None:
+        raise HTTPException(status_code=400, detail="dataset_id is required")
+
+    dataset_id = int(payload.dataset_id)
+    dataset = db.get(models.SemanticDataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+
+    routing = {
+        "entry_intent": "detail_query",
+        "entry_route": "query_graph",
+        "entry_reason": "dataset_runtime_direct",
+        "route_payload": {},
+    }
+    route_decision = {
+        "decision": "selected",
+        "dataset_id": dataset_id,
+        "dataset_name": getattr(dataset, "name", None),
+        "reason": "dataset_runtime_direct",
+    }
+    lead_agent_context = {
+        "selected_skills": [],
+        "planned_tool_calls": [],
+        "executed_tool_calls": [],
+        "policy_violations": [],
+        "time_context": {},
+        "thread_context": {},
+        "route_decision": route_decision,
+        "schema_status": {"status": "bypassed_for_dataset_runtime_direct"},
+    }
+
+    allowed_tables, sql_generation_context = _atomic_allowed_tables_and_sql_context(dataset)
+    datasource = db.get(models.Datasource, dataset.datasource_id)
+    datasource_dialect = (
+        getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "sqlite"
+    )
+    provider = BIAtomicToolProvider(
+        db,
+        query_executor=_build_atomic_query_executor(
+            db=db,
+            dataset=dataset,
+            question=payload.question,
+        ),
+    )
+    runtime = DatasetAgentToolCallRuntime(
+        provider=provider,
+        dsl_generator=_build_atomic_dsl_generator(
+            db=db,
+            dataset_id=dataset_id,
+            routing=routing,
+            route_decision=route_decision,
+            lead_agent_context=lead_agent_context,
+            multiturn_context=None,
+        ),
+    )
+    result = runtime.run_query(
+        dataset_id=dataset_id,
+        question=payload.question,
+        sql_generation_context=sql_generation_context,
+        dialect=datasource_dialect,
+        current_datasource_dialect=datasource_dialect,
+        query_constraints=getattr(dataset, "query_constraints", None) or {},
+        allowed_tables=allowed_tables,
+        conversation_id=payload.conversation_id,
+        trace_id=None,
+    )
+    result["execution_path"] = "dataset_agent_runtime_direct"
+    result["lead_agent_bypassed"] = True
+    return result
+
+
 @router.post("/feedback")
 def chat_feedback(payload: schemas.ChatFeedback, db: Session = Depends(get_db)):
     """人工反馈接口，对接 LangGraph HumanFeedback 节点（Phase 3 完善）。"""
@@ -4782,8 +5373,8 @@ def _early_trace_metadata(
     }
 
 
-def _early_langfuse_payload(trace_context: Any) -> dict:
-    """提取前端和审计页需要的 Langfuse trace 信息。"""
+def _early_observability_payload(trace_context: Any) -> dict:
+    """提取前端和审计页需要的 Observability trace 信息。"""
     return {
         "trace_id": trace_context.trace_id,
         "session_id": trace_context.session_id,
@@ -4821,7 +5412,7 @@ def _finalize_early_trace(
         response_metadata=response_metadata,
         trace_context=trace_context,
     )
-    response_metadata["langfuse"] = _early_langfuse_payload(trace_context)
+    response_metadata["observability"] = _early_observability_payload(trace_context)
     response_metadata["observability"] = trace_context.observability_payload()
     tracer.update_trace_output(trace_context, output=answer, metadata=trace_metadata)
     assistant_message.response_metadata = jsonable_encoder(response_metadata)
@@ -4829,8 +5420,8 @@ def _finalize_early_trace(
     if trace_context.trace_id:
         db.add(
             models.ObservabilityTraceIndex(
-                langfuse_trace_id=trace_context.trace_id,
-                langfuse_session_id=trace_context.session_id,
+                trace_id=trace_context.trace_id,
+                trace_session_id=trace_context.session_id,
                 conversation_id=assistant_message.conversation_id,
                 message_id=assistant_message.id,
                 dataset_id=effective_dataset_id,
@@ -4988,8 +5579,8 @@ async def _interpret_early_return(
         "task_id": f"conv-{conv.id}-msg-{assistant_message.id}",
         "trace_id": trace_context.trace_id,
         "title": conv.title,
-        "langfuse_trace_id": trace_context.trace_id,
-        "langfuse_session_id": trace_context.session_id,
+        "trace_id": trace_context.trace_id,
+        "trace_session_id": trace_context.session_id,
         "observability": trace_context.observability_payload(),
         "trace_metadata": trace_metadata,
         "out_capsule": interpret_payload.get("out_capsule"),
@@ -5133,8 +5724,8 @@ async def _early_route_return(
         "task_id": f"conv-{conv.id}-msg-{assistant_message.id}",
         "trace_id": trace_context.trace_id,
         "title": conv.title,
-        "langfuse_trace_id": trace_context.trace_id,
-        "langfuse_session_id": trace_context.session_id,
+        "trace_id": trace_context.trace_id,
+        "trace_session_id": trace_context.session_id,
         "observability": trace_context.observability_payload(),
         "trace_metadata": trace_metadata,
     }

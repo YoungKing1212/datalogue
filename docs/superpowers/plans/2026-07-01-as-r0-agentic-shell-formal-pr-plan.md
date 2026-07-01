@@ -86,6 +86,20 @@
 
 **目标：** 用原子 tools 串起 `get_dataset_status -> list_candidate_assets -> DSL -> compile -> execute -> artifact summary`，替代当前 `DatasetSubAgent.run()` 直接暴露 graph event/final_state 的方式。
 
+#### PR1.3-b: BI atomic runtime 直接接管查询执行核心
+
+**目标：** 在保留 `/chat/stream`、Workbench、trace、artifact、checkpoint 外部契约不变的前提下，让已通过 LeadAgent 路由的单数据集 BI 查询默认绕过 `DatasetSubAgent/LangGraph` 执行核心，改由 `DatalogueAgenticShell -> DatasetAgentToolCallRuntime + BIAtomicToolProvider` 完成受控执行。
+
+**计划归属：** PR1.3 原目标的验收缺口修正，不新增 P3/P4，不提前扩展 ReportAgent、PythonAgent 或 AuditAgent。
+
+**验收：**
+
+- 不再新增或依赖 runtime 灰度开关；`/chat/stream` singleturn 默认先进入 `DatalogueAgenticShell.run_turn()`。
+- 满足单数据集 BI 查询条件时，执行链路为 `DatasetAgentToolCallRuntime -> get_dataset_status -> list_candidate_assets -> generate_dsl -> compile_dsl_to_sql -> execute_compiled_query -> get_artifact_summary`，不得调用 legacy `build_workflow(db)`。
+- 产出的 SSE final / Workbench View Model 继续包含 answer、artifact refs、trace id、checkpoint ref，并触发 `dataset.query.completed` / `answer.completed`。
+- SQL、schema 全量、物理字段明细、raw rows、query_plan 主体、RepairPatch 主体、blueprint 主体不进入 Agent context、SSE 用户可见层或 Workbench View Model。
+- 同一代表性 BI 问题在默认 Agentic Shell + atomic runtime path 下完成，并通过 trace/artifact/workbench harness。
+
 #### PR1.4: checkpoint/retry 迁移
 
 **目标：** Workbench retry 调 Shell action，Shell 写 `retry.started/checkpoint_restored/dataset.query.completed/answer.completed`，并继续满足 provider-neutral observability contract。
@@ -207,7 +221,8 @@
 | PR0.4 | Complete | AS-R0 security matrix commit | PR0 已完成；后续在 P1 新 runtime 下继续沿用矩阵 |
 | PR1.1 | Complete | Runtime adapter 接管入口提交 + `docs/test-reports/2026-07-01-as-r0-pr1-1.md` | 后续 PR1.2 接入 BI LeadAgent Shell 能力路由 |
 | PR1.2 | Complete | Shell/Runtime boundary 均携带 BI LeadAgent action contract + `docs/test-reports/2026-07-01-as-r0-pr1-2.md` | 后续 PR1.3 用原子 tools 串 DatasetAgent tool-call runtime |
-| PR1.3 | Complete | DatasetAgent tool-call runtime 最小编排 + `docs/test-reports/2026-07-01-as-r0-pr1-3.md` | 后续 PR1.4 迁移 checkpoint/retry writer |
+| PR1.3 | Complete (contract only) | DatasetAgent tool-call runtime 最小编排 + `docs/test-reports/2026-07-01-as-r0-pr1-3.md` | 已发现原目标“替代当前 DatasetSubAgent/LangGraph 执行核心”尚未完成，纳入 PR1.3-b |
+| PR1.3-b | Complete | 用户已明确要求去掉灰度开关；单数据集 BI 查询默认走 Agentic Shell + AgentScope 2.0 external-tool 风格的受控 atomic runtime；`docs/test-reports/2026-07-01-as-r0-pr1-3-b.md` 已记录 API、Workbench 和安全扫描证据 | 多数据集 fanout 迁出 legacy 需要新增已批准计划 |
 | PR1.4 | Complete | Shell writer 接管 Workbench retry action 与 Chat SSE event 写回 + `docs/test-reports/2026-07-01-as-r0-pr1-4.md` | 后续 PR1.5 做双路径灰度 parity |
 | PR1.5 | Complete | 双路径灰度 parity harness + `docs/test-reports/2026-07-01-as-r0-pr1-5.md` | P1 已完成；后续进入 P2 收敛 legacy runtime |
 | P2.1 | Complete | `_stream_chat` transport adapter 收缩 + `docs/test-reports/2026-07-01-as-r0-p2-1.md` | 后续 P2.2 收敛 legacy adapter / `ask_bi` |
@@ -217,9 +232,9 @@
 
 ## 5. Next Allowed Work Without Plan Change
 
-AS-R0 P0/P1/P2 正式计划已全部完成。当前没有可在不变更计划的前提下继续实施的新工作。
+当前正式 PR0/P1/P2 计划和已批准的 PR1.3-b 修正项均已完成。用户已在 2026-07-01 明确要求去掉灰度开关，当前 `/chat/stream` singleturn 已直接按 AgentScope 2.0 / Agentic Shell-first 方式进入受控 atomic runtime。
 
-后续如果要实现真实 ReportAgent、PythonAgent、AuditAgent 业务执行器，或把 feature flag 默认打开，必须先按 `6. Proposed Plan Changes` 提交变更说明并等待用户审核。
+后续如果要实现真实 ReportAgent、PythonAgent、AuditAgent 业务执行器，或把多数据集 fanout 迁出 legacy LangGraph，仍必须先按 `6. Proposed Plan Changes` 提交变更说明并等待用户审核。
 
 ## 5.1 Completed Task Reports
 
@@ -342,7 +357,7 @@ AS-R0 P0/P1/P2 正式计划已全部完成。当前没有可在不变更计划�
 - `datalogue-api/tests/test_agentscope_chat_bridge.py`
 - `docs/test-reports/2026-07-01-as-r0-pr1-5.md`
 
-**Result:** 新增 runtime parity harness，在 `AS_R0_AGENTIC_RUNTIME_ENABLED=false/true` 下用同一 `_stream_chat` 请求验证 final payload 完全一致，并校验 AgentScope assistant message 的 `artifact_ref` 与 `trace_ref` 保持一致。PR1.5 不默认开启新 runtime，不替换 DatasetAgent 主链，只把 PR1.1 已有的 Shell wrapper 灰度路径固化为正式验收闸门。
+**Result:** 新增 runtime parity harness，在当时的 `AS_R0_AGENTIC_RUNTIME_ENABLED=false/true` 下用同一 `_stream_chat` 请求验证 final payload 完全一致，并校验 AgentScope assistant message 的 `artifact_ref` 与 `trace_ref` 保持一致。该项是历史迁移闸门；在用户 2026-07-01 明确要求“不要灰度开关”后，主链灰度开关已由 PR1.3-b 删除，当前不再保留 legacy/new runtime 双路径切换。
 
 ### P2.1: `/chat/stream` transport adapter 收缩
 
@@ -405,7 +420,43 @@ AS-R0 P0/P1/P2 正式计划已全部完成。当前没有可在不变更计划�
 
 ## 6. Proposed Plan Changes
 
-当前没有已批准的新增计划。
+### Approved
+
+#### CR-2026-07-01-1: PR1.3-b BI atomic runtime 灰度替换查询执行核心
+
+**Status:** Approved by user on 2026-07-01
+
+**Requested Change:** 把 PR1.3 原目标中“替代当前 `DatasetSubAgent.run()` / LangGraph 执行核心”的未完成部分拆成 PR1.3-b，新增 feature flag 灰度路径，让单数据集 BI 查询可以走 `DatasetAgentToolCallRuntime + BIAtomicToolProvider`。
+
+**Reason:** 当前代码审计确认 `/chat/stream` 的真实查询执行仍进入 `build_workflow(db)` 与 `_managed_subagent_events()`；早前 PR1.3 只完成 tool-call runtime 契约和最小编排，没有完成主链替换验收。
+
+**Affected Plan Items:** PR1.3、PR1.5、P2.1。
+
+**Files Likely Affected:** `datalogue-api/app/core/config.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/agentic_dataset_runtime.py`、`datalogue-api/app/services/agentic_bi_tools.py`、`datalogue-api/tests/*`、`docs/test-reports/*`、`.codex/project-memory.md`。
+
+**Acceptance Impact:** 增加 atomic runtime 灰度/parity 测试和真实浏览器 E2E；原安全矩阵继续适用。
+
+**Risk:** 新路径必须补齐 DSL 生成、SQL 执行、answer 合成、artifact/trace/checkpoint/SSE 映射，否则会破坏 Workbench completed 和多轮承接。
+
+**Rollback:** feature flag 默认关闭；如新路径失败，保持 legacy `DatasetSubAgent/LangGraph` 路径继续服务。
+
+#### CR-2026-07-01-2: PR1.3-b 去灰度并默认走 AgentScope-owned runtime
+
+**Status:** Approved by user on 2026-07-01
+
+**Requested Change:** 删除 `AS_R0_AGENTIC_RUNTIME_ENABLED` 与 `AS_R0_DATASET_ATOMIC_RUNTIME_ENABLED` 两个主链灰度开关；`/chat/stream` singleturn 默认进入 `DatalogueAgenticShell.run_turn()`，单数据集 BI 查询默认进入 `DatasetAgentToolCallRuntime + BIAtomicToolProvider`，不得回落到 legacy `build_workflow(db)`。
+
+**Reason:** 用户明确要求“不需要灰度开关，直接按照 AgentScope 2.0 方式构建”。灰度保留会导致实际主链仍可停留在 legacy runtime ownership，和 AS-R0 目标冲突。
+
+**Affected Plan Items:** PR1.1、PR1.3-b、PR1.5、P2.1。
+
+**Files Likely Affected:** `datalogue-api/app/core/config.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py`、`datalogue-api/tests/test_agentscope_chat_bridge.py`、`docs/test-reports/*`、`.codex/project-memory.md`。
+
+**Acceptance Impact:** 原 parity 验收从 flag on/off 对比改为“无 flag 默认 Shell wrapper 且 final payload/refs/trace contract 不被改写”；atomic cutover 验收改为“无 flag 默认绕过 legacy graph core”。
+
+**Risk:** 单数据集 BI 查询无回退路径后，DSL generator、compile、execute、artifact summary 任一缺口都会直接影响主链；多数据集 fanout 当前仍在 legacy 分支，需要单独计划迁移。
+
+**Rollback:** 不保留代码级 runtime 灰度回退；如需回退，必须通过 git revert 或新的受控计划恢复。
 
 ### Pending User Review
 

@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : __init__.py
 # Description:
-#   Langfuse 可观测能力服务包入口。
+#   Observability 可观测能力服务包入口。
 #
 # Responsibilities:
 #   - 导出 Datalogue 内部使用的观测服务封装。
-#   - 隔离业务代码对 Langfuse SDK 的直接依赖。
+#   - 隔离业务代码对 Observability SDK 的直接依赖。
 #
 # Author      : yangkai
 # Created On  : 2026-06-11

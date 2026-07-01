@@ -29,7 +29,7 @@ def test_artifact_card_refs_do_not_expose_internal_details():
         "message_id": 9,
         "result_ref": "artifact:result-1",
         "report_ref": "artifact:report-1",
-        "langfuse_trace_id": "trace-123",
+        "trace_id": "trace-123",
         "retry_checkpoint": {"checkpoint_ref": "checkpoint://conv-7-msg-9/query_context_ready"},
         "sql": "select * from secret_table",
         "sql_result": {"rows": [{"raw": "value"}]},
@@ -88,7 +88,7 @@ def test_artifact_card_related_refs_accept_repair_plan_ref_without_new_prefix():
         "message_id": 9,
         "result_ref": "artifact:result-1",
         "repair_plan_ref": "artifact:repair-1",
-        "langfuse_trace_id": "trace-123",
+        "trace_id": "trace-123",
         "retry_checkpoint": {"checkpoint_ref": "checkpoint://conv-7-msg-9/query_context_ready"},
     }
 
