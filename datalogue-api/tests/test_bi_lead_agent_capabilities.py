@@ -1,0 +1,63 @@
+# ============================================================
+# File Name   : test_bi_lead_agent_capabilities.py
+# Description:
+#   BI LeadAgent K1 能力清单与数据集摘要清洗测试。
+#
+# Responsibilities:
+#   - 验证 LeadAgent 只暴露路由、确认和单数据集查询三类外层能力。
+#   - 验证数据集能力摘要会剔除 DatasetAgent 内部执行上下文。
+#
+# Author      : yangkai
+# Created On  : 2026-07-01
+# ============================================================
+
+from app.services.bi_lead_agent.capabilities import (
+    build_bi_lead_agent_capabilities,
+    sanitize_dataset_capability,
+)
+
+
+def test_bi_lead_agent_capability_manifest_exposes_three_enabled_one_disabled():
+    manifest = build_bi_lead_agent_capabilities()
+    enabled = {item.name for item in manifest if item.status == "enabled"}
+    disabled = {item.name for item in manifest if item.status == "disabled"}
+
+    assert enabled == {"list_dataset_capabilities", "request_dataset_confirmation", "query_dataset"}
+    assert disabled == {"query_multiple_datasets"}
+    assert "list_candidate_assets" not in enabled
+    assert "compile_dsl_to_sql" not in enabled
+    assert "execute_compiled_query" not in enabled
+    assert "repair_dsl" not in enabled
+    assert "create_query_artifact" not in enabled
+
+
+def test_dataset_capability_summary_strips_dataset_internal_context():
+    summary = sanitize_dataset_capability(
+        {
+            "dataset_id": 12,
+            "name": "订单数据集",
+            "domain": "销售",
+            "supported_questions": ["订单金额趋势"],
+            "key_metrics": ["订单金额"],
+            "key_dimensions": ["月份"],
+            "freshness": "T+1",
+            "availability": "ready",
+            "schema": {"orders": ["amount"]},
+            "sql": "select * from orders",
+            "dsl": {"metric": "amount"},
+            "candidate_assets": [{"name": "订单金额"}],
+            "field_mapping": {"amount": "orders.amount"},
+            "blueprint_body": "内部蓝图正文",
+        }
+    )
+
+    assert summary.model_dump() == {
+        "dataset_id": 12,
+        "name": "订单数据集",
+        "domain": "销售",
+        "supported_questions": ["订单金额趋势"],
+        "key_metrics": ["订单金额"],
+        "key_dimensions": ["月份"],
+        "freshness": "T+1",
+        "availability": "ready",
+    }
