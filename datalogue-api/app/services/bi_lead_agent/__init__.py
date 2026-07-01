@@ -15,10 +15,16 @@ from app.services.bi_lead_agent.capabilities import (
     sanitize_dataset_capability,
 )
 from app.services.bi_lead_agent.confirmation_service import BILeadAgentConfirmationService
+from app.services.bi_lead_agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
+from app.services.bi_lead_agent.handoff_adapter import DatalogueBIHandoffAdapter
+from app.services.bi_lead_agent.handoff_service import BIHandoffService
 from app.services.bi_lead_agent.run_service import BILeadAgentRunService
 
 __all__ = [
+    "AgentScopeDatasetAgentFactory",
     "BILeadAgentConfirmationService",
+    "BIHandoffService",
+    "DatalogueBIHandoffAdapter",
     "BILeadAgentRunService",
     "build_bi_lead_agent_capabilities",
     "sanitize_dataset_capability",
