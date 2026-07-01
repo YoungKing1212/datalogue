@@ -11,6 +11,9 @@
 # Created On  : 2026-07-01
 # ============================================================
 
+from sqlalchemy import select, text
+
+from app.core.database import Base
 from app.models.bi_lead_agent import BIAgentHandoff, BILeadAgentConfirmation, BILeadAgentRun
 
 
@@ -71,3 +74,73 @@ def test_bi_lead_agent_models_persist_k1_contract(db_session):
     assert saved.handoff.child_agent == "dataset_agent"
     assert saved.handoff.handoff_status == "completed"
     assert "schema" not in saved.confirmation.capability_snapshot_json
+
+
+def test_bi_lead_agent_confirmation_raw_insert_defaults_snapshot(db_session):
+    db_session.execute(
+        text(
+            """
+            INSERT INTO bi_lead_agent_run (status, question, trace_id, task_id)
+            VALUES (:status, :question, :trace_id, :task_id)
+            """
+        ),
+        {
+            "status": "waiting_confirmation",
+            "question": "统计 2026 年订单金额",
+            "trace_id": "trace-bi-core-001",
+            "task_id": "task-bi-core-001",
+        },
+    )
+    run_id = db_session.execute(
+        select(BILeadAgentRun.id).where(BILeadAgentRun.trace_id == "trace-bi-core-001")
+    ).scalar_one()
+
+    db_session.execute(
+        text(
+            """
+            INSERT INTO bi_lead_agent_confirmation (
+                run_id,
+                dataset_id,
+                confirmed_question,
+                task_goal,
+                routing_rationale,
+                trace_id,
+                parent_run_id
+            )
+            VALUES (
+                :run_id,
+                :dataset_id,
+                :confirmed_question,
+                :task_goal,
+                :routing_rationale,
+                :trace_id,
+                :parent_run_id
+            )
+            """
+        ),
+        {
+            "run_id": run_id,
+            "dataset_id": 12,
+            "confirmed_question": "统计 2026 年订单金额",
+            "task_goal": "按确认的数据集执行单数据集问数",
+            "routing_rationale": "订单金额问题应由订单数据集回答。",
+            "trace_id": "trace-bi-core-001",
+            "parent_run_id": str(run_id),
+        },
+    )
+    db_session.commit()
+
+    snapshot = db_session.execute(
+        select(BILeadAgentConfirmation.capability_snapshot_json).where(
+            BILeadAgentConfirmation.run_id == run_id
+        )
+    ).scalar_one()
+    assert snapshot == {}
+
+
+def test_bi_lead_agent_models_registered_through_app_main():
+    import app.main  # noqa: F401  # 导入主应用后，三张 K1 表必须已进入共享 metadata，避免测试外运行漏注册。
+
+    assert "bi_lead_agent_run" in Base.metadata.tables
+    assert "bi_lead_agent_confirmation" in Base.metadata.tables
+    assert "bi_agent_handoff" in Base.metadata.tables

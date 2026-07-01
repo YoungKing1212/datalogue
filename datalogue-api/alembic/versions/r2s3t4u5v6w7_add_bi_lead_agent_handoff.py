@@ -51,7 +51,11 @@ def _existing_index_names(table_name: str) -> set[str]:
     if not _has_table(table_name):
         return set()
     bind = op.get_bind()
-    return {item["name"] for item in sa.inspect(bind).get_indexes(table_name)}
+    return {
+        index_name
+        for item in sa.inspect(bind).get_indexes(table_name)
+        if (index_name := item.get("name")) is not None
+    }
 
 
 def _create_index_if_missing(table_name: str, index_name: str, columns: list[str], *, unique: bool = False) -> None:
@@ -182,7 +186,6 @@ def upgrade() -> None:
         )
 
     for table_name, index_name, columns, unique in [
-        ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_id"), ["id"], False),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_status"), ["status"], False),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_phase"), ["phase"], False),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_task_id"), ["task_id"], False),
@@ -191,8 +194,6 @@ def upgrade() -> None:
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_created_at"), ["created_at"], False),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_updated_at"), ["updated_at"], False),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_completed_at"), ["completed_at"], False),
-        ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_id"), ["id"], False),
-        ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_run_id"), ["run_id"], False),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_dataset_id"), ["dataset_id"], False),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_user_decision"), ["user_decision"], False),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_trace_id"), ["trace_id"], False),
@@ -201,9 +202,6 @@ def upgrade() -> None:
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_created_at"), ["created_at"], False),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_updated_at"), ["updated_at"], False),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_decided_at"), ["decided_at"], False),
-        ("bi_agent_handoff", op.f("ix_bi_agent_handoff_id"), ["id"], False),
-        ("bi_agent_handoff", op.f("ix_bi_agent_handoff_run_id"), ["run_id"], False),
-        ("bi_agent_handoff", op.f("ix_bi_agent_handoff_handoff_id"), ["handoff_id"], False),
         ("bi_agent_handoff", op.f("ix_bi_agent_handoff_parent_agent"), ["parent_agent"], False),
         ("bi_agent_handoff", op.f("ix_bi_agent_handoff_child_agent"), ["child_agent"], False),
         ("bi_agent_handoff", op.f("ix_bi_agent_handoff_child_run_id"), ["child_run_id"], False),
@@ -236,9 +234,6 @@ def downgrade() -> None:
         ("bi_agent_handoff", op.f("ix_bi_agent_handoff_child_run_id")),
         ("bi_agent_handoff", op.f("ix_bi_agent_handoff_child_agent")),
         ("bi_agent_handoff", op.f("ix_bi_agent_handoff_parent_agent")),
-        ("bi_agent_handoff", op.f("ix_bi_agent_handoff_handoff_id")),
-        ("bi_agent_handoff", op.f("ix_bi_agent_handoff_run_id")),
-        ("bi_agent_handoff", op.f("ix_bi_agent_handoff_id")),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_decided_at")),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_updated_at")),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_created_at")),
@@ -247,8 +242,6 @@ def downgrade() -> None:
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_trace_id")),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_user_decision")),
         ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_dataset_id")),
-        ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_run_id")),
-        ("bi_lead_agent_confirmation", op.f("ix_bi_lead_agent_confirmation_id")),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_completed_at")),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_updated_at")),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_created_at")),
@@ -257,7 +250,6 @@ def downgrade() -> None:
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_task_id")),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_phase")),
         ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_status")),
-        ("bi_lead_agent_run", op.f("ix_bi_lead_agent_run_id")),
     ]:
         _drop_index_if_exists(table_name, index_name)
 

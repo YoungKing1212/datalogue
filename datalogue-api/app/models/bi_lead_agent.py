@@ -11,7 +11,7 @@
 # Created On  : 2026-07-01
 # ============================================================
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -73,7 +73,12 @@ class BILeadAgentConfirmation(Base):
     dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=False, index=True)
     confirmed_question = Column(Text, nullable=False)
     task_goal = Column(Text, nullable=False)
-    capability_snapshot_json = Column(_json_type(), nullable=False, default=dict)
+    capability_snapshot_json = Column(
+        _json_type(),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )  # 兼容 raw insert/create_all 场景；K1 只允许落路由级能力摘要，默认空对象。
     routing_rationale = Column(Text, nullable=False)
     risk_notice = Column(Text, nullable=True)
     user_decision = Column(
