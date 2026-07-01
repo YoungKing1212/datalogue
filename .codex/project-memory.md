@@ -137,6 +137,7 @@
 - C3-P2 Retry Completed 自动化 Harness 将手工浏览器 retry 复验固化为内部-only pytest：构造 `as_*` failed 会话和 checkpoint，驱动 `/api/workbench/actions/retry -> /api/chat/stream` checkpoint restore，并断言 Workbench completed、primary artifact、trace/checkpoint refs 和事件顺序。
 - C3-P2 PR2 补齐 Workbench 状态体验：空态、失败诊断、running 轮询提示、artifact drawer 内部 loading/404/无权限错误和 completed 产物重新打开；前端测试、lint/build 和真实浏览器扫描均通过。
 - C3-P2 PR2 Provider-neutral Observability Gate 将 `/api/observability/traces/{trace_id}` 收敛为 provider-neutral contract，统一断言 `workbench.retry_requested -> retry.started -> retry.checkpoint_restored -> dataset.query.completed -> answer.completed` 和关键 refs；自动化 harness 改为查询该 contract，不绑定 Langfuse 内部字段。
+- C3-P2 发布 Checklist 收口覆盖数据源容器、本地端口、浏览器 retry、自动化 harness、旧会话只读、隐藏 Workbench route 和 provider-neutral observability 发布口径；Langfuse UI 登录核对保留为人工 checklist，不把后端 API 成功写成 UI 通过。
 
 ## 高价值判断
 
@@ -147,14 +148,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 09:16 · C3-P2 发布 Checklist 收口
-
-- 涉及文件：`docs/superpowers/plans/2026-06-30-c3-p2-workbench-productization.md`、`.codex/project-memory.md`
-- 关键改动：在 C3-P2 Workbench productization plan 中新增发布 checklist，覆盖数据源容器依赖、本地服务端口、浏览器 retry 手工闸门、自动化 harness、旧会话只读策略、隐藏 Workbench route 策略和 provider-neutral observability 发布口径；Final Review Gate 增加 checklist owner/status 确认项。
-- 发布边界：自动化闸门以 `/api/observability/traces/{trace_id}` 的 `observability_contract` 为准，不绑定 Langfuse 内部字段名；Langfuse UI 登录核对保留为发布前人工 checklist，无权限时必须记录未完成，不能把后端 API 成功写成 UI 通过。
-- 验证方式：执行 `git diff --check` 通过；文档检查确认“最新详细记录”保持 10 条，较早 C3-P0 真实浏览器 E2E 记录已压缩进历史压缩记录。
-- 残留风险：本次是文档和项目记忆收口，不重新运行浏览器 retry 或自动化测试；发布前仍需按 checklist 逐项补 owner/status 和真实环境证据。
 
 ### 2026-07-01 10:21 · AS-R0 P0 Agentic Shell 契约层骨架
 
@@ -234,3 +227,12 @@
 - TDD 记录：先新增 runtime adapter 委托测试并确认 RED 为 `app.api.chat` 缺少 `DatalogueAgenticShell` 接入点；实现配置、Shell `run_turn()` 和 chat 兼容 wrapper 后，定向测试转 GREEN。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py::test_chat_stream_agentic_runtime_adapter_delegates_to_shell_run_turn -q`，1 条通过；执行 AS-R0 runtime 相关回归 `tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_as_r0_security_matrix.py tests/test_event_envelope.py tests/test_agentscope_runtime_driver_contract.py -q`，42 条通过、4 个既有 warning；执行正式计划最小回归 `tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，36 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：当前只是 runtime ownership 的入口适配；BI LeadAgent capability routing、DatasetAgent tool-call runtime、checkpoint/retry writer 迁移和双路径灰度仍分别归 PR1.2 - PR1.5。
+
+### 2026-07-01 11:48 · AS-R0 PR1.2 BI LeadAgent 接入 Shell
+
+- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-2.md`、`.codex/project-memory.md`
+- 关键改动：新增 `AgenticShellAction`、`route_agent_action()` 和 `route_action_from_contract()`；BI LeadAgent 只允许 `query_dataset` / `query_multiple_datasets` 两个业务能力，默认 `query_dataset`；请求 `create_report_from_artifact` 等非白名单能力时返回 `capability_not_whitelisted` disabled action；Runtime boundary 新增 `lead_agent_action` 并复用同一 Shell 路由判断。
+- 安全边界：ReportAgent、PythonAgent、AuditAgent 继续作为 disabled placeholder，显式返回 `agent_disabled_placeholder` action，不注册工具、不启用业务 Agent；action payload 来自安全投影上下文，不携带 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body。
+- TDD 记录：先写 Shell 能力路由测试并确认 RED 为 `DatalogueAgenticShell` 缺少 `route_agent_action`；实现 Shell action contract 后转 GREEN；再写 Runtime boundary action 测试并确认 RED 为缺少 `lead_agent_action` 字段，接入后转 GREEN。
+- 验证方式：执行 Shell 定向测试 2 条通过、driver 定向测试 2 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py -q`，33 条通过、4 个既有 warning；执行正式计划最小回归 `tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，38 条通过、4 个既有 warning；执行安全矩阵回归 `tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，11 条通过、2 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：PR1.2 只定义 LeadAgent action routing，不执行 DatasetAgent 原子工具链；`get_dataset_status -> list_candidate_assets -> DSL -> compile -> execute -> artifact summary` 编排留给 PR1.3。

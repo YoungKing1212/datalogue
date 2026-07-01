@@ -62,6 +62,13 @@ def test_agentscope_runtime_driver_registers_bi_atomic_tools_without_ask_bi():
         "BIAtomicToolProvider",
     ]
     assert runtime_contract.business_capabilities == ["query_dataset", "query_multiple_datasets"]
+    assert runtime_contract.lead_agent_action.status == "ready"
+    assert runtime_contract.lead_agent_action.selected_agent == "bi_lead_agent"
+    assert runtime_contract.lead_agent_action.capability == "query_dataset"
+    assert runtime_contract.lead_agent_action.allowed_capabilities == [
+        "query_dataset",
+        "query_multiple_datasets",
+    ]
 
     dumped = runtime_contract.model_dump_json()
     for forbidden in (
@@ -114,3 +121,6 @@ def test_agentscope_runtime_driver_rejects_disabled_placeholder_without_tools():
     assert runtime_contract.tool_registry == []
     assert "get_dataset_status" in runtime_contract.disabled_tools
     assert "query_dataset" in runtime_contract.disabled_tools
+    assert runtime_contract.lead_agent_action.status == "disabled"
+    assert runtime_contract.lead_agent_action.action_type == "report_agent.disabled"
+    assert runtime_contract.lead_agent_action.disabled_reason == "agent_disabled_placeholder"

@@ -19,6 +19,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.agentic_shell import (
+    AgenticShellAction,
     AgenticShellStatus,
     AgenticShellTurnContract,
     DatalogueAgenticShell,
@@ -56,6 +57,7 @@ class AgentScopeRuntimeBoundaryContract(BaseModel):
     business_capabilities: list[str] = Field(default_factory=list)
     disabled_tools: list[str] = Field(default_factory=list)
     disabled_agents: list[str] = Field(default_factory=list)
+    lead_agent_action: AgenticShellAction
 
 
 class DatalogueAgentScopeRuntimeDriver:
@@ -69,13 +71,18 @@ class DatalogueAgentScopeRuntimeDriver:
         *,
         question: str,
         context: dict[str, Any] | None = None,
+        capability: str | None = None,
     ) -> AgentScopeRuntimeBoundaryContract:
         shell_contract = self.shell.prepare_turn(question=question, context=context or {})
-        return self.from_shell_contract(shell_contract)
+        # PR1.2: Runtime boundary 必须显式携带 BI LeadAgent action 或非 BI disabled action。
+        lead_agent_action = self.shell.route_action_from_contract(shell_contract, capability=capability)
+        return self.from_shell_contract(shell_contract, lead_agent_action=lead_agent_action)
 
     def from_shell_contract(
         self,
         shell_contract: AgenticShellTurnContract,
+        *,
+        lead_agent_action: AgenticShellAction | None = None,
     ) -> AgentScopeRuntimeBoundaryContract:
         if not isinstance(shell_contract, AgenticShellTurnContract):
             raise TypeError("AgentScope Runtime driver only accepts AgenticShellTurnContract")
@@ -95,6 +102,8 @@ class DatalogueAgentScopeRuntimeDriver:
             business_capabilities=list(shell_contract.tool_policy.business_capabilities),
             disabled_tools=list(shell_contract.tool_policy.disabled_tools),
             disabled_agents=list(shell_contract.disabled_agents),
+            lead_agent_action=lead_agent_action
+            or self.shell.route_action_from_contract(shell_contract),
         )
 
     @staticmethod

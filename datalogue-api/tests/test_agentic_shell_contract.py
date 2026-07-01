@@ -131,6 +131,63 @@ def test_agentic_shell_non_bi_task_routes_to_disabled_placeholder_without_tools(
     assert contract.tool_policy.allowed_tools == []
 
 
+def test_agentic_shell_bi_lead_agent_routes_only_query_capabilities():
+    shell = DatalogueAgenticShell()
+
+    action = shell.route_agent_action(
+        question="查询 GMV",
+        context={"dataset_id": 12, "sql": "select * from orders"},
+        capability="query_dataset",
+    )
+
+    assert action.status == "ready"
+    assert action.selected_agent == "bi_lead_agent"
+    assert action.action_type == "bi_lead_agent.capability_route"
+    assert action.capability == "query_dataset"
+    assert action.allowed_capabilities == ["query_dataset", "query_multiple_datasets"]
+    assert action.payload == {"question": "查询 GMV", "dataset_id": 12}
+
+    blocked = shell.route_agent_action(
+        question="查询 GMV",
+        context={"dataset_id": 12},
+        capability="create_report_from_artifact",
+    )
+
+    assert blocked.status == "disabled"
+    assert blocked.selected_agent == "bi_lead_agent"
+    assert blocked.action_type == "bi_lead_agent.disabled"
+    assert blocked.capability == "create_report_from_artifact"
+    assert blocked.allowed_capabilities == ["query_dataset", "query_multiple_datasets"]
+    assert blocked.disabled_reason == "capability_not_whitelisted"
+
+
+def test_agentic_shell_report_python_audit_return_disabled_actions():
+    shell = DatalogueAgenticShell()
+
+    report_action = shell.route_agent_action(question="根据查询结果生成一份经营报告")
+    python_action = shell.route_agent_action(question="用 python 分析查询结果")
+    audit_action = shell.route_agent_action(question="审计这次查询")
+
+    assert [action.status for action in (report_action, python_action, audit_action)] == [
+        "disabled",
+        "disabled",
+        "disabled",
+    ]
+    assert [action.selected_agent for action in (report_action, python_action, audit_action)] == [
+        "report_agent",
+        "python_agent",
+        "audit_agent",
+    ]
+    assert [action.action_type for action in (report_action, python_action, audit_action)] == [
+        "report_agent.disabled",
+        "python_agent.disabled",
+        "audit_agent.disabled",
+    ]
+    assert all(action.capability is None for action in (report_action, python_action, audit_action))
+    assert all(action.allowed_capabilities == [] for action in (report_action, python_action, audit_action))
+    assert all(action.disabled_reason == "agent_disabled_placeholder" for action in (report_action, python_action, audit_action))
+
+
 def test_agentic_shell_writer_interface_sanitizes_event_action_and_checkpoint_payloads():
     writer = InMemoryAgenticShellWriter()
     shell = DatalogueAgenticShell(writer=writer)

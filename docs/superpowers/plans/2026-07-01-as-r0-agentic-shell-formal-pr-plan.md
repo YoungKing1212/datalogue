@@ -206,19 +206,20 @@
 | PR0.3 | Complete | `04e01c84` + PR0.3 atomic provider commit + review fix commit | 后续 PR0.4 继续扩大安全矩阵到 SSE 和 Workbench View Model |
 | PR0.4 | Complete | AS-R0 security matrix commit | PR0 已完成；后续在 P1 新 runtime 下继续沿用矩阵 |
 | PR1.1 | Complete | Runtime adapter 接管入口提交 + `docs/test-reports/2026-07-01-as-r0-pr1-1.md` | 后续 PR1.2 接入 BI LeadAgent Shell 能力路由 |
-| PR1.2 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.2 BI LeadAgent 接入 Shell |
+| PR1.2 | Complete | Shell/Runtime boundary 均携带 BI LeadAgent action contract + `docs/test-reports/2026-07-01-as-r0-pr1-2.md` | 后续 PR1.3 用原子 tools 串 DatasetAgent tool-call runtime |
+| PR1.3 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.3 DatasetAgent tool-call runtime |
 | PR2.1 - PR2.4 | Not started | None | 等 P1 验收后再进入 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. PR1.2：BI LeadAgent 接入 Shell，只开放 `query_dataset` / `query_multiple_datasets` 能力路由；Report/Python/Audit 返回 disabled action。
+1. PR1.3：DatasetAgent tool-call runtime，用原子 tools 串起 `get_dataset_status -> list_candidate_assets -> DSL -> compile -> execute -> artifact summary`。
 
 优先级建议：
 
-1. 先补 Shell 侧 BI LeadAgent capability routing contract 测试，确保默认只开放 BI 查询能力。
-2. 再把 Report/Python/Audit 的任务路由落到 disabled action，不提前启用业务 Agent。
+1. 先补 tool-call runtime 的 contract 测试，证明链路只通过 BI atomic tools 流转。
+2. 再实现最小编排，不暴露 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body。
 
 ## 5.1 Completed Task Reports
 
@@ -291,6 +292,20 @@
 - `docs/test-reports/2026-07-01-as-r0-pr1-1.md`
 
 **Result:** 新增默认关闭的 `AS_R0_AGENTIC_RUNTIME_ENABLED` feature flag；开启后 `/chat/stream` 仍保持 HTTP/SSE 兼容壳，但单轮与多轮入口会先委托 `DatalogueAgenticShell.run_turn()`，Shell 只生成安全 turn contract 并包裹既有 `_stream_chat_singleturn` 流，不改变 final payload、mirror 写入和 legacy 回退路径。PR1.1 不提前实现 DatasetAgent tool-call runtime，后者仍归 PR1.3。
+
+### PR1.2: BI LeadAgent 接入 Shell
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/services/agentic_shell.py`
+- `datalogue-api/app/services/agentscope_runtime_driver.py`
+- `datalogue-api/tests/test_agentic_shell_contract.py`
+- `datalogue-api/tests/test_agentscope_runtime_driver_contract.py`
+- `docs/test-reports/2026-07-01-as-r0-pr1-2.md`
+
+**Result:** Shell 新增 `AgenticShellAction` 与 `route_agent_action()`，BI LeadAgent 只返回 `query_dataset` / `query_multiple_datasets` 两个能力路由；请求非白名单能力时返回 disabled action。ReportAgent、PythonAgent、AuditAgent 仍是 disabled placeholder，并显式返回 `agent_disabled_placeholder` action。AgentScope Runtime boundary 同步携带 `lead_agent_action`，让 P1 后续 runner 接入前能看到 ready/disabled 的统一 action contract。
 
 ## 6. Proposed Plan Changes
 

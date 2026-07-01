@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 AgentStatus = Literal["enabled", "disabled"]
 AgenticShellStatus = Literal["ready", "disabled"]
+AgenticShellActionStatus = Literal["ready", "disabled"]
 TaskType = Literal["bi_query", "report", "python_analysis", "audit", "unsupported"]
 AgenticShellWriteKind = Literal["event", "action", "checkpoint"]
 AgenticStreamDelegate = Callable[[], AsyncIterator[dict[str, Any]]]
@@ -165,6 +166,21 @@ class AgenticShellTurnContract(BaseModel):
         return [agent.name for agent in self.agent_registry if agent.status == "disabled"]
 
 
+class AgenticShellAction(BaseModel):
+    """Shell 输出给 Runtime 的受控 action；PR1.2 只描述能力路由，不执行工具。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action_type: str
+    status: AgenticShellActionStatus
+    selected_agent: str
+    task_type: TaskType
+    capability: str | None = None
+    allowed_capabilities: list[str] = Field(default_factory=list)
+    disabled_reason: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgenticShellWriteRecord(BaseModel):
     """Shell 写回接口的安全记录；P0 只定义契约，不替换现有持久化主链。"""
 
@@ -261,6 +277,60 @@ class DatalogueAgenticShell:
             agent_registry=self.registry,
             tool_policy=tool_policy,
             projected_context=projected_context,
+        )
+
+    def route_agent_action(
+        self,
+        *,
+        question: str,
+        context: dict[str, Any] | None = None,
+        capability: str | None = None,
+    ) -> AgenticShellAction:
+        """PR1.2 LeadAgent 能力路由；BI 只开放查询能力，其他 Agent 返回 disabled action。"""
+
+        contract = self.prepare_turn(question=question, context=context or {})
+        return self.route_action_from_contract(contract, capability=capability)
+
+    @staticmethod
+    def route_action_from_contract(
+        contract: AgenticShellTurnContract,
+        *,
+        capability: str | None = None,
+    ) -> AgenticShellAction:
+        """从已生成的 turn contract 派生 action，供 Runtime driver 复用同一白名单判断。"""
+
+        if contract.status != "ready":
+            # AS-R0 先把非 BI Agent 显式收束为 disabled action，避免 placeholder 被 Runtime 误执行。
+            return AgenticShellAction(
+                action_type=f"{contract.selected_agent}.disabled",
+                status="disabled",
+                selected_agent=contract.selected_agent,
+                task_type=contract.task_type,
+                disabled_reason="agent_disabled_placeholder",
+            )
+
+        requested_capability = capability or "query_dataset"
+        allowed_capabilities = list(contract.tool_policy.business_capabilities)
+        if requested_capability not in allowed_capabilities:
+            # 即使选中 BI LeadAgent，也只能路由 query_dataset/query_multiple_datasets 两个业务能力。
+            return AgenticShellAction(
+                action_type=f"{contract.selected_agent}.disabled",
+                status="disabled",
+                selected_agent=contract.selected_agent,
+                task_type=contract.task_type,
+                capability=requested_capability,
+                allowed_capabilities=allowed_capabilities,
+                disabled_reason="capability_not_whitelisted",
+            )
+
+        return AgenticShellAction(
+            action_type=f"{contract.selected_agent}.capability_route",
+            status="ready",
+            selected_agent=contract.selected_agent,
+            task_type=contract.task_type,
+            capability=requested_capability,
+            allowed_capabilities=allowed_capabilities,
+            payload=contract.projected_context.model_dump(),
         )
 
     async def run_turn(
