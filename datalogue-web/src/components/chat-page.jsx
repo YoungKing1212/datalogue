@@ -24,6 +24,7 @@ import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
 import { getConversation, listDatasets, streamChatEvents } from '../api/client';
 import { normalizeWorkbenchThreadId } from '../assistant/workbench-api';
+import BILeadAgentFlow from './bi-lead-agent-flow';
 import WorkbenchPanel from './workbench-panel';
 
 // 单例 adapter（避免每次渲染重建）
@@ -607,9 +608,12 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
           />
         </TraceProvider>
 
-        {workbenchThreadId && (
-          <WorkbenchPanel threadId={workbenchThreadId} onRetryRun={handleWorkbenchRetryRun} />
-        )}
+        <aside className="bi-lead-side-panel" aria-label="BI LeadAgent 与 Workbench">
+          <BILeadAgentFlow selectedDataset={selectedDs} />
+          {workbenchThreadId && (
+            <WorkbenchPanel threadId={workbenchThreadId} onRetryRun={handleWorkbenchRetryRun} />
+          )}
+        </aside>
 
         <AgentPanel
           open={traceOpen}
