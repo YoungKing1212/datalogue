@@ -7944,3 +7944,123 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
     justify-content: center;
   }
 }
+
+/* BI LeadAgent run 状态面板：只展示安全摘要、结果规模和受控 refs。 */
+.bi-lead-run-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  overflow-wrap: anywhere;
+}
+
+.bi-lead-run-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bi-lead-run-panel__eyebrow {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.bi-lead-run-panel h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.bi-lead-run-panel__phase {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bi-lead-run-panel__summary {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.bi-lead-run-panel__meta {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bi-lead-run-panel__ref,
+.bi-lead-run-panel__shape {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.bi-lead-run-panel__ref span,
+.bi-lead-run-panel__shape span {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bi-lead-run-panel__ref code,
+.bi-lead-run-panel__shape strong {
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.bi-lead-run-panel--completed {
+  border-color: color-mix(in oklch, var(--pos) 30%, var(--hairline-strong));
+}
+
+.bi-lead-run-panel--blocked {
+  border-color: color-mix(in oklch, var(--warn) 45%, var(--hairline-strong));
+}
+
+.bi-lead-run-panel--failed {
+  border-color: color-mix(in oklch, var(--neg) 35%, var(--hairline-strong));
+}
+
+@media (max-width: 640px) {
+  .bi-lead-run-panel__header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .bi-lead-run-panel__phase {
+    align-self: flex-start;
+  }
+
+  .bi-lead-run-panel__ref,
+  .bi-lead-run-panel__shape {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
