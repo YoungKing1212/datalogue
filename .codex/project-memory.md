@@ -127,6 +127,12 @@
 - 补 internal-only harness 和统一 `retry.started/checkpoint_restored/completed/failed` event envelope，确保 `workbench.retry_requested -> retry.checkpoint_restored -> answer.completed` 能按同一 thread、trace、artifact、checkpoint refs 追溯。
 - 真实浏览器补证修复 `as_*` route 恢复数据集、历史 thread append、Panel running 轮询和 ArtifactCard 重复 refs 等缺口；验证包含后端/前端定向测试、lint/build、真实页面点击 retry 到 completed，以及后端 observability API 可拉取同一 trace。
 
+### 2026-06-30 C3-P2 Workbench 产品化状态模型
+
+- C3-P2 PR1 启动 Workbench 产品化状态模型：后端新增 `WorkbenchStatusSummary`，统一表达 `empty/running/completed/failed/interrupted/read_only`、actionable、primary artifact、retry checkpoint 和 trace ref。
+- Workbench Panel 使用后端 `status_summary` 渲染状态卡、空态、失败诊断摘要、Artifact 详情抽屉和 retry 后主产物自动聚焦；artifact detail 增加 thread ownership scope，用户可见层继续禁止 SQL/schema/raw rows/query_plan/field_patch。
+- 验证覆盖后端 Workbench/ViewModel/retry/event/retry checkpoint pytest、前端 Workbench/route/chat/artifact/thread-list/workbench-api 测试、py_compile、lint/build 和 `git diff --check`。
+
 ## 高价值判断
 
 - Datalogue 当前业务链路不依赖 Redis 保存多轮业务状态；`last_success_task`、`conversation_state.subagent_capsules` 和 query artifacts 的真相在数据库或应用 ArtifactStore 路径，Langfuse/BullMQ Redis key 不能当成业务状态依据。
@@ -136,14 +142,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-30 16:08 · C3-P2 PR1 Workbench 产品化状态模型
-
-- 涉及文件：`datalogue-api/app/api/workbench.py`、`datalogue-api/app/schemas/agentscope_workbench.py`、`datalogue-api/app/services/workbench_view_model.py`、`datalogue-api/app/services/workbench_actions.py`、`datalogue-api/tests/test_workbench_view_api.py`、`datalogue-api/tests/test_workbench_retry_actions.py`、`datalogue-web/src/assistant/workbench-api.js`、`datalogue-web/src/assistant/workbench-api.test.js`、`datalogue-web/src/components/workbench-panel.jsx`、`datalogue-web/src/components/workbench-panel.test.jsx`、`datalogue-web/src/components/workbench-route.test.jsx`、`datalogue-web/src/styles.css`、`docs/superpowers/plans/2026-06-30-c3-p2-workbench-productization.md`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`。
-- 关键改动：按“方案 1 产品化、方案 2 作验收闸门”启动 C3-P2 PR1；后端新增 `WorkbenchStatusSummary` 作为 Workbench thread-level 产品态，统一表达 `empty/running/completed/failed/interrupted/read_only`、actionable、primary artifact、retry checkpoint 和 trace ref；`_build_agentscope_actions()` 收紧为只使用最新终态 assistant message 自身 checkpoint；`POST /api/workbench/actions/retry` 对同一 running checkpoint 幂等返回既有 retry message，避免重复 running；artifact detail 支持可选 `thread_id` ownership scope，非当前 thread refs 中的 artifact fail-closed。
-- 前端改动：Workbench Panel 使用后端 `status_summary` 渲染状态卡、空态、失败诊断摘要、Artifact 详情抽屉和 retry 后主产物自动聚焦；隐藏 `/workbench/:threadId/:artifactRef?` 继续复用同一 Panel；`fetchWorkbenchArtifact()` 支持携带规范化 `thread_id`，前端不读取或拼接 SQL/schema/raw rows/query_plan/field_patch。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py tests/test_workbench_view_api.py tests/test_workbench_retry_actions.py tests/test_event_envelope.py tests/test_agentscope_event_projection.py tests/test_retry_checkpoint.py -q`，34 条通过；执行 `cd datalogue-web && npm run test -- src/components/workbench-panel.test.jsx src/components/workbench-route.test.jsx src/components/chat-page.test.jsx src/components/artifact-card.test.jsx src/assistant/chat-adapter.test.js src/assistant/thread-list-adapter.test.js src/assistant/workbench-api.test.js`，66 条通过；执行 `cd datalogue-api && python3 -m py_compile app/api/workbench.py app/schemas/agentscope_workbench.py app/services/workbench_view_model.py app/services/workbench_actions.py` 通过；执行 `cd datalogue-web && npm run lint` 通过，保留 15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk warning；执行 `git diff --check` 通过，diff 泄露扫描只命中 schema 文件路径和测试禁止词断言。
-- 残留风险：本轮完成自动化验收闸门和产品态加固，尚未重新跑真实浏览器点击 retry；C3-P2 PR1 发布前仍应复用 C3-P1 的真实 seed，再确认页面点击、Network SSE、Workbench Panel 刷新和 `/api/observability/traces/{trace_id}` 一致。
 
 ### 2026-06-30 16:24 · C3-P2 PR1 浏览器验收闸门补证
 
@@ -222,3 +220,11 @@
 - TDD 记录：先新增 `test_chat_stream_shadow_runtime_boundary_records_safe_contract` 和默认关闭测试，RED 失败为 metadata 缺少 `agentic_runtime_boundary`；实现配置、chat helper 和 mirror metadata 白名单后转 GREEN。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py::test_chat_stream_shadow_runtime_boundary_records_safe_contract tests/test_agentscope_chat_bridge.py::test_chat_stream_shadow_runtime_boundary_defaults_off -q`，2 条通过；后续合并验证继续覆盖 AS-R0 contract、Runtime driver、旧 AgentScope adapter 和 ask_bi。
 - 残留风险：第三刀仍是影子路径，不启动真实 AgentScope SDK runner；下一步可在 shadow contract 旁增加 trace-only event/checkpoint refs，或在 feature flag 下接入 runner dry-run 但保持主链输出不变。
+
+### 2026-07-01 10:54 · AS-R0 正式 PR 计划口径收口
+
+- 涉及文件：`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`.codex/project-memory.md`
+- 关键改动：新增 AS-R0 正式 PR 计划文档，按用户确认的 PR0.1-PR0.4、PR1.1-PR1.5、PR2.1-PR2.4 作为唯一执行口径；把今天已完成的 commits 重新映射为 PR0 partial 或 P1-prep，废弃“P0.1/P0.2/P0.3”临时小刀命名。
+- 计划治理：新增 Plan Governance 与 Change Request Template，明确任何新增 PR、移动 scope 或提前实现后续阶段能力，都必须先写入 `Proposed Plan Changes` 并保持 `Pending User Review`，说明理由、影响、风险和回滚，等待用户审核后才能执行。
+- 验证方式：执行 `git diff --check` 通过；文档检查确认当前没有新增正式计划，只有已有提前实现项被标注为 `P1-prep`，不计入 PR0 完成。
+- 残留风险：该文档是计划口径治理，不补 PR0.1 的 C3 架构文档正文；下一步应按该文档先执行 PR0.1，更新 C3 foundation 与 Shell ownership 边界。
