@@ -121,6 +121,12 @@
 - C3-P0 PR6 完成 Workbench acceptance hardening：后端补新 `as_*` Chat stream mirror、lease interrupted + controlled retry、legacy `conv_*` 只读回放三条验收路径；前端补 thread remap、Workbench View Model 回放、artifact refs 和 Panel source 优先级测试；同步 `task.started` 事件契约与 C3 验收记录。
 - C3-P0 真实浏览器 E2E 补证修复 AgentScope mirror payload 泄露拦截和 `/chat` 候选确认后 Workbench Panel 切换问题；真实问题“查询杨凯 2024 年工作日志”完成成功问数，主 Chat、右侧 Workbench Panel、隐藏 route 和旧会话只读回放均补证。
 
+### 2026-06-30 C3-P1 Workbench Retry 主链恢复
+
+- 完成 Workbench 受控 retry 从 action 到 `/chat/stream` checkpoint restore 的主链恢复入口：后端 `WorkbenchRetryRunRequest` 返回业务级 `run_request`，前端 WorkbenchPanel/ChatPage/chat-adapter 消费 pending retry 并交给既有 checkpoint restore 链路。
+- 补 internal-only harness 和统一 `retry.started/checkpoint_restored/completed/failed` event envelope，确保 `workbench.retry_requested -> retry.checkpoint_restored -> answer.completed` 能按同一 thread、trace、artifact、checkpoint refs 追溯。
+- 真实浏览器补证修复 `as_*` route 恢复数据集、历史 thread append、Panel running 轮询和 ArtifactCard 重复 refs 等缺口；验证包含后端/前端定向测试、lint/build、真实页面点击 retry 到 completed，以及后端 observability API 可拉取同一 trace。
+
 ## 高价值判断
 
 - Datalogue 当前业务链路不依赖 Redis 保存多轮业务状态；`last_success_task`、`conversation_state.subagent_capsules` 和 query artifacts 的真相在数据库或应用 ArtifactStore 路径，Langfuse/BullMQ Redis key 不能当成业务状态依据。
@@ -130,29 +136,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-30 14:22 · C3-P1 PR1 Workbench Retry 主链恢复入口
-
-- 涉及文件：`datalogue-api/app/schemas/agentscope_workbench.py`、`datalogue-api/app/services/workbench_actions.py`、`datalogue-api/tests/test_workbench_retry_actions.py`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/workbench-panel.jsx`、`datalogue-web/src/components/workbench-panel.test.jsx`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
-- 关键改动：C3-P1 PR1 将 Workbench 受控 retry 从“只创建 running mirror message”推进到 Chat 主链恢复入口；后端新增业务级 `WorkbenchRetryRunRequest`，`request_controlled_retry()` 在 accepted response 中返回 `question/conversation_id/thread_id/dataset_id/retry_checkpoint_ref/display_text`，但不携带 SQL/schema/raw rows/query_plan/field_patch；前端 WorkbenchPanel 接收 `run_request` 后回调 ChatPage，ChatPage 使用 assistant-ui `thread.append()` 发起普通用户消息，chat-adapter 一次性消费 `window.__DATALOGUE_PENDING_WORKBENCH_RETRY__` 并把 `retry_checkpoint_ref` 交给既有 `/chat/stream` checkpoint restore 链路。
-- 验证方式：先执行后端和前端定向测试确认 RED，失败点分别为 `run_request` 缺失、Panel 未触发 `onRetryRun`、chat-adapter 未发送 pending retry；实现后执行 `cd datalogue-api && python3 -m pytest tests/test_workbench_retry_actions.py tests/test_retry_checkpoint.py tests/test_c3_workbench_acceptance.py tests/test_workbench_view_api.py -q`，16 条通过；执行 `cd datalogue-web && npm run test -- src/components/workbench-panel.test.jsx src/assistant/chat-adapter.test.js src/components/chat-page.test.jsx`，34 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过；执行 `git diff --check` 通过。
-- 残留风险：本次完成 retry action 到 `/chat/stream` 的主链恢复入口，不伪造成真实浏览器 retry 成功；下一步需要补真实页面 retry 场景或内部 harness，验证 `retry.checkpoint_restored -> answer.completed` 与 Workbench mirror 同一 thread/trace/ref 一致。
-
-### 2026-06-30 14:40 · C3-P1 PR2 Workbench Retry 主链恢复 internal-only harness
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/tests/test_c3_workbench_acceptance.py`、`datalogue-api/tests/test_event_envelope.py`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
-- 关键改动：补 C3-P1 PR2 内部-only harness，验证 Workbench retry action 返回的 `run_request` 能继续同一 `/chat/stream` checkpoint restore 链路；`retry.started/checkpoint_restored/completed/failed` 纳入统一 event envelope schema；多轮 wrapper 生成的 retry SSE 事件同步投影到 AgentScope mirror，保证 `retry.checkpoint_restored -> answer.completed` 与同一 thread、trace、artifact、checkpoint refs 可追溯。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py::test_workbench_retry_run_request_restores_checkpoint_through_chat_stream -q`，1 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py tests/test_retry_checkpoint.py tests/test_workbench_retry_actions.py tests/test_event_envelope.py tests/test_agentscope_event_projection.py -q`，25 条通过；执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/schemas/bi_workbench.py tests/test_c3_workbench_acceptance.py tests/test_event_envelope.py` 通过。
-- 残留风险：本次是 internal-only harness，不冒充真实浏览器点击 retry；下一步仍需补真实页面点击 retry、Network SSE、Workbench Panel 刷新和 Langfuse UI/observation 人工核对。
-
-### 2026-06-30 15:25 · C3-P1 真实浏览器 Retry E2E 补证
-
-- 涉及文件：`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/workbench-panel.jsx`、`datalogue-web/src/components/artifact-card.jsx`、对应前端测试、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
-- 关键改动：修复真实浏览器 retry 链路暴露的前端缺口：`as_*` route 不再调用旧会话接口恢复数据集；Workbench retry 不再依赖 assistant-ui 在历史 thread 上 append，而是由 ChatPage 直接消费后端业务级 `run_request` 并调用 `/chat/stream`；Panel 在最新消息 running 时轮询并在 completed 后停止；ArtifactCard 对重复 refs 去重。
-- 真实验收：通过浏览器打开 `http://127.0.0.1:5173/chat/as_7e4a8514-68b9-4c67-89bb-feb892b9c26a`，点击右侧 Workbench `重试`，同一 `conversation_id=43/thread_id=as_7e4a8514-68b9-4c67-89bb-feb892b9c26a/checkpoint_ref=checkpoint://c3-p1-real-browser-success-9aa39b92/query_context_ready` 触发 `POST /api/workbench/actions/retry` 和 `POST /api/chat/stream`，后端日志命中 `retry_checkpoint_restored`，Panel 自动刷新到 `assistant completed`，timeline 包含 `workbench.retry_requested -> retry.started -> retry.checkpoint_restored -> dataset.query.completed -> retry.completed -> answer.completed`。
-- 五件套证据：最终 `trace_id=11dc1e265bd7ea771d1b3116dc98d75c`、`primary_ref=artifact:93e42026c65745bea2e103b3bae6ed24`、`report_ref=artifact:8c34e0c8c1234f18ac90783fe2d3be76`、新 checkpoint `checkpoint://conv-43-msg-82/query_context_ready`；AgentScope mirror、`query_artifact`、`conversation_state` 和后端 observability trace index 均可按同一 id 对齐；`/api/observability/traces/11dc1e265bd7ea771d1b3116dc98d75c` 返回 `source=langfuse`、`langfuse_error=null`、`observation_count=23`。
-- 验证方式：执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/components/workbench-panel.test.jsx src/components/artifact-card.test.jsx src/assistant/chat-adapter.test.js`，58 条通过；执行 `cd datalogue-web && npm run lint` 通过，保留 15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk warning；真实浏览器页面确认 Workbench Panel completed 和 refs 展示。
-- 残留风险：Langfuse trace 深链可打开到 `http://localhost:3000/project/cmq8xx2th0006qn07zof1xttd/traces/11dc1e265bd7ea771d1b3116dc98d75c`，但当前浏览器会话无权限，页面显示 `You do not have access to this trace / Sign In`；本次不能声称已人工查看 Langfuse UI 详情，只确认后端 API 能从 Langfuse 拉取 observation。
 
 ### 2026-06-30 16:08 · C3-P2 PR1 Workbench 产品化状态模型
 
@@ -221,3 +204,12 @@
 - TDD 记录：先新增 `test_agentic_shell_contract.py` 并确认 RED 为 `ModuleNotFoundError: No module named 'app.services.agentic_bi_tools'`；实现契约后暴露 `ProjectedContext` 空字段 dump 和 blueprint 摘要被清洗的问题，分别补默认 `exclude_none` 与上下文/输出禁用键拆分后转 GREEN；review 后补 camelCase `queryPlan/repairPatch`、`rows`、`fields` 和物理字段串脱敏断言，并把未实现的 compile/execute/create artifact 从当前 runtime allowed tools 移到 reserved/disabled。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py -q`，4 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，5 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/agentic_shell.py app/services/agentic_bi_tools.py tests/test_agentic_shell_contract.py` 通过；执行 `git diff --check` 通过。
 - 残留风险：AS-R0 P0 当前只是契约层和安全 provider 骨架，尚未把 `/chat/stream` 主链迁到 AgentScope Runtime 驱动；`compile_dsl_to_sql`、`execute_compiled_query`、`repair_dsl` 等仍需在后续 P0/P1 中接入 DatasetAgent Runtime 的真实受控工具实现。
+
+### 2026-07-01 10:31 · AS-R0 P0 Runtime 边界适配契约
+
+- 涉及文件：`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`.codex/project-memory.md`
+- 关键改动：新增 `DatalogueAgentScopeRuntimeDriver`，把 `DatalogueAgenticShell.prepare_turn()` 产物转换成 AgentScope Runtime 接入前的安全边界契约；Runtime contract 只包含 `projected_context`、当前可注册的 `BIAtomicToolProvider` tool registry、业务能力名、disabled tools 和 disabled agents，不包含 callable、schema、SQL、raw rows、query_plan 或旧 `ask_bi` 外层桥接。
+- 安全边界：第二刀仍不替换 `/chat/stream`、不启动真实 AgentScope runner、不修改 `AgentScopeShellAdapter`；非 BI placeholder 任务 fail-closed，`tool_registry=[]`，后续只有显式启用对应 Agent 和工具实现后才能进入 Runtime。
+- TDD 记录：先新增 `test_agentscope_runtime_driver_contract.py` 并确认 RED 为 `ModuleNotFoundError: No module named 'app.services.agentscope_runtime_driver'`；实现 driver 后转 GREEN，覆盖只接受 `AgenticShellTurnContract`、BI atomic tool registry 不含 `ask_bi`、上下文投影脱敏、report placeholder 无工具四类断言。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_runtime_driver_contract.py -q`，4 条通过；后续合并验证继续覆盖 Agentic Shell skeleton、旧 adapter 和 ask_bi 契约。
+- 残留风险：当前只是 Runtime 边界 contract，尚未接 AgentScope SDK runner，也未把 DatasetAgent compile/execute/create artifact 工具注册为可执行；下一步应在 feature flag 下做 `/chat/stream -> AgenticShell -> Runtime driver` 的只读/影子路径对齐。
