@@ -204,20 +204,20 @@
 | PR0.1 | Complete | C3 架构文档、C3 spec、C3 implementation plan、C3-P2 plan 和 C3 验收记录已标注 foundation / runtime ownership 边界 | 后续如发现旧口径，按本文 Plan Governance 补文档 |
 | PR0.2 | Complete | `04e01c84` + writer interface commit | 后续 P1 再把 writer interface 接到真实 Workbench/mirror 写回 |
 | PR0.3 | Complete | `04e01c84` + PR0.3 atomic provider commit + review fix commit | 后续 PR0.4 继续扩大安全矩阵到 SSE 和 Workbench View Model |
-| PR0.4 | Partial | `04e01c84`, `39fbae95` | 补 SSE 用户可见层和 Workbench View Model 安全矩阵 |
-| PR1.1 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 等 PR0 完成后再进入 |
+| PR0.4 | Complete | AS-R0 security matrix commit | PR0 已完成；后续在 P1 新 runtime 下继续沿用矩阵 |
+| PR1.1 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.1 Runtime adapter 接管入口 |
 | PR2.1 - PR2.4 | Not started | None | 等 P1 验收后再进入 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. PR0.4：补完整安全测试矩阵。
+1. PR1.1：新增 AgentScope runtime adapter，`/chat/stream` 先作为 HTTP/SSE 兼容壳，内部委托 `DatalogueAgenticShell.run_turn()`。
 
 优先级建议：
 
-1. 继续执行 PR0.4 统一安全矩阵。
-2. PR0 全部完成后再进入 PR1.1 Runtime adapter 接管入口。
+1. 先在 feature flag 下实现兼容壳委托，保持 legacy `_stream_chat_singleturn` 可回退。
+2. 同步复用 PR0.4 安全矩阵，验证新 runtime 可见层不泄露禁用字段。
 
 ## 5.1 Completed Task Reports
 
@@ -262,6 +262,20 @@
 - `docs/test-reports/2026-07-01-as-r0-pr0-3.md`
 
 **Result:** `BIAtomicToolProvider` 已补齐 `compile_dsl_to_sql`、`execute_compiled_query` 和 `create_query_artifact` 的受控边界；Shell whitelist 与 Runtime tool registry 同步开放六个 BI 原子工具。SQL 只在 compile/execute 工具内部通过私有 `compiled_query_ref` 流转，Agent 可见响应只返回句柄、状态、计数和 artifact ref，不返回 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint body。Review fix 已补冷启动导入测试和 dataset mismatch fail-closed 校验。
+
+### PR0.4: 安全测试矩阵
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/tests/test_as_r0_security_matrix.py`
+- `datalogue-api/app/api/chat.py`
+- `datalogue-api/app/services/agentscope_mirror.py`
+- `datalogue-api/app/services/workbench_view_model.py`
+- `docs/test-reports/2026-07-01-as-r0-pr0-4.md`
+
+**Result:** 已固化 Agent context、BI tool response、SSE payload、AgentScope mirror metadata/event 和 Workbench View Model 的统一安全矩阵。`raw_rows`、`repair_patch`、`patch_body`、`blueprint_body` 及其 camelCase / 归一形式不会进入 Agent 或用户可见层；trace_only SSE 随流 payload 也移除内部 `node/display_name`。
 
 ## 6. Proposed Plan Changes
 

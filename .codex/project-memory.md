@@ -135,6 +135,7 @@
 - C3-P2 PR1 真实浏览器 retry completed 复验确认 `/api/workbench/actions/retry -> /api/chat/stream -> Workbench Panel completed` 跑通，refs、checkpoint、trace 和 mirror events 对齐。
 - 验证覆盖后端 Workbench/ViewModel/retry/event/retry checkpoint pytest、前端 Workbench/route/chat/artifact/thread-list/workbench-api 测试、py_compile、lint/build 和 `git diff --check`。
 - C3-P2 Retry Completed 自动化 Harness 将手工浏览器 retry 复验固化为内部-only pytest：构造 `as_*` failed 会话和 checkpoint，驱动 `/api/workbench/actions/retry -> /api/chat/stream` checkpoint restore，并断言 Workbench completed、primary artifact、trace/checkpoint refs 和事件顺序。
+- C3-P2 PR2 补齐 Workbench 状态体验：空态、失败诊断、running 轮询提示、artifact drawer 内部 loading/404/无权限错误和 completed 产物重新打开；前端测试、lint/build 和真实浏览器扫描均通过。
 
 ## 高价值判断
 
@@ -145,14 +146,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-30 18:19 · C3-P2 PR2 Workbench 状态体验补齐
-
-- 涉及文件：`datalogue-web/src/components/workbench-panel.jsx`、`datalogue-web/src/components/workbench-panel.test.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
-- 关键改动：补齐 Workbench 发布可用性第一项状态体验：空线程显示无产物/无动作说明；失败态诊断摘要明确 retry 可用性和禁用原因；running 态显示轮询提示与完成后自动刷新说明；artifact drawer 独立承载 loading、404、无权限和非当前 thread 产物错误，不再把抽屉错误升级为整个工作台不可用。
-- TDD 记录：先新增 `workbench-panel.test.jsx` 状态体验用例并确认 RED，失败点为缺少空态 section、running 轮询提示和 drawer 内部 loading/error；随后实现最小组件状态与样式，定向测试转 GREEN。
-- 验证方式：执行 `cd datalogue-web && npm test -- workbench-panel.test.jsx`，12 条通过；执行 `cd datalogue-web && npm test -- workbench-panel.test.jsx workbench-route.test.jsx`，13 条通过；执行 `cd datalogue-web && npm run lint` 通过，保留 15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过；内置浏览器打开 `http://localhost:5173/chat/as_e5ccbdd5-d026-45cc-b6bd-720bcae88dff`，确认 Workbench completed、产物抽屉可关闭并从 artifact ref 重新打开、console error/warn 为 0、页面扫描未命中 `raw_rows/raw_result/query_plan/field_patch/direct_sql/llm_sql/SELECT`。
-- 残留风险：本次只收口 Workbench 前端状态体验；C3-P2 PR2 后续仍需补 API 级 Langfuse trace 查询断言和发布 checklist，真实浏览器 retry 手工闸门仍按发布前 checklist 保留。
 
 ### 2026-06-30 18:32 · C3-P2 PR2 Provider-neutral Observability Gate
 
@@ -231,3 +224,12 @@
 - TDD 记录：先新增 compile/execute/unknown handle 测试并确认 RED 为 `NotImplementedError` 和 `query_executor` 参数缺失；实现私有句柄、executor 注入、artifact 写入和 unknown handle fail-closed 后转 GREEN。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py -q`，13 条通过、2 个既有 warning；执行 AS-R0 最小回归 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，33 条通过、4 个既有 warning；review fix 定向测试 2 条通过；扩大回归 `tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py tests/test_query_plan_compiler.py tests/test_subagent_execution.py tests/test_subagent_run.py -q`，61 条通过、4 个既有 warning；冷启动导入 `agentic_bi_tools/agentscope_runtime_driver/app.api.chat` 通过；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：PR0.3 不替换 `/chat/stream`，不接真实 AgentScope runner；下一步按正式计划进入 PR0.4 安全测试矩阵。
+
+### 2026-07-01 11:48 · AS-R0 PR0.4 安全测试矩阵
+
+- 涉及文件：`datalogue-api/tests/test_as_r0_security_matrix.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/agentscope_mirror.py`、`datalogue-api/app/services/workbench_view_model.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr0-4.md`、`.codex/project-memory.md`
+- 关键改动：新增 AS-R0 安全矩阵测试，集中覆盖 Agentic Shell context、BI tool response、SSE 用户可见 payload、trace_only 随流 payload、AgentScope mirror metadata/event 和 Workbench View Model；统一阻断 `raw_rows`、`repair_patch`、`patch_body`、`blueprint_body` 及 camelCase/归一形式。
+- 安全边界：SSE 公开兼容层同步移除内部 `node/display_name`，避免 `query_plan` 等内部节点名进入浏览器可见 payload；mirror 和 Workbench View Model 对 RepairPatch/blueprint body 主体 fail-closed。
+- TDD 记录：先跑矩阵 RED，暴露 SSE `raw_rows` 泄露、mirror 未拒绝 `blueprint_body/repair_patch`、Workbench 对污染 payload 未 fail-closed、trace_only 顶层 `node=query_plan` 泄露；随后补禁用键集合和顶层裁剪后转 GREEN。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，11 条通过、2 个既有 warning；扩大回归 `tests/test_as_r0_security_matrix.py tests/test_event_envelope.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_mirror_models.py tests/test_workbench_view_api.py tests/test_c3_workbench_acceptance.py -q`，61 条通过、12 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：PR0 已完成但仍未替换 `/chat/stream`、未接真实 AgentScope runner；下一步按正式计划进入 PR1.1 Runtime adapter 接管入口。

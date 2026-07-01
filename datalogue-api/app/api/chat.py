@@ -186,16 +186,22 @@ _PUBLIC_SSE_BLOCKED_KEYS = {
     "merge_debug",
     "out_capsule",
     "patch",
+    "patch_body",
+    "patchbody",
     "query_plan",
     "query_plan_debug",
     "query_profile",
     "query_task_capsule",
     "raw",
     "raw_result",
+    "raw_rows",
     "raw_sql",
     "records",
     "repair_patch",
     "repair_patch_apply",
+    "repairpatch",
+    "blueprint_body",
+    "blueprintbody",
     "result",
     "result_artifact",
     "result_rows",
@@ -440,6 +446,8 @@ def _with_event_envelope(
         ),
     )
     enriched = _public_sse_payload(payload)  # 旧字段只保留业务摘要，内部执行面留在 trace/store。
+    for internal_step_key in ("node", "display_name"):
+        enriched.pop(internal_step_key, None)
     # event_envelope 是新增兼容字段，不能覆盖旧 type；未来 AgentScope 可直接消费这里。
     enriched["event_envelope"] = envelope.model_dump(mode="json")
     return enriched

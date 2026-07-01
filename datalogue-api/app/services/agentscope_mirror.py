@@ -37,6 +37,12 @@ _FORBIDDEN_KEY_FRAGMENTS = (
     "result",
     "query_plan",
     "field_patch",
+    "repair_patch",
+    "repairpatch",
+    "patch_body",
+    "patchbody",
+    "blueprint_body",
+    "blueprintbody",
     "table_name",
     "column_name",
 )
