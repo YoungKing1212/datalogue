@@ -106,6 +106,7 @@
 ### 2026-07-01 AS-R0 P0/P1 初始接入
 
 - AS-R0 P0 Agentic Shell 契约层骨架建立：`DatalogueAgenticShell` 固定只启用 `bi_lead_agent`，Report/Python/Audit 作为 disabled placeholder；新增 BI 业务能力名、工具白名单、上下文投影、输出清洗和 `BIAtomicToolProvider` 安全目录摘要骨架，保留 `/chat/stream` 主链不替换。
+- AS-R0 P0 Runtime 边界适配建立：`DatalogueAgentScopeRuntimeDriver` 将 Shell turn contract 投影成 Runtime 可见安全契约，只包含 projected context、BI atomic tool registry、业务能力、disabled tools/agents，不启动真实 AgentScope runner、不调用旧 `ask_bi`。
 
 ## 高价值判断
 
@@ -116,15 +117,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 10:31 · AS-R0 P0 Runtime 边界适配契约
-
-- 涉及文件：`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`.codex/project-memory.md`
-- 关键改动：新增 `DatalogueAgentScopeRuntimeDriver`，把 `DatalogueAgenticShell.prepare_turn()` 产物转换成 AgentScope Runtime 接入前的安全边界契约；Runtime contract 只包含 `projected_context`、当前可注册的 `BIAtomicToolProvider` tool registry、业务能力名、disabled tools 和 disabled agents，不包含 callable、schema、SQL、raw rows、query_plan 或旧 `ask_bi` 外层桥接。
-- 安全边界：第二刀仍不替换 `/chat/stream`、不启动真实 AgentScope runner、不修改 `AgentScopeShellAdapter`；非 BI placeholder 任务 fail-closed，`tool_registry=[]`，后续只有显式启用对应 Agent 和工具实现后才能进入 Runtime。
-- TDD 记录：先新增 `test_agentscope_runtime_driver_contract.py` 并确认 RED 为 `ModuleNotFoundError: No module named 'app.services.agentscope_runtime_driver'`；实现 driver 后转 GREEN，覆盖只接受 `AgenticShellTurnContract`、BI atomic tool registry 不含 `ask_bi`、上下文投影脱敏、report placeholder 无工具四类断言。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_runtime_driver_contract.py -q`，4 条通过；后续合并验证继续覆盖 Agentic Shell skeleton、旧 adapter 和 ask_bi 契约。
-- 残留风险：当前只是 Runtime 边界 contract，尚未接 AgentScope SDK runner，也未把 DatasetAgent compile/execute/create artifact 工具注册为可执行；下一步应在 feature flag 下做 `/chat/stream -> AgenticShell -> Runtime driver` 的只读/影子路径对齐。
 
 ### 2026-07-01 10:45 · AS-R0 P0 Chat Stream Runtime Shadow
 
@@ -204,3 +196,12 @@
 - TDD 记录：先新增 PR1.3 runtime 测试并确认 RED 为缺少 `app.services.agentic_dataset_runtime`；实现最小编排后转 GREEN，覆盖成功链路和 compile 失败不调用 execute。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_dataset_runtime.py -q`，2 条通过、2 个既有 warning；执行 AS-R0 最小回归 `tests/test_agentic_dataset_runtime.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_agentscope_chat_bridge.py tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py -q`，40 条通过、4 个既有 warning；执行安全矩阵回归 `tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，11 条通过、2 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：PR1.3 尚未把 `/chat/stream` 最终灰度切到新 DatasetAgent runtime；checkpoint/retry writer 迁移和双路径 parity 分别留给 PR1.4、PR1.5。
+
+### 2026-07-01 11:48 · AS-R0 PR1.4 checkpoint/retry 迁移
+
+- 涉及文件：`datalogue-api/app/services/agentic_shell_writers.py`、`datalogue-api/app/services/workbench_actions.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_agentic_shell_retry_writer.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-4.md`、`.codex/project-memory.md`
+- 关键改动：新增 `AgentScopeMirrorShellWriter`，Workbench retry request 改为通过 `DatalogueAgenticShell.record_action()` 写入 `workbench.retry_requested`；Chat SSE event projection 改为先经 `DatalogueAgenticShell.record_event()` 清洗，再由 writer 调用既有 `record_stream_event()` 投影到 AgentScope mirror。
+- 安全边界：Shell writer 只桥接 event/action/checkpoint 写回，不执行 BI 查询；`retry.started`、`retry.checkpoint_restored`、`dataset.query.completed`、`answer.completed` 等事件沿用原 envelope/Workbench projection，写回前继续阻断 SQL、schema、raw rows、query_plan 和内部执行载荷。
+- TDD 记录：先新增 PR1.4 writer 测试并确认 RED 为 Workbench action 没有 Shell 接入点、Chat SSE projection 没有调用 Shell `record_event()`；接入 writer 后转 GREEN。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_retry_writer.py -q`，2 条通过、2 个既有 warning；执行 `tests/test_agentic_shell_retry_writer.py tests/test_workbench_retry_actions.py tests/test_c3_workbench_acceptance.py -q`，13 条通过、10 个既有 warning；执行 observability/retry checkpoint 回归 4 条通过、6 个既有 warning；提交前 AS-R0 最小回归 42 条通过、4 个既有 warning，Workbench/observability/retry 回归 15 条通过、14 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：PR1.4 完成 writer ownership 迁移，但新 Shell runtime 与 legacy direct stream 的 final payload/artifact refs/trace contract parity 仍留给 PR1.5。

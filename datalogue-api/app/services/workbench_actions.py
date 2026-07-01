@@ -28,10 +28,11 @@ from app.schemas.agentscope_workbench import (
 from app.services.agentscope_mirror import (
     create_running_assistant_message,
     find_expired_running_messages,
-    record_agentscope_event,
     record_agentscope_ref,
 )
 from app.services.agentscope_thread_resolver import normalize_thread_id
+from app.services.agentic_shell import DatalogueAgenticShell
+from app.services.agentic_shell_writers import AgentScopeMirrorShellWriter
 
 
 _INTERNAL_RETRY_TEXT_RE = re.compile(
@@ -136,19 +137,21 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
         ref_value=request.checkpoint_ref,
         relation="checkpoint",
     )
-    record_agentscope_event(
-        db,
+    DatalogueAgenticShell(
+        writer=AgentScopeMirrorShellWriter(
+            db,
+            thread_id=normalized_thread_id,
+            message_id=retry_message.message_id,
+        )
+    ).record_action(
+        action_id=request.selected_action,
         thread_id=normalized_thread_id,
         message_id=retry_message.message_id,
-        event_type="workbench.retry_requested",
         payload={
             "summary": "已接收重试请求，准备从检查点恢复。",
             "checkpoint_ref": request.checkpoint_ref,
             "selected_action": request.selected_action,
         },
-        visibility="user",
-        task_id=None,
-        trace_id=None,
     )
     return WorkbenchRetryResponse(
         thread_id=normalized_thread_id,

@@ -90,6 +90,7 @@ from app.services.agentscope_chat_bridge import (
     record_stream_event,
 )
 from app.services.agentic_shell import DatalogueAgenticShell
+from app.services.agentic_shell_writers import AgentScopeMirrorShellWriter
 from app.services.agentscope_runtime_driver import DatalogueAgentScopeRuntimeDriver
 from app.services.message_gateway import classify_turn_event
 from app.services.task_capsule import (
@@ -4527,7 +4528,30 @@ def _record_agentscope_event_from_sse(
         if not isinstance(envelope_payload, dict):
             return
         envelope = DatalogueEventEnvelope.model_validate(envelope_payload)
-        record_stream_event(db, context=context, envelope=envelope)
+        shell = DatalogueAgenticShell(
+            writer=AgentScopeMirrorShellWriter(
+                db,
+                thread_id=context.thread_id,
+                message_id=context.assistant_message_id,
+                chat_context=context,
+            )
+        )
+        payload = dict(envelope.payload or {})
+        for key, value in (
+            ("event_visibility", envelope.visibility),
+            ("event_task_id", envelope.task_id),
+            ("event_trace_id", envelope.trace_id),
+            ("event_conversation_id", envelope.conversation_id),
+        ):
+            if value is not None:
+                payload[key] = value
+        safe_payload = shell.sanitize_output(payload)
+        shell.record_event(
+            event_type=envelope.event_type,
+            thread_id=context.thread_id,
+            message_id=context.assistant_message_id,
+            payload=safe_payload if isinstance(safe_payload, dict) else {},
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[AgentScopeBridge] record_stream_event 失败，不中断主链: %s", exc)
 

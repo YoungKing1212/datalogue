@@ -208,19 +208,20 @@
 | PR1.1 | Complete | Runtime adapter 接管入口提交 + `docs/test-reports/2026-07-01-as-r0-pr1-1.md` | 后续 PR1.2 接入 BI LeadAgent Shell 能力路由 |
 | PR1.2 | Complete | Shell/Runtime boundary 均携带 BI LeadAgent action contract + `docs/test-reports/2026-07-01-as-r0-pr1-2.md` | 后续 PR1.3 用原子 tools 串 DatasetAgent tool-call runtime |
 | PR1.3 | Complete | DatasetAgent tool-call runtime 最小编排 + `docs/test-reports/2026-07-01-as-r0-pr1-3.md` | 后续 PR1.4 迁移 checkpoint/retry writer |
-| PR1.4 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.4 checkpoint/retry 迁移 |
+| PR1.4 | Complete | Shell writer 接管 Workbench retry action 与 Chat SSE event 写回 + `docs/test-reports/2026-07-01-as-r0-pr1-4.md` | 后续 PR1.5 做双路径灰度 parity |
+| PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.5 双路径灰度 |
 | PR2.1 - PR2.4 | Not started | None | 等 P1 验收后再进入 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. PR1.4：checkpoint/retry 迁移，Workbench retry 调 Shell action，Shell 写 `retry.started/checkpoint_restored/dataset.query.completed/answer.completed`。
+1. PR1.5：双路径灰度，feature flag 下新 Shell runtime 与 legacy `_stream_chat_singleturn` 对齐同一 final payload、artifact refs、trace contract。
 
 优先级建议：
 
-1. 先补 Shell writer 与 Workbench retry 事件序列的 contract 测试。
-2. 再把 retry started/checkpoint restored/dataset completed/answer completed 写入 Shell writer，同时保持 provider-neutral observability contract。
+1. 先补 parity 测试，证明新 Shell runtime 和 legacy path 在 final payload、artifact refs、trace contract 上一致。
+2. 再实现 feature flag 下的灰度对齐，不改变默认关闭行为。
 
 ## 5.1 Completed Task Reports
 
@@ -319,6 +320,20 @@
 - `docs/test-reports/2026-07-01-as-r0-pr1-3.md`
 
 **Result:** 新增 `DatasetAgentToolCallRuntime`，按固定顺序串联 `get_dataset_status -> list_candidate_assets -> generate_dsl -> compile_dsl_to_sql -> execute_compiled_query -> get_artifact_summary`。DSL 由注入的 generator 产生结构化 `QueryPlan` 或 dict；SQL 只在 `BIAtomicToolProvider` 的 private compiled handle 内流转；execute 结果写 artifact，Runtime 返回 artifact ref、row/column count 和 artifact summary，不返回 SQL、schema、raw rows、query_plan 或字段明细。compile 失败时 fail-closed，不调用 execute。
+
+### PR1.4: checkpoint/retry 迁移
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/services/agentic_shell_writers.py`
+- `datalogue-api/app/services/workbench_actions.py`
+- `datalogue-api/app/api/chat.py`
+- `datalogue-api/tests/test_agentic_shell_retry_writer.py`
+- `docs/test-reports/2026-07-01-as-r0-pr1-4.md`
+
+**Result:** 新增 `AgentScopeMirrorShellWriter`，把 Shell event/action/checkpoint 写回契约桥接到 AgentScope mirror。Workbench retry request 现在通过 `DatalogueAgenticShell.record_action()` 写入 `workbench.retry_requested`；Chat SSE event projection 先经 `DatalogueAgenticShell.record_event()` 清洗，再由 writer 调回既有 `record_stream_event()`，因此 `retry.started`、`retry.checkpoint_restored`、`dataset.query.completed`、`answer.completed` 等事件都经过 Shell writer，但底层 mirror projection 和 provider-neutral observability contract 保持兼容。
 
 ## 6. Proposed Plan Changes
 
