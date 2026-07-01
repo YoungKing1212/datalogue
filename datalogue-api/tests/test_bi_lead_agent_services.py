@@ -13,7 +13,7 @@
 
 import pytest
 
-from app.models.bi_lead_agent import BIAgentHandoff
+from app.models.bi_lead_agent import BIAgentHandoff, BILeadAgentRun
 from app.schemas.bi_lead_agent import ConfirmBILeadAgentRunRequest, DatasetCapabilitySummary
 from app.services.bi_lead_agent.confirmation_service import BILeadAgentConfirmationService
 from app.services.bi_lead_agent.run_service import BILeadAgentRunService
@@ -67,6 +67,48 @@ def test_create_run_generates_trace_and_task_when_missing(db_session):
     assert len(run.task_id) > len("bi-lead-task-")
 
 
+def test_mark_phase_persists_run_status_fields(db_session):
+    service = BILeadAgentRunService(db_session)
+    run = service.create_run(question="统计 2026 年订单金额")
+    run_id = run.id
+
+    service.mark_phase(
+        run,
+        phase="handoff_run",
+        status="running",
+        status_reason="handoff_started",
+    )
+    db_session.expunge_all()
+
+    saved = db_session.get(BILeadAgentRun, run_id)
+    assert saved is not None
+    assert saved.phase == "handoff_run"
+    assert saved.status == "running"
+    assert saved.status_reason == "handoff_started"
+
+
+def test_mark_failed_persists_failure_fields(db_session):
+    service = BILeadAgentRunService(db_session)
+    run = service.create_run(question="统计 2026 年订单金额")
+    run_id = run.id
+
+    service.mark_failed(
+        run,
+        phase="summarize_run",
+        error_code="DATASET_AGENT_FAILED",
+        error_summary="DatasetAgent 执行失败",
+    )
+    db_session.expunge_all()
+
+    saved = db_session.get(BILeadAgentRun, run_id)
+    assert saved is not None
+    assert saved.status == "failed"
+    assert saved.phase == "summarize_run"
+    assert saved.error_code == "DATASET_AGENT_FAILED"
+    assert saved.error_summary == "DatasetAgent 执行失败"
+    assert saved.completed_at is not None
+
+
 def test_confirm_approved_saves_snapshot_and_moves_run_to_running(db_session, sample_dataset):
     run_service = BILeadAgentRunService(db_session)
     confirmation_service = BILeadAgentConfirmationService(db_session)
@@ -109,6 +151,7 @@ def test_confirm_rejected_blocks_run_and_confirmation_gate_rejects(db_session, s
     confirmation = confirmation_service.confirm(run.id, _confirmation_request(sample_dataset.id, "rejected"))
 
     assert confirmation.user_decision == "rejected"
+    assert confirmation.decided_at is not None
     assert run.status == "blocked"
     assert run.phase == "confirm_run"
     assert run.status_reason == "confirmation_rejected"
@@ -116,11 +159,23 @@ def test_confirm_rejected_blocks_run_and_confirmation_gate_rejects(db_session, s
         confirmation_service.require_approved_confirmation(run.id)
 
 
+def test_confirm_rejects_missing_run(db_session, sample_dataset):
+    confirmation_service = BILeadAgentConfirmationService(db_session)
+
+    with pytest.raises(ValueError, match="BI_LEAD_AGENT_RUN_NOT_FOUND"):
+        confirmation_service.confirm(999999, _confirmation_request(sample_dataset.id, "approved"))
+
+
 def test_require_approved_confirmation_rejects_missing_confirmation(db_session):
     run = BILeadAgentRunService(db_session).create_run(question="统计 2026 年订单金额")
 
     with pytest.raises(ValueError, match="USER_CONFIRMATION_REQUIRED"):
         BILeadAgentConfirmationService(db_session).require_approved_confirmation(run.id)
+
+
+def test_require_approved_confirmation_rejects_missing_run(db_session):
+    with pytest.raises(ValueError, match="BI_LEAD_AGENT_RUN_NOT_FOUND"):
+        BILeadAgentConfirmationService(db_session).require_approved_confirmation(999999)
 
 
 def test_get_response_returns_safe_confirmation_and_handoff_dto(db_session, sample_dataset):

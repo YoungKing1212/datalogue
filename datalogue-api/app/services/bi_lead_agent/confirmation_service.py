@@ -32,7 +32,7 @@ class BILeadAgentConfirmationService:
         if run is None:
             raise ValueError("BI_LEAD_AGENT_RUN_NOT_FOUND")
 
-        decided_at = datetime.now(timezone.utc) if request.user_decision == "approved" else None
+        decided_at = datetime.now(timezone.utc)  # approved/rejected 都是用户明确决策，审计链路必须记录决策时间。
         status_reason = (
             "confirmation_approved" if request.user_decision == "approved" else "confirmation_rejected"
         )
