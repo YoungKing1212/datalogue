@@ -29,7 +29,7 @@ def _json_type():
 class BILeadAgentRun(Base):
     __tablename__ = "bi_lead_agent_run"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     status = Column(
         String(40),
         nullable=False,
@@ -68,8 +68,8 @@ class BILeadAgentConfirmation(Base):
         UniqueConstraint("run_id", name="uq_bi_lead_agent_confirmation_run_id"),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
-    run_id = Column(Integer, ForeignKey("bi_lead_agent_run.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("bi_lead_agent_run.id", ondelete="CASCADE"), nullable=False)
     dataset_id = Column(Integer, ForeignKey("semantic_dataset.id"), nullable=False, index=True)
     confirmed_question = Column(Text, nullable=False)
     task_goal = Column(Text, nullable=False)
@@ -107,9 +107,9 @@ class BIAgentHandoff(Base):
         UniqueConstraint("handoff_id", name="uq_bi_agent_handoff_handoff_id"),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
-    run_id = Column(Integer, ForeignKey("bi_lead_agent_run.id", ondelete="CASCADE"), nullable=False, index=True)
-    handoff_id = Column(String(120), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("bi_lead_agent_run.id", ondelete="CASCADE"), nullable=False)
+    handoff_id = Column(String(120), nullable=False)
     parent_agent = Column(String(80), nullable=False, default="bi_lead_agent", server_default="bi_lead_agent", index=True)
     child_agent = Column(
         String(80),

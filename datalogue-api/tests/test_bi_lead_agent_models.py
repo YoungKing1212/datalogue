@@ -11,7 +11,7 @@
 # Created On  : 2026-07-01
 # ============================================================
 
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 
 from app.core.database import Base
 from app.models.bi_lead_agent import BIAgentHandoff, BILeadAgentConfirmation, BILeadAgentRun
@@ -144,3 +144,34 @@ def test_bi_lead_agent_models_registered_through_app_main():
     assert "bi_lead_agent_run" in Base.metadata.tables
     assert "bi_lead_agent_confirmation" in Base.metadata.tables
     assert "bi_agent_handoff" in Base.metadata.tables
+
+
+def test_bi_lead_agent_create_all_avoids_duplicate_identity_indexes(db_session):
+    inspector = inspect(db_session.get_bind())
+
+    def index_names(table_name):
+        return {index["name"] for index in inspector.get_indexes(table_name)}
+
+    run_indexes = index_names("bi_lead_agent_run")
+    confirmation_indexes = index_names("bi_lead_agent_confirmation")
+    handoff_indexes = index_names("bi_agent_handoff")
+
+    assert "ix_bi_lead_agent_run_id" not in run_indexes
+    assert "ix_bi_lead_agent_confirmation_id" not in confirmation_indexes
+    assert "ix_bi_lead_agent_confirmation_run_id" not in confirmation_indexes
+    assert "ix_bi_agent_handoff_id" not in handoff_indexes
+    assert "ix_bi_agent_handoff_run_id" not in handoff_indexes
+    assert "ix_bi_agent_handoff_handoff_id" not in handoff_indexes
+
+    assert {"ix_bi_lead_agent_run_status", "ix_bi_lead_agent_run_phase", "ix_bi_lead_agent_run_trace_id"} <= run_indexes
+    assert {
+        "ix_bi_lead_agent_confirmation_dataset_id",
+        "ix_bi_lead_agent_confirmation_trace_id",
+        "ix_bi_lead_agent_confirmation_error_code",
+    } <= confirmation_indexes
+    assert {
+        "ix_bi_agent_handoff_dataset_id",
+        "ix_bi_agent_handoff_child_run_id",
+        "ix_bi_agent_handoff_artifact_ref",
+        "ix_bi_agent_handoff_checkpoint_ref",
+    } <= handoff_indexes
