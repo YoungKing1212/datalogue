@@ -611,3 +611,123 @@ def test_query_audit_trace_list_and_detail(client, db_session, sample_dataset, m
     assert detail["observations"][0]["name"] == "node.sql_execute"
     assert detail["scores"][0]["name"] == "user_feedback"
     assert detail["fallback_steps"][0]["name"] == "SQL 执行"
+
+
+def test_query_audit_trace_detail_exposes_provider_neutral_contract(
+    client,
+    db_session,
+    sample_dataset,
+    monkeypatch,
+):
+    class DummyTrace:
+        def model_dump(self):
+            return {
+                "id": "trace-contract",
+                "name": "workbench retry",
+                "observations": [
+                    {
+                        "id": "obs-requested",
+                        "name": "workbench.retry_requested",
+                        "type": "SPAN",
+                        "startTime": "2026-06-30T10:00:00Z",
+                        "metadata": {
+                            "thread_id": "as_contract",
+                            "checkpoint_ref": "checkpoint://contract",
+                        },
+                    },
+                    {
+                        "id": "obs-started",
+                        "name": "retry.started",
+                        "type": "SPAN",
+                        "startTime": "2026-06-30T10:00:01Z",
+                        "metadata": {"thread_id": "as_contract"},
+                    },
+                    {
+                        "id": "obs-restored",
+                        "name": "retry.checkpoint_restored",
+                        "type": "SPAN",
+                        "startTime": "2026-06-30T10:00:02Z",
+                        "metadata": {"checkpoint_ref": "checkpoint://contract"},
+                    },
+                    {
+                        "id": "obs-query",
+                        "name": "dataset.query.completed",
+                        "type": "SPAN",
+                        "startTime": "2026-06-30T10:00:03Z",
+                        "metadata": {"artifact_ref": "artifact:contract"},
+                    },
+                    {
+                        "id": "obs-answer",
+                        "name": "answer.completed",
+                        "type": "SPAN",
+                        "startTime": "2026-06-30T10:00:04Z",
+                        "metadata": {
+                            "thread_id": "as_contract",
+                            "artifact_ref": "artifact:contract",
+                        },
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(
+        "app.services.observability.traces._fetch_langfuse_trace",
+        lambda trace_id: (DummyTrace(), None),
+    )
+
+    conv = models.Conversation(title="观测契约测试", thread_id="obs-contract", user_id=1)
+    db_session.add(conv)
+    db_session.commit()
+    db_session.refresh(conv)
+    msg = models.Message(
+        conversation_id=conv.id,
+        role="assistant",
+        content="已完成 Workbench retry",
+        response_metadata={
+            "observability": {
+                "trace_url": "http://localhost:3000/project/p/traces/trace-contract",
+            }
+        },
+    )
+    db_session.add(msg)
+    db_session.commit()
+    db_session.refresh(msg)
+    db_session.add(
+        models.ObservabilityTraceIndex(
+            langfuse_trace_id="trace-contract",
+            langfuse_session_id="session-contract",
+            conversation_id=conv.id,
+            message_id=msg.id,
+            dataset_id=sample_dataset.id,
+            entry_route="workbench_retry",
+            status="success",
+            total_tokens=0,
+            total_cost=0,
+            metadata_json={
+                "thread_id": "as_contract",
+                "checkpoint_ref": "checkpoint://contract",
+                "artifact_ref": "artifact:contract",
+            },
+        )
+    )
+    db_session.commit()
+
+    detail = client.get("/api/observability/traces/trace-contract").json()
+
+    assert detail["provider"]["name"] == "langfuse"
+    assert detail["provider"]["available"] is True
+    contract = detail["observability_contract"]
+    assert contract["name"] == "workbench_retry_v1"
+    assert contract["passed"] is True
+    assert contract["missing_events"] == []
+    assert contract["required_events"] == [
+        "workbench.retry_requested",
+        "retry.started",
+        "retry.checkpoint_restored",
+        "dataset.query.completed",
+        "answer.completed",
+    ]
+    assert set(contract["matched_events"]) >= set(contract["required_events"])
+    assert contract["attributes"]["thread_id"] == "as_contract"
+    assert contract["attributes"]["conversation_id"] == conv.id
+    assert contract["attributes"]["checkpoint_ref"] == "checkpoint://contract"
+    assert contract["attributes"]["artifact_ref"] == "artifact:contract"

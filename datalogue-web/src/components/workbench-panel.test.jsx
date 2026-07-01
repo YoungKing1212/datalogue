@@ -119,6 +119,61 @@ describe('WorkbenchPanel', () => {
     expect(screen.queryByRole('button', { name: /重试/ })).not.toBeInTheDocument();
   });
 
+  it('explains empty thread state without artifact or actions', async () => {
+    fetchWorkbenchThread.mockResolvedValueOnce({
+      ...threadView,
+      messages: [],
+      timeline: [],
+      primary_artifact_ref: null,
+      related_refs: [],
+      available_actions: [],
+      status_summary: null,
+    });
+
+    render(<WorkbenchPanel threadId="as_empty" />);
+
+    expect(await screen.findByText('当前线程还没有可展示的 BI 结果。')).toBeInTheDocument();
+    expect(screen.getByText('暂无可打开产物。')).toBeInTheDocument();
+    expect(screen.getByText('暂无可用动作。')).toBeInTheDocument();
+  });
+
+  it('shows failed diagnostics with retry availability and disabled reason', async () => {
+    fetchWorkbenchThread.mockResolvedValueOnce({
+      ...threadView,
+      primary_artifact_ref: null,
+      related_refs: [],
+      status_summary: {
+        status: 'failed',
+        label: '执行失败',
+        tone: 'warning',
+        actionable: true,
+        read_only: false,
+        latest_message_id: 'msg_failed',
+        primary_artifact_ref: null,
+        retry_checkpoint_ref: null,
+        trace_ref: 'trace:failed',
+        summary: '任务超时中断，缺少可恢复检查点。',
+      },
+      available_actions: [
+        {
+          action_id: 'retry',
+          label: '重试',
+          enabled: false,
+          disabled_reason: '当前消息缺少可用检查点。',
+          checkpoint_ref: null,
+          message_id: 'msg_failed',
+        },
+      ],
+    });
+
+    render(<WorkbenchPanel threadId="as_failed" />);
+
+    expect(await screen.findByText('诊断摘要')).toBeInTheDocument();
+    expect(screen.getAllByText('任务超时中断，缺少可恢复检查点。').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('重试暂不可用')).toBeInTheDocument();
+    expect(screen.getAllByText('当前消息缺少可用检查点。').length).toBeGreaterThanOrEqual(1);
+  });
+
   it('keeps admin diagnostic drawer closed by default', async () => {
     render(<WorkbenchPanel threadId="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" />);
 
@@ -247,8 +302,10 @@ describe('WorkbenchPanel', () => {
       related_refs: [],
     });
 
-    render(<WorkbenchPanel threadId="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" refreshIntervalMs={1} />);
+    render(<WorkbenchPanel threadId="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" refreshIntervalMs={80} />);
 
+    expect(await screen.findByText('正在轮询工作台状态')).toBeInTheDocument();
+    expect(screen.getByText('运行结束后会自动刷新最新产物。')).toBeInTheDocument();
     await waitFor(() => expect(fetchWorkbenchThread).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('已恢复检查点')).toBeInTheDocument();
     expect(screen.getAllByText('重试已完成').length).toBeGreaterThanOrEqual(2);
@@ -273,5 +330,60 @@ describe('WorkbenchPanel', () => {
         { message_id: 'msg_answer', status: 'completed' },
       ],
     })).toBe(false);
+  });
+
+  it('keeps artifact loading and 404 state inside the drawer', async () => {
+    let resolveArtifact;
+    fetchWorkbenchThread.mockResolvedValueOnce({
+      ...threadView,
+      primary_artifact_ref: null,
+      related_refs: [{ ref_type: 'artifact', ref: 'artifact:missing', relation: 'related' }],
+      status_summary: { ...threadView.status_summary, primary_artifact_ref: null },
+    });
+    fetchWorkbenchArtifact.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveArtifact = resolve;
+    }));
+
+    render(<WorkbenchPanel threadId="as_artifact" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /artifact:missing/ }));
+
+    expect(await screen.findByText('正在加载产物详情...')).toBeInTheDocument();
+
+    resolveArtifact({
+      artifact_ref: 'artifact:missing',
+      kind: 'query_result',
+      preview_payload: { summary: '补加载产物摘要' },
+      related_refs: [],
+    });
+
+    expect(await screen.findByText('补加载产物摘要')).toBeInTheDocument();
+
+    fetchWorkbenchArtifact.mockRejectedValueOnce(new Error('HTTP 404: Not Found'));
+    fireEvent.click(screen.getByRole('button', { name: /artifact:missing/ }));
+
+    expect(await screen.findByText('产物不存在或已过期。')).toBeInTheDocument();
+    expect(screen.queryByText('工作台暂不可用')).not.toBeInTheDocument();
+  });
+
+  it('explains forbidden and cross-thread artifact drawer failures', async () => {
+    fetchWorkbenchThread.mockResolvedValue({
+      ...threadView,
+      primary_artifact_ref: null,
+      related_refs: [{ ref_type: 'artifact', ref: 'artifact:locked', relation: 'related' }],
+      status_summary: { ...threadView.status_summary, primary_artifact_ref: null },
+    });
+
+    render(<WorkbenchPanel threadId="as_artifact" />);
+
+    fetchWorkbenchArtifact.mockRejectedValueOnce(new Error('HTTP 403: Forbidden'));
+    fireEvent.click(await screen.findByRole('button', { name: /artifact:locked/ }));
+
+    expect(await screen.findByText('无权限查看该产物。')).toBeInTheDocument();
+
+    fetchWorkbenchArtifact.mockRejectedValueOnce(new Error('HTTP 409: artifact does not belong to current thread'));
+    fireEvent.click(screen.getByRole('button', { name: /artifact:locked/ }));
+
+    expect(await screen.findByText('该产物不属于当前会话。')).toBeInTheDocument();
   });
 });

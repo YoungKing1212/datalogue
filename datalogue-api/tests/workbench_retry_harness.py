@@ -43,6 +43,7 @@ class WorkbenchRetryCompletedHarnessResult:
     """浏览器 retry completed 验收结果；字段只保留用户可见摘要和 refs。"""
 
     thread_id: str
+    trace_id: str
     checkpoint_ref: str
     initial_view: dict[str, Any]
     retry_response: dict[str, Any]
@@ -50,6 +51,7 @@ class WorkbenchRetryCompletedHarnessResult:
     event_types: list[str]
     final_payload: dict[str, Any]
     completed_view: dict[str, Any]
+    observability_detail: dict[str, Any]
     primary_artifact_ref: str
     persisted_event_types: list[str]
     refs: list[dict[str, str]]
@@ -156,6 +158,17 @@ async def run_workbench_retry_completed_harness(
         conversation_id=conversation.id,
         trace_id=trace_id,
     )
+    dataset_completed = build_datalogue_event_envelope(
+        event_type="dataset.query.completed",
+        visibility="trace_only",
+        payload={
+            "summary": "Workbench retry 已完成数据查询阶段",
+            "checkpoint_ref": checkpoint_ref,
+            "primary_ref": {"ref_type": "artifact", "ref": primary_artifact_ref},
+        },
+        task_id="c3-p2-browser-harness-rerun",
+        trace_id=trace_id,
+    )
     answer_completed = build_datalogue_event_envelope(
         event_type="answer.completed",
         visibility="user_visible",
@@ -176,6 +189,15 @@ async def run_workbench_retry_completed_harness(
         assert payload.thread_id == session.thread_id
         assert payload.retry_checkpoint_ref == checkpoint_ref
         assert payload.dataset_id == dataset_id
+        yield _sse(
+            {
+                "type": "progress",
+                "message": "Workbench retry 数据查询完成",
+                "task_id": "c3-p2-browser-harness-rerun",
+                "trace_id": trace_id,
+                "event_envelope": dataset_completed.model_dump(mode="json"),
+            }
+        )
         yield _sse(
             {
                 "type": "final",
@@ -230,10 +252,32 @@ async def run_workbench_retry_completed_harness(
             .order_by(AgentScopeRef.id.asc())
             .all()
         )
-    ]
+        ]
+
+    db_session.add(
+        models.ObservabilityTraceIndex(
+            langfuse_trace_id=trace_id,
+            langfuse_session_id=session_id,
+            conversation_id=conversation.id,
+            message_id=None,
+            dataset_id=dataset_id,
+            entry_route="workbench_retry",
+            status="success",
+            total_tokens=0,
+            total_cost=0,
+            metadata_json={
+                "thread_id": session.thread_id,
+                "checkpoint_ref": checkpoint_ref,
+                "artifact_ref": primary_artifact_ref,
+            },
+        )
+    )
+    db_session.commit()
+    observability_detail = client.get(f"/api/observability/traces/{trace_id}").json()
 
     return WorkbenchRetryCompletedHarnessResult(
         thread_id=session.thread_id,
+        trace_id=trace_id,
         checkpoint_ref=checkpoint_ref,
         initial_view=initial_view,
         retry_response=retry_payload,
@@ -241,6 +285,7 @@ async def run_workbench_retry_completed_harness(
         event_types=event_types,
         final_payload=final_payload,
         completed_view=completed_view,
+        observability_detail=observability_detail,
         primary_artifact_ref=primary_artifact_ref,
         persisted_event_types=persisted_event_types,
         refs=refs,

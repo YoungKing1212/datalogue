@@ -117,6 +117,9 @@
 - C3-P0 PR2 完成 Chat Session Bridge：`/chat/stream` 接入 AgentScope mirror 但不替换 Datalogue 主链，新增 `thread_id`、新 `as_*` session/message/event/ref 投影、final payload 回写线程和异常/取消/无 final 收口；验证覆盖 chat bridge、event projection、mirror、thread resolver 和 chat pytest。
 - C3-P0 PR3 完成 Workbench View Model API：新增 `/api/workbench/thread/{thread_id}` 和 artifact view，支持 `as_*` mirror 视图、`conv_*` 旧会话只读回放、artifact refs 脱敏摘要和用户可见层禁止 SQL/schema/raw rows/query_plan/field_patch。
 - C3-P0 PR4 完成 Controlled Retry And Lease Recovery：`POST /api/workbench/actions/retry` 白名单化接收 thread/message/checkpoint/action，过期 running message 收口为 interrupted 并生成可恢复 checkpoint，旧 `conv_*` 只读禁用 retry。
+- C3-P0 PR5 完成 Chat Workbench Panel：Chat 右侧挂载工作台 Panel 和隐藏 `/workbench/:threadId/:artifactRef?` 路由，前端 adapter 支持 `as_* / conv_*` 线程规范化、Workbench View Model、artifact 详情和受控 retry 请求白名单，Panel 只展示业务摘要、timeline、refs、Artifact 摘要和 action 禁用原因。
+- C3-P0 PR6 完成 Workbench acceptance hardening：后端补新 `as_*` Chat stream mirror、lease interrupted + controlled retry、legacy `conv_*` 只读回放三条验收路径；前端补 thread remap、Workbench View Model 回放、artifact refs 和 Panel source 优先级测试；同步 `task.started` 事件契约与 C3 验收记录。
+- C3-P0 真实浏览器 E2E 补证修复 AgentScope mirror payload 泄露拦截和 `/chat` 候选确认后 Workbench Panel 切换问题；真实问题“查询杨凯 2024 年工作日志”完成成功问数，主 Chat、右侧 Workbench Panel、隐藏 route 和旧会话只读回放均补证。
 
 ## 高价值判断
 
@@ -127,32 +130,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-
-### 2026-06-30 13:35 · C3-P0 PR5 Chat Workbench Panel
-
-- 涉及文件：`datalogue-web/src/App.jsx`、`datalogue-web/src/assistant/workbench-api.js`、`datalogue-web/src/assistant/workbench-api.test.js`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/components/workbench-panel.jsx`、`datalogue-web/src/components/workbench-panel.test.jsx`、`datalogue-web/src/components/workbench-route.jsx`、`datalogue-web/src/components/workbench-route.test.jsx`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
-- 关键改动：新增 Chat 右侧 Workbench Panel 和隐藏 `/workbench/:threadId/:artifactRef?` 路由；前端 adapter 支持 `as_* / conv_*` 线程规范化、Workbench View Model 读取、artifact 详情读取和受控 retry 请求白名单；`chat-adapter` 在请求中携带 `thread_id` 并从 final payload 回收 `as_*` 真相源线程；`thread-list-adapter` 支持 `as_*` 历史会话从 Workbench View Model 回放，`conv_*` 继续走旧会话只读路径；Panel 只展示业务摘要、timeline、refs、Artifact 摘要和受控 action 禁用原因，不展示 SQL/schema/raw rows/query_plan/field_patch。
-- 前端形态：现有 Chat 入口直接挂载右侧 Panel，不新建独立 BI 工作台页面；隐藏 route 只作为后续独立 Workbench 页面升级出口；移动端 Panel 自动落到消息流下方，桌面固定右侧工作区。
-- 验证方式：先执行 `cd datalogue-web && npm run test -- src/assistant/workbench-api.test.js src/components/workbench-panel.test.jsx src/components/workbench-route.test.jsx src/components/chat-page.test.jsx` 确认 RED，失败为 Workbench API、Panel、Route 和 `resolveWorkbenchThreadId` 未实现；实现后执行 `cd datalogue-web && npm run test -- src/assistant/workbench-api.test.js src/components/workbench-panel.test.jsx src/components/workbench-route.test.jsx src/assistant/chat-adapter.test.js src/components/chat-page.test.jsx`，31 条通过；执行 `cd datalogue-web && npm run lint`，0 error、15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
-- 残留风险：PR5 只完成 Chat 侧 Workbench Panel 和隐藏 route；PR6 仍需做双主路径验收加固，包括真实 `as_*` 页面回放、`conv_*` 旧会话只读回放、Artifact refs、受控 retry 禁用/发起路径和用户可见层脱敏扫描。
-
-### 2026-06-30 13:55 · C3-P0 PR6 Acceptance Hardening
-
-- 涉及文件：`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/tests/test_c3_workbench_acceptance.py`、`datalogue-web/src/assistant/thread-list-adapter.test.js`、`datalogue-web/src/components/chat-page.test.jsx`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
-- 关键改动：新增 C3 Workbench 双主路径验收测试；后端覆盖新 `as_*` Chat stream mirror 到 Workbench View Model、lease interrupted + 受控 retry、legacy `conv_*` 只读回放三条路径；前端覆盖 `datalogue:thread-resolved` 后本地 draft thread remap 到 `as_*`、`as_*` Workbench View Model 回放、artifact refs 映射和 Chat route 对 Workbench Panel source 的优先级。
-- 契约补洞：PR6 RED 暴露 `agentscope_event_projection` 和 C3 计划已使用 `task.started`，但 `DatalogueEventType` 未纳入该事件；本次将 `task.started` 加入统一 event envelope schema，保证新会话工作台 timeline 可从任务开始事件建立。
-- 验收记录：新增 `docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`，记录路径 A/B/C 的 thread、task、trace、artifact/checkpoint/ref 证据，以及页面、SSE、mirror、Langfuse 和残留风险分层状态；明确本次是自动化 acceptance hardening，未伪造成真实浏览器/Langfuse UI 五件套。
-- 验证方式：先执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py -q` 确认 RED，失败为 `task.started` 不在 `DatalogueEventType`；修复后同一命令 3 条通过；执行 `cd datalogue-web && npm run test -- src/assistant/thread-list-adapter.test.js src/components/chat-page.test.jsx src/components/workbench-panel.test.jsx src/assistant/workbench-api.test.js`，22 条通过。
-- 残留风险：PR6 不启动真实浏览器或 Langfuse UI；retry action 仍只创建新的 running message 并记录 checkpoint/event，不在本阶段直接驱动 Datalogue 主链重跑。
-
-### 2026-06-30 14:10 · C3-P0 真实浏览器 E2E 补证与 Workbench Panel 切换修复
-
-- 涉及文件：`datalogue-api/app/services/agentscope_event_projection.py`、`datalogue-api/tests/test_agentscope_event_projection.py`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
-- 关键改动：真实浏览器 E2E 暴露两处 C3-P0 缺口并完成修复：一是 `error.blocked` 候选事件投影时 `bound_schema_version` 触发 AgentScope mirror 泄露拦截，改为通用 user-visible payload 递归裁剪内部键后再 fail-closed；二是 `/chat` 候选确认后第二轮 `as_*` mirror 没有接管右侧 Workbench Panel，新增 `shouldAcceptResolvedWorkbenchThread()`，无显式 route 时接受最新 AgentScope thread，显式 `/chat/:id` 继续保持 route source 优先。
-- 真实验收：本地 API `127.0.0.1:8000` 和前端 `127.0.0.1:5173` 下，用真实问题“查询杨凯 2024 年工作日志”完成候选确认到成功问数；生成 `conversation_id=31`、`thread_id=as_60b44ad7-cd95-4b2e-a765-c2e82e189c2d`、`trace_id=22b163778f0bbdb422c691997ae6eb60`、`primary_ref=artifact:e1c094ea0d2242a681345f70a2404284`、`report_ref=artifact:5d40ec7b33b04ab199b8d3dc3b46f53f`、`checkpoint_ref=checkpoint://conv-31-msg-74/query_context_ready`；主 Chat 和右侧 Workbench Panel 均显示 completed，隐藏 `/workbench/:threadId/:artifactRef` 路由可打开同一产物，`/chat/25` 旧会话只读回放正常。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_event_projection.py tests/test_c3_workbench_acceptance.py tests/test_agentscope_chat_bridge.py tests/test_workbench_view_api.py tests/test_workbench_retry_actions.py -q`，31 条通过；执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/assistant/chat-adapter.test.js src/assistant/thread-list-adapter.test.js src/components/workbench-panel.test.jsx`，34 条通过；真实浏览器页面扫描未命中 `SELECT/query_plan/raw_result/schema_summary/field_patch`，console error/warn 为空。
-- 残留风险：本次没有打开 Langfuse UI 做人工核对；C3-P1 仍需把 Workbench 受控 retry 从“创建 running message + checkpoint event”推进到真实主链恢复。
 
 ### 2026-06-30 14:22 · C3-P1 PR1 Workbench Retry 主链恢复入口
 
@@ -210,3 +187,28 @@
 - TDD 记录：先新增 `test_browser_retry_completed_harness_replays_workbench_click_to_completed` 并确认 RED 失败为 `ModuleNotFoundError: No module named 'workbench_retry_harness'`；随后实现 harness，单测转 GREEN。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py::test_browser_retry_completed_harness_replays_workbench_click_to_completed -q`，1 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py -q`，5 条通过。
 - 残留风险：该 harness 复刻浏览器点击后的 API/stream/Workbench 状态闭环，但不启动真实浏览器、不连接真实 MySQL；真实浏览器和真实数据源复验仍按发布前手工闸门保留。
+
+### 2026-06-30 18:19 · C3-P2 PR2 Workbench 状态体验补齐
+
+- 涉及文件：`datalogue-web/src/components/workbench-panel.jsx`、`datalogue-web/src/components/workbench-panel.test.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：补齐 Workbench 发布可用性第一项状态体验：空线程显示无产物/无动作说明；失败态诊断摘要明确 retry 可用性和禁用原因；running 态显示轮询提示与完成后自动刷新说明；artifact drawer 独立承载 loading、404、无权限和非当前 thread 产物错误，不再把抽屉错误升级为整个工作台不可用。
+- TDD 记录：先新增 `workbench-panel.test.jsx` 状态体验用例并确认 RED，失败点为缺少空态 section、running 轮询提示和 drawer 内部 loading/error；随后实现最小组件状态与样式，定向测试转 GREEN。
+- 验证方式：执行 `cd datalogue-web && npm test -- workbench-panel.test.jsx`，12 条通过；执行 `cd datalogue-web && npm test -- workbench-panel.test.jsx workbench-route.test.jsx`，13 条通过；执行 `cd datalogue-web && npm run lint` 通过，保留 15 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过；内置浏览器打开 `http://localhost:5173/chat/as_e5ccbdd5-d026-45cc-b6bd-720bcae88dff`，确认 Workbench completed、产物抽屉可关闭并从 artifact ref 重新打开、console error/warn 为 0、页面扫描未命中 `raw_rows/raw_result/query_plan/field_patch/direct_sql/llm_sql/SELECT`。
+- 残留风险：本次只收口 Workbench 前端状态体验；C3-P2 PR2 后续仍需补 API 级 Langfuse trace 查询断言和发布 checklist，真实浏览器 retry 手工闸门仍按发布前 checklist 保留。
+
+### 2026-06-30 18:32 · C3-P2 PR2 Provider-neutral Observability Gate
+
+- 涉及文件：`datalogue-api/app/services/observability/traces.py`、`datalogue-api/tests/test_observability.py`、`datalogue-api/tests/test_c3_workbench_acceptance.py`、`datalogue-api/tests/workbench_retry_harness.py`、`.codex/project-memory.md`
+- 关键改动：把原“API 级 Langfuse 闸门”收口为 provider-neutral observability contract；`GET /api/observability/traces/{trace_id}` 新增 `provider`、`local_events` 和 `observability_contract`，统一断言 `workbench.retry_requested -> retry.started -> retry.checkpoint_restored -> dataset.query.completed -> answer.completed` 以及 `thread_id/conversation_id/checkpoint_ref/artifact_ref`，不绑定 Langfuse 内部字段名，后续可由 OTel adapter 填同一契约。
+- harness 改动：C3-P2 browser retry completed harness 写入 `ObservabilityTraceIndex` 后直接查询 `/api/observability/traces/{trace_id}`，并断言 contract passed；模拟成功 retry 流补 `dataset.query.completed` trace-only envelope，保证自动化闸门证明数据查询阶段存在，而不是只看到最终回答。
+- TDD 记录：先新增 API contract 单测和 harness trace detail 断言，RED 分别为缺少 `provider` 响应字段、harness 结果缺少 `observability_detail`；实现后再暴露缺失 `dataset.query.completed`，补齐 trace-only event 后转 GREEN。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_observability.py::test_query_audit_trace_list_and_detail tests/test_observability.py::test_query_audit_trace_detail_exposes_provider_neutral_contract -q`，2 条通过；执行 `cd datalogue-api && python3 -m pytest tests/test_c3_workbench_acceptance.py -q`，5 条通过；执行 `cd datalogue-api && python3 -m py_compile app/services/observability/traces.py tests/workbench_retry_harness.py tests/test_observability.py tests/test_c3_workbench_acceptance.py` 通过；执行 `git diff --check` 通过。
+- 残留风险：本次不要求浏览器登录 Langfuse UI；发布前 checklist 仍需保留 UI 人工核对项。若后续切换 OTel，应只替换 provider adapter，保持 `observability_contract` 响应和 harness 断言不变。
+
+### 2026-07-01 09:16 · C3-P2 发布 Checklist 收口
+
+- 涉及文件：`docs/superpowers/plans/2026-06-30-c3-p2-workbench-productization.md`、`.codex/project-memory.md`
+- 关键改动：在 C3-P2 Workbench productization plan 中新增发布 checklist，覆盖数据源容器依赖、本地服务端口、浏览器 retry 手工闸门、自动化 harness、旧会话只读策略、隐藏 Workbench route 策略和 provider-neutral observability 发布口径；Final Review Gate 增加 checklist owner/status 确认项。
+- 发布边界：自动化闸门以 `/api/observability/traces/{trace_id}` 的 `observability_contract` 为准，不绑定 Langfuse 内部字段名；Langfuse UI 登录核对保留为发布前人工 checklist，无权限时必须记录未完成，不能把后端 API 成功写成 UI 通过。
+- 验证方式：执行 `git diff --check` 通过；文档检查确认“最新详细记录”保持 10 条，较早 C3-P0 真实浏览器 E2E 记录已压缩进历史压缩记录。
+- 残留风险：本次是文档和项目记忆收口，不重新运行浏览器 retry 或自动化测试；发布前仍需按 checklist 逐项补 owner/status 和真实环境证据。

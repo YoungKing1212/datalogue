@@ -362,6 +362,20 @@ async def test_browser_retry_completed_harness_replays_workbench_click_to_comple
     assert result.final_payload["result_ref"] == result.primary_artifact_ref
     assert result.completed_view["status_summary"]["status"] == "completed"
     assert result.completed_view["primary_artifact_ref"] == result.primary_artifact_ref
+    assert result.observability_detail["found"] is True
+    assert result.observability_detail["trace_id"] == result.trace_id
+    contract = result.observability_detail["observability_contract"]
+    assert contract["passed"] is True, contract
+    assert contract["missing_events"] == []
+    assert contract["attributes"]["thread_id"] == result.thread_id
+    assert (
+        contract["attributes"]["checkpoint_ref"]
+        == result.checkpoint_ref
+    )
+    assert (
+        contract["attributes"]["artifact_ref"]
+        == result.primary_artifact_ref
+    )
     assert result.event_types.index("retry.checkpoint_restored") < result.event_types.index("answer.completed")
     assert "retry.completed" in result.persisted_event_types
     assert "answer.completed" in result.persisted_event_types

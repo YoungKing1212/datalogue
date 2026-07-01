@@ -50,6 +50,27 @@ function statusToneClass(tone = 'neutral') {
   return 'workbench-status';
 }
 
+function artifactErrorMessage(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  if (message.includes('403') || message.includes('forbidden')) return '无权限查看该产物。';
+  if (message.includes('409') || message.includes('current thread') || message.includes('belong')) {
+    return '该产物不属于当前会话。';
+  }
+  if (message.includes('404') || message.includes('not found')) return '产物不存在或已过期。';
+  return '产物详情暂不可用。';
+}
+
+function retryAvailability(actions = []) {
+  const retryAction = actions.find((action) => action.action_id === 'retry');
+  if (!retryAction) {
+    return { label: '暂无可用重试', reason: '当前状态没有声明 retry action。' };
+  }
+  if (retryAction.enabled) {
+    return { label: '重试可用', reason: retryAction.checkpoint_ref || '可从检查点恢复。' };
+  }
+  return { label: '重试暂不可用', reason: retryAction.disabled_reason || '当前状态不允许重试。' };
+}
+
 function fallbackStatusSummary(view) {
   if (!view) return null;
   const messages = view.messages || [];
@@ -103,6 +124,25 @@ export function WorkbenchStatusSummary({ summary }) {
   );
 }
 
+function WorkbenchEmptySection({ title, children }) {
+  return (
+    <section className="workbench-section">
+      <h4>{title}</h4>
+      <p className="workbench-empty">{children}</p>
+    </section>
+  );
+}
+
+export function WorkbenchRunningState({ running = false }) {
+  if (!running) return null;
+  return (
+    <section className="workbench-running" aria-live="polite">
+      <strong>正在轮询工作台状态</strong>
+      <span>运行结束后会自动刷新最新产物。</span>
+    </section>
+  );
+}
+
 export function WorkbenchTimeline({ timeline = [] }) {
   if (!timeline.length) return null;
   return (
@@ -123,8 +163,10 @@ export function WorkbenchTimeline({ timeline = [] }) {
   );
 }
 
-export function WorkbenchArtifactRefs({ refs = [], onOpen }) {
-  if (!refs.length) return null;
+export function WorkbenchArtifactRefs({ refs = [], onOpen, showEmpty = false }) {
+  if (!refs.length) {
+    return showEmpty ? <WorkbenchEmptySection title="引用">暂无可打开产物。</WorkbenchEmptySection> : null;
+  }
   return (
     <section className="workbench-section">
       <h4>引用</h4>
@@ -150,8 +192,10 @@ export function WorkbenchArtifactRefs({ refs = [], onOpen }) {
   );
 }
 
-export function WorkbenchActions({ threadId, actions = [], onRetried, onRetryRun }) {
-  if (!actions.length) return null;
+export function WorkbenchActions({ threadId, actions = [], onRetried, onRetryRun, showEmpty = false }) {
+  if (!actions.length) {
+    return showEmpty ? <WorkbenchEmptySection title="动作">暂无可用动作。</WorkbenchEmptySection> : null;
+  }
   return (
     <section className="workbench-section">
       <h4>动作</h4>
@@ -190,33 +234,45 @@ export function WorkbenchActions({ threadId, actions = [], onRetried, onRetryRun
   );
 }
 
-export function WorkbenchDiagnosticDrawer({ open = false, diagnostic = null }) {
+export function WorkbenchDiagnosticDrawer({ open = false, diagnostic = null, retryInfo = null }) {
   if (!open || !diagnostic) return null;
   return (
     <aside className="workbench-diagnostic">
       <h4>诊断摘要</h4>
       <p>{safeText(diagnostic.summary, '当前任务可从检查点继续处理。')}</p>
       {diagnostic.retry_checkpoint_ref && <code>{safeText(diagnostic.retry_checkpoint_ref)}</code>}
+      {retryInfo && (
+        <div className="workbench-retry-state">
+          <strong>{safeText(retryInfo.label, '重试状态')}</strong>
+          <span>{safeText(retryInfo.reason, '等待重试状态更新。')}</span>
+        </div>
+      )}
     </aside>
   );
 }
 
-export function WorkbenchArtifactDrawer({ artifact = null, onClose }) {
-  if (!artifact) return null;
-  const refs = artifact.related_refs || [];
+export function WorkbenchArtifactDrawer({ artifact = null, artifactRef = null, loading = false, error = null, onClose }) {
+  if (!artifact && !loading && !error) return null;
+  const refs = artifact?.related_refs || [];
   return (
     <section className="workbench-artifact-drawer" data-testid="workbench-artifact-drawer">
       <div className="workbench-artifact-head">
         <div>
-          <span>{safeText(artifact.kind, 'artifact')}</span>
+          <span>{safeText(artifact?.kind, 'artifact')}</span>
           <h4>产物详情</h4>
         </div>
         <button type="button" className="workbench-close" onClick={onClose} aria-label="关闭产物详情">
           <Icon name="x" />
         </button>
       </div>
-      <p>{safeText(artifact.preview_payload?.summary || artifact.summary, '产物摘要已生成')}</p>
-      <code>{safeText(artifact.artifact_ref)}</code>
+      {loading && <p className="workbench-muted">正在加载产物详情...</p>}
+      {error && <p className="workbench-error">{artifactErrorMessage(error)}</p>}
+      {!loading && !error && artifact && (
+        <>
+          <p>{safeText(artifact.preview_payload?.summary || artifact.summary, '产物摘要已生成')}</p>
+          <code>{safeText(artifact.artifact_ref || artifactRef)}</code>
+        </>
+      )}
       {!!refs.length && (
         <div className="workbench-refs">
           {refs.map((ref) => (
@@ -257,6 +313,8 @@ export function WorkbenchPanel({
   const [view, setView] = useState(null);
   const [artifact, setArtifact] = useState(null);
   const [error, setError] = useState(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [artifactError, setArtifactError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [focusedArtifactRef, setFocusedArtifactRef] = useState(initialArtifactRef);
 
@@ -264,6 +322,7 @@ export function WorkbenchPanel({
     if (!threadId) {
       setView(null);
       setArtifact(null);
+      setArtifactError(null);
       return undefined;
     }
     let cancelled = false;
@@ -311,24 +370,57 @@ export function WorkbenchPanel({
   useEffect(() => {
     if (!initialArtifactRef) return;
     setFocusedArtifactRef(initialArtifactRef);
-    fetchWorkbenchArtifact(initialArtifactRef, threadId).then(setArtifact).catch(setError);
+    setArtifactLoading(true);
+    setArtifactError(null);
+    fetchWorkbenchArtifact(initialArtifactRef, threadId)
+      .then((nextArtifact) => {
+        setArtifact(nextArtifact);
+        setArtifactError(null);
+      })
+      .catch((err) => {
+        setArtifact(null);
+        setArtifactError(err);
+      })
+      .finally(() => setArtifactLoading(false));
   }, [initialArtifactRef, threadId]);
 
   const refs = useMemo(() => collectRefs(view), [view]);
   const statusSummary = view?.status_summary || fallbackStatusSummary(view);
+  const running = hasRunningWorkbenchMessage(view);
+  const hasThreadView = Boolean(threadId && view);
   const primaryArtifactRef = statusSummary?.primary_artifact_ref || view?.primary_artifact_ref;
   useEffect(() => {
-    if (!primaryArtifactRef || hasRunningWorkbenchMessage(view)) return;
+    if (!primaryArtifactRef || running) return;
     if (focusedArtifactRef === primaryArtifactRef) return;
     setFocusedArtifactRef(primaryArtifactRef);
     // completed 快照出现新主产物时自动聚焦，避免 retry 结束后用户仍停在旧失败状态。
-    fetchWorkbenchArtifact(primaryArtifactRef, threadId).then(setArtifact).catch(setError);
-  }, [primaryArtifactRef, view, focusedArtifactRef, threadId]);
+    setArtifactLoading(true);
+    setArtifactError(null);
+    fetchWorkbenchArtifact(primaryArtifactRef, threadId)
+      .then((nextArtifact) => {
+        setArtifact(nextArtifact);
+        setArtifactError(null);
+      })
+      .catch((err) => {
+        setArtifact(null);
+        setArtifactError(err);
+      })
+      .finally(() => setArtifactLoading(false));
+  }, [primaryArtifactRef, running, focusedArtifactRef, threadId]);
 
   const openArtifact = async (artifactRef) => {
     setFocusedArtifactRef(artifactRef);
-    const next = await fetchWorkbenchArtifact(artifactRef, view?.thread_id || threadId);
-    setArtifact(next);
+    setArtifact(null);
+    setArtifactLoading(true);
+    setArtifactError(null);
+    try {
+      const next = await fetchWorkbenchArtifact(artifactRef, view?.thread_id || threadId);
+      setArtifact(next);
+    } catch (err) {
+      setArtifactError(err);
+    } finally {
+      setArtifactLoading(false);
+    }
   };
 
   return (
@@ -348,19 +440,32 @@ export function WorkbenchPanel({
       {!threadId && <p className="workbench-muted">选择一个会话后查看工作台。</p>}
       {threadId && !loading && !view && !error && <p className="workbench-muted">暂无工作台数据。</p>}
       <WorkbenchStatusSummary summary={statusSummary} />
+      <WorkbenchRunningState running={running} />
       <WorkbenchMessages messages={view?.messages || []} />
       <WorkbenchTimeline timeline={view?.timeline || []} />
-      <WorkbenchArtifactRefs refs={refs} onOpen={openArtifact} />
-      <WorkbenchArtifactDrawer artifact={artifact} onClose={() => setArtifact(null)} />
+      <WorkbenchArtifactRefs refs={refs} onOpen={openArtifact} showEmpty={hasThreadView} />
+      <WorkbenchArtifactDrawer
+        artifact={artifact}
+        artifactRef={focusedArtifactRef}
+        loading={artifactLoading}
+        error={artifactError}
+        onClose={() => {
+          setArtifact(null);
+          setArtifactError(null);
+          setArtifactLoading(false);
+        }}
+      />
       <WorkbenchActions
         threadId={view?.thread_id || threadId}
         actions={view?.available_actions || []}
         onRetried={() => fetchWorkbenchThread(threadId).then(setView)}
         onRetryRun={onRetryRun}
+        showEmpty={hasThreadView}
       />
       <WorkbenchDiagnosticDrawer
         open={statusSummary?.actionable}
         diagnostic={statusSummary}
+        retryInfo={retryAvailability(view?.available_actions || [])}
       />
     </aside>
   );

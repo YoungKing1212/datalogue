@@ -27,6 +27,14 @@ from app.services.observability.tracer import build_langfuse_trace_url
 
 logger = logging.getLogger(__name__)
 
+WORKBENCH_RETRY_REQUIRED_EVENTS = [
+    "workbench.retry_requested",
+    "retry.started",
+    "retry.checkpoint_restored",
+    "dataset.query.completed",
+    "answer.completed",
+]
+
 
 def list_query_audit_traces(
     db: Session,
@@ -71,12 +79,22 @@ def get_query_audit_trace(db: Session, *, trace_id: str) -> dict[str, Any]:
             "found": False,
             "trace_id": trace_id,
             "source": "missing",
+            "provider": {"name": "missing", "available": False, "error": "trace index not found"},
             "langfuse_error": "trace index not found",
             "item": None,
             "trace": None,
             "observations": [],
             "scores": [],
             "fallback_steps": [],
+            "local_events": [],
+            "observability_contract": _build_observability_contract(
+                trace_id=trace_id,
+                conversation_id=None,
+                metadata={},
+                observations=[],
+                fallback_steps=[],
+                local_events=[],
+            ),
         }
 
     item = _trace_index_item(db, index)
@@ -85,17 +103,33 @@ def get_query_audit_trace(db: Session, *, trace_id: str) -> dict[str, Any]:
     observations = _normalize_observations(langfuse_trace)
     scores = _normalize_scores(langfuse_trace)
     fallback_steps = _fallback_steps(message)
+    local_events = _local_agentscope_events(db, trace_id=trace_id, metadata=index.metadata_json or {})
+    source = "langfuse" if langfuse_trace else "local"
 
     return {
         "found": True,
         "trace_id": trace_id,
-        "source": "langfuse" if langfuse_trace else "local",
+        "source": source,
+        "provider": {
+            "name": source,
+            "available": bool(langfuse_trace) or bool(local_events or fallback_steps),
+            "error": langfuse_error,
+        },
         "langfuse_error": langfuse_error,
         "item": item,
         "trace": _normalize_trace(langfuse_trace) if langfuse_trace else _local_trace(message, item),
         "observations": observations,
         "scores": scores,
         "fallback_steps": fallback_steps,
+        "local_events": local_events,
+        "observability_contract": _build_observability_contract(
+            trace_id=trace_id,
+            conversation_id=index.conversation_id,
+            metadata=index.metadata_json or {},
+            observations=observations,
+            fallback_steps=fallback_steps,
+            local_events=local_events,
+        ),
     }
 
 
@@ -246,6 +280,126 @@ def _normalize_scores(trace: Any) -> list[dict[str, Any]]:
         }
         for score in (_to_plain(item) for item in scores)
     ]
+
+
+def _local_agentscope_events(
+    db: Session,
+    *,
+    trace_id: str,
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    thread_id = metadata.get("thread_id") if isinstance(metadata, dict) else None
+    query = db.query(models.AgentScopeEvent)
+    if thread_id:
+        query = query.filter(
+            (models.AgentScopeEvent.trace_id == trace_id)
+            | (models.AgentScopeEvent.thread_id == thread_id)
+        )
+    else:
+        query = query.filter(models.AgentScopeEvent.trace_id == trace_id)
+    events = query.order_by(models.AgentScopeEvent.id.asc()).all()
+    seen: set[int] = set()
+    out = []
+    for event in events:
+        if event.id in seen:
+            continue
+        seen.add(event.id)
+        out.append(
+            {
+                "id": event.event_id,
+                "name": event.event_type,
+                "event_type": event.event_type,
+                "thread_id": event.thread_id,
+                "message_id": event.message_id,
+                "task_id": event.task_id,
+                "trace_id": event.trace_id,
+                "metadata": event.payload_json or {},
+                "created_at": _iso(event.created_at),
+            }
+        )
+    return out
+
+
+def _build_observability_contract(
+    *,
+    trace_id: str,
+    conversation_id: int | None,
+    metadata: dict[str, Any],
+    observations: list[dict[str, Any]],
+    fallback_steps: list[dict[str, Any]],
+    local_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    # 契约只关心业务事件和 refs，不绑定 Langfuse/OTel 的内部字段名。
+    event_sources = [*observations, *fallback_steps, *local_events]
+    matched_events = _matched_contract_events(event_sources)
+    missing_events = [event for event in WORKBENCH_RETRY_REQUIRED_EVENTS if event not in matched_events]
+    attributes = _contract_attributes(
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        metadata=metadata,
+        event_sources=event_sources,
+    )
+    return {
+        "name": "workbench_retry_v1",
+        "passed": not missing_events,
+        "required_events": WORKBENCH_RETRY_REQUIRED_EVENTS,
+        "matched_events": matched_events,
+        "missing_events": missing_events,
+        "attributes": attributes,
+    }
+
+
+def _matched_contract_events(items: list[dict[str, Any]]) -> list[str]:
+    matched: list[str] = []
+    for item in items:
+        candidates = [
+            item.get("event_type"),
+            item.get("name"),
+            item.get("id"),
+            (item.get("metadata") or {}).get("event_type") if isinstance(item.get("metadata"), dict) else None,
+            (item.get("metadata") or {}).get("technical_name") if isinstance(item.get("metadata"), dict) else None,
+        ]
+        for value in candidates:
+            event = _normalize_contract_event_name(value)
+            if event in WORKBENCH_RETRY_REQUIRED_EVENTS and event not in matched:
+                matched.append(event)
+    return matched
+
+
+def _normalize_contract_event_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    for prefix in ("node.", "event."):
+        if text.startswith(prefix):
+            text = text.removeprefix(prefix)
+    return text
+
+
+def _contract_attributes(
+    *,
+    trace_id: str,
+    conversation_id: int | None,
+    metadata: dict[str, Any],
+    event_sources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    attrs = {
+        "trace_id": trace_id,
+        "conversation_id": conversation_id,
+        "thread_id": metadata.get("thread_id"),
+        "checkpoint_ref": metadata.get("checkpoint_ref"),
+        "artifact_ref": metadata.get("artifact_ref"),
+    }
+    for item in event_sources:
+        nested = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        for key in ("thread_id", "checkpoint_ref", "artifact_ref"):
+            if not attrs.get(key):
+                attrs[key] = item.get(key) or nested.get(key)
+        if not attrs.get("artifact_ref"):
+            primary_ref = nested.get("primary_ref")
+            if isinstance(primary_ref, dict):
+                attrs["artifact_ref"] = primary_ref.get("ref")
+    return attrs
 
 
 def _fallback_steps(message: models.Message | None) -> list[dict[str, Any]]:
