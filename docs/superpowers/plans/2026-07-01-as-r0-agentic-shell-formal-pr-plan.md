@@ -209,19 +209,19 @@
 | PR1.2 | Complete | Shell/Runtime boundary 均携带 BI LeadAgent action contract + `docs/test-reports/2026-07-01-as-r0-pr1-2.md` | 后续 PR1.3 用原子 tools 串 DatasetAgent tool-call runtime |
 | PR1.3 | Complete | DatasetAgent tool-call runtime 最小编排 + `docs/test-reports/2026-07-01-as-r0-pr1-3.md` | 后续 PR1.4 迁移 checkpoint/retry writer |
 | PR1.4 | Complete | Shell writer 接管 Workbench retry action 与 Chat SSE event 写回 + `docs/test-reports/2026-07-01-as-r0-pr1-4.md` | 后续 PR1.5 做双路径灰度 parity |
-| PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 下一步进入 PR1.5 双路径灰度 |
-| PR2.1 - PR2.4 | Not started | None | 等 P1 验收后再进入 |
+| PR1.5 | Complete | 双路径灰度 parity harness + `docs/test-reports/2026-07-01-as-r0-pr1-5.md` | P1 已完成；后续进入 P2 收敛 legacy runtime |
+| PR2.1 - PR2.4 | Not started | None | 下一步进入 P2.1 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. PR1.5：双路径灰度，feature flag 下新 Shell runtime 与 legacy `_stream_chat_singleturn` 对齐同一 final payload、artifact refs、trace contract。
+1. P2.1：把 `_stream_chat` 收缩为 transport adapter，业务 turn lifecycle 从 `chat.py` 迁走。
 
 优先级建议：
 
-1. 先补 parity 测试，证明新 Shell runtime 和 legacy path 在 final payload、artifact refs、trace contract 上一致。
-2. 再实现 feature flag 下的灰度对齐，不改变默认关闭行为。
+1. 先识别 `chat.py` 中 transport、AgentScope mirror、业务 lifecycle 的边界。
+2. 再做最小 adapter 抽取，不改变旧 `/chat`、`/workbench`、retry harness 和 trace contract。
 
 ## 5.1 Completed Task Reports
 
@@ -334,6 +334,17 @@
 - `docs/test-reports/2026-07-01-as-r0-pr1-4.md`
 
 **Result:** 新增 `AgentScopeMirrorShellWriter`，把 Shell event/action/checkpoint 写回契约桥接到 AgentScope mirror。Workbench retry request 现在通过 `DatalogueAgenticShell.record_action()` 写入 `workbench.retry_requested`；Chat SSE event projection 先经 `DatalogueAgenticShell.record_event()` 清洗，再由 writer 调回既有 `record_stream_event()`，因此 `retry.started`、`retry.checkpoint_restored`、`dataset.query.completed`、`answer.completed` 等事件都经过 Shell writer，但底层 mirror projection 和 provider-neutral observability contract 保持兼容。
+
+### PR1.5: 双路径灰度 parity
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/tests/test_agentscope_chat_bridge.py`
+- `docs/test-reports/2026-07-01-as-r0-pr1-5.md`
+
+**Result:** 新增 runtime parity harness，在 `AS_R0_AGENTIC_RUNTIME_ENABLED=false/true` 下用同一 `_stream_chat` 请求验证 final payload 完全一致，并校验 AgentScope assistant message 的 `artifact_ref` 与 `trace_ref` 保持一致。PR1.5 不默认开启新 runtime，不替换 DatasetAgent 主链，只把 PR1.1 已有的 Shell wrapper 灰度路径固化为正式验收闸门。
 
 ## 6. Proposed Plan Changes
 

@@ -107,6 +107,7 @@
 
 - AS-R0 P0 Agentic Shell 契约层骨架建立：`DatalogueAgenticShell` 固定只启用 `bi_lead_agent`，Report/Python/Audit 作为 disabled placeholder；新增 BI 业务能力名、工具白名单、上下文投影、输出清洗和 `BIAtomicToolProvider` 安全目录摘要骨架，保留 `/chat/stream` 主链不替换。
 - AS-R0 P0 Runtime 边界适配建立：`DatalogueAgentScopeRuntimeDriver` 将 Shell turn contract 投影成 Runtime 可见安全契约，只包含 projected context、BI atomic tool registry、业务能力、disabled tools/agents，不启动真实 AgentScope runner、不调用旧 `ask_bi`。
+- AS-R0 P1-prep Chat Stream Runtime Shadow 建立：新增默认关闭的 `AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED`，开启后只把 Shell/Runtime boundary 安全摘要写入 AgentScope mirror metadata，不改变 SSE 输出和现有主链执行。
 
 ## 高价值判断
 
@@ -117,15 +118,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 10:45 · AS-R0 P0 Chat Stream Runtime Shadow
-
-- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/agentscope_chat_bridge.py`、`datalogue-api/tests/test_agentscope_chat_bridge.py`、`.codex/project-memory.md`
-- 关键改动：新增 `AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED` feature flag，默认关闭；开启后 `/chat/stream` wrapper 在进入现有单轮/多轮主链前生成 `DatalogueAgenticShell -> DatalogueAgentScopeRuntimeDriver` 边界契约，并将安全摘要写入 AgentScope mirror 的 session/user metadata `agentic_runtime_boundary`；SSE 输出和真实执行仍走原 Datalogue 主链。
-- 安全边界：shadow path 只记录 `projected_context`、BI atomic tool registry、业务能力名和 disabled 列表；生成失败只写 warning，不中断 `/chat/stream`；旧 `AgentScopeShellAdapter`、`ask_bi`、LangGraph/DatasetAgent 主链均未替换。
-- TDD 记录：先新增 `test_chat_stream_shadow_runtime_boundary_records_safe_contract` 和默认关闭测试，RED 失败为 metadata 缺少 `agentic_runtime_boundary`；实现配置、chat helper 和 mirror metadata 白名单后转 GREEN。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py::test_chat_stream_shadow_runtime_boundary_records_safe_contract tests/test_agentscope_chat_bridge.py::test_chat_stream_shadow_runtime_boundary_defaults_off -q`，2 条通过；后续合并验证继续覆盖 AS-R0 contract、Runtime driver、旧 AgentScope adapter 和 ask_bi。
-- 残留风险：第三刀仍是影子路径，不启动真实 AgentScope SDK runner；下一步可在 shadow contract 旁增加 trace-only event/checkpoint refs，或在 feature flag 下接入 runner dry-run 但保持主链输出不变。
 
 ### 2026-07-01 10:54 · AS-R0 正式 PR 计划口径收口
 
@@ -205,3 +197,11 @@
 - TDD 记录：先新增 PR1.4 writer 测试并确认 RED 为 Workbench action 没有 Shell 接入点、Chat SSE projection 没有调用 Shell `record_event()`；接入 writer 后转 GREEN。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentic_shell_retry_writer.py -q`，2 条通过、2 个既有 warning；执行 `tests/test_agentic_shell_retry_writer.py tests/test_workbench_retry_actions.py tests/test_c3_workbench_acceptance.py -q`，13 条通过、10 个既有 warning；执行 observability/retry checkpoint 回归 4 条通过、6 个既有 warning；提交前 AS-R0 最小回归 42 条通过、4 个既有 warning，Workbench/observability/retry 回归 15 条通过、14 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：PR1.4 完成 writer ownership 迁移，但新 Shell runtime 与 legacy direct stream 的 final payload/artifact refs/trace contract parity 仍留给 PR1.5。
+
+### 2026-07-01 11:48 · AS-R0 PR1.5 双路径灰度 parity
+
+- 涉及文件：`datalogue-api/tests/test_agentscope_chat_bridge.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-5.md`、`.codex/project-memory.md`
+- 关键改动：新增 `AS_R0_AGENTIC_RUNTIME_ENABLED=false/true` 双路径 parity harness，用同一 `_stream_chat` 请求验证 Shell runtime wrapper 与 legacy path 输出同一 final payload、同一 artifact refs 和同一 trace contract。
+- 安全边界：PR1.5 不默认开启新 runtime，不替换 DatasetAgent 主链，不把 P2 legacy 收敛提前；只把 PR1.1 已有 wrapper 行为固化为正式灰度验收闸门。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py::test_agentic_runtime_flag_preserves_legacy_final_payload_refs_and_trace_contract -q`，1 条通过、2 个既有 warning；执行 AS-R0/chat 回归 `tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_agentscope_runtime_driver_contract.py tests/test_as_r0_security_matrix.py tests/test_event_envelope.py -q`，45 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：P1 已完成；下一步 P2.1 要把 `_stream_chat` 收缩为 transport adapter，并把业务 turn lifecycle 从 `chat.py` 迁出。
