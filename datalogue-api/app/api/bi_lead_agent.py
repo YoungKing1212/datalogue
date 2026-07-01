@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -36,7 +38,7 @@ _BUSINESS_REQUEST_ERRORS = {
 }
 
 
-def _raise_http_error(exc: ValueError) -> None:
+def _raise_http_error(exc: ValueError) -> NoReturn:
     """把服务层业务错误映射到 HTTP；未知 ValueError 仍按 400 处理，避免误映射成 404。"""
 
     error_code = str(exc)
