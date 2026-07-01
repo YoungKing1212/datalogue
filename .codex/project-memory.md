@@ -213,3 +213,12 @@
 - TDD 记录：先新增 `test_agentscope_runtime_driver_contract.py` 并确认 RED 为 `ModuleNotFoundError: No module named 'app.services.agentscope_runtime_driver'`；实现 driver 后转 GREEN，覆盖只接受 `AgenticShellTurnContract`、BI atomic tool registry 不含 `ask_bi`、上下文投影脱敏、report placeholder 无工具四类断言。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_runtime_driver_contract.py -q`，4 条通过；后续合并验证继续覆盖 Agentic Shell skeleton、旧 adapter 和 ask_bi 契约。
 - 残留风险：当前只是 Runtime 边界 contract，尚未接 AgentScope SDK runner，也未把 DatasetAgent compile/execute/create artifact 工具注册为可执行；下一步应在 feature flag 下做 `/chat/stream -> AgenticShell -> Runtime driver` 的只读/影子路径对齐。
+
+### 2026-07-01 10:45 · AS-R0 P0 Chat Stream Runtime Shadow
+
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/agentscope_chat_bridge.py`、`datalogue-api/tests/test_agentscope_chat_bridge.py`、`.codex/project-memory.md`
+- 关键改动：新增 `AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED` feature flag，默认关闭；开启后 `/chat/stream` wrapper 在进入现有单轮/多轮主链前生成 `DatalogueAgenticShell -> DatalogueAgentScopeRuntimeDriver` 边界契约，并将安全摘要写入 AgentScope mirror 的 session/user metadata `agentic_runtime_boundary`；SSE 输出和真实执行仍走原 Datalogue 主链。
+- 安全边界：shadow path 只记录 `projected_context`、BI atomic tool registry、业务能力名和 disabled 列表；生成失败只写 warning，不中断 `/chat/stream`；旧 `AgentScopeShellAdapter`、`ask_bi`、LangGraph/DatasetAgent 主链均未替换。
+- TDD 记录：先新增 `test_chat_stream_shadow_runtime_boundary_records_safe_contract` 和默认关闭测试，RED 失败为 metadata 缺少 `agentic_runtime_boundary`；实现配置、chat helper 和 mirror metadata 白名单后转 GREEN。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_chat_bridge.py::test_chat_stream_shadow_runtime_boundary_records_safe_contract tests/test_agentscope_chat_bridge.py::test_chat_stream_shadow_runtime_boundary_defaults_off -q`，2 条通过；后续合并验证继续覆盖 AS-R0 contract、Runtime driver、旧 AgentScope adapter 和 ask_bi。
+- 残留风险：第三刀仍是影子路径，不启动真实 AgentScope SDK runner；下一步可在 shadow contract 旁增加 trace-only event/checkpoint refs，或在 feature flag 下接入 runner dry-run 但保持主链输出不变。

@@ -162,6 +162,9 @@ def _safe_initial_payload(metadata: dict) -> dict:
     for key in ("dataset_id", "candidate_id", "checkpoint_ref", "legacy_conversation_id"):
         if metadata.get(key) is not None:
             payload[key] = metadata[key]
+    if isinstance(metadata.get("agentic_runtime_boundary"), dict):
+        # AS-R0 shadow boundary 已由 Agentic Shell sanitizer 处理；这里只允许整块安全契约进 mirror metadata。
+        payload["agentic_runtime_boundary"] = metadata["agentic_runtime_boundary"]
     return payload
 
 

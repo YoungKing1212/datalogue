@@ -89,6 +89,7 @@ from app.services.agentscope_chat_bridge import (
     interrupt_chat_turn,
     record_stream_event,
 )
+from app.services.agentscope_runtime_driver import DatalogueAgentScopeRuntimeDriver
 from app.services.message_gateway import classify_turn_event
 from app.services.task_capsule import (
     build_query_task_capsule,
@@ -4409,18 +4410,53 @@ def _persist_completed_turn(
     return True
 
 
-def _begin_agentscope_chat_bridge(payload: schemas.ChatRequest, db: Session) -> AgentScopeChatBridgeContext:
+def _build_agentic_runtime_shadow_boundary(
+    payload: schemas.ChatRequest,
+    *,
+    settings: Any,
+) -> dict | None:
+    if not bool(getattr(settings, "AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED", False)):
+        return None
+    try:
+        runtime_contract = DatalogueAgentScopeRuntimeDriver().prepare_runtime(
+            question=payload.question,
+            context={
+                "conversation_id": payload.conversation_id,
+                "dataset_id": payload.dataset_id,
+                "thread_id": payload.thread_id,
+                "session_id": payload.session_id,
+                "checkpoint_ref": payload.retry_checkpoint_ref,
+            },
+        )
+        _log_chat_stream_checkpoint(
+            "agentic_runtime_shadow_prepared",
+            status=runtime_contract.status,
+            selected_agent=runtime_contract.selected_agent,
+            tool_count=len(runtime_contract.tool_registry),
+            disabled_tool_count=len(runtime_contract.disabled_tools),
+        )
+        return runtime_contract.model_dump(mode="json")
+    except Exception as exc:  # noqa: BLE001
+        # 影子路径只能记录 contract，不能影响现有 /chat/stream 主链执行。
+        logger.warning("[AS-R0] Agentic runtime shadow boundary 生成失败，不中断主链: %s", exc)
+        return None
+
+
+def _begin_agentscope_chat_bridge(
+    payload: schemas.ChatRequest,
+    db: Session,
+    *,
+    agentic_runtime_boundary: dict | None = None,
+) -> AgentScopeChatBridgeContext:
     raw_thread_id = payload.thread_id
-    return begin_chat_turn(
-        db,
-        raw_thread_id=raw_thread_id,
-        user_text=payload.question,
-        metadata={
-            "dataset_id": payload.dataset_id,
-            "checkpoint_ref": payload.retry_checkpoint_ref,
-            "legacy_conversation_id": payload.conversation_id,
-        },
-    )
+    metadata = {
+        "dataset_id": payload.dataset_id,
+        "checkpoint_ref": payload.retry_checkpoint_ref,
+        "legacy_conversation_id": payload.conversation_id,
+    }
+    if agentic_runtime_boundary is not None:
+        metadata["agentic_runtime_boundary"] = agentic_runtime_boundary
+    return begin_chat_turn(db, raw_thread_id=raw_thread_id, user_text=payload.question, metadata=metadata)
 
 
 def _record_agentscope_event_from_sse(
@@ -4566,7 +4602,12 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
         session_id=payload.session_id,
         multiturn_enabled=bool(settings.MULTITURN_ENABLED),
     )
-    agentscope_context = _begin_agentscope_chat_bridge(payload, db)
+    agentic_runtime_boundary = _build_agentic_runtime_shadow_boundary(payload, settings=settings)
+    agentscope_context = _begin_agentscope_chat_bridge(
+        payload,
+        db,
+        agentic_runtime_boundary=agentic_runtime_boundary,
+    )
     if not settings.MULTITURN_ENABLED:
         # 关闭多轮时直接下钻单轮链路，后续不会出现锁和 ConversationState 写回日志。
         _log_chat_stream_checkpoint(

@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # LeadAgent Planner 输入投影灰度开关；默认关闭，生产按环境变量切流。
     LEAD_AGENT_PLANNER_USE_PROJECTION: bool = False
     LEAD_AGENT_ENABLE_DATASET_FANOUT: bool = False
+    # AS-R0 影子路径开关：只生成 Agentic Shell -> Runtime driver 边界契约，不替换真实 /chat/stream 主链。
+    AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED: bool = False
 
     QUERY_ARTIFACT_TTL_SECONDS: int = 7 * 24 * 60 * 60
     QUERY_ARTIFACT_MAX_BYTES: int = 2 * 1024 * 1024

@@ -54,6 +54,80 @@ def test_begin_chat_turn_creates_agentscope_session_and_messages(db_session):
     assert messages[1].status == "running"
 
 
+@pytest.mark.asyncio
+async def test_chat_stream_shadow_runtime_boundary_records_safe_contract(db_session, monkeypatch):
+    from app.api import chat as chat_api
+
+    class Settings:
+        MULTITURN_ENABLED = False
+        AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED = True
+
+    async def successful_singleturn(*args, **kwargs):
+        yield {"data": json.dumps({"type": "final", "answer": "完成"}, ensure_ascii=False)}
+
+    monkeypatch.setattr("app.api.chat.get_settings", lambda: Settings())
+    monkeypatch.setattr(chat_api, "_stream_chat_singleturn", successful_singleturn)
+
+    events = [
+        event
+        async for event in chat_api._stream_chat(
+            ChatRequest(
+                question="查询 GMV",
+                dataset_id=12,
+                conversation_id=7,
+                thread_id="as_11111111-1111-1111-1111-111111111111",
+            ),
+            db_session,
+        )
+    ]
+
+    session = db_session.query(AgentScopeSession).one()
+    boundary = session.metadata_json["agentic_runtime_boundary"]
+    assert len(events) == 1
+    assert boundary["status"] == "ready"
+    assert boundary["selected_agent"] == "bi_lead_agent"
+    assert boundary["projected_context"] == {
+        "question": "查询 GMV",
+        "conversation_id": 7,
+        "dataset_id": 12,
+        "thread_id": "as_11111111-1111-1111-1111-111111111111",
+    }
+    assert [tool["name"] for tool in boundary["tool_registry"]] == [
+        "get_dataset_status",
+        "list_candidate_assets",
+        "get_artifact_summary",
+    ]
+    dumped = repr(boundary)
+    for forbidden in ("ask_bi", "AgentScopeShellAdapter", "schema", "raw_rows", "query_plan", "select "):
+        assert forbidden not in dumped
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_shadow_runtime_boundary_defaults_off(db_session, monkeypatch):
+    from app.api import chat as chat_api
+
+    class Settings:
+        MULTITURN_ENABLED = False
+        AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED = False
+
+    async def successful_singleturn(*args, **kwargs):
+        yield {"data": json.dumps({"type": "final", "answer": "完成"}, ensure_ascii=False)}
+
+    monkeypatch.setattr("app.api.chat.get_settings", lambda: Settings())
+    monkeypatch.setattr(chat_api, "_stream_chat_singleturn", successful_singleturn)
+
+    _ = [
+        event
+        async for event in chat_api._stream_chat(
+            ChatRequest(question="查询 GMV", dataset_id=12),
+            db_session,
+        )
+    ]
+
+    session = db_session.query(AgentScopeSession).one()
+    assert "agentic_runtime_boundary" not in session.metadata_json
+
+
 def test_chat_request_accepts_agentscope_thread_id():
     request = ChatRequest(
         question="继续查询",
