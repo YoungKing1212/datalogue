@@ -171,6 +171,80 @@ describe('BILeadRunPanel', () => {
     expect(screen.queryByText(/结果规模/)).not.toBeInTheDocument();
   });
 
+  it('falls back for completed runs when answer summary only contains result internals', () => {
+    const { rerender } = render(
+      <BILeadRunPanel
+        run={{
+          run_id: 15,
+          status: 'completed',
+          phase: 'summarize_run',
+          handoff: {
+            answer_summary: 'result_rows: secret_order',
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('BI LeadAgent 正在处理本次查询。')).toBeInTheDocument();
+    expect(screen.queryByText(/result_rows/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_order/i)).not.toBeInTheDocument();
+
+    rerender(
+      <BILeadRunPanel
+        run={{
+          run_id: 16,
+          status: 'completed',
+          phase: 'summarize_run',
+          handoff: {
+            answer_summary: 'result_columns: secret_col',
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('BI LeadAgent 正在处理本次查询。')).toBeInTheDocument();
+    expect(screen.queryByText(/result_columns/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
+  });
+
+  it('falls back for failed runs when error summary only contains result internals', () => {
+    render(
+      <BILeadRunPanel
+        run={{
+          run_id: 17,
+          status: 'failed',
+          phase: 'handoff_run',
+          error_summary: 'result rows: secret_order\nresult-columns: secret_col',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('查询失败，请稍后重试。')).toBeInTheDocument();
+    expect(screen.queryByText(/result rows/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/result-columns/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_order/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
+  });
+
+  it('falls back for blocked runs when error summary only contains result internals', () => {
+    render(
+      <BILeadRunPanel
+        run={{
+          run_id: 18,
+          status: 'blocked',
+          phase: 'confirm_run',
+          error_summary: 'result_rows: secret_order\nresult_columns: secret_col',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('需要补充查询条件。')).toBeInTheDocument();
+    expect(screen.queryByText(/result_rows/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/result_columns/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_order/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
+  });
+
   it('renders null without a run', () => {
     const { container } = render(<BILeadRunPanel run={null} />);
     expect(container.firstChild).toBeNull();

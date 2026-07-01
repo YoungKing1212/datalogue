@@ -26,7 +26,7 @@ function statusTitle(status) {
 
 function isSensitiveLine(line) {
   return (
-    /traceback|stack trace|\bsql\b|\bselect\b|\bfrom\b|\bdrop\b|\bdelete\b|\binsert\b|\bupdate\b|\balter\b|create\s+table|\bschema\b|\bdsl\b|raw[_\s-]*rows?/i
+    /traceback|stack trace|\bsql\b|\bselect\b|\bfrom\b|\bdrop\b|\bdelete\b|\binsert\b|\bupdate\b|\balter\b|create\s+table|\bschema\b|\bdsl\b|raw[_\s-]*rows?|result[_\s-]*rows?|result[_\s-]*columns?/i
       .test(line)
   );
 }
