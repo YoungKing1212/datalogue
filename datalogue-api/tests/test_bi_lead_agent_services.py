@@ -19,13 +19,17 @@ from app.services.bi_lead_agent.confirmation_service import BILeadAgentConfirmat
 from app.services.bi_lead_agent.run_service import BILeadAgentRunService
 
 
-def _confirmation_request(dataset_id: int, user_decision: str = "approved") -> ConfirmBILeadAgentRunRequest:
+def _confirmation_request(
+    dataset_id: int,
+    user_decision: str = "approved",
+    capability_dataset_id: int | None = None,
+) -> ConfirmBILeadAgentRunRequest:
     return ConfirmBILeadAgentRunRequest(
         dataset_id=dataset_id,
         confirmed_question="统计 2026 年订单金额",
         task_goal="按确认的数据集执行单数据集问数",
         capability_snapshot=DatasetCapabilitySummary(
-            dataset_id=dataset_id,
+            dataset_id=capability_dataset_id or dataset_id,
             name="订单数据集",
             domain="销售",
             supported_questions=["订单金额趋势"],
@@ -85,6 +89,18 @@ def test_mark_phase_persists_run_status_fields(db_session):
     assert saved.phase == "handoff_run"
     assert saved.status == "running"
     assert saved.status_reason == "handoff_started"
+    assert saved.completed_at is None
+
+
+def test_mark_phase_rejects_invalid_phase_or_status(db_session):
+    service = BILeadAgentRunService(db_session)
+    run = service.create_run(question="统计 2026 年订单金额")
+
+    with pytest.raises(ValueError, match="BI_LEAD_AGENT_PHASE_INVALID"):
+        service.mark_phase(run, phase="dataset_runtime", status="running")
+
+    with pytest.raises(ValueError, match="BI_LEAD_AGENT_STATUS_INVALID"):
+        service.mark_phase(run, phase="handoff_run", status="querying")
 
 
 def test_mark_failed_persists_failure_fields(db_session):
@@ -137,6 +153,32 @@ def test_confirm_approved_saves_snapshot_and_moves_run_to_running(db_session, sa
     assert run.phase == "confirm_run"
     assert run.status_reason == "confirmation_approved"
     assert confirmation_service.require_approved_confirmation(run.id).id == confirmation.id
+
+
+def test_confirm_rejects_dataset_snapshot_mismatch(db_session, sample_dataset):
+    run_service = BILeadAgentRunService(db_session)
+    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run = run_service.create_run(question="统计 2026 年订单金额")
+
+    with pytest.raises(ValueError, match="DATASET_CONFIRMATION_MISMATCH"):
+        confirmation_service.confirm(
+            run.id,
+            _confirmation_request(
+                sample_dataset.id,
+                "approved",
+                capability_dataset_id=sample_dataset.id + 1000,
+            ),
+        )
+
+
+def test_confirm_rejects_duplicate_decision_before_database_unique_error(db_session, sample_dataset):
+    run_service = BILeadAgentRunService(db_session)
+    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run = run_service.create_run(question="统计 2026 年订单金额")
+    confirmation_service.confirm(run.id, _confirmation_request(sample_dataset.id, "approved"))
+
+    with pytest.raises(ValueError, match="CONFIRMATION_ALREADY_DECIDED"):
+        confirmation_service.confirm(run.id, _confirmation_request(sample_dataset.id, "rejected"))
 
 
 def test_confirm_rejected_blocks_run_and_confirmation_gate_rejects(db_session, sample_dataset):

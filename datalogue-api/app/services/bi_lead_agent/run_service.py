@@ -14,12 +14,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import get_args
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.models.bi_lead_agent import BIAgentHandoff, BILeadAgentRun
-from app.schemas.bi_lead_agent import BILeadAgentHandoffResult, BILeadAgentRunResponse
+from app.schemas.bi_lead_agent import (
+    BILeadAgentHandoffResult,
+    BILeadAgentRunPhase,
+    BILeadAgentRunResponse,
+    BILeadAgentRunStatus,
+)
+
+
+_ALLOWED_RUN_PHASES = set(get_args(BILeadAgentRunPhase))
+_ALLOWED_RUN_STATUSES = set(get_args(BILeadAgentRunStatus))
+_TERMINAL_RUN_STATUSES = {"completed", "blocked", "failed", "cancelled"}
 
 
 def _new_prefixed_id(prefix: str) -> str:
@@ -52,9 +63,12 @@ class BILeadAgentRunService:
         status: str,
         status_reason: str | None = None,
     ) -> BILeadAgentRun:
+        _validate_phase_status(phase=phase, status=status)
         run.phase = phase
         run.status = status
         run.status_reason = status_reason
+        if status in _TERMINAL_RUN_STATUSES:
+            run.completed_at = datetime.now(timezone.utc)  # 终态统一落完成时间，方便轮询和审计判断 run 已收口。
         self.db.add(run)
         self.db.commit()  # 阶段切换需要及时持久化，便于前端轮询和失败恢复读取一致状态。
         self.db.refresh(run)
@@ -67,6 +81,7 @@ class BILeadAgentRunService:
         error_code: str,
         error_summary: str,
     ) -> BILeadAgentRun:
+        _validate_phase_status(phase=phase, status="failed")
         run.phase = phase
         run.status = "failed"
         run.status_reason = error_code  # status_reason 保留机器可读失败原因，UI 可再读取 error_summary 展示。
@@ -120,3 +135,12 @@ class BILeadAgentRunService:
             error_code=handoff.error_code,
             error_summary=handoff.error_summary,
         )
+
+
+def _validate_phase_status(*, phase: str, status: str) -> None:
+    """在写库前校验外层 run 状态，避免非法枚举落库后由响应 DTO 才暴露错误。"""
+
+    if phase not in _ALLOWED_RUN_PHASES:
+        raise ValueError("BI_LEAD_AGENT_PHASE_INVALID")
+    if status not in _ALLOWED_RUN_STATUSES:
+        raise ValueError("BI_LEAD_AGENT_STATUS_INVALID")

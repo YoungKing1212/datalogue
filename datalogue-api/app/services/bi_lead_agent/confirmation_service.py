@@ -31,6 +31,12 @@ class BILeadAgentConfirmationService:
         run = self.db.get(BILeadAgentRun, run_id)
         if run is None:
             raise ValueError("BI_LEAD_AGENT_RUN_NOT_FOUND")
+        if request.capability_snapshot.dataset_id != request.dataset_id:
+            # 用户确认的是能力快照里的数据集；二者不一致时必须 fail closed，不能把 A 快照放行到 B 数据集。
+            raise ValueError("DATASET_CONFIRMATION_MISMATCH")
+        if run.confirmation is not None:
+            # 单 run 只允许一次明确决策，避免前端重试/双击落到数据库唯一约束异常并变成 500。
+            raise ValueError("CONFIRMATION_ALREADY_DECIDED")
 
         decided_at = datetime.now(timezone.utc)  # approved/rejected 都是用户明确决策，审计链路必须记录决策时间。
         status_reason = (
