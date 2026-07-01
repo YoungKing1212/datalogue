@@ -124,6 +124,7 @@
 - AS-R0 P2.4 业务 Agent 受控启用完成：Report/Python/Audit optional agents 默认 disabled，显式启用时只开放单一白名单工具，Runtime registry 只注册已启用业务 Agent。
 - DatasetAgent Runtime direct 测试入口建立：本地/测试环境新增 `POST /api/chat/dataset-runtime/direct`，用最小 routing/route_decision/lead_agent_context 直通受控 DatasetAgent Runtime，作为压测 Runtime 底座；production 禁用，后续仍需替换真正 DatasetAgent-owned planner。
 - AS-R0 PR1.3-b BI atomic runtime 直接接管执行核心完成：移除两个主链灰度开关，`/chat/stream` singleturn 默认进入 Agentic Shell，单数据集 BI 查询绕过 legacy `build_workflow(db)` 并由受控 DatasetAgent tool-call runtime 串起 compile、execute、artifact summary 和 final payload。
+- AS-R0 PR1.3-c AgentScope 2.0 SDK Runtime Bridge 完成：`AgentScopeDatasetRuntimeBridge` 通过 `RequireExternalExecutionEvent -> ToolResultBlock -> ExternalExecutionResultEvent` 驱动 DatasetAgent external tools，`DatasetAgentScopeExternalTool(ToolBase)` 使用 permission hook 和 ToolMiddlewareBase 日志，安全边界继续禁止 SQL/schema/raw rows/query_plan/RepairPatch/blueprint body 外泄。
 
 ## 高价值判断
 
@@ -134,16 +135,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 15:44 · AS-R0 PR1.3-c AgentScope 2.0 SDK Runtime Bridge
-
-- 涉及文件：`datalogue-api/app/services/agentscope_dataset_runtime.py`、`datalogue-api/app/services/agentscope_middlewares/`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`datalogue-api/pyproject.toml`、`datalogue-api/requirements.txt`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr1-3-c-agentscope-sdk-runtime.md`、`.codex/project-memory.md`
-- 关键改动：新增 `AgentScopeDatasetRuntimeBridge` 和 `DatasetAgentScopeExternalTool(ToolBase)`，六个 BI 原子工具以 `is_external_tool=True` 注册；bridge 监听 `RequireExternalExecutionEvent`，执行 Datalogue 受控 BI 工具层，并用 `ToolResultBlock/TextBlock/ToolResultState` 封装成 `ExternalExecutionResultEvent` 回填 AgentScope；新增 `run_reply_stream()` 驱动 `agent.reply_stream(msg) -> external execution -> agent.reply(external_event)`；`DatasetAgentScopeExternalTool` 通过 `ToolBase(middlewares=[...])` 默认挂载 `DatasetRuntimeToolLoggingMiddleware(ToolMiddlewareBase)`，工具调用日志不再散落在 Datalogue Runtime 编排代码里。
-- 安全边界：Permission hook 使用 `PermissionContext/PermissionDecision/PermissionBehavior` fail-closed 拦截非 BI Agent、未白名单工具、乱序调用、compile 前 execute、伪造 `compiled_query_ref` 和敏感入参；ToolResultBlock 只回填 `compiled_query_ref`、artifact ref、row/column count、error summary 等安全结果，不回填 SQL、schema、raw rows、query_plan 主体、物理字段明细、RepairPatch 或 blueprint body。
-- 依赖调整：新增 `agentscope==2.0.3`；因 AgentScope 2.0.3 经 `mcp` 依赖要求较新 Pydantic，后端依赖声明调整为 `pydantic>=2.11,<3`、`pydantic-settings>=2.6,<3`，避免 fresh install resolver 和 AgentScope SDK 冲突。
-- TDD 记录：先新增 AgentScope SDK bridge 测试并确认 RED 为缺少 `app.services.agentscope_dataset_runtime`；实现 ToolBase、permission、external event、ToolResultBlock 和 reply_stream loop 后转 GREEN；修正 DSL 中空 `sql_template` 占位不能被误判为 Agent 传 SQL。
-- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_dataset_runtime_bridge.py -q`，7 条通过、2 个 warning；执行 AS-R0 宽回归 `tests/test_agentscope_dataset_runtime_bridge.py tests/test_agentic_dataset_runtime.py tests/test_as_r0_atomic_runtime_cutover.py tests/test_agentscope_chat_bridge.py tests/test_agentic_shell_contract.py tests/test_as_r0_security_matrix.py -q`，58 条通过、6 个 warning；官方 AgentScope 2.0 文档与本地 `agentscope==2.0.3` 签名确认 ToolBase、ToolMiddlewareBase、PermissionDecision、RequireExternalExecutionEvent、ExternalExecutionResultEvent、ToolResultBlock 接口可用；同步把 AS-R0 atomic cutover 测试调整为兼容 AgentScope bridge direct 入口。
-- 残留风险：当前 `/chat/stream` 生产主链仍使用 Datalogue direct atomic runtime；PR1.3-c 已补齐 AgentScope SDK bridge 和 fake agent loop，真实 LLM DatasetAgent 实例接入生产流仍需新增已批准计划。
 
 ### 2026-07-01 15:45 · 移除 Langfuse 技术栈并暂时关闭 Trace
 
@@ -223,3 +214,11 @@
 - 安全边界：`ObservabilityTraceIndex` DB 模型与 `chat.py` 写入链暂保留，因为旧主链验收仍直接断言该表；Workbench retry harness 不再调用已下线 `/api/observability/traces/{trace_id}`，改为基于本次 stream/persisted events 组装 provider-neutral contract。
 - 验证方式：执行 `pytest datalogue-api/tests/test_agentic_shell_contract.py datalogue-api/tests/test_as_r0_security_matrix.py datalogue-api/tests/test_observability.py datalogue-api/tests/test_c3_workbench_acceptance.py -q`，40 条通过、11 个既有 warning；执行 `npm test -- --run src/assistant/chat-adapter.test.js`，12 条通过；执行 `npm run lint` 通过但保留 13 个既有 warning；执行 `npm run build` 通过并保留 Vite chunk size warning；执行残留 `rg` 扫描，当前代码和生成脚本不再引用已删 API、审计页组件、Provider 兼容壳或远端 prompt 同步函数。
 - 残留风险：第三批清理应单独处理 `ObservabilityTraceIndex` 模型、迁移、`chat.py` 写入链和旧五件套验收断言；这需要数据库/测试契约级迁移，不能和本次未挂载代码清理混在同一刀里。
+
+### 2026-07-01 20:26 · BI LeadAgent K1 后端契约与 AgentScope 2.0 handoff
+
+- 涉及文件：`datalogue-api/app/models/bi_lead_agent.py`、`datalogue-api/alembic/versions/r2s3t4u5v6w7_add_bi_lead_agent_handoff.py`、`datalogue-api/app/schemas/bi_lead_agent.py`、`datalogue-api/app/services/bi_lead_agent/*`、`datalogue-api/app/api/bi_lead_agent.py`、`datalogue-api/tests/test_bi_lead_agent_*.py`、`docs/test-reports/2026-07-01-bi-lead-agent-k1.md`、`.codex/project-memory.md`
+- 关键改动：建立 BI LeadAgent K1 三开一藏能力面、run/confirmation/handoff DB 契约、H2 用户确认快照、D2 `query_dataset` 安全返回、AgentScope 2.0 `UserMsg + run_reply_stream()` Host Handoff Adapter、DatasetAgent factory、run-centric API 和 `/runs/{run_id}/handoff` endpoint；`query_multiple_datasets` 继续只作为 disabled capability 预留。
+- 安全边界：BI LeadAgent 不直接调用 `list_candidate_assets/compile_dsl_to_sql/execute_compiled_query/repair_dsl/create_query_artifact` 等 Dataset 原子工具；handoff adapter 不走 `run_direct_query()`；异常路径只返回固定安全摘要，SQL/schema/raw rows/DSL/result_rows/compiled refs/candidate assets/blueprint body/repair patch 均不进入 API response、handoff DTO 或测试可见 payload。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_lead_agent_models.py tests/test_bi_lead_agent_capabilities.py tests/test_bi_lead_agent_services.py tests/test_bi_lead_agent_handoff_adapter.py tests/test_bi_lead_agent_api.py tests/test_agentscope_dataset_runtime_bridge.py tests/test_as_r0_security_matrix.py -q`，46 条通过、2 个既有 warning；Task 3/4/5/6 均经过只读 code review，修复过确认一致性、重复确认、非法状态、AgentScope dict 消息、异常泄漏和 API `NoReturn` 类型问题。
+- 残留风险：K2 仍需把前端确认卡片、run polling、Workbench refs 和页面端到端原型接到 K1 API；K3 后续再抽象 `BIHandoffPort` 并实现 AgentScope native handoff；真实 LLM DatasetAgent live handoff 需有凭据后单独做 smoke。
