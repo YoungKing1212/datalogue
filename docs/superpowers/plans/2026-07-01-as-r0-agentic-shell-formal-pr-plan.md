@@ -202,7 +202,7 @@
 | Plan Item | Status | Evidence | Remaining Work |
 | --- | --- | --- | --- |
 | PR0.1 | Complete | C3 架构文档、C3 spec、C3 implementation plan、C3-P2 plan 和 C3 验收记录已标注 foundation / runtime ownership 边界 | 后续如发现旧口径，按本文 Plan Governance 补文档 |
-| PR0.2 | Partial | `04e01c84` | 补 event/action/checkpoint writer 接口 |
+| PR0.2 | Complete | `04e01c84` + writer interface commit | 后续 P1 再把 writer interface 接到真实 Workbench/mirror 写回 |
 | PR0.3 | Partial | `04e01c84` | 补 compile/execute/create artifact 真实受控工具边界，或经用户审核拆到 P1 |
 | PR0.4 | Partial | `04e01c84`, `39fbae95` | 补 SSE 用户可见层和 Workbench View Model 安全矩阵 |
 | PR1.1 - PR1.5 | Not started | `abcc0618`, `39fbae95` only as P1-prep | 等 PR0 完成后再进入 |
@@ -212,15 +212,13 @@
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. PR0.2：补 `event/action/checkpoint writer` 接口和测试。
-2. PR0.3：补齐 BI atomic provider 的缺口。
-3. PR0.4：补完整安全测试矩阵。
+1. PR0.3：补齐 BI atomic provider 的缺口。
+2. PR0.4：补完整安全测试矩阵。
 
 优先级建议：
 
-1. 先收口 PR0.2 writer interface。
-2. 决定 PR0.3 的 compile/execute/create artifact 是留在 PR0.3 完成，还是提交计划变更申请拆到 P1。
-3. 最后做 PR0.4 统一安全矩阵。
+1. 决定 PR0.3 的 compile/execute/create artifact 是留在 PR0.3 完成，还是提交计划变更申请拆到 P1。
+2. 最后做 PR0.4 统一安全矩阵。
 
 ## 5.1 Completed Task Reports
 
@@ -238,6 +236,18 @@
 - `docs/test-reports/2026-07-01-as-r0-pr0-1.md`
 
 **Result:** C3 Workbench / mirror 已明确标注为 AS-R0 foundation，而不是 AgentScope Runtime ownership 完成态；迁移闸门明确 P0 不替换 `/chat/stream`，P1 才开始 runtime ownership 迁移，P2 才收敛 legacy runtime 和扩展业务 Agent。
+
+### PR0.2: `DatalogueAgenticShell` writer interface
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/services/agentic_shell.py`
+- `datalogue-api/tests/test_agentic_shell_contract.py`
+- `docs/test-reports/2026-07-01-as-r0-pr0-2.md`
+
+**Result:** `DatalogueAgenticShell` 已新增 event/action/checkpoint writer interface、Noop writer 和测试用 memory writer。P0 阶段只产出并清洗安全写入记录，不替换现有 Workbench/retry 写回，不产生数据库或外部副作用。
 
 ## 6. Proposed Plan Changes
 

@@ -132,6 +132,7 @@
 - C3-P2 PR1 启动 Workbench 产品化状态模型：后端新增 `WorkbenchStatusSummary`，统一表达 `empty/running/completed/failed/interrupted/read_only`、actionable、primary artifact、retry checkpoint 和 trace ref。
 - Workbench Panel 使用后端 `status_summary` 渲染状态卡、空态、失败诊断摘要、Artifact 详情抽屉和 retry 后主产物自动聚焦；artifact detail 增加 thread ownership scope，用户可见层继续禁止 SQL/schema/raw rows/query_plan/field_patch。
 - C3-P2 PR1 浏览器验收闸门补证修复 artifact detail ownership gate，真实 `as_*` completed thread 和隐藏 Workbench route 可打开同一脱敏产物；旧 `/chat/44` 仍只读，页面扫描未命中 raw rows、query_plan、field_patch、direct_sql、llm_sql 或 SELECT 泄露。
+- C3-P2 PR1 真实浏览器 retry completed 复验确认 `/api/workbench/actions/retry -> /api/chat/stream -> Workbench Panel completed` 跑通，refs、checkpoint、trace 和 mirror events 对齐。
 - 验证覆盖后端 Workbench/ViewModel/retry/event/retry checkpoint pytest、前端 Workbench/route/chat/artifact/thread-list/workbench-api 测试、py_compile、lint/build 和 `git diff --check`。
 
 ## 高价值判断
@@ -143,15 +144,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-06-30 17:05 · C3-P2 PR1 真实浏览器 Retry Completed 复验
-
-- 涉及文件：`docs/main-chain-acceptance-records/2026-06-30-c3-agentscope-workbench.md`、`.codex/project-memory.md`
-- 关键改动：恢复真实 MySQL 数据源 `retail_test_mysql` 后，重新种入基于完整 checkpoint 上下文的 `as_*` failed 会话，使用真实浏览器在 Chat 右侧 Workbench 点击 `重试`，完整跑通 `/api/workbench/actions/retry -> /api/chat/stream -> Workbench Panel completed`；本次没有改业务代码，只补验收证据和项目记录。
-- 真实验收：复验线程 `thread_id=as_e5ccbdd5-d026-45cc-b6bd-720bcae88dff`、原 retry checkpoint `checkpoint://c3-p2-browser-answer-ef401505/query_context_ready`；页面最终显示 `已完成`、`retry.checkpoint_restored -> dataset.query.completed -> retry.completed -> answer.completed`，主产物 `artifact:4359f70b36344dfeb07afa884f81bbe1`、报告占位 `artifact:ae88e62df89f44d2be8bcab5e1dd4f70`、trace `0afae92c6ece62037d78e9a7e21e84c8`、新 checkpoint `checkpoint://conv-43-msg-125/query_context_ready`。
-- 后端核验：AgentScope mirror 中同一 thread 持久化 `assistant failed -> assistant running -> user completed -> assistant completed`，events 包含 `workbench.retry_requested`、`retry.started`、`retry.checkpoint_restored`、`dataset.query.completed`、`retry.completed`、`answer.completed`；Workbench View Model 返回 `status_summary.status=completed` 和同一 primary artifact ref。
-- 验证方式：真实浏览器页面 DOM 扫描未命中 `raw_rows/raw_result/query_plan/field_patch/direct_sql/llm_sql/SELECT`；随后执行后端 C3-P2 验收 pytest、前端 Workbench/Chat 相关测试、`npm run lint`、`npm run build` 和 `git diff --check`。
-- 残留风险：本次复验确认浏览器 retry 到 completed 和 refs 持久化一致；Langfuse UI 仍受本地登录权限限制，后续如要做人工 UI 深链核对，需要先登录对应 Langfuse 项目。
 
 ### 2026-06-30 17:35 · C3-P2 Retry Completed 自动化 Harness
 
@@ -228,3 +220,12 @@
 - 安全边界：文档明确 C3 mirror 只承接会话、消息、事件、refs、Workbench View Model、retry 回放和审计兜底；不启动 AgentScope runner，不让 AgentScope 生成 SQL，不让 AgentScope 读取 schema、raw rows、query_plan 或 trace-only metadata。
 - 验证方式：执行 PR0.1 文档口径扫描、AS-R0 最小 pytest/py_compile 和 `git diff --check`；测试报告记录在 `docs/test-reports/2026-07-01-as-r0-pr0-1.md`。
 - 残留风险：PR0.1 只收口文档与迁移闸门，不补 PR0.2 writer interface、PR0.3 atomic provider 真实工具缺口或 PR0.4 安全测试矩阵。
+
+### 2026-07-01 11:18 · AS-R0 PR0.2 Agentic Shell Writer 接口
+
+- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr0-2.md`、`.codex/project-memory.md`
+- 关键改动：为 `DatalogueAgenticShell` 新增 `AgenticShellWriteRecord`、`AgenticShellWriter` Protocol、默认 `NoopAgenticShellWriter`、测试用 `InMemoryAgenticShellWriter`，并提供 `record_event`、`record_action`、`record_checkpoint` 三个接口。
+- 安全边界：writer 接口只产出清洗后的业务级写入记录，默认不持久化、不连接 DB、不替换 Workbench/retry 写回；payload 继续阻断 SQL、schema、物理字段、raw rows、query_plan 和 RepairPatch 主体。
+- TDD 记录：先新增 writer 测试并确认 RED 为 `ImportError: cannot import name 'InMemoryAgenticShellWriter'`；实现最小接口后定向测试转 GREEN。
+- 验证方式：writer 定向测试 `2 passed, 2 warnings`；AS-R0 最小回归 `30 passed, 4 warnings`；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：PR0.2 仍只是接口层；真实 event/action/checkpoint 写回到 Workbench/mirror 要等 P1 runtime adapter 迁移时接入。

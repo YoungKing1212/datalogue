@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from app.models.dataset import AnalysisBlueprint
 from app.services.agentic_bi_tools import BIAtomicToolProvider
-from app.services.agentic_shell import DatalogueAgenticShell
+from app.services.agentic_shell import DatalogueAgenticShell, InMemoryAgenticShellWriter
 
 
 def test_agentic_shell_as_r0_registry_enables_only_bi_main_chain():
@@ -111,6 +111,73 @@ def test_agentic_shell_non_bi_task_routes_to_disabled_placeholder_without_tools(
     assert contract.enabled_agents == ["bi_lead_agent"]
     assert "report_agent" in contract.disabled_agents
     assert contract.tool_policy.allowed_tools == []
+
+
+def test_agentic_shell_writer_interface_sanitizes_event_action_and_checkpoint_payloads():
+    writer = InMemoryAgenticShellWriter()
+    shell = DatalogueAgenticShell(writer=writer)
+
+    event_record = shell.record_event(
+        event_type="dataset.query.completed",
+        thread_id="as_thread",
+        message_id="msg-1",
+        payload={
+            "artifact_ref": "artifact:query:1",
+            "sql": "select * from orders",
+            "raw_rows": [{"amount": 1}],
+            "query_plan": {"steps": ["internal"]},
+        },
+    )
+    action_record = shell.record_action(
+        action_id="retry_last_step",
+        thread_id="as_thread",
+        message_id="msg-1",
+        payload={
+            "checkpoint_ref": "checkpoint://task/query_context_ready",
+            "selected_action": "retry_last_step",
+            "schema": {"orders": ["amount"]},
+            "repairPatch": {"body": "internal"},
+        },
+    )
+    checkpoint_record = shell.record_checkpoint(
+        checkpoint_ref="checkpoint://task/query_context_ready",
+        thread_id="as_thread",
+        message_id="msg-1",
+        payload={
+            "checkpoint_kind": "query_context_ready",
+            "dataset_id": 12,
+            "fields": ["orders.amount"],
+            "raw_result": [{"amount": 1}],
+        },
+    )
+
+    assert [record.write_kind for record in writer.records] == ["event", "action", "checkpoint"]
+    assert event_record.payload == {"artifact_ref": "artifact:query:1"}
+    assert action_record.payload == {
+        "checkpoint_ref": "checkpoint://task/query_context_ready",
+        "selected_action": "retry_last_step",
+    }
+    assert checkpoint_record.payload == {"checkpoint_kind": "query_context_ready", "dataset_id": 12}
+    assert all(record.persisted is False for record in writer.records)
+
+    dumped = repr([record.model_dump(mode="json") for record in writer.records])
+    for forbidden in ("select *", "raw_rows", "query_plan", "orders.amount", "repairPatch", "raw_result"):
+        assert forbidden not in dumped
+
+
+def test_agentic_shell_default_writer_is_noop_interface_only():
+    shell = DatalogueAgenticShell()
+
+    record = shell.record_event(
+        event_type="answer.completed",
+        thread_id="as_thread",
+        payload={"artifact_ref": "artifact:query:1"},
+    )
+
+    assert record.write_kind == "event"
+    assert record.persisted is False
+    assert record.writer_name == "noop"
+    assert record.payload == {"artifact_ref": "artifact:query:1"}
 
 
 def test_bi_atomic_tool_provider_exposes_safe_dataset_status_and_full_catalog(

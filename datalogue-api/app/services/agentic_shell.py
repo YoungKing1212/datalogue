@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 AgentStatus = Literal["enabled", "disabled"]
 AgenticShellStatus = Literal["ready", "disabled"]
 TaskType = Literal["bi_query", "report", "python_analysis", "audit", "unsupported"]
+AgenticShellWriteKind = Literal["event", "action", "checkpoint"]
 
 
 AS_R0_ALLOWED_BI_TOOLS = [
@@ -163,11 +164,65 @@ class AgenticShellTurnContract(BaseModel):
         return [agent.name for agent in self.agent_registry if agent.status == "disabled"]
 
 
+class AgenticShellWriteRecord(BaseModel):
+    """Shell 写回接口的安全记录；P0 只定义契约，不替换现有持久化主链。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    write_kind: AgenticShellWriteKind
+    writer_name: str
+    persisted: bool = False
+    thread_id: str
+    message_id: str | None = None
+    event_type: str | None = None
+    action_id: str | None = None
+    checkpoint_ref: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgenticShellWriter(Protocol):
+    """event/action/checkpoint 写回接口；后续 P1 再接真实 Workbench/mirror 写入。"""
+
+    writer_name: str
+
+    def write(self, record: AgenticShellWriteRecord) -> AgenticShellWriteRecord:
+        ...
+
+
+class NoopAgenticShellWriter:
+    """默认 writer 只返回安全记录，不产生外部副作用。"""
+
+    writer_name = "noop"
+
+    def write(self, record: AgenticShellWriteRecord) -> AgenticShellWriteRecord:
+        return record.model_copy(update={"writer_name": self.writer_name, "persisted": False})
+
+
+class InMemoryAgenticShellWriter:
+    """测试用 writer：记录 Shell 产出的安全写入契约，不连接数据库或 Workbench。"""
+
+    writer_name = "memory"
+
+    def __init__(self) -> None:
+        self.records: list[AgenticShellWriteRecord] = []
+
+    def write(self, record: AgenticShellWriteRecord) -> AgenticShellWriteRecord:
+        stored = record.model_copy(update={"writer_name": self.writer_name, "persisted": False})
+        self.records.append(stored)
+        return stored
+
+
 class DatalogueAgenticShell:
     """AS-R0 Agentic Shell 统一入口；当前只生成契约，不替换 /chat/stream。"""
 
-    def __init__(self, *, registry: list[AgentRegistryEntry] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        registry: list[AgentRegistryEntry] | None = None,
+        writer: AgenticShellWriter | None = None,
+    ) -> None:
         self.registry = registry or self._default_registry()
+        self.writer = writer or NoopAgenticShellWriter()
 
     def prepare_turn(
         self,
@@ -243,6 +298,82 @@ class DatalogueAgenticShell:
         if isinstance(value, str):
             return None if self._looks_like_execution_payload(value) else value
         return value
+
+    def record_event(
+        self,
+        *,
+        event_type: str,
+        thread_id: str,
+        message_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> AgenticShellWriteRecord:
+        record = self._build_write_record(
+            write_kind="event",
+            thread_id=thread_id,
+            message_id=message_id,
+            event_type=event_type,
+            payload=payload,
+        )
+        return self.writer.write(record)
+
+    def record_action(
+        self,
+        *,
+        action_id: str,
+        thread_id: str,
+        message_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> AgenticShellWriteRecord:
+        record = self._build_write_record(
+            write_kind="action",
+            thread_id=thread_id,
+            message_id=message_id,
+            action_id=action_id,
+            payload=payload,
+        )
+        return self.writer.write(record)
+
+    def record_checkpoint(
+        self,
+        *,
+        checkpoint_ref: str,
+        thread_id: str,
+        message_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> AgenticShellWriteRecord:
+        record = self._build_write_record(
+            write_kind="checkpoint",
+            thread_id=thread_id,
+            message_id=message_id,
+            checkpoint_ref=checkpoint_ref,
+            payload=payload,
+        )
+        return self.writer.write(record)
+
+    def _build_write_record(
+        self,
+        *,
+        write_kind: AgenticShellWriteKind,
+        thread_id: str,
+        message_id: str | None = None,
+        event_type: str | None = None,
+        action_id: str | None = None,
+        checkpoint_ref: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> AgenticShellWriteRecord:
+        # Writer 接口只能接收 Shell 清洗后的业务级 payload，真实持久化留到 P1 适配层。
+        safe_payload = self.sanitize_output(payload or {})
+        return AgenticShellWriteRecord(
+            write_kind=write_kind,
+            writer_name=getattr(self.writer, "writer_name", "unknown"),
+            persisted=False,
+            thread_id=thread_id,
+            message_id=message_id,
+            event_type=event_type,
+            action_id=action_id,
+            checkpoint_ref=checkpoint_ref,
+            payload=safe_payload if isinstance(safe_payload, dict) else {},
+        )
 
     @staticmethod
     def _default_registry() -> list[AgentRegistryEntry]:
