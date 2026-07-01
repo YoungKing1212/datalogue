@@ -83,6 +83,25 @@ def test_agentscope_runtime_driver_registers_bi_atomic_tools_without_ask_bi():
         assert forbidden not in dumped
 
 
+def test_agentscope_runtime_driver_exposes_future_tools_only_as_disabled_or_admin_gated():
+    runtime_contract = DatalogueAgentScopeRuntimeDriver().prepare_runtime(
+        question="查询 GMV",
+        context={"dataset_id": 12},
+    )
+
+    assert {
+        tool.name: tool.status for tool in runtime_contract.disabled_tool_specs
+    } == {
+        "repair_dsl": "admin_gated",
+        "classify_query_failure": "disabled",
+        "create_report_from_artifact": "admin_gated",
+        "run_sandboxed_analysis_on_artifact": "admin_gated",
+    }
+    assert all(tool.gate in {"admin_only", "not_enabled"} for tool in runtime_contract.disabled_tool_specs)
+    registered = {tool.name for tool in runtime_contract.tool_registry}
+    assert registered.isdisjoint({tool.name for tool in runtime_contract.disabled_tool_specs})
+
+
 def test_agentscope_runtime_driver_projects_context_without_execution_payloads():
     runtime_contract = DatalogueAgentScopeRuntimeDriver().prepare_runtime(
         question="查询销售额",

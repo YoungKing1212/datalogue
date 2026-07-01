@@ -212,18 +212,19 @@
 | PR1.5 | Complete | 双路径灰度 parity harness + `docs/test-reports/2026-07-01-as-r0-pr1-5.md` | P1 已完成；后续进入 P2 收敛 legacy runtime |
 | P2.1 | Complete | `_stream_chat` transport adapter 收缩 + `docs/test-reports/2026-07-01-as-r0-p2-1.md` | 后续 P2.2 收敛 legacy adapter / `ask_bi` |
 | P2.2 | Complete | legacy adapter / `ask_bi` compatibility contract + `docs/test-reports/2026-07-01-as-r0-p2-2.md` | 后续 P2.3 接入 future tools disabled/admin-gated contract |
-| P2.3 - P2.4 | Not started | None | 下一步进入 P2.3 |
+| P2.3 | Complete | future tools disabled/admin-gated contract + `docs/test-reports/2026-07-01-as-r0-p2-3.md` | 后续 P2.4 分别受控启用业务 Agent |
+| P2.4 | Not started | None | 下一步进入 P2.4 |
 
 ## 5. Next Allowed Work Without Plan Change
 
 以下工作可继续执行，因为它们直接属于现有正式计划：
 
-1. P2.3：接入后续 tools：`repair_dsl`、`classify_query_failure`、`create_report_from_artifact`、`run_sandboxed_analysis_on_artifact`，默认 disabled 或 admin-gated。
+1. P2.4：ReportAgent/PythonAgent/AuditAgent 从 placeholder 到受控启用，每个 Agent 单独 PR、单独白名单、单独验收。
 
 优先级建议：
 
-1. 先补 future tool policy 测试，确认这些工具不会默认进入 AS-R0 allowed tool registry。
-2. 再补 disabled/admin-gated contract，避免未来工具被 Runtime 误执行。
+1. 先补每个业务 Agent 的独立 enablement gate 测试，确认默认仍是 placeholder。
+2. 再为每个 Agent 增加单独白名单/验收契约，保持 fail-closed。
 
 ## 5.1 Completed Task Reports
 
@@ -378,6 +379,20 @@
 - `docs/test-reports/2026-07-01-as-r0-p2-2.md`
 
 **Result:** `AgentScopeShellAdapter` 与 `BIWorkbenchTool` 均新增 compatibility contract，显式声明 `compatibility_mode=legacy_compatibility`、`runtime_owner=datalogue_agentic_shell`、`owns_business_runtime=false`。BI_SOUL、Hermes SOUL 和渲染 policy 同步更新为 P2 口径：legacy `ask_bi` 只作为兼容入口，不再作为 AS-R0 新主链工具。
+
+### P2.3: future tools disabled/admin-gated contract
+
+**Status:** Complete
+
+**Artifacts:**
+
+- `datalogue-api/app/services/agentic_shell.py`
+- `datalogue-api/app/services/agentscope_runtime_driver.py`
+- `datalogue-api/tests/test_agentic_shell_contract.py`
+- `datalogue-api/tests/test_agentscope_runtime_driver_contract.py`
+- `docs/test-reports/2026-07-01-as-r0-p2-3.md`
+
+**Result:** 新增 `AgenticDisabledToolSpec`，Shell policy 与 Runtime boundary 均能看到 future tools 的结构化状态。`repair_dsl`、`create_report_from_artifact`、`run_sandboxed_analysis_on_artifact` 默认 `admin_gated/admin_only`；`classify_query_failure` 默认 `disabled/not_enabled`。这些工具不会进入 Runtime executable `tool_registry`。
 
 ## 6. Proposed Plan Changes
 

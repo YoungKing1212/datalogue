@@ -110,6 +110,7 @@
 - AS-R0 P1-prep Chat Stream Runtime Shadow 建立：新增默认关闭的 `AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED`，开启后只把 Shell/Runtime boundary 安全摘要写入 AgentScope mirror metadata，不改变 SSE 输出和现有主链执行。
 - AS-R0 正式 PR 计划口径收口：`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md` 成为 PR0.1-PR0.4、PR1.1-PR1.5、P2.1-P2.4 唯一执行口径；任何新增或移动 scope 必须先进入 `Proposed Plan Changes` 等待用户审核。
 - AS-R0 PR0.1 架构文档与迁移闸门完成：C3 Workbench / mirror 被明确标注为 AS-R0 foundation，不是 AgentScope Runtime ownership 完成态；P0/P1/P2 迁移闸门和禁暴露边界进入 C3 架构文档、spec、计划和验收记录。
+- AS-R0 PR0.2 Agentic Shell Writer 接口完成：`DatalogueAgenticShell` 新增 event/action/checkpoint writer interface、Noop writer 和 InMemory writer，写回前统一走 payload sanitizer。
 
 ## 高价值判断
 
@@ -120,15 +121,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 11:18 · AS-R0 PR0.2 Agentic Shell Writer 接口
-
-- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-pr0-2.md`、`.codex/project-memory.md`
-- 关键改动：为 `DatalogueAgenticShell` 新增 `AgenticShellWriteRecord`、`AgenticShellWriter` Protocol、默认 `NoopAgenticShellWriter`、测试用 `InMemoryAgenticShellWriter`，并提供 `record_event`、`record_action`、`record_checkpoint` 三个接口。
-- 安全边界：writer 接口只产出清洗后的业务级写入记录，默认不持久化、不连接 DB、不替换 Workbench/retry 写回；payload 继续阻断 SQL、schema、物理字段、raw rows、query_plan 和 RepairPatch 主体。
-- TDD 记录：先新增 writer 测试并确认 RED 为 `ImportError: cannot import name 'InMemoryAgenticShellWriter'`；实现最小接口后定向测试转 GREEN。
-- 验证方式：writer 定向测试 `2 passed, 2 warnings`；AS-R0 最小回归 `30 passed, 4 warnings`；`py_compile` 和 `git diff --check` 通过。
-- 残留风险：PR0.2 仍只是接口层；真实 event/action/checkpoint 写回到 Workbench/mirror 要等 P1 runtime adapter 迁移时接入。
 
 ### 2026-07-01 11:34 · AS-R0 PR0.3 BI Atomic Tool Provider
 
@@ -209,3 +201,12 @@
 - TDD 记录：先新增 adapter/tool compatibility contract 测试并确认 RED 为缺少 `compatibility_contract()`；实现 contract 后转 GREEN，并同步更新 BI_SOUL 同步测试。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_bi_workbench_tool.py tests/test_bi_soul_contract.py tests/test_agentscope_runtime_driver_contract.py -q`，14 条通过、2 个既有 warning；AS-R0 最小回归 42 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
 - 残留风险：P2.3 要接入 future tools disabled/admin-gated contract，避免 repair/report/python 类工具被 Runtime 误执行。
+
+### 2026-07-01 11:48 · AS-R0 P2.3 future tools disabled/admin-gated contract
+
+- 涉及文件：`datalogue-api/app/services/agentic_shell.py`、`datalogue-api/app/services/agentscope_runtime_driver.py`、`datalogue-api/tests/test_agentic_shell_contract.py`、`datalogue-api/tests/test_agentscope_runtime_driver_contract.py`、`docs/superpowers/plans/2026-07-01-as-r0-agentic-shell-formal-pr-plan.md`、`docs/test-reports/2026-07-01-as-r0-p2-3.md`、`.codex/project-memory.md`
+- 关键改动：新增 `AgenticDisabledToolSpec`，`AgenticToolPolicy` 和 `AgentScopeRuntimeBoundaryContract` 均透传 future tools 的结构化 disabled/admin-gated 状态。
+- 安全边界：`repair_dsl`、`create_report_from_artifact`、`run_sandboxed_analysis_on_artifact` 默认 `admin_gated/admin_only`；`classify_query_failure` 默认 `disabled/not_enabled`；这些工具不进入 Runtime executable `tool_registry`。
+- TDD 记录：先新增 Shell/Runtime future tool contract 测试并确认 RED 为缺少 `disabled_tool_specs`；实现结构化 spec 和 Runtime 透传后转 GREEN。
+- 验证方式：future tool 定向测试 2 条通过、2 个既有 warning；Shell/Runtime 契约回归 18 条通过、2 个既有 warning；AS-R0 最小回归 47 条通过、4 个既有 warning；`py_compile` 和 `git diff --check` 通过。
+- 残留风险：P2.4 要为 ReportAgent/PythonAgent/AuditAgent 做单独 enablement gate、单独白名单和单独验收。

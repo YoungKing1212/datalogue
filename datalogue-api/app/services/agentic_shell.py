@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 AgentStatus = Literal["enabled", "disabled"]
 AgenticShellStatus = Literal["ready", "disabled"]
 AgenticShellActionStatus = Literal["ready", "disabled"]
+AgenticFutureToolStatus = Literal["disabled", "admin_gated"]
 TaskType = Literal["bi_query", "report", "python_analysis", "audit", "unsupported"]
 AgenticShellWriteKind = Literal["event", "action", "checkpoint"]
 AgenticStreamDelegate = Callable[[], AsyncIterator[dict[str, Any]]]
@@ -123,7 +124,19 @@ class AgenticToolPolicy(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     business_capabilities: list[str] = Field(default_factory=list)
     disabled_tools: list[str] = Field(default_factory=list)
+    disabled_tool_specs: list["AgenticDisabledToolSpec"] = Field(default_factory=list)
     policy_version: str = "as-r0"
+
+
+class AgenticDisabledToolSpec(BaseModel):
+    """P2.3 future tool 契约；默认不可执行，必要时只允许 admin gate。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    status: AgenticFutureToolStatus
+    gate: Literal["not_enabled", "admin_only"]
+    reason: str
 
 
 class ProjectedContext(BaseModel):
@@ -256,6 +269,7 @@ class DatalogueAgenticShell:
                 allowed_tools=list(AS_R0_ALLOWED_BI_TOOLS),
                 business_capabilities=list(AS_R0_BI_CAPABILITIES),
                 disabled_tools=list(AS_R0_RESERVED_DATASET_TOOLS + AS_R0_DISABLED_FUTURE_TOOLS),
+                disabled_tool_specs=self._future_tool_specs(),
             )
             if status == "ready"
             else AgenticToolPolicy(
@@ -267,6 +281,7 @@ class DatalogueAgenticShell:
                     + AS_R0_RESERVED_DATASET_TOOLS
                     + AS_R0_DISABLED_FUTURE_TOOLS
                 ),
+                disabled_tool_specs=self._future_tool_specs(),
             )
         )
         projected_context = self.project_context(question=question, context=context or {})
@@ -485,6 +500,37 @@ class DatalogueAgenticShell:
                 role="审计查询、策略与工具调用",
                 status="disabled",
                 reason="审计链路先作为 registry 占位",
+            ),
+        ]
+
+    @staticmethod
+    def _future_tool_specs() -> list[AgenticDisabledToolSpec]:
+        """P2.3：future tools 只能以 disabled/admin-gated 契约出现，不能进入 allowed_tools。"""
+
+        return [
+            AgenticDisabledToolSpec(
+                name="repair_dsl",
+                status="admin_gated",
+                gate="admin_only",
+                reason="requires_admin_repair_policy",
+            ),
+            AgenticDisabledToolSpec(
+                name="classify_query_failure",
+                status="disabled",
+                gate="not_enabled",
+                reason="failure_classifier_not_enabled",
+            ),
+            AgenticDisabledToolSpec(
+                name="create_report_from_artifact",
+                status="admin_gated",
+                gate="admin_only",
+                reason="report_agent_placeholder_disabled",
+            ),
+            AgenticDisabledToolSpec(
+                name="run_sandboxed_analysis_on_artifact",
+                status="admin_gated",
+                gate="admin_only",
+                reason="python_agent_placeholder_disabled",
             ),
         ]
 

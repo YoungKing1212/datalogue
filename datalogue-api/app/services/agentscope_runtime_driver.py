@@ -19,6 +19,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.agentic_shell import (
+    AgenticDisabledToolSpec,
     AgenticShellAction,
     AgenticShellStatus,
     AgenticShellTurnContract,
@@ -56,6 +57,7 @@ class AgentScopeRuntimeBoundaryContract(BaseModel):
     tool_registry: list[AgentScopeRuntimeToolSpec] = Field(default_factory=list)
     business_capabilities: list[str] = Field(default_factory=list)
     disabled_tools: list[str] = Field(default_factory=list)
+    disabled_tool_specs: list[AgenticDisabledToolSpec] = Field(default_factory=list)
     disabled_agents: list[str] = Field(default_factory=list)
     lead_agent_action: AgenticShellAction
 
@@ -101,6 +103,7 @@ class DatalogueAgentScopeRuntimeDriver:
             tool_registry=tool_registry,
             business_capabilities=list(shell_contract.tool_policy.business_capabilities),
             disabled_tools=list(shell_contract.tool_policy.disabled_tools),
+            disabled_tool_specs=list(shell_contract.tool_policy.disabled_tool_specs),
             disabled_agents=list(shell_contract.disabled_agents),
             lead_agent_action=lead_agent_action
             or self.shell.route_action_from_contract(shell_contract),

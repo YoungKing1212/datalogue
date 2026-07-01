@@ -63,6 +63,15 @@ def test_agentic_shell_as_r0_registry_enables_only_bi_main_chain():
     assert "ask_bi" not in contract.tool_policy.allowed_tools
     assert "repair_dsl" in contract.tool_policy.disabled_tools
     assert "create_report_from_artifact" in contract.tool_policy.disabled_tools
+    future_tool_status = {
+        tool.name: tool.status for tool in contract.tool_policy.disabled_tool_specs
+    }
+    assert future_tool_status == {
+        "repair_dsl": "admin_gated",
+        "classify_query_failure": "disabled",
+        "create_report_from_artifact": "admin_gated",
+        "run_sandboxed_analysis_on_artifact": "admin_gated",
+    }
 
 
 def test_agentic_shell_context_projection_and_output_sanitizer_drop_execution_payloads():
