@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     BI_LEAD_AGENT_DATASET_FALLBACK_MODE: str = "off"
     # BI LeadAgent handoff 实现模式；K3 后默认直接启用 AgentScope native handoff。
     BI_LEAD_AGENT_HANDOFF_MODE: str = "agentscope_native"
-    # AS-R0 影子路径开关：只生成 Agentic Shell -> Runtime driver 边界契约，不替换真实 /chat/stream 主链。
+    # AS-R0 历史影子开关：保留配置读取兼容，当前真实入口已切到 Agentic Shell task stream。
     AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED: bool = False
 
     QUERY_ARTIFACT_TTL_SECONDS: int = 7 * 24 * 60 * 60

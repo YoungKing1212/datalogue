@@ -249,7 +249,7 @@ class InMemoryAgenticShellWriter:
 
 
 class DatalogueAgenticShell:
-    """AS-R0 Agentic Shell 统一入口；当前只生成契约，不替换 /chat/stream。"""
+    """Agentic Shell 统一入口；负责生成受控回合契约并选择业务 Agent。"""
 
     def __init__(
         self,

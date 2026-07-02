@@ -22,7 +22,9 @@ def test_legacy_chat_stream_and_old_lead_agent_sources_are_removed():
     project_root = __import__("pathlib").Path(__file__).resolve().parents[1]
     app_root = project_root / "app"
     forbidden_paths = [
+        app_root / "services" / "agentscope_shell_adapter.py",
         app_root / "services" / "agentic_chat_runtime.py",
+        app_root / "services" / "bi_workbench_tool.py",
         app_root / "services" / "lead_agent.py",
         app_root / "services" / "lead_agent_routing.py",
         app_root / "services" / "lead_agent_planner_projection.py",
@@ -32,6 +34,10 @@ def test_legacy_chat_stream_and_old_lead_agent_sources_are_removed():
     forbidden_terms = [
         "LegacyWorkflowTaskRunner",
         "DatalogueChatStreamRuntime",
+        "BIWorkbenchTool",
+        "AgentScopeShellAdapter",
+        "AskBIRequest",
+        "AskBIResponse",
         "chat_stream_runtime_hooks",
         "_stream_chat",
         "lead_agent_skill_selector",

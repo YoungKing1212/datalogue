@@ -199,33 +199,23 @@ async def test_agentscope_native_handoff_uses_session_artifact_when_final_event_
 
 
 @pytest.mark.asyncio
-async def test_agentscope_native_handoff_runs_dataset_runtime_fallback_when_agent_stops_without_artifact(monkeypatch):
+async def test_agentscope_native_handoff_blocks_when_agent_stops_without_artifact():
     bridge = FakeBridge(
         events=[{"event_type": "agent.child.running", "child_run_id": "dataset-native-running"}],
         session=SimpleNamespace(artifact_ref=None, last_error=None),
     )
     native = AgentScopeNativeBIHandoff(bridge=bridge, dataset_agent_factory=FakeFactory())
-    fallback_calls = []
-
-    async def fake_direct_fallback(*, request, session):
-        fallback_calls.append({"request": request, "session": session})
-        session.artifact_ref = "artifact-native-direct"
-        return {
-            "status": "completed",
-            "artifact_ref": "artifact-native-direct",
-            "row_count": 1,
-            "column_count": 1,
-        }
-
-    monkeypatch.setattr(native, "_run_direct_runtime_fallback", fake_direct_fallback)
 
     result = await native.query_dataset(_handoff_request(), task_id="task-native")
 
-    assert fallback_calls == [{"request": _handoff_request(), "session": bridge.session}]
-    assert result.handoff_status == "completed"
-    assert result.artifact_ref == "artifact-native-direct"
-    assert result.row_count == 1
-    assert result.column_count == 1
+    assert result.handoff_status == "blocked"
+    assert result.status_reason == "native_handoff_missing_terminal_event"
+    assert result.error_code == "NATIVE_HANDOFF_MISSING_ARTIFACT"
+    assert result.error_summary == "DatasetAgent native handoff 未生成安全结果引用，已停止补执行。"
+    assert result.artifact_ref is None
+    assert result.row_count is None
+    assert result.column_count is None
+    assert all(call["method"] != "run_direct_query" for call in bridge.calls)
 
 
 @pytest.mark.asyncio

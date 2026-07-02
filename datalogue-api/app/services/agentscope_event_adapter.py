@@ -6,7 +6,7 @@
 # Responsibilities:
 #   - 将 DatalogueEventEnvelope 映射为 AgentScope Shell 第一阶段可验证事件。
 #   - 保证 control_plane 事件不进入 AgentScope 可见事件流。
-#   - 保留 trace_only 到 trace 事件的只读映射，不替换现有 /chat/stream SSE。
+#   - 保留 trace_only 到 trace 事件的只读映射，供 Agentic Shell task stream 使用。
 #
 # Author      : yangkai
 # Created On  : 2026-06-26

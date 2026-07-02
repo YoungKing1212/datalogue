@@ -504,7 +504,7 @@ function makeHistoryAdapter(getRemoteId) {
     },
     async append(_item) {
       // assistant-ui 默认会调这个把新消息存到 history；
-      // 我们的真实持久化由后端 streamChat 完成，这里 no-op 即可
+      // 真实持久化由后端 Agentic Shell task stream 完成，这里 no-op 即可
     },
   };
 }
