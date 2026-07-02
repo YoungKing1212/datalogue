@@ -33,11 +33,6 @@ from app.services.bi_lead_agent.handoff_events import (
 )
 from app.services.bi_tools import build_bi_atomic_toolkit
 from app.services.sql_preview import preview_dataset_sql
-from app.services.subagent_planning import (
-    build_query_plan_compiler_context,
-    plan_query,
-    recall_candidate_assets,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -100,11 +95,7 @@ class AgentScopeNativeBIHandoff:
                 session=session,
             )
             payload = self._collect_payload(events=events, session=session, child_run_id=child_run_id)
-            if self._needs_direct_runtime_fallback(payload=payload, session=session):
-                direct_payload = await self._run_direct_runtime_fallback(request=request, session=session)
-                if direct_payload:
-                    events.append(self._event_from_direct_payload(direct_payload, child_run_id=child_run_id))
-                    payload = self._collect_payload(events=events, session=session, child_run_id=child_run_id)
+            payload = self._fail_closed_without_terminal_evidence(payload)
             return self._result_from_payload(
                 request=request,
                 handoff_id=handoff_id,
@@ -184,57 +175,6 @@ class AgentScopeNativeBIHandoff:
 
         context.query_executor = _execute
 
-    async def _run_direct_runtime_fallback(
-        self,
-        *,
-        request: BILeadAgentHandoffRequest,
-        session: Any,
-    ) -> dict[str, Any] | None:
-        if self.db is None:
-            return None
-        dataset = self.db.get(SemanticDataset, request.dataset_id)
-        if dataset is None:
-            return None
-        route_decision = {
-            "decision": "selected",
-            "dataset_id": request.dataset_id,
-            "dataset_name": getattr(dataset, "name", None),
-            "reason": "bi_lead_agent_native_handoff",
-        }
-        routing = {
-            "entry_intent": "metric_query",
-            "entry_route": "query_graph",
-            "entry_reason": "bi_lead_agent_native_handoff",
-            "route_payload": {},
-        }
-        lead_agent_context = {
-            "selected_skills": [],
-            "planned_tool_calls": [],
-            "executed_tool_calls": [],
-            "policy_violations": [],
-            "time_context": {},
-            "thread_context": {},
-            "route_decision": route_decision,
-            "schema_status": {"status": "confirmed_by_bi_lead_agent"},
-        }
-        candidate_assets = recall_candidate_assets(
-            self.db,
-            dataset_id=request.dataset_id,
-            question=request.confirmed_question,
-            manifest_version=route_decision.get("manifest_version"),
-            bound_schema_version=route_decision.get("bound_schema_version"),
-        )
-        dsl = plan_query(
-            db=self.db,
-            question=request.confirmed_question,
-            routing=routing,
-            candidate_assets=candidate_assets,
-            multiturn_context=None,
-            lead_agent_context=lead_agent_context,
-        )
-        # AgentScope 模型可能在外部工具确认后停止继续调用；这里仍由 DatasetAgent Runtime 状态机驱动原子工具收口。
-        return await self.bridge.run_direct_query(session=session, dsl=dsl)
-
     @staticmethod
     def _collect_payload(*, events: list[Any], session: Any, child_run_id: str) -> dict[str, Any]:
         return collect_native_handoff_payload(
@@ -244,30 +184,18 @@ class AgentScopeNativeBIHandoff:
         )
 
     @staticmethod
-    def _needs_direct_runtime_fallback(*, payload: dict[str, Any], session: Any) -> bool:
+    def _fail_closed_without_terminal_evidence(payload: dict[str, Any]) -> dict[str, Any]:
         status = str(payload.get("handoff_status") or "").strip().lower()
-        if getattr(session, "artifact_ref", None) or getattr(session, "last_error", None):
-            return False
-        return status in {"", "accepted", "running", "waiting_child"}
-
-    @staticmethod
-    def _event_from_direct_payload(payload: dict[str, Any], *, child_run_id: str) -> dict[str, Any]:
-        status = str(payload.get("status") or "").strip().lower()
-        if status == "completed" and payload.get("artifact_ref"):
-            return {
-                "event_type": "agent.child.completed",
-                "child_run_id": child_run_id,
-                "artifact_ref": payload.get("artifact_ref"),
-                "answer_summary": "DatasetAgent 查询完成，已生成安全结果引用。",
-                "row_count": payload.get("row_count"),
-                "column_count": payload.get("column_count"),
-            }
-        return {
-            "event_type": "agent.child.blocked",
-            "child_run_id": child_run_id,
-            "error_code": payload.get("code") or "DATASET_RUNTIME_FALLBACK_BLOCKED",
-            "error_summary": payload.get("error_summary") or "DatasetAgent Runtime 未能生成安全结果引用。",
-        }
+        if status in {"completed", "blocked", "failed", "cancelled"}:
+            return payload
+        if payload.get("artifact_ref") or payload.get("error_code") or payload.get("error_summary"):
+            return payload
+        blocked = dict(payload)
+        blocked["handoff_status"] = "blocked"
+        blocked["status_reason"] = "native_handoff_missing_terminal_event"
+        blocked["error_code"] = "NATIVE_HANDOFF_MISSING_ARTIFACT"
+        blocked["error_summary"] = "DatasetAgent native handoff 未生成安全结果引用，已停止补执行。"
+        return blocked
 
     @staticmethod
     def _wrap_native_events(events: list[Any], *, child_run_id: str) -> list[Any]:
