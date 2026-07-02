@@ -19,6 +19,7 @@
 - 仓库存在 `.codegraph/` 时，代码探索优先用 CodeGraph。
 - 不主动回滚用户或其他工具已有改动；脏工作区只处理当前任务相关文件。
 - Datalogue 复杂问题优先做真实链路验证：页面/前端回放、Langfuse trace、后端日志、prompt/token、final payload、历史回放交叉取证。
+- Datalogue 架构头脑风暴若存在多个候选方案，先列出各方案的大体概括，再给出 Codex 的建议和理由，最后让用户选择或确认。
 - Playwright、浏览器或 E2E 截图放 `/private/tmp` 或系统临时目录，不写入仓库。
 - 新增数据库表时，Alembic 迁移必须同步添加中文表注释，并为表内每个字段添加中文字段注释；后续新增字段也必须添加中文字段注释；状态、类型、角色等字典字段要写清 `字典：code=中文含义`。
 
@@ -135,6 +136,51 @@
 - AS-R0 BI 原子工具 ToolBase/Toolkit 收口完成：`get_dataset_status/list_candidate_assets/compile_dsl_to_sql/execute_compiled_query/repair_dsl/create_query_artifact/get_artifact_summary` 迁入 `app.services.bi_tools` Toolkit，Runtime registry 不再把 Provider 作为主工具提供方。
 - AS-R0 direct 入口接入 AgentScope repair_dsl 链路完成：`POST /api/chat/dataset-runtime/direct` 切到 `AgentScopeDatasetRuntimeBridge.run_direct_query()`，compile/execute/repair_dsl/retry/artifact summary 均通过 AgentScope external execution event 状态机执行，direct 入口仍仅限非 production。
 - AS-R0 DatasetAgent Runtime 日志收口完成：删除 event-level `DatasetRuntimeLoggingMiddleware`，保留 tool-level 安全日志摘要，日志只输出 refs/计数/状态标志，不输出 SQL、schema、raw rows、query_plan、RepairPatch 或 blueprint 主体。
+- 修正数据集页面顶部“数据表”能力卡计数为当前数据集已选表数量，并补组件回归测试、lint 和 build 验证。
+- 去重 LeadAgent 两阶段 Planner Prompt，并同步 Langfuse Prompt Management 的 production v4，回读确认远端与本地一致。
+- 修复新建对话排序与本地草稿体验：新对话优先显示在最近对话顶部，未发送时不落库，发送首条消息时再创建后端会话。
+
+### 2026-06-23
+
+- SubAgent Planner 金额/合计类聚合兜底增强：当 LLM 空响应或非法 JSON 且候选资产已有字段/表时，不再误判 `unsupported/reject`，而是生成 `metric_query + query_graph` 计划交给 QueryGraph 继续执行；补充 planner 和 subagent run 回归测试。
+- `/chat/stream` 主链路 checkpoint 日志增强：统一记录 request、trace、gateway、LeadAgent 路由、SubAgent 候选资产/query plan/result、Graph 完成、落库和 final payload 等关键节点，并补充关键链路行级注释，便于页面、SSE、后端日志和 Langfuse trace 交叉取证。
+- SubAgent 规则规划器命名澄清：将 `build_fallback_query_plan` 更名为 `build_rule_based_query_plan`，同步公共导出、测试和规划文档，明确 LLM 前确定性预判与 LLM 失败后规则兜底的边界。
+- 固化关键代码中文行级注释规范与项目记忆压缩规则：更新 AGENTS、上下文入口和核心问数链路注释，要求新增或修改关键业务代码时在重要分支、跨层状态、fallback、外部副作用等位置补充解释业务边界的中文注释。
+- 关键注释进一步调整为调用行/操作行行尾注释：覆盖 chat stream checkpoint、trace context、artifact、conversation store、planner、thread list 等关键调用点，并通过 py_compile、ruff、前端 lint 和 diff check 验证。
+- SubAgent Planner LLM 原始响应诊断：新增 `_planner_response_debug()`，在普通规划和 detail loop 的 LLM 返回后记录截断后的响应类型、content 类型、metadata、usage 和 additional kwargs，便于排查空响应、非法 JSON 与服务端 token/finish reason 的真实关系；通过 planner targeted tests 和 py_compile 验证。
+- 新对话本地草稿体验修正：新建对话未发送时只保留 assistant-ui 本地草稿，不新增数据库 conversation；首条消息发送时再由 thread-list adapter 创建后端会话，并通过组件测试、lint/build 和真实会话数量检查验证。
+- 生成面向业务用户和项目负责人的数语项目整体介绍手册，弱化内部代码细节，说明已具备功能、业务问题、典型场景、使用流程、边界和可交付内容，并通过 DOCX 渲染抽查验证版式。
+- Hermes Skill 直连数语只读问数预览：新增 `POST /api/dataset/{ds_id}/sql/preview` 和 `api_assets.py plan-query/execute-sql`，按 dataset datasource、已选表、只读 SQL Guard 和查询约束执行 preview，不进入 `/api/chat/stream`，并用 dataset 12 live SQL 与 DELETE 拦截验证。
+
+### 2026-06-24
+
+- 生成当前项目工作总结与下步计划文档，面向项目负责人、业务使用方和产品/研发协作人员说明整体建设思路、已完成任务、成果截图、当前成熟度判断、下步计划和真实链路验收口径；复用既有用户手册截图和执行链路图，并通过图片存在性检查和 `git diff --check` 验证。
+- 工作总结文档从功能点表格改为逐项展开说明，补充每项能力解决的问题、设计思路、当前效果和验收关注点，提升非研发读者可读性。
+- 补齐工作总结文档中 27 个已完成功能点对应截图，将截图从集中展示改为跟随功能点展示，并通过图片引用存在性和 `git diff --check` 验证。
+- 生成工作总结 Word 增强版，补充数语智能问数执行链路说明图、功能点截图和 ECharts 报表生成、多租户、权限管理体系等后续计划，并通过 DOCX 图片数量与 LibreOffice 渲染抽查验证。
+- 将工作总结 Word 截图替换为 2026-06-24 本地运行态截图，重新截取工作台、问数中心、查询审计、数据集治理、数据源 Schema、API 管理、系统设置等页面，生成最新截图版并通过 DOCX 图片数量和 LibreOffice 渲染抽查验证。
+- 将工作总结 Word 的执行链路图拆分为总体图、LeadAgent、Dataset SubAgent、QueryGraph/SubGraph、Trace 观测等独立链路图，避免多个功能点复用同一张大图；新版 DOCX 渲染为 36 页并抽查关键页无明显裁剪、重叠或错图。
+
+### 2026-06-25
+
+- AgentScope 2.0 ReAct MVP 真实请求验证：新增独立真实集成测试目录，用 AgentScope 2.0 Agent/Toolkit/ToolBase 封装数语最小工具面，真实调用数据集资产和 guarded SQL preview，不进入 `/api/chat/stream`，并通过 live API、默认跳过测试、真实开关测试、py_compile 和 `git diff --check` 验证。
+- AgentScope 真实测试过程日志增强：补充 LLM 配置、工具 HTTP 请求、Plan/Execute 摘要、SQL preview、最终回答和动态数据集选择日志，支持 `pytest -s` 查看完整执行过程。
+- AgentScope Hermes-style DatasetAgent MVP：加载 Hermes SOUL/SKILL/capabilities 生成 AgentScope system prompt，用最小工具面验证 DatasetAgent 可通过 guarded SQL preview 自主查数，保留正式 artifact store、trace 和 `/chat/stream` 产品化为后续工作。
+- 项目文档多目录治理：将 `docs/` 根目录混放材料迁移到 product/architecture/observability/deliverables/assets/archive 等目录，保留 `docs/上下文入口.md` 和 `docs/README.md` 作为导航，并通过图片/链接和 `git diff --check` 验证。
+- Obsidian 智能问数长期知识沉淀：新增受约束 Agent 架构、语义治理与执行安全、真实链路验收方法三篇知识库方法论，沉淀 Capability Manifest、Manifest fail-closed、QueryArtifact/result_ref 和五件套验收原则。
+
+### 2026-06-26
+
+- Multica Datalogue 员工智能体创建与技能绑定：创建 datalogue skill、上传 SOUL/capabilities/API assets，并配置数据问数分析师、后端、前端、QA、文档等员工智能体及 CEO skill。
+- Multica 数语智能问数小队创建：创建 `数语智能问数小队`，leader 设为 CEO，将 Datalogue 数据问数、后端、前端、QA、文档等成员加入 roster，并明确小队由 leader 分派而非自动 fan-out。
+- C 产品形态优先且 BI 内核 B-governed 工作规划：沉淀 B-first C-ready 决策总览、任务清单、AgentScope 2.0 集成系统设计和二十余条能力路由/Artifact/ask_bi/旧会话边界决策。
+- 默认测试套件稳定性修复：恢复 AgentScope live 集成测试显式开关，更新 intent 角色 LLM `max_tokens` 断言，默认后端全量 pytest 和前端 lint/test/build 通过，仅保留既有 warning 与 ruff 历史问题。
+- B-first C-ready 计划细化与 Obsidian 同步：拆分后续改造记录、正式开发计划、决策总览和 AgentScope 2.0 集成系统设计，明确 P0/P1/P2 与五件套验收口径。
+- Multica 开发测试并行员工扩编：为数语小队新增 LeadAgent、数据治理 SQL、前端工作台、后端回归、前端 E2E、观测链路等 6 个并行员工角色，并验证 squad roster。
+- BI_SOUL 内部契约与 Hermes SOUL 同步校验：新增 BI 不可越界 source of truth、同步服务和测试，明确外层 Agent 只能调用 `ask_bi`，raw SQL/raw result/capsule 属于控制面。
+- DAT-15 数据集能力清单：新增 `CapabilityManifest` / `CapabilityManifestSummary`、业务级泄露扫描和 `GET /api/dataset/{dataset_id}/capability-manifest` 调试接口，为 LeadAgent Capability Router 提供真实 manifest summary 依赖。
+- DAT-13 LeadAgent Capability Router：数据集路由改为只消费 `CapabilityManifestSummary`，低置信/close-score 只返回候选确认，并在用户确认后写入 `conversation_state.facts` 的 `confirmed_dataset_id` 与 retry checkpoint。
+- DAT-9 QueryGraph Compiler 方言边界收窄：合入 QueryPlan Compiler 外壳，将 SQL 只写入 control_plane / query_artifact / trace，并把方言门禁收窄为当前真实数据源 dialect，不允许 LLM 通过 raw_sql/direct_sql/llm_sql/sql 作为执行来源。
 
 ## 高价值判断
 
@@ -225,3 +271,79 @@
 - 安全边界：保留 Agentic Shell、BI LeadAgent、DatasetAgent Runtime、Capability Manifest、SQL audit/guard、QueryArtifactStore、RepairPatch node、Manifest 门禁、planner/detail loop 和 blueprint execute 的底座测试；本次不删除仍保护 SQL 审计、artifact refs、manifest fail-closed 或用户可见脱敏契约的测试。
 - 验证方式：执行退役候选和新链路保护测试时，当前锁文件环境在导入阶段阻塞：AgentScope 2.0.3 期望 `mcp.client.streamable_http.streamable_http_client`，但锁定的 `mcp==1.12.4` 只暴露 `streamablehttp_client`；已执行残留扫描确认退役测试文件和旧 `build_workflow`/`InProcessDatasetSubAgentRunner` 绑定只剩新 runtime 的禁止日志断言或说明性注释。
 - 残留风险：需要单独处理 AgentScope/MCP 依赖兼容或 SDK lazy import 后，再恢复 pytest 验证；如后续继续退役旧 DatasetSubAgent helper，应逐项确认是否已有 DatasetAgent Runtime 等价保护。
+### 2026-06-26 19:23 · DAT-8 SubAgent ToolAdapter 三层输出
+
+- 涉及文件：`datalogue-api/app/services/subagent_tool_adapter.py`、`datalogue-api/tests/test_subagent_tool_adapter.py`、`.omx/plans/2026-06-26-p0-4-subagent-tool-adapter-three-layer.md`、`.codex/project-memory.md`
+- 关键改动：合入 SubAgent ToolAdapter 三层输出改造，区分 `llm_visible`、`control_plane` 和 `external_artifact`，将大结果、raw SQL、trace 主体等敏感或重载内容限制在控制面/产物面，面向 LLM 的工具输出保持摘要化和低泄露风险。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_subagent_tool_adapter.py -q`，10 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/subagent_tool_adapter.py` 通过。
+- 残留风险：当前验证覆盖 ToolAdapter 契约本身；后续 #7 event envelope、#8 ask_bi、Artifact refs 和前端承接还需要继续确保三层输出不会被重新混入用户可见 SSE。
+
+### 2026-06-26 19:25 · DAT-5 SSE Event Envelope 标准化
+
+- 涉及文件：`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_event_envelope.py`、`datalogue-api/tests/test_chat.py`、`.omx/plans/DAT-5-event-envelope-plan.md`、`.codex/project-memory.md`
+- 关键改动：合入 `DatalogueEventEnvelope`，为 SSE 输出补统一 envelope 结构，保留 legacy 顶层字段兼容；Chat 流式事件可以同时携带 `event_envelope` 和既有 payload，给后续 AgentScope event adapter 与前端 C-ready timeline 留出口。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_event_envelope.py tests/test_chat.py -q`，121 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/schemas/__init__.py app/api/chat.py` 通过。
+- 残留风险：当前只是标准化 envelope，不替换 SSE 主协议；前端 `chat-adapter.js` 解析 envelope、AgentScope event stream adapter 和五件套真实链路验收仍需后续 DAT-16/DAT-18 收口。
+
+### 2026-06-26 19:28 · DAT-4 ask_bi 外层工具契约
+
+- 涉及文件：`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/services/bi_workbench_tool.py`、`datalogue-api/tests/test_bi_workbench_tool.py`、`.codex/project-memory.md`
+- 关键改动：合入 `AskBIRequest`、`AskBIResponse`、`ArtifactRef`、`ArtifactAction` 和 `ArtifactCard`，新增 `ask_bi` 外层工具入口，把现有 Chat 主链流式结果转成 C-ready 外层响应；解决 `bi_workbench.py` add/add 冲突，保留 #7 的 `DatalogueEventEnvelope`、事件类型、可见性、sanitize 和 builder，同时保留 #8 的 ask_bi / Artifact 契约；用户可见响应继续 fail closed 阻断 raw SQL、schema、capsule、control_plane 和 raw result。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q`，5 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/services/bi_workbench_tool.py app/schemas/__init__.py` 通过。
+- 残留风险：`ask_bi` 目前是外层工具契约和 Chat 转接封装，尚未由 AgentScopeShellAdapter 或前端独立工作台实际调用；Artifact refs 的持久化和旧会话兼容仍需 DAT-17 收口。
+
+### 2026-06-26 19:30 · DAT-7 Artifact Action 安全协议
+
+- 涉及文件：`datalogue-api/app/services/artifact_actions.py`、`datalogue-api/tests/test_reserved_actions_contract.py`、`datalogue-api/tests/test_llm_config.py`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`.omx/plans/DAT-7-轻量协议验收与全量回归计划.md`、`.codex/project-memory.md`
+- 关键改动：合入 ArtifactCard action 安全协议，前端卡片只渲染声明式 action、禁用态和 disabled reason，不直接启动 ReportAgent/导出副作用；后端保留 reserved action 合约测试；解决 `test_llm_config.py` 冲突，改为按 `ROLE_CALL_POLICIES["intent"]["max_tokens"]` 断言，保留当前策略修复。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_reserved_actions_contract.py tests/test_llm_config.py::test_get_llm_uses_database_role_config -q`，4 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/services/artifact_actions.py` 通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx`，1 个测试文件 3 条用例通过。
+- 残留风险：#10 retry action 后续需要合入同一个 `artifact-card.jsx`，必须以本安全 action 协议为基础；真正 export / continue_edit / ReportAgent 仍保持禁用或详情面板，不启动链路。
+
+### 2026-06-26 19:35 · DAT-12 Retry Checkpoint 安全恢复
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/schemas/chat.py`、`datalogue-api/app/services/conversation_store.py`、`datalogue-api/tests/test_retry_checkpoint.py`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/styles.css`、`.omx/plans/DAT-12-retry-checkpoint-plan.md`、`.codex/project-memory.md`
+- 关键改动：合入 retry checkpoint 注册与恢复链路，final payload 发出前注册安全 `checkpoint_ref` 并写入 `retry_checkpoint`，前端 ArtifactCard 的 `retry` action 只发送 checkpointRef；合并 #7 event envelope 和 #10 final 注册顺序，先挂载 checkpoint 再生成用户可见 envelope；保留 #11 安全 action 协议，`export/continue_edit` 仍禁用，只有 retry 可在存在 checkpoint 时触发自定义事件。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_retry_checkpoint.py tests/test_chat.py::TestLangGraphNodes::test_dataset_confirmation_fact_persists_checkpoint -q`，4 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_chat.py tests/test_event_envelope.py -q`，121 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/api/chat.py app/services/conversation_store.py app/schemas/chat.py` 通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx`，1 个测试文件 4 条用例通过。
+- 残留风险：retry 恢复当前只回放安全业务上下文，不回放 SQL/schema/control_plane；前端还没有 DAT-16 的统一 Chat adapter 接管该自定义事件。
+
+### 2026-06-26 19:45 · DAT-11 AgentScope Shell Adapter 最小验证线
+
+- 涉及文件：`.omx/plans/DAT-11-agentscope-shell-adapter.md`、`datalogue-api/app/schemas/bi_workbench.py`、`datalogue-api/app/services/bi_workbench_tool.py`、`datalogue-api/app/services/agentscope_shell_adapter.py`、`datalogue-api/app/services/agentscope_event_adapter.py`、`datalogue-api/tests/test_agentscope_shell_adapter.py`、`datalogue-api/tests/test_agentscope_event_adapter.py`、`datalogue-api/tests/test_bi_workbench_tool.py`、`datalogue-api/tests/test_event_envelope.py`、`.codex/project-memory.md`
+- 关键改动：合入 AgentScope Shell Adapter 最小验证线，固定第一阶段只允许 `ask_bi`，不开放公开 API、不启动 AgentScope runner、不替换 `/chat/stream`；`AgentScopeEventAdapter` 只把 `DatalogueEventEnvelope` 映射为 Shell 可见事件或 trace 事件，并丢弃 `control_plane`；解决 #9 与 #7/#8 的 add/add 冲突，保留真实异步 `ask_bi` 主链转接，同时兼容 `ref/ref_id`、`summary/summary_for_chat` 等前后端历史字段。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_bi_workbench_tool.py tests/test_event_envelope.py -q`，16 条用例通过；执行 `cd datalogue-api && python3 -m py_compile app/schemas/bi_workbench.py app/services/bi_workbench_tool.py app/services/agentscope_shell_adapter.py app/services/agentscope_event_adapter.py` 通过。
+- 残留风险：当前仍是 contract-first Shell Adapter，不接真实 AgentScope runtime、不接公开 API；后续若要完整 AgentScope 2.0 集成，需要在 event stream adapter、runner adapter 和多 Agent 产品链路成熟后再打开。
+
+### 2026-06-26 19:50 · DAT-16 前端 C-ready Chat Shell
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/components/task-timeline.jsx`、`datalogue-web/src/components/task-timeline.test.jsx`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：在现有 Chat 入口内解析 `event_envelope` 并兼容旧 SSE 顶层字段，将 final payload 收敛为 `taskTimeline`、`candidateConfirmation`、`artifactCard`、`primaryRef/relatedRefs` 等 C-ready metadata；新增业务阶段任务时间线组件；新增候选数据集确认卡，点击后只提交 `candidate_id/checkpoint_ref/selected_dataset_id/selected_text`，不提交 schema/字段/资产细节；ArtifactCard 支持 `ref/ref_id`、`refs`、`summary`、`action_id/payload_ref` 兼容，`export/continue_edit` 继续禁用。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js src/components/task-timeline.test.jsx src/components/artifact-card.test.jsx src/assistant/MyMessage.test.jsx`，4 个测试文件 11 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning。
+- 残留风险：当前仍承接在现有 Chat 页面，未新建独立 BI 工作台；真实页面点击候选后继续同一任务、retry 自定义事件接 composer 的端到端验收需要 DAT-18 五件套记录继续覆盖。
+
+### 2026-06-26 21:05 · DAT-17 Artifact refs 持久化与旧会话兼容
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_artifact_card_contract.py`、`datalogue-api/tests/test_legacy_conversation_replay.py`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/components/artifact-card.jsx`、`datalogue-web/src/components/artifact-card.test.jsx`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/tests/unit/assistant/artifact-custom.test.js`、`.codex/project-memory.md`
+- 关键改动：final payload 统一补齐 `task_id`、`trace_id`、`primary_ref`、`related_refs` 和 `artifact_card`，event envelope 透传同一 task/trace；ArtifactCard 只暴露 `artifact:/trace:/checkpoint://` 引用句柄和禁用态动作，不携带 raw SQL/raw result；assistant message metadata 写回新 refs，`query_artifact` 只按 `artifact:<uuid>` 反连 message_id；`conversation_state.facts` 写入 `artifact_refs` fact，旧会话不迁移、不回填；前端历史回放只渲染真实 `response_metadata.artifact_card`，不会根据旧 `result_ref/report_ref` 伪造卡片；补充 `/chat/:id` 正向线程同步，直接打开历史会话时显式切到路由会话，避免停留在本地草稿导致 ArtifactCard 不回放。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_artifact_card_contract.py tests/test_legacy_conversation_replay.py tests/test_conversation.py tests/test_artifact_api.py -q`，15 条用例通过；执行 `cd datalogue-api && python3 -m pytest tests/test_event_envelope.py tests/test_retry_checkpoint.py tests/test_chat.py -q`，129 条用例通过；执行 `cd datalogue-web && npm run test -- src/components/artifact-card.test.jsx tests/unit/assistant/artifact-custom.test.js src/assistant/chat-adapter.test.js`，3 个测试文件 14 条用例通过；执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/components/artifact-card.test.jsx tests/unit/assistant/artifact-custom.test.js src/assistant/chat-adapter.test.js`，4 个测试文件 18 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过。
+- 残留风险：DAT-17 只完成协议与持久化闭环；真实页面、SSE、后端日志、Langfuse、`query_artifact/conversation_state` 五件套一致性仍需 DAT-18 用本地服务和真实问题记录验收。
+
+### 2026-06-26 21:15 · DAT-14 主链路自动化验收框架
+
+- 涉及文件：`.omx/plans/2026-06-26-dat-14-main-chain-acceptance.md`、`datalogue-api/app/api/chat.py`、`datalogue-api/tests/test_bi_main_chain_acceptance.py`、`datalogue-api/tests/test_chat.py`、`datalogue-web/src/assistant/chat-adapter.test.js`、`docs/main-chain-acceptance-record-template.md`、`.codex/project-memory.md`
+- 关键改动：合入主链路自动化验收框架，新增成功问数、低置信候选确认、无法回答拒答、受控失败 retry 和旧历史不伪造 ArtifactCard 的验收用例；扩展 `chat.stream` 摘要字段，记录 `result_ref/report_ref/langfuse_trace_id/langfuse_session_id`；前端 adapter 测试覆盖 final SSE 中 observability 和 artifact refs 写入页面 metadata；新增五件套验收记录模板，为 DAT-18 真实链路记录提供结构。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，122 条用例通过；执行 `cd datalogue-web && npm run test -- src/assistant/chat-adapter.test.js`，1 个测试文件 5 条用例通过。
+- 残留风险：DAT-14 仍是自动化验收框架，Langfuse observation、页面 ArtifactCard、后端日志和数据库状态的一次真实问题五件套记录仍需 DAT-18 补齐。
+
+### 2026-06-26 21:25 · DAT-18 五件套验收记录落档
+
+- 涉及文件：`docs/main-chain-acceptance-records/2026-06-26-b-first-c-core-chain.md`、`.codex/project-memory.md`
+- 关键改动：新增 B-first C-ready 主链路五件套验收记录，明确自动化代表问题 `最近30日GMV趋势如何` 已覆盖 SSE、后端 checkpoint、trace index、query_artifact 和 conversation_state 交叉核对；2026-06-27 补录真实问题 `查询杨凯 2024 年工作日志`，记录 Manifest stale fail-closed、Manifest v3 发布、`conversation_id=16/message_id=34/task_id=conv-16-msg-34/trace_id=dlg-a85416ec39724384b5aa992a23641bb7/artifact:e668a634847a41a4b5489d11092da363` 在页面、SSE、Artifact API、query_artifact、conversation_state 和本地 trace index 的一致性。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_main_chain_acceptance.py tests/test_chat.py tests/test_observability.py tests/test_artifact_api.py -q`，142 条用例通过；执行最终集成套件 `cd datalogue-api && python3 -m pytest tests/test_capability_manifest.py tests/test_bi_soul_contract.py tests/test_lead_agent_capability_router.py tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py tests/test_subagent_tool_adapter.py tests/test_event_envelope.py tests/test_bi_workbench_tool.py tests/test_agentscope_shell_adapter.py tests/test_agentscope_event_adapter.py tests/test_artifact_card_contract.py tests/test_retry_checkpoint.py tests/test_legacy_conversation_replay.py tests/test_bi_main_chain_acceptance.py tests/test_chat.py -q`，175 条用例通过；执行 `cd datalogue-web && npm run test`，9 个测试文件 38 条用例通过；执行 `cd datalogue-web && npm run lint` 通过，保留既有 15 个 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留既有 chunk size warning；执行 `git diff --check` 通过；Playwright 打开 `/chat/16` 确认历史问题、错误诊断、`BI 查询结果` ArtifactCard、同一 artifact_ref 和重试按钮可见。
+- 残留风险：Langfuse 页面服务可达但后端 Python 环境缺少 `langfuse` SDK，真实 observation 未写入；真实业务 SQL 因语义层错误引用不存在字段 `eas_personofile.create_time` 受控失败，需修正 dataset 10 语义资产后才能把 DAT-18 标为“真实业务成功查询 + Langfuse observation 完整五件套”通过。
+
+### 2026-07-02 14:18 · 历史集成分支收口合并到 b-first-c
+
+- 涉及文件：`datalogue-api/app/services/agentscope_shell_adapter.py`、`datalogue-api/app/services/bi_workbench_tool.py`、`datalogue-api/tests/agentscope_react_mvp/*`、`datalogue-web/src/*`、`docs/architecture/*`、`docs/assets/*`、`.codex/project-memory.md`
+- 关键改动：将 `origin/codex/dat-18-five-piece-acceptance` 合并进 `b-first-c`，该分支已包含 `main`、`codex/agentscope-react-mvp` 和 `origin/codex/b-first-c-core-chain-dat16-base` 的历史提交；合并时保留当前 `b-first-c` 对旧 `/chat/stream`、旧 `lead_agent_routing.py`、旧 `test_chat.py` 和 Langfuse 文档归档路径的收口决策，避免恢复已下线主链。
+- 验证方式：执行合并冲突清理后使用 `rg --hidden '^(<<<<<<<|=======|>>>>>>>)' .` 确认无冲突标记；后续在恢复当前未提交日志/OTel改动后继续执行 Python 编译、目标后端测试和前端基础测试。
+- 残留风险：本次是历史分支收口合并，冲突文件以当前 Agentic Shell-first 主线为准；DAT-16/DAT-18 中依赖旧 Chat 主链的历史测试记录只作为历史证据保留，不代表旧 `/chat/stream` 路径恢复。

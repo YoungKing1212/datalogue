@@ -402,6 +402,84 @@ def test_subagent_run_emits_candidate_assets_and_query_plan(monkeypatch, db_sess
     assert events[-1].payload["final_state"]["candidate_assets"]["assets"] == []
 
 
+def test_subagent_run_injects_tool_compiler_compilation(monkeypatch, db_session):
+    captured: dict[str, Any] = {}
+
+    def recall_with_field_assets(*_args, **_kwargs):
+        return {
+            "dataset_id": 10,
+            "question": "查询日志账号",
+            "assets": [],
+            "summary": {
+                "blueprint_count": 0,
+                "metric_count": 0,
+                "dimension_count": 0,
+                "term_count": 0,
+                "field_count": 1,
+                "table_count": 1,
+            },
+            "recall_debug": {},
+            "context": {
+                "schema_context": "schema text",
+                "query_constraints": {"enabled": True, "default_limit": 10, "max_limit": 100},
+                "datasource_context": {
+                    "db_type": "sqlite",
+                    "dialect": "sqlite",
+                    "allowed_tables": ["user_logs"],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.recall_candidate_assets",
+        recall_with_field_assets,
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.plan_query",
+        lambda **kwargs: QueryPlan(
+            query_type="detail_query",
+            execution_strategy="query_graph",
+            confidence=0.82,
+            selected_assets=[
+                CandidateAsset(
+                    asset_type="field",
+                    asset_id="user_logs.account",
+                    name="account",
+                    display_name="账号",
+                    source="schema",
+                    confidence=0.91,
+                    metadata={"table_name": "user_logs", "column_name": "account"},
+                    usage="selected",
+                )
+            ],
+            debug={"selected_main_table": "user_logs"},
+        ),
+    )
+
+    class FakeRunner:
+        def __init__(self, graph, db):
+            pass
+
+        async def run(self, request, trace_context, initial_state, **kwargs):
+            captured["initial_state"] = initial_state
+            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
+        FakeRunner,
+    )
+
+    events = asyncio.run(_collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=object()))
+
+    compilation = captured["initial_state"]["query_plan_compilation"]
+    final_state = events[-1].payload["final_state"]
+    assert compilation["ok"] is True
+    assert compilation["execution_source"] == "tool_compiler"
+    assert compilation["control_plane"]["execution_source"] == "tool_compiler"
+    assert "account" in compilation["sql"]
+    assert final_state["query_plan_compilation"]["query_artifact"]["sql"] == compilation["sql"]
+
+
 @pytest.mark.asyncio
 async def test_dataset_subagent_uses_detail_loop_when_enabled(monkeypatch, db_session):
     captured: dict[str, Any] = {}

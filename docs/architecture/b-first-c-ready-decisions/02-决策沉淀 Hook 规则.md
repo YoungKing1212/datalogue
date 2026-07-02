@@ -1,0 +1,131 @@
+# 决策沉淀 Hook 规则
+
+本文定义本轮 B-first C-ready 头脑风暴的决策沉淀规则。目标是在每个关键决定被敲定时，立刻生成一份 Obsidian 决策记录，方便后续整理正式设计和开发计划。
+
+---
+
+## 一、Hook 触发条件
+
+当满足以下任一条件时，认为一个决策已经敲定，需要写入 `decisions/` 目录：
+
+- 用户明确表示“同意”“就这样”“可以定”“我倾向这个方向”等确认性表达。
+- 多个方案比较后，明确选定其中一个方案。
+- 一个关键边界被明确固定，例如“LeadAgent 不看 schema 明细”。
+- 一个阶段性取舍被明确固定，例如“第一阶段不做完整 Agentic Shell”。
+
+以下情况不触发写入：
+
+- 仍在开放讨论的问题。
+- 只是列举可能方案，没有做取舍。
+- 需要继续查证的外部事实。
+- 临时措辞、类比、解释性表达。
+
+---
+
+## 二、Hook 动作
+
+每次触发后执行三件事：
+
+1. 在 `decisions/` 目录新增一份单独决策文档。
+2. 在 `00-本轮决策总览.md` 中保持决策方向一致；必要时补充引用。
+3. 如果决策影响后续开发计划，将任务拆分同步到 `01-改造任务清单.md` 或后续计划文档。
+
+---
+
+## 三、文件命名
+
+决策文件命名规则：
+
+```text
+decisions/NNN-短标题.md
+```
+
+示例：
+
+```text
+decisions/001-capability_manifest 定位为轻量能力广告.md
+```
+
+编号按确认顺序递增，不按重要性排序。
+
+---
+
+## 四、决策文档模板
+
+```markdown
+# NNN · 决策标题
+
+## 状态
+
+- 状态：已敲定
+- 时间：YYYY-MM-DD HH:mm
+- 触发：用户确认 / 方案比较后选定 / 边界敲定
+
+## 决策
+
+一句话写清楚最终决定。
+
+## 背景
+
+为什么讨论到这个问题。
+
+## 选择理由
+
+为什么选择这个方案。
+
+## 被排除方案
+
+记录没有选的方案，以及原因。
+
+## 对架构的影响
+
+这个决策会影响哪些模块、接口、上下文边界或运行时。
+
+## 对开发计划的影响
+
+后续计划需要拆出哪些任务。
+
+## 后续问题
+
+还有哪些问题需要继续头脑风暴。
+```
+
+---
+
+## 五、当前决策序列
+
+- `001`：`capability_manifest` 定位为轻量能力广告。
+- `002`：`capability_manifest` 采用固化主体加运行态叠加。
+- `003`：`static_capability` 字段边界只到业务摘要层。
+- `004`：`can_answer` 等能力文案采用模型辅助生成加人工审核。
+- `005`：LeadAgent 低置信路由采用候选数据集确认式澄清。
+- `006`：`query_multiple_datasets` 采用保守加少量半自动 fan-out。
+- `007`：`DatasetAgentToolAdapter` 先兼容迁移，后续强制改造成细分语义块。
+- `008`：SSE 先标准化为统一 event envelope，并预留 AgentScope event stream adapter。
+- `009`：AgentScope 第一阶段保留验证线，暂不进入主链 runtime。
+- `010`：产品目标直接采用 C 形态，但 BI 查询内核保持 B-governed。
+- `011`：Agentic Shell 第一阶段采用现有 Chat 入口，并按未来工作台协议设计任务、事件和产物引用。
+- `012`：Chat 内第一版任务展示采用业务级任务时间线，并预留后续双层可展开时间线。
+- `013`：产物详情第一阶段采用 Chat 轻量产物卡，并预留详情面板或独立工作台承载完整产物。
+- `014`：轻量产物卡采用统一 `ArtifactCard` 壳，并用类型化 `preview_payload` 表达产物差异。
+- `015`：`ArtifactCard` 外层采用强 schema，`preview_payload` 采用半强 schema。
+- `016`：`actions` 采用固定 Action Registry，并由后端下发受控动作实例。
+- `017`：`refs` 拆分为 `primary_ref` 与 `related_refs`，并预留 `role` 字段。
+- `018`：`export` 第一阶段进入 Action Registry，但默认作为预留禁用态。
+- `019`：`continue_edit` 第一阶段只作为详情面板或未来工作台的预留动作，不启动 ReportAgent。
+- `020`：`ask_bi` / `BIWorkbenchTool` 采用最小稳定契约，内部第一阶段复用现有主链。
+- `021`：`retry` 第一阶段从最后安全检查点重试，不可恢复时降级整任务重试。
+- `022`：主链路验收采用分层验收，P0 主链路强制五件套一致，预留项轻量验收。
+- `023`：`DSL / QueryGraph` 保留为 DatasetAgent 内部语义计划，SQL 编译和方言适配由 Tools 完成。
+- `024`：`QueryGraph Compiler` 第一阶段采用外壳封装方案，内部先复用现有 QueryGraph / SQL 生成 / Guard / preview 链路。
+- `025`：AgentScope 第一阶段作为 Shell Adapter 显式接入，但不接管 BI 主链 runtime。
+- `026`：`AgentScopeShellAdapter` 放入后端正式 service，但第一阶段不开放公开 API、前端入口或独立 runner。
+- `027`：`SOUL.md` 抽成 Datalogue 内部契约，再同步到 Hermes skill、AgentScopeShellAdapter 等外部入口。
+- `028`：SQL 方言适配第一阶段只覆盖当前真实数据源，接口预留多方言注册表。
+- `029`：旧会话不支持新 ArtifactCard、event envelope、refs 和新 conversation_state 的历史回放。
+
+下一个决策编号：
+
+```text
+030
+```

@@ -65,6 +65,9 @@ target-version = "py311"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: 需要真实外部服务或真实 LLM 的集成测试",
+]
 
 [tool.mypy]
 python_version = "3.11"

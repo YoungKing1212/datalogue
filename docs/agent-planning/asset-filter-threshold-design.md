@@ -5,7 +5,7 @@
 > 本文档只描述设计，不写实现。实际代码需等待 M1 投影层合入。
 >
 > 关联文档：
-> - `docs/progressive-asset-integration-draft.md` — 整体接入设计
+> - `docs/agent-planning/progressive-asset-integration-draft.md` — 整体接入设计
 > - `docs/superpowers/plans/2026-06-16-lead-agent-planner-projection-m1.md` — M1 投影层计划
 
 ---
