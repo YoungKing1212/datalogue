@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : test_subagent_run.py
 # Description:
-#   DatasetSubAgent.run 编排层单元测试。
+#   DatasetSubAgent.run 资产召回、规划与非 Graph 分支单元测试。
 #
 # Responsibilities:
-#   - 验证候选资产召回、查询规划和策略执行的事件顺序。
-#   - 验证 QueryGraph 执行前会注入规划结果、候选资产和蓝图参考上下文。
+#   - 验证候选资产召回、查询规划、Manifest 门禁和非 Graph 分支事件顺序。
+#   - 保留 DatasetAgent Runtime 仍复用的业务底座，不再断言旧 QueryGraph 执行主链。
 #
 # Author      : yangkai
 # Created On  : 2026-06-15
@@ -402,84 +402,6 @@ def test_subagent_run_emits_candidate_assets_and_query_plan(monkeypatch, db_sess
     assert events[-1].payload["final_state"]["candidate_assets"]["assets"] == []
 
 
-def test_subagent_run_injects_tool_compiler_compilation(monkeypatch, db_session):
-    captured: dict[str, Any] = {}
-
-    def recall_with_field_assets(*_args, **_kwargs):
-        return {
-            "dataset_id": 10,
-            "question": "查询日志账号",
-            "assets": [],
-            "summary": {
-                "blueprint_count": 0,
-                "metric_count": 0,
-                "dimension_count": 0,
-                "term_count": 0,
-                "field_count": 1,
-                "table_count": 1,
-            },
-            "recall_debug": {},
-            "context": {
-                "schema_context": "schema text",
-                "query_constraints": {"enabled": True, "default_limit": 10, "max_limit": 100},
-                "datasource_context": {
-                    "db_type": "sqlite",
-                    "dialect": "sqlite",
-                    "allowed_tables": ["user_logs"],
-                },
-            },
-        }
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.recall_candidate_assets",
-        recall_with_field_assets,
-    )
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.plan_query",
-        lambda **kwargs: QueryPlan(
-            query_type="detail_query",
-            execution_strategy="query_graph",
-            confidence=0.82,
-            selected_assets=[
-                CandidateAsset(
-                    asset_type="field",
-                    asset_id="user_logs.account",
-                    name="account",
-                    display_name="账号",
-                    source="schema",
-                    confidence=0.91,
-                    metadata={"table_name": "user_logs", "column_name": "account"},
-                    usage="selected",
-                )
-            ],
-            debug={"selected_main_table": "user_logs"},
-        ),
-    )
-
-    class FakeRunner:
-        def __init__(self, graph, db):
-            pass
-
-        async def run(self, request, trace_context, initial_state, **kwargs):
-            captured["initial_state"] = initial_state
-            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
-        FakeRunner,
-    )
-
-    events = asyncio.run(_collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=object()))
-
-    compilation = captured["initial_state"]["query_plan_compilation"]
-    final_state = events[-1].payload["final_state"]
-    assert compilation["ok"] is True
-    assert compilation["execution_source"] == "tool_compiler"
-    assert compilation["control_plane"]["execution_source"] == "tool_compiler"
-    assert "account" in compilation["sql"]
-    assert final_state["query_plan_compilation"]["query_artifact"]["sql"] == compilation["sql"]
-
-
 @pytest.mark.asyncio
 async def test_dataset_subagent_uses_detail_loop_when_enabled(monkeypatch, db_session):
     captured: dict[str, Any] = {}
@@ -562,7 +484,6 @@ async def test_dataset_subagent_uses_detail_loop_when_enabled(monkeypatch, db_se
 async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
     monkeypatch, db_session
 ):
-    captured: dict[str, Any] = {}
     detail_request_payload = {
         "asset_detail_requests": [
             {
@@ -576,8 +497,9 @@ async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
     }
     final_plan_payload = {
         "query_type": "detail_query",
-        "execution_strategy": "query_graph",
+        "execution_strategy": "clarify",
         "confidence": 0.86,
+        "clarification": {"message": "请确认查询范围。"},
         "selected_assets": [
             {
                 "asset_type": "table",
@@ -640,27 +562,13 @@ async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
         lambda temperature=0.0, **kwargs: fake_llm,
     )
 
-    class FakeRunner:
-        def __init__(self, graph, db):
-            pass
-
-        async def run(self, request, trace_context, initial_state, **kwargs):
-            captured["initial_state"] = initial_state
-            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
-        FakeRunner,
-    )
-
-    events = await _collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=object())
+    events = await _collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=None)
 
     asset_detail_event = next(event for event in events if event.event_type == "asset_detail")
     query_plan_event = next(event for event in events if event.event_type == "query_plan")
     final_state = events[-1].payload["final_state"]
     table_schemas = final_state["sql_generation_context"]["table_schemas"]
     query_plan_text = json.dumps(query_plan_event.payload["query_plan"], ensure_ascii=False)
-    initial_plan_text = json.dumps(captured["initial_state"]["query_plan"], ensure_ascii=False)
 
     assert asset_detail_event.payload["requested_count"] > 0
     assert table_schemas[0]["table_name"] == "plan_task_daily_record"
@@ -673,13 +581,11 @@ async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
     assert "private_salary_shadow" in json.dumps(table_schemas, ensure_ascii=False)
     for leaked_text in ("private_salary_shadow", "SELECT * FROM secret_table"):
         assert leaked_text not in query_plan_text
-        assert leaked_text not in initial_plan_text
     assert query_plan_event.payload["query_plan"]["selected_assets"][0]["metadata"] == {
         "schema_version": "schema-v1",
         "manifest_version": "manifest-v1",
     }
     assert query_plan_event.payload["query_plan"]["debug"] == {"safe_note": "保留短说明"}
-    assert captured["initial_state"]["sql_generation_context"]["table_schemas"] == table_schemas
     assert len(fake_llm.messages) == 2
     second_prompt = json.loads(fake_llm.messages[1][1].content)
     assert second_prompt["asset_detail_context"][0]["payload"]["table_name"] == (
@@ -772,249 +678,6 @@ def test_subagent_run_records_candidate_assets_and_query_plan_spans(monkeypatch,
     assert query_plan_output["fallback_reason"] == "planner validation failed"
     assert query_plan_output["validation_error"] == "blueprint_execute cannot include required_inputs"
     assert query_plan_output["decision_factors"] == [{"code": "missing_required_input"}]
-
-
-def test_subagent_run_blueprint_reference_marks_context_and_query_graph(monkeypatch, db_session):
-    captured: dict[str, Any] = {}
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.recall_candidate_assets",
-        lambda *args, **kwargs: _blueprint_recall_result(),
-    )
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.plan_query",
-        lambda **kwargs: QueryPlan(
-            query_type="detail_query",
-            execution_strategy="blueprint_as_reference",
-            confidence=0.83,
-            reference_assets=[_blueprint_asset(usage="reference")],
-        ),
-    )
-
-    class FakeRunner:
-        def __init__(self, graph, db):
-            captured["graph"] = graph
-            captured["db"] = db
-
-        async def run(self, request, trace_context, initial_state, **kwargs):
-            captured["request"] = request
-            captured["trace_context"] = trace_context
-            captured["initial_state"] = initial_state
-            captured["kwargs"] = kwargs
-            yield {
-                "event": "on_chain_end",
-                "data": {
-                    "output": {
-                        "answer": "已完成查询。",
-                        "sql": "SELECT * FROM daily_report",
-                        "sql_list": ["SELECT * FROM daily_report"],
-                    }
-                },
-            }
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
-        FakeRunner,
-    )
-
-    events = asyncio.run(
-        _collect(
-            DatasetSubAgent(db=db_session, dataset_id=10),
-            _request(),
-            graph=object(),
-            initial_state={"question": "查询10条个人日报"},
-            graph_kwargs={"version": "v2"},
-        )
-    )
-
-    final_result = events[-1].payload["final_state"]
-    initial_state = captured["initial_state"]
-
-    assert events[-1].event_type == "result"
-    assert final_result["answer"] == "已完成查询。"
-    assert initial_state["query_plan"]["execution_strategy"] == "blueprint_as_reference"
-    assert initial_state["candidate_assets"]["summary"]["blueprint_count"] == 1
-    assert "context" not in initial_state["candidate_assets"]
-    assert "只能作为参考证据" in initial_state["blueprint_context"]
-    assert "不能原样执行" in initial_state["dataset_prompt_instructions"]
-    assert captured["kwargs"] == {"version": "v2"}
-
-
-def test_subagent_run_uses_request_task_capsule_when_initial_state_missing(monkeypatch, db_session):
-    captured: dict[str, Any] = {}
-    capsule = {
-        "turn_type": "followup",
-        "base_task_ref": {"task_id": "task-1"},
-        "base_main_table": "plan_task_daily_record",
-        "standalone_question": "查询杨凯最近7天的个人日报",
-        "base_question": "查询杨凯的个人日报",
-    }
-    turn_event = {"event_id": "turn-2", "turn_type": "followup"}
-    request = DatasetSubAgentRequest(
-        **(_request().__dict__ | {"query_task_capsule": capsule, "turn_event": turn_event})
-    )
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.recall_candidate_assets",
-        lambda *args, **kwargs: _blueprint_recall_result(),
-    )
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.plan_query",
-        lambda **kwargs: QueryPlan(
-            query_type="detail_query",
-            execution_strategy="query_graph",
-            confidence=0.77,
-        ),
-    )
-
-    class FakeRunner:
-        def __init__(self, graph, db):
-            pass
-
-        async def run(self, request, trace_context, initial_state, **kwargs):
-            captured["initial_state"] = initial_state
-            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
-        FakeRunner,
-    )
-
-    events = asyncio.run(
-        _collect(
-            DatasetSubAgent(db=db_session, dataset_id=10),
-            request,
-            graph=object(),
-        )
-    )
-
-    initial_state = captured["initial_state"]
-    assert events[-1].event_type == "result"
-    assert initial_state["query_task_capsule"] == capsule
-    assert initial_state["turn_event"] == turn_event
-    assert initial_state["question"] == "查询杨凯最近7天的个人日报"
-    assert initial_state["original_question"] == "查询个人日报"
-
-
-def test_subagent_run_preserves_existing_task_capsule_over_request(monkeypatch, db_session):
-    captured: dict[str, Any] = {}
-    request_capsule = {
-        "turn_type": "followup",
-        "base_task_ref": {"task_id": "request-task"},
-        "standalone_question": "请求里的独立问题",
-        "base_question": "请求里的原始问题",
-    }
-    existing_capsule = {
-        "turn_type": "refine",
-        "base_task_ref": {"task_id": "state-task"},
-        "base_main_table": "existing_table",
-        "standalone_question": "已有状态里的独立问题",
-        "base_question": "已有状态里的原始问题",
-    }
-    existing_turn_event = {"event_id": "state-turn"}
-    request = DatasetSubAgentRequest(
-        **(
-            _request().__dict__
-            | {"query_task_capsule": request_capsule, "turn_event": {"event_id": "request-turn"}}
-        )
-    )
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.recall_candidate_assets",
-        lambda *args, **kwargs: _blueprint_recall_result(),
-    )
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.plan_query",
-        lambda **kwargs: QueryPlan(
-            query_type="detail_query",
-            execution_strategy="query_graph",
-            confidence=0.77,
-        ),
-    )
-
-    class FakeRunner:
-        def __init__(self, graph, db):
-            pass
-
-        async def run(self, request, trace_context, initial_state, **kwargs):
-            captured["initial_state"] = initial_state
-            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
-        FakeRunner,
-    )
-
-    asyncio.run(
-        _collect(
-            DatasetSubAgent(db=db_session, dataset_id=10),
-            request,
-            graph=object(),
-            initial_state={
-                "question": "初始问题",
-                "query_task_capsule": existing_capsule,
-                "turn_event": existing_turn_event,
-            },
-        )
-    )
-
-    initial_state = captured["initial_state"]
-    assert initial_state["query_task_capsule"] == existing_capsule
-    assert initial_state["turn_event"] == existing_turn_event
-    assert initial_state["question"] == "已有状态里的独立问题"
-    assert initial_state["original_question"] == "初始问题"
-
-
-def test_subagent_run_unwraps_node_output_before_merging(monkeypatch, db_session):
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.recall_candidate_assets",
-        lambda *args, **kwargs: _blueprint_recall_result(),
-    )
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.plan_query",
-        lambda **kwargs: QueryPlan(
-            query_type="detail_query",
-            execution_strategy="query_graph",
-            confidence=0.77,
-        ),
-    )
-
-    class FakeRunner:
-        def __init__(self, graph, db):
-            pass
-
-        async def run(self, request, trace_context, initial_state, **kwargs):
-            yield {
-                "event": "on_chain_end",
-                "metadata": {"langgraph_node": "dsl_generate"},
-                "data": {
-                    "output": {
-                        "dsl_generate": {
-                            "answer": "完成",
-                            "sql": "select 1",
-                        }
-                    }
-                },
-            }
-
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
-        FakeRunner,
-    )
-
-    events = asyncio.run(
-        _collect(
-            DatasetSubAgent(db=db_session, dataset_id=10),
-            _request(),
-            graph=object(),
-        )
-    )
-
-    final_state = events[-1].payload["final_state"]
-
-    assert final_state["answer"] == "完成"
-    assert final_state["sql"] == "select 1"
-    assert "dsl_generate" not in final_state
 
 
 def test_subagent_run_blueprint_execute_uses_reference_blueprint_id(monkeypatch, db_session):
@@ -1146,31 +809,6 @@ def test_subagent_run_blueprint_execute_merges_routing_params(monkeypatch, db_se
     assert final_state["route_payload"]["params"]["start_date"] == "2026-06-01"
     assert captured["input_params"]["user_name"] == "KenYang"
     assert captured["input_params"]["start_date"] == "2026-06-01"
-
-
-def test_subagent_run_query_graph_requires_graph(monkeypatch, db_session):
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.recall_candidate_assets",
-        lambda *args, **kwargs: _empty_recall_result(),
-    )
-    monkeypatch.setattr(
-        "app.services.dataset_subagent.plan_query",
-        lambda **kwargs: QueryPlan(
-            query_type="detail_query",
-            execution_strategy="query_graph",
-            confidence=0.7,
-        ),
-    )
-
-    try:
-        asyncio.run(_collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=None))
-    except ValueError as exc:
-        message = str(exc)
-    else:
-        raise AssertionError("query_graph without graph should raise ValueError")
-
-    assert "query_graph" in message
-    assert "dataset_id=10" in message
 
 
 def test_subagent_run_reject_result_is_not_error(monkeypatch, db_session):
