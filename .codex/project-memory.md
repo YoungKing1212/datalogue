@@ -81,6 +81,7 @@
 
 ### 2026-07-01 Langfuse 移除、DatasetAgent 阻断与 C3-P0 Workbench 收口
 
+- 过期 Langfuse 文档归档：`docs/archive/2026-07-01-langfuse-removal/` 新增归档说明，当前入口、项目介绍、系统设计、验收模板和导出脚本不再把 Langfuse、查询审计页或 `/api/observability/*` 描述为现行能力；历史架构/spec/验收记录保留当时事实，后续如要改写需按历史/当前边界单独处理。
 - 删除 Langfuse Python 依赖、Docker Compose 服务、观测 API 挂载、prompt/feedback 外部同步和前端 Trace/查询审计入口；`DatalogueTracer` 改为本地 no-op 兼容壳，运行时代码/依赖/部署/前端源码不再包含 Langfuse 调用链。
 - 验证覆盖 Langfuse 残留扫描、observability/conversation pytest、后端 compileall、前端 lint/build；历史文档保留 Langfuse 作为历史事实，当前链路改以后端日志、Workbench refs、SSE 和 DB 状态为主。
 - `BIAtomicToolProvider.execute_compiled_query()` 将 MySQL/SQLite/PostgreSQL 字段缺失异常统一收敛为 `FIELD_NOT_FOUND`，AgentScope bridge 只回填 `status=blocked/code=FIELD_NOT_FOUND` 和固定安全摘要。
@@ -144,14 +145,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 18:21 · 过期 Langfuse 文档清理
-
-- 涉及文件：`docs/archive/2026-07-01-langfuse-removal/`、`docs/上下文入口.md`、`docs/数语项目介绍手册.md`、`docs/数语系统设计方案.md`、`docs/main-chain-acceptance-record-template.md`、`docs/llm-eval-baseline-design.md`、`docs/golden-fixture-test-plan.md`、`scripts/export_langfuse_docs_to_docx.py`、`.codex/project-memory.md`
-- 关键改动：将 Langfuse 需求、开发、docx 和 metadata schema 专题文档移入归档目录并新增归档说明；当前入口、项目介绍、系统设计和五件套模板不再把 Langfuse、查询审计页、`/api/observability/*` 或 Trace 深链描述为现行能力；评估/fixture 文档改为使用历史 trace 归档、后端日志或 fixture 捕获结果作为样本来源。
-- 安全边界：历史验收记录和 C1/C2/C3 设计中的 Langfuse 描述保留为当时事实，不改写历史证据；新任务路由优先按 SSE step、response metadata、Workbench refs、数据库状态和后端日志核对当前链路。
-- 验证方式：执行 `rg` 扫描当前入口/手册/模板/脚本中的旧路径、`/audit-query`、`/api/observability`、`ObservabilityTraceIndex`、`langfuse_trace_id` 等引用；执行 `git diff --check` 通过。
-- 残留风险：部分历史架构、spec、计划和验收记录仍保留 Langfuse 作为历史上下文；如后续要彻底替换旧 C1/C2/C3 验收口径，需要另起任务按历史/当前边界分层改写。
 
 ### 2026-07-01 18:40 · 过期代码第一/第二批清理
 
@@ -224,3 +217,11 @@
 - 安全边界：BI LeadAgent 仍只做 run/confirmation/handoff，不直接暴露 Dataset 原子工具；Agentic Shell runner 可见层只输出 `agent.handoff.started`、`artifact.created`、`message.completed` 等清洗后的 envelope，artifact/checkpoint refs 和结果规模可见，SQL/schema/DSL/raw rows/query_plan/repair patch 继续不可见；没有 `dataset_id` 时返回数据集选择澄清，不回退旧 LeadAgent 自动选数。
 - 验证方式：先新增 `BILeadAgentTaskRunner` 和默认 runner 非 legacy 测试并确认 RED；修复后定向后端 35 条通过、全量后端 `638 passed, 1 skipped, 103 warnings`；`python3 -m compileall app -q` 通过；前端目标 vitest 5 文件 `51 passed`；`npm run lint` 通过且保留 13 个既有 warning；`npm run build` 通过且保留既有 chunk size warning；源码扫描确认运行代码不再包含旧 stream/old LeadAgent 符号。
 - 残留风险：旧 chat/LeadAgent 自动选数、多轮澄清和旧 Workbench retry 主链测试已随代码删除；后续若要恢复自动选数，必须在 Agentic Shell/BI LeadAgent 新路由里重建，不能复用旧 `route_query_intent` 或 `skill_selector/tool_planner`。
+
+### 2026-07-02 13:44 · 旧主链测试退役
+
+- 涉及文件：`datalogue-api/tests/test_phase5_equivalence.py`、`datalogue-api/tests/test_phase6_equivalence.py`、`datalogue-api/tests/test_phase7_equivalence.py`、`datalogue-api/tests/fixtures/phase*_*.jsonl`、`datalogue-api/scripts/capture_phase*_fixtures.py`、`datalogue-api/tests/test_repair_patch_stream.py`、`datalogue-api/tests/test_subagent_run.py`、`.codex/project-memory.md`
+- 关键改动：删除 Phase 5/6/7 历史等价 fixture 测试、对应 jsonl fixture 和捕获脚本；从 RepairPatch 测试中移除旧 `build_workflow` 编译和 workflow E2E 绑定，仅保留 sql_audit 路由与 RepairPatch node 安全契约；从 DatasetSubAgent.run 测试中退役依赖 `InProcessDatasetSubAgentRunner`、旧 QueryGraph graph 对象和 `query_graph_requires_graph` 的执行主链断言，并把 detail loop 字段水合测试改为非 Graph clarify 分支。
+- 安全边界：保留 Agentic Shell、BI LeadAgent、DatasetAgent Runtime、Capability Manifest、SQL audit/guard、QueryArtifactStore、RepairPatch node、Manifest 门禁、planner/detail loop 和 blueprint execute 的底座测试；本次不删除仍保护 SQL 审计、artifact refs、manifest fail-closed 或用户可见脱敏契约的测试。
+- 验证方式：执行退役候选和新链路保护测试时，当前锁文件环境在导入阶段阻塞：AgentScope 2.0.3 期望 `mcp.client.streamable_http.streamable_http_client`，但锁定的 `mcp==1.12.4` 只暴露 `streamablehttp_client`；已执行残留扫描确认退役测试文件和旧 `build_workflow`/`InProcessDatasetSubAgentRunner` 绑定只剩新 runtime 的禁止日志断言或说明性注释。
+- 残留风险：需要单独处理 AgentScope/MCP 依赖兼容或 SDK lazy import 后，再恢复 pytest 验证；如后续继续退役旧 DatasetSubAgent helper，应逐项确认是否已有 DatasetAgent Runtime 等价保护。
