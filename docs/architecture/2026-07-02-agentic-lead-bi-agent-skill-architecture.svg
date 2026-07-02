@@ -1,0 +1,230 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1900" height="1180" viewBox="0 0 1900 1180">
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 700 36px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #101828; }
+      .subtitle { font: 500 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475467; }
+      .box { fill: #ffffff; stroke-width: 3; rx: 16; }
+      .blue { stroke: #2563eb; }
+      .orange { stroke: #f97316; }
+      .green { stroke: #16a34a; }
+      .purple { stroke: #7c3aed; }
+      .red { stroke: #dc2626; }
+      .gray { stroke: #98a2b3; }
+      .box-title { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #101828; }
+      .box-sub { font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344054; }
+      .text { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344054; }
+      .small { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475467; }
+      .tiny { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667085; }
+      .tag { font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .pill-blue { fill: #2563eb; }
+      .pill-orange { fill: #f97316; }
+      .pill-green { fill: #16a34a; }
+      .pill-purple { fill: #7c3aed; }
+      .pill-red { fill: #dc2626; }
+      .pill-gray { fill: #667085; }
+      .panel-blue { fill: #eff6ff; stroke: #93c5fd; stroke-width: 2; rx: 12; }
+      .panel-orange { fill: #fff7ed; stroke: #fdba74; stroke-width: 2; rx: 12; }
+      .panel-green { fill: #f0fdf4; stroke: #86efac; stroke-width: 2; rx: 12; }
+      .panel-red { fill: #fef2f2; stroke: #fca5a5; stroke-width: 2; rx: 12; }
+      .panel-gray { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 2; rx: 12; }
+      .line { stroke: #344054; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #2563eb; stroke-width: 3; fill: none; marker-end: url(#arrowBlue); }
+      .line-orange { stroke: #f97316; stroke-width: 3; fill: none; marker-end: url(#arrowOrange); }
+      .line-green { stroke: #16a34a; stroke-width: 3; fill: none; marker-end: url(#arrowGreen); }
+      .line-purple { stroke: #7c3aed; stroke-width: 3; fill: none; marker-end: url(#arrowPurple); }
+      .line-dash { stroke: #98a2b3; stroke-width: 3; fill: none; stroke-dasharray: 8 8; marker-end: url(#arrowGray); }
+      .line-red { stroke: #dc2626; stroke-width: 3; fill: none; stroke-dasharray: 9 8; marker-end: url(#arrowRed); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#344054"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#f97316"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#16a34a"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#98a2b3"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1900" height="1180"/>
+  <text class="title" x="950" y="58" text-anchor="middle">AgenticLeadAgent + BI Agent：Skill 注册到 BI Agent 的新架构</text>
+  <text class="subtitle" x="950" y="94" text-anchor="middle">核心变化：不再单独暴露 DatasetAgentRuntime；BI Agent 本身就是 AgentScope ReAct Agent，并通过 Dataset Skill + BI Toolkit 完成问数闭环。</text>
+
+  <!-- User -->
+  <rect class="box blue" x="44" y="150" width="250" height="470" rx="16"/>
+  <rect class="pill-blue" x="74" y="178" width="118" height="30" rx="15"/>
+  <text class="tag" x="133" y="199" text-anchor="middle">用户入口</text>
+  <text class="box-title" x="169" y="242" text-anchor="middle">Chat / Workbench</text>
+  <text class="text" x="74" y="296">自然语言任务</text>
+  <text class="text" x="74" y="330">进度 / 结果 / 图表</text>
+  <text class="text" x="74" y="364">artifact_ref</text>
+  <text class="text" x="74" y="398">checkpoint_ref</text>
+  <rect class="panel-red" x="70" y="458" width="198" height="112" rx="12"/>
+  <text class="box-sub" x="169" y="492" text-anchor="middle">永不展示</text>
+  <text class="small" x="94" y="526">raw SQL / schema</text>
+  <text class="small" x="94" y="552">raw rows / query_plan</text>
+
+  <!-- Agentic Lead Agent -->
+  <rect class="box blue" x="350" y="130" width="390" height="590" rx="16"/>
+  <rect class="pill-blue" x="382" y="158" width="188" height="30" rx="15"/>
+  <text class="tag" x="476" y="179" text-anchor="middle">顶层主控 Agent</text>
+  <text class="box-title" x="545" y="222" text-anchor="middle">AgenticLeadAgent</text>
+  <text class="subtitle" x="545" y="252" text-anchor="middle">AgentScope Agent ReAct loop</text>
+  <text class="box-sub" x="386" y="304">职责</text>
+  <text class="text" x="386" y="340">任务分类与跨 Agent 调度</text>
+  <text class="text" x="386" y="374">调用 BI / Report / Python / Audit Agent</text>
+  <text class="text" x="386" y="408">维护任务进度、确认和可用动作</text>
+  <text class="text" x="386" y="442">输出 AgentScope event 到 Datalogue envelope</text>
+
+  <rect class="panel-blue" x="380" y="488" width="330" height="96" rx="12"/>
+  <text class="box-sub" x="545" y="520" text-anchor="middle">Toolkit</text>
+  <text class="small" x="408" y="552">call_bi_agent / call_report_agent</text>
+  <text class="small" x="408" y="576">call_python_agent / ask_clarification</text>
+
+  <rect class="panel-red" x="380" y="612" width="330" height="76" rx="12"/>
+  <text class="small" x="408" y="640">默认不持有 raw SQL</text>
+  <text class="small" x="408" y="666">只能接收 sql_ref / sql_summary / guard_status</text>
+
+  <!-- BI Agent -->
+  <rect class="box orange" x="820" y="100" width="640" height="760" rx="16"/>
+  <rect class="pill-orange" x="852" y="128" width="176" height="30" rx="15"/>
+  <text class="tag" x="940" y="149" text-anchor="middle">问数专业 Agent</text>
+  <text class="box-title" x="1140" y="192" text-anchor="middle">BI Agent</text>
+  <text class="subtitle" x="1140" y="222" text-anchor="middle">AgentScope ReAct Agent：Skill + Toolkit + SQL Control Plane</text>
+
+  <rect class="panel-orange" x="850" y="270" width="270" height="180" rx="12"/>
+  <text class="box-sub" x="985" y="306" text-anchor="middle">Dataset Skill / SOUL</text>
+  <text class="small" x="878" y="340">查询规则和业务边界</text>
+  <text class="small" x="878" y="368">指标、维度、过滤、时间语义</text>
+  <text class="small" x="878" y="396">失败修复策略</text>
+  <text class="small" x="878" y="424">禁止用户可见 SQL 泄露</text>
+
+  <rect class="panel-green" x="1160" y="270" width="270" height="180" rx="12"/>
+  <text class="box-sub" x="1295" y="306" text-anchor="middle">BI Toolkit</text>
+  <text class="small" x="1188" y="340">list_dataset_capabilities</text>
+  <text class="small" x="1188" y="368">plan_query / compile_query</text>
+  <text class="small" x="1188" y="396">guard_sql / execute_query</text>
+  <text class="small" x="1188" y="424">repair_query / create_artifact</text>
+
+  <rect class="panel-orange" x="850" y="492" width="580" height="142" rx="12"/>
+  <text class="box-sub" x="1140" y="526" text-anchor="middle">SQL Control Plane</text>
+  <text class="small" x="886" y="562">BI Agent 可持有：raw_sql / sql_ast / compiled_query_ref / guard_result</text>
+  <text class="small" x="886" y="590">这些对象必须标记 visibility=control_plane、owner=bi_agent</text>
+  <text class="small" x="886" y="618">对外只投影 sql_ref、sql_summary、guard_status、artifact_ref</text>
+
+  <rect class="panel-gray" x="850" y="674" width="580" height="142" rx="12"/>
+  <text class="box-sub" x="1140" y="708" text-anchor="middle">BI Agent 单轮闭环</text>
+  <text class="small" x="886" y="744">确认数据集 -> 读取 Skill -> 规划 DSL/QueryGraph -> 编译 SQL</text>
+  <text class="small" x="886" y="772">Guard -> 执行 -> 修复/重跑 -> Artifact -> 业务答案</text>
+  <text class="small" x="886" y="800">第一阶段单数据集；跨数据集作为后续 query_multiple_datasets</text>
+
+  <!-- Toolchain -->
+  <rect class="box green" x="1530" y="160" width="320" height="560" rx="16"/>
+  <rect class="pill-green" x="1562" y="188" width="162" height="30" rx="15"/>
+  <text class="tag" x="1643" y="209" text-anchor="middle">确定性执行链</text>
+  <text class="box-title" x="1690" y="252" text-anchor="middle">Dataset Toolchain</text>
+  <text class="subtitle" x="1690" y="282" text-anchor="middle">不是独立 Agent</text>
+
+  <text class="text" x="1564" y="336">1. 资产目录 / manifest</text>
+  <text class="text" x="1564" y="374">2. DSL / QueryGraph compiler</text>
+  <text class="text" x="1564" y="412">3. SQL dialect adapter</text>
+  <text class="text" x="1564" y="450">4. SQL Guard / permission</text>
+  <text class="text" x="1564" y="488">5. Datasource execute</text>
+  <text class="text" x="1564" y="526">6. Repair / retry</text>
+  <text class="text" x="1564" y="564">7. ArtifactStore</text>
+
+  <rect class="panel-green" x="1560" y="608" width="260" height="72" rx="12"/>
+  <text class="small" x="1586" y="636">工具可返回 control_plane 给 BI Agent</text>
+  <text class="small" x="1586" y="662">但不能直接进入用户输出</text>
+
+  <!-- Other agents -->
+  <rect class="box gray" x="350" y="782" width="390" height="210" rx="16"/>
+  <rect class="pill-gray" x="382" y="810" width="148" height="30" rx="15"/>
+  <text class="tag" x="456" y="831" text-anchor="middle">后续专业 Agent</text>
+  <text class="text" x="386" y="878">ReportAgent：消费 artifact_ref 生成报告</text>
+  <text class="text" x="386" y="916">PythonAgent：消费受控数据视图做分析</text>
+  <text class="text" x="386" y="954">AuditAgent：消费 guard_status / trace 摘要</text>
+
+  <!-- Truth source -->
+  <rect class="box purple" x="820" y="900" width="1030" height="190" rx="16"/>
+  <rect class="pill-purple" x="852" y="928" width="206" height="30" rx="15"/>
+  <text class="tag" x="955" y="949" text-anchor="middle">Datalogue 真相源</text>
+  <text class="box-title" x="1335" y="990" text-anchor="middle">DB / AgentState / ArtifactStore / Trace / Audit</text>
+  <text class="text" x="880" y="1042">AgentScope AgentState</text>
+  <text class="text" x="1115" y="1042">conversation_state</text>
+  <text class="text" x="1348" y="1042">query_artifact</text>
+  <text class="text" x="1545" y="1042">compiled_query_ref</text>
+  <text class="text" x="880" y="1074">checkpoint_ref</text>
+  <text class="text" x="1115" y="1074">SQL audit / guard</text>
+  <text class="text" x="1348" y="1074">trace span</text>
+  <text class="text" x="1545" y="1074">artifact payload</text>
+
+  <!-- Output sanitizer -->
+  <rect class="box red" x="44" y="760" width="250" height="250" rx="16"/>
+  <rect class="pill-red" x="74" y="788" width="146" height="30" rx="15"/>
+  <text class="tag" x="147" y="809" text-anchor="middle">输出硬拦截</text>
+  <text class="box-title" x="169" y="856" text-anchor="middle">Sanitizer</text>
+  <text class="small" x="74" y="902">拦截 control_plane</text>
+  <text class="small" x="74" y="930">拦截 raw_sql / schema / rows</text>
+  <text class="small" x="74" y="958">只允许 answer / refs / 图表</text>
+  <text class="small" x="74" y="986">所有 SSE / API / 日志同口径</text>
+
+  <!-- Removed runtime note -->
+  <rect class="panel-red" x="820" y="34" width="1030" height="44" rx="12"/>
+  <text class="small" x="1335" y="62" text-anchor="middle" fill="#b42318">本版不再单独建 DatasetAgentRuntime：执行链路注册进 BI Agent 的 Skill / Toolkit，但确定性工具链和 SQL 控制面仍保留。</text>
+
+  <!-- Arrows -->
+  <path class="line-blue" d="M294 372 C320 372, 326 372, 350 372"/>
+  <text class="tiny" x="322" y="352" text-anchor="middle">用户任务</text>
+
+  <path class="line-orange" d="M740 420 C780 420, 784 420, 820 420"/>
+  <text class="tiny" x="780" y="400" text-anchor="middle">call_bi_agent</text>
+
+  <path class="line-green" d="M1460 408 C1490 408, 1500 408, 1530 408"/>
+  <text class="tiny" x="1495" y="388" text-anchor="middle">tool calls</text>
+
+  <path class="line-orange" d="M1530 560 C1500 560, 1490 560, 1460 560"/>
+  <text class="tiny" x="1495" y="540" text-anchor="middle">control_plane / refs</text>
+
+  <path class="line-dash" d="M820 626 C780 626, 780 626, 740 626"/>
+  <text class="tiny" x="780" y="606" text-anchor="middle">摘要和引用</text>
+
+  <path class="line-purple" d="M1140 860 C1140 880, 1140 880, 1140 900"/>
+  <text class="tiny" x="1188" y="884">AgentState / SQL audit</text>
+
+  <path class="line-purple" d="M1690 720 C1690 820, 1690 850, 1690 900"/>
+  <text class="tiny" x="1730" y="820">artifact / trace</text>
+
+  <path class="line-blue" d="M545 720 C545 748, 545 754, 545 782"/>
+  <text class="tiny" x="596" y="756">后续 Agent 调度</text>
+
+  <path class="line-red" d="M350 626 C308 626, 308 884, 294 884"/>
+  <text class="tiny" x="330" y="744" text-anchor="middle">用户输出前清洗</text>
+
+  <path class="line-blue" d="M169 760 C169 705, 169 675, 169 620"/>
+  <text class="tiny" x="210" y="696">安全展示</text>
+
+  <path class="line-red" d="M1430 520 C1478 490, 1518 490, 1530 490"/>
+  <text class="tiny" x="1480" y="470" fill="#dc2626" text-anchor="middle">raw SQL 不跨出用户可见边界</text>
+
+  <!-- Legend -->
+  <rect x="44" y="1120" width="1806" height="42" rx="12" fill="#ffffff" stroke="#d0d5dd" stroke-width="2"/>
+  <text class="small" x="78" y="1146">蓝色：顶层任务调度</text>
+  <text class="small" x="300" y="1146">橙色：BI Agent 和 SQL 控制面</text>
+  <text class="small" x="590" y="1146">绿色：确定性 Dataset Toolchain</text>
+  <text class="small" x="900" y="1146">紫色：Datalogue 真相源</text>
+  <text class="small" x="1150" y="1146" fill="#dc2626">红色：用户可见输出禁区</text>
+</svg>
