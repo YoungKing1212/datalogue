@@ -1,7 +1,14 @@
 // Agentic Shell envelope 到旧 ChatModelAdapter 内部事件的迁移适配。
 
 export function agenticEnvelopeToChatEvent(streamEvent = {}) {
-  if (streamEvent.type) return streamEvent; // 测试和过渡期兼容旧 chat event 形状，避免 UI 处理层大范围改动。
+  // 迁移期兼容：后端若回退到旧 chat event 形状（带顶层 type 字段），跳过 envelope 解析。
+  // 迁移完成后应移除此 bypass。
+  if (streamEvent.type && !streamEvent.event_envelope) {
+    if (typeof console !== 'undefined') {
+      console.warn('[agentic-shell] bypassing envelope parse for legacy event shape', streamEvent.type);
+    }
+    return streamEvent;
+  }
 
   const envelope = streamEvent.event_envelope || {};
   const payload = envelope.payload || {};

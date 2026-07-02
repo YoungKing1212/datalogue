@@ -5411,8 +5411,12 @@ def _mirror_agentscope_stream_event(
     return event, final_seen, bridge_closed
 
 
-def _chat_stream_runtime_hooks() -> DatalogueChatStreamRuntimeHooks:
-    """P2.1 transport adapter hook 装配；chat.py 保留兼容 helper，生命周期交给 service。"""
+def chat_stream_runtime_hooks() -> DatalogueChatStreamRuntimeHooks:
+    """P2.1 transport adapter hook 装配；chat.py 保留兼容 helper，生命周期交给 service。
+
+    公开函数：api/agentic_shell.py 的 LegacyWorkflowTaskRunner 也依赖此函数，
+    Agentic Shell 迁移完成后可随旧 chat stream 入口一并移除。
+    """
 
     return DatalogueChatStreamRuntimeHooks(
         log_chat_stream_checkpoint=_log_chat_stream_checkpoint,
@@ -5441,7 +5445,7 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     runtime = DatalogueChatStreamRuntime(
         db=db,
         settings=get_settings(),
-        hooks=_chat_stream_runtime_hooks(),
+        hooks=chat_stream_runtime_hooks(),
     )
     async for event in runtime.stream(payload):
         yield event

@@ -115,12 +115,12 @@ class AgenticShellTaskRuntime:
             thread_id=session.thread_id,
             lease_seconds=300,
         )
+        # 把 session/message 关联写回 task 后只做一次 commit，减少 DB 往返。
         task.agent_scope_session_id = session.thread_id
         task.thread_id = session.thread_id
         task.message_id = assistant_message.message_id
         self.db.add(task)
-        self.db.commit()
-        self.db.refresh(task)
+        self.db.flush()  # 发 SQL 但不提交事务，后续失败时整体回滚
 
         yield build_task_envelope(
             event_type="task.started",
@@ -237,6 +237,5 @@ class AgenticShellTaskRuntime:
             request_payload_json=request.model_dump(),
         )
         self.db.add(task)
-        self.db.commit()
-        self.db.refresh(task)
+        self.db.flush()  # 取得 task_id，事务由外层控制
         return task

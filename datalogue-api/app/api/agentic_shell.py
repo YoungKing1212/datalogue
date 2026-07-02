@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
-from app.api.chat import _chat_stream_runtime_hooks
+from app.api.chat import chat_stream_runtime_hooks
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.schemas.agentic_shell_task import AgenticShellTaskRequest, AgenticShellTaskStreamEvent
@@ -35,13 +35,17 @@ def _sse_data(payload: dict) -> dict:
 
 
 def build_agentic_shell_task_runner(db: Session) -> LegacyWorkflowTaskRunner:
-    """生产默认 runner：新入口创建 task，BI 执行体通过 LegacyWorkflowAdapter 复用现有 service runtime。"""
+    """生产默认 runner：新入口创建 task，BI 执行体通过 LegacyWorkflowAdapter 复用现有 service runtime。
+
+    TODO(AS-R0): 迁移期结束后，LegacyWorkflowTaskRunner 和 DatalogueChatStreamRuntime
+    应替换为 AgentScope 原生 runner，不再每次请求 new Runtime 实例。
+    """
 
     async def legacy_stream_factory(chat_payload):
         runtime = DatalogueChatStreamRuntime(
             db=db,
             settings=get_settings(),
-            hooks=_chat_stream_runtime_hooks(),
+            hooks=chat_stream_runtime_hooks(),
         )
         async for event in runtime.stream(chat_payload):
             yield event
