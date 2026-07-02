@@ -24,7 +24,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
-from sse_starlette.sse import EventSourceResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -5446,20 +5445,6 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
     )
     async for event in runtime.stream(payload):
         yield event
-
-
-@router.post("/stream")
-def chat_stream(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
-    """流式问数接口，返回 SSE 事件流。"""
-    _log_chat_stream_checkpoint(  # HTTP 入口只记录轻量请求面，细节由下游 checkpoint 补齐。
-        "request_received",
-        question_preview=payload.question[:80],
-        payload_dataset_id=payload.dataset_id,
-        conversation_id=payload.conversation_id,
-        session_id=payload.session_id,
-        has_clarification_response=payload.clarification_response is not None,
-    )
-    return EventSourceResponse(_stream_chat(payload, db))
 
 
 def _run_agentscope_dataset_runtime_direct(

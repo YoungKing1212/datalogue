@@ -66,6 +66,20 @@ def _collect_stream_events(payload, db_session):
     return asyncio.run(_collect())
 
 
+def _agentic_shell_payload(payload):
+    return {
+        "task_source": "chat",
+        "task_type": "bi_query",
+        "question": payload["question"],
+        "dataset_id": payload.get("dataset_id"),
+        "conversation_id": payload.get("conversation_id"),
+        "session_id": payload.get("session_id"),
+        "thread_id": payload.get("thread_id"),
+        "retry_checkpoint_ref": payload.get("retry_checkpoint_ref"),
+        "clarification_response": payload.get("clarification_response"),
+    }
+
+
 def _find_event(events, event_type):
     return next(item for item in events if item.get("type") == event_type)
 
@@ -352,7 +366,7 @@ class TestChatAPI:
             "dataset_id": sample_dataset.id,
         }
         try:
-            resp = client.post("/api/chat/stream", json=payload)
+            resp = client.post("/api/agentic-shell/tasks/stream", json=_agentic_shell_payload(payload))
             assert resp.status_code == 200
             # SSE 响应
             assert "text/event-stream" in resp.headers.get("content-type", "")
@@ -366,7 +380,7 @@ class TestChatAPI:
         # SSE 在 TestClient 中可能因事件循环问题报错，这里只验证接口可访问
         # 实际流式内容在集成环境中测试
         try:
-            resp = client.post("/api/chat/stream", json=payload)
+            resp = client.post("/api/agentic-shell/tasks/stream", json=_agentic_shell_payload(payload))
             assert resp.status_code == 200
         except Exception:
             # SSE 流式在同步 TestClient 中可能有问题，跳过
@@ -2518,7 +2532,7 @@ class TestWorkflowRouting:
 
 
 class TestChatStreamEvents:
-    """测试 /api/chat/stream SSE 事件格式（astream_events）"""
+    """测试旧 chat stream service SSE 事件格式（astream_events）"""
 
     @pytest.mark.asyncio
     async def test_stream_message_gateway_step_and_final_include_turn_event_and_task_capsule(
@@ -3407,7 +3421,7 @@ class TestChatStreamEvents:
             mock_wf.return_value = mock_graph
 
             try:
-                resp = client.post("/api/chat/stream", json=payload)
+                resp = client.post("/api/agentic-shell/tasks/stream", json=_agentic_shell_payload(payload))
             except Exception:
                 # sse_starlette 在测试中复用事件循环时可能抛出 ExceptionGroup，跳过
                 pytest.skip("SSE AppStatus event loop issue in repeated TestClient usage")
@@ -4214,7 +4228,7 @@ class TestChatStreamEvents:
             mock_wf.return_value = mock_graph
 
             try:
-                resp = client.post("/api/chat/stream", json=payload)
+                resp = client.post("/api/agentic-shell/tasks/stream", json=_agentic_shell_payload(payload))
             except Exception:
                 # sse_starlette 在测试中复用事件循环时可能抛出 ExceptionGroup，跳过
                 pytest.skip("SSE AppStatus event loop issue in repeated TestClient usage")

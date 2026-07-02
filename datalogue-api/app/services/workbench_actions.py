@@ -20,6 +20,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models.agentscope_workbench import AgentScopeMessage, AgentScopeRef, AgentScopeSession
+from app.schemas.agentic_shell_task import AgenticShellTaskRequest
 from app.schemas.agentscope_workbench import (
     WorkbenchRetryRequest,
     WorkbenchRetryResponse,
@@ -83,6 +84,7 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
             retry_message_id=None,
             accepted=False,
             disabled_reason="旧会话为只读模式，不能直接发起 Workbench 重试。",
+            task_request=None,
             run_request=None,
         )
     if request.selected_action != "retry_last_step":
@@ -114,11 +116,12 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
             retry_message_id=existing_retry_message.message_id,
             accepted=True,
             disabled_reason=None,
-            run_request=_build_retry_run_request(
+            task_request=_build_retry_task_request(
                 session=session,
                 source_message=source_message,
                 checkpoint_ref=request.checkpoint_ref,
             ),
+            run_request=None,
         )
 
     retry_message = create_running_assistant_message(db, thread_id=normalized_thread_id, lease_seconds=300)
@@ -158,11 +161,12 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
         retry_message_id=retry_message.message_id,
         accepted=True,
         disabled_reason=None,
-        run_request=_build_retry_run_request(
+        task_request=_build_retry_task_request(
             session=session,
             source_message=source_message,
             checkpoint_ref=request.checkpoint_ref,
         ),
+        run_request=None,
     )
 
 
@@ -225,6 +229,24 @@ def _build_retry_run_request(
         retry_checkpoint_ref=checkpoint_ref,
         dataset_id=_retry_dataset_id(source_message),
         display_text="重试上一步",
+    )
+
+
+def _build_retry_task_request(
+    *,
+    session: AgentScopeSession,
+    source_message: AgentScopeMessage,
+    checkpoint_ref: str,
+) -> AgenticShellTaskRequest:
+    return AgenticShellTaskRequest(
+        task_source="workbench",
+        task_type="bi_query",
+        question=_retry_run_question(session=session, source_message=source_message),
+        conversation_id=session.legacy_conversation_id,
+        thread_id=session.thread_id,
+        retry_checkpoint_ref=checkpoint_ref,
+        dataset_id=_retry_dataset_id(source_message),
+        client_context={"action": "retry_last_step"},
     )
 
 

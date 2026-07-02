@@ -76,6 +76,14 @@ from .conversation import (
     ConversationRename,
 )
 from .chat import ChatRequest, ChatFeedback, ClarificationResponse
+from .agentic_shell_task import (
+    AgenticShellTaskOut,
+    AgenticShellTaskRequest,
+    AgenticShellTaskSource,
+    AgenticShellTaskStatus,
+    AgenticShellTaskStreamEvent,
+    AgenticShellTaskType,
+)
 from .bi_workbench import (
     ArtifactAction,
     ArtifactCard,
@@ -163,6 +171,12 @@ __all__ = [
     "ChatRequest",
     "ChatFeedback",
     "ClarificationResponse",
+    "AgenticShellTaskOut",
+    "AgenticShellTaskRequest",
+    "AgenticShellTaskSource",
+    "AgenticShellTaskStatus",
+    "AgenticShellTaskStreamEvent",
+    "AgenticShellTaskType",
     "ArtifactAction",
     "ArtifactCard",
     "ArtifactRef",

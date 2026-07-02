@@ -24,7 +24,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DatalogueEventType = Literal[
     "task.started",
+    "task.completed",
+    "task.failed",
+    "task.cancelled",
     "route.started",
+    "agent.selected",
+    "agent.handoff.started",
+    "agent.handoff.completed",
+    "agent.handoff.failed",
+    "message.delta",
+    "message.completed",
+    "tool.external_required",
+    "tool.result",
+    "tool.blocked",
+    "checkpoint.created",
+    "artifact.ready",
+    "trace.updated",
     "dataset.selected",
     "clarification.required",
     "dataset.query.started",
@@ -202,12 +217,17 @@ class DatalogueEventEnvelope(BaseModel):
     task_id: str | None = None
     conversation_id: int | None = None
     trace_id: str | None = None
+    thread_id: str | None = None
+    message_id: str | None = None
+    selected_agent: str | None = None
+    legacy_payload: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _reject_user_visible_internal_details(self) -> "DatalogueEventEnvelope":
         if self.visibility == "user_visible" and (
             _contains_forbidden_visible_detail(self.payload)
             or _contains_forbidden_visible_detail(self.metadata)
+            or _contains_forbidden_visible_detail(self.legacy_payload)
         ):
             raise ValueError("user_visible event contains forbidden internal details")
         return self
@@ -257,6 +277,10 @@ def build_datalogue_event_envelope(
     task_id: str | None = None,
     conversation_id: int | None = None,
     trace_id: str | None = None,
+    thread_id: str | None = None,
+    message_id: str | None = None,
+    selected_agent: str | None = None,
+    legacy_payload: dict[str, Any] | None = None,
 ) -> DatalogueEventEnvelope:
     """构造统一事件 envelope；用户可见事件在这里集中执行脱敏。"""
 
@@ -265,9 +289,11 @@ def build_datalogue_event_envelope(
     if visibility == "user_visible":
         safe_payload = sanitize_event_payload(raw_payload)
         safe_metadata = sanitize_event_payload(raw_metadata)
+        safe_legacy_payload = sanitize_event_payload(legacy_payload or {})
     else:
         safe_payload = raw_payload
         safe_metadata = raw_metadata
+        safe_legacy_payload = legacy_payload or {}
     return DatalogueEventEnvelope(
         event_type=event_type,
         visibility=visibility,
@@ -276,6 +302,10 @@ def build_datalogue_event_envelope(
         task_id=task_id,
         conversation_id=conversation_id,
         trace_id=trace_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        selected_agent=selected_agent,
+        legacy_payload=safe_legacy_payload if isinstance(safe_legacy_payload, dict) else {},
     )
 
 

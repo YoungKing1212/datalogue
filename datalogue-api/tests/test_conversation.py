@@ -51,15 +51,17 @@ class TestConversationAPI:
         assert resp.status_code == 404
 
     def test_create_conversation_via_chat(self, client, sample_dataset):
-        """通过 chat stream 接口创建对话（验证对话和消息持久化）"""
-        # 注意：chat/stream 是 SSE 接口，在同步 TestClient 中可能有问题
+        """通过 Agentic Shell task stream 接口创建对话（验证对话和消息持久化）"""
+        # 注意：task stream 是 SSE 接口，在同步 TestClient 中可能有问题
         # 这里只验证接口可访问，实际流式测试在集成环境中进行
         payload = {
+            "task_source": "chat",
+            "task_type": "bi_query",
             "question": "测试问题",
             "dataset_id": sample_dataset.id,
         }
         try:
-            resp = client.post("/api/chat/stream", json=payload)
+            resp = client.post("/api/agentic-shell/tasks/stream", json=payload)
             assert resp.status_code == 200
             # 验证对话已创建
             convs = client.get("/api/conversation").json()

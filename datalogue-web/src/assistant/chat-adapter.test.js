@@ -6,8 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeChatAdapter, buildBusinessSessionId } from './chat-adapter';
 import { buildHistoryMessageCustom } from './thread-list-adapter';
 
-vi.mock('../api/client', () => ({
-  streamChatEvents: vi.fn(),
+vi.mock('./agentic-shell-task-api', () => ({
+  streamAgenticShellTask: vi.fn(),
 }));
 
 vi.mock('./thread-list-adapter', async (importOriginal) => {
@@ -19,7 +19,7 @@ vi.mock('./thread-list-adapter', async (importOriginal) => {
   };
 });
 
-const { streamChatEvents } = await import('../api/client');
+const { streamAgenticShellTask } = await import('./agentic-shell-task-api');
 
 async function* events(items) {
   for (const item of items) {
@@ -65,7 +65,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('converts route, step and final events into timeline and artifact metadata', async () => {
-    streamChatEvents.mockReturnValue(events([
+    streamAgenticShellTask.mockReturnValue(events([
       {
         type: 'route_decision',
         decision: 'selected',
@@ -109,8 +109,10 @@ describe('chat-adapter C-ready metadata', () => {
     const chunks = await collectRun(adapter, runInput({ threadId: 'local-thread' }));
     const finalChunk = chunks.at(-1);
 
-    expect(streamChatEvents).toHaveBeenCalledWith(
+    expect(streamAgenticShellTask).toHaveBeenCalledWith(
       expect.objectContaining({
+        task_source: 'chat',
+        task_type: 'bi_query',
         question: '查询销售趋势',
         session_id: 'assistant-thread-local-thread',
         conversation_id: null,
@@ -137,7 +139,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('maps final SSE artifact refs without internal planning, observability or raw result metadata', async () => {
-    streamChatEvents.mockReturnValue(events([
+    streamAgenticShellTask.mockReturnValue(events([
       {
         type: 'step',
         node: 'query_plan',
@@ -198,7 +200,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('exposes only business-level candidate dataset confirmation metadata', async () => {
-    streamChatEvents.mockReturnValue(events([
+    streamAgenticShellTask.mockReturnValue(events([
       {
         type: 'final',
         answer: '请选择数据集',
@@ -234,7 +236,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('passes pending clarification response once and then clears it', async () => {
-    streamChatEvents.mockReturnValue(events([{ type: 'final', answer: '已确认' }]));
+    streamAgenticShellTask.mockReturnValue(events([{ type: 'final', answer: '已确认' }]));
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
       selected_dataset_id: 7,
       selected_text: '销售明细',
@@ -243,8 +245,10 @@ describe('chat-adapter C-ready metadata', () => {
     const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
     await collectRun(adapter);
 
-    expect(streamChatEvents).toHaveBeenCalledWith(
+    expect(streamAgenticShellTask).toHaveBeenCalledWith(
       expect.objectContaining({
+        task_source: 'chat',
+        task_type: 'bi_query',
         clarification_response: {
           selected_dataset_id: 7,
           selected_text: '销售明细',
@@ -256,7 +260,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('passes pending workbench retry request to chat stream once and clears it', async () => {
-    streamChatEvents.mockReturnValue(events([{ type: 'final', answer: '已从检查点恢复' }]));
+    streamAgenticShellTask.mockReturnValue(events([{ type: 'final', answer: '已从检查点恢复' }]));
     window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = {
       question: '查询杨凯 2024 年工作日志',
       conversation_id: 31,
@@ -269,8 +273,10 @@ describe('chat-adapter C-ready metadata', () => {
     const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
     await collectRun(adapter, runInput({ question: '重试上一步', threadId: 'local-thread' }));
 
-    expect(streamChatEvents).toHaveBeenCalledWith(
+    expect(streamAgenticShellTask).toHaveBeenCalledWith(
       expect.objectContaining({
+        task_source: 'chat',
+        task_type: 'bi_query',
         question: '查询杨凯 2024 年工作日志',
         session_id: 'conversation-31',
         conversation_id: 31,
@@ -287,7 +293,7 @@ describe('chat-adapter C-ready metadata', () => {
   it('emits resolved AgentScope thread id from final payload', async () => {
     const listener = vi.fn();
     window.addEventListener('datalogue:thread-resolved', listener);
-    streamChatEvents.mockReturnValue(events([
+    streamAgenticShellTask.mockReturnValue(events([
       {
         type: 'final',
         answer: '已完成',
@@ -370,7 +376,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('maps repair event envelopes into business-level metadata without leaking patch details', async () => {
-    streamChatEvents.mockReturnValue(events([
+    streamAgenticShellTask.mockReturnValue(events([
       {
         type: 'repair',
         event_envelope: {
@@ -446,7 +452,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('maps C2 repair patch summary into timeline, artifact refs, and safe metadata', async () => {
-    streamChatEvents.mockReturnValue(events([
+    streamAgenticShellTask.mockReturnValue(events([
       {
         type: 'repair',
         event_envelope: {
@@ -565,7 +571,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('maps repair_patch graph step into business timeline without internal patch body', async () => {
-    streamChatEvents.mockReturnValue(events([
+    streamAgenticShellTask.mockReturnValue(events([
       {
         type: 'step',
         node: 'repair_patch',

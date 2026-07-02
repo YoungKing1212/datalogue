@@ -114,9 +114,7 @@ class BIWorkbenchTool:
     def _resolve_stream_chat(self) -> ChatStreamCallable:
         if self._stream_chat is not None:
             return self._stream_chat
-        from app.api.chat import _stream_chat
-
-        return _stream_chat
+        raise RuntimeError("CHAT_STREAM_REMOVED_USE_AGENTIC_SHELL_TASKS")
 
     def compatibility_contract(self) -> dict[str, Any]:
         """声明 ask_bi 只保留为兼容工具；新主链 ownership 属于 Agentic Shell。"""

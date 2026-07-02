@@ -65,15 +65,22 @@ def test_retry_action_creates_new_running_message(client, db_session):
     assert payload["accepted"] is True
     assert payload["thread_id"] == thread_id
     assert payload["retry_message_id"]
-    assert payload["run_request"] == {
+    assert payload["task_request"] == {
+        "task_source": "workbench",
+        "task_type": "bi_query",
         "question": "retry 测试",
         "conversation_id": None,
+        "session_id": None,
         "thread_id": thread_id,
+        "clarification_response": None,
         "retry_checkpoint_ref": checkpoint_ref,
+        "artifact_ref": None,
         "dataset_id": None,
-        "display_text": "重试上一步",
+        "user_confirmation": None,
+        "client_context": {"action": "retry_last_step"},
     }
-    assert "sql" not in str(payload["run_request"]).lower()
+    assert payload["run_request"] is None
+    assert "sql" not in str(payload["task_request"]).lower()
     retry_message = (
         db_session.query(AgentScopeMessage)
         .filter(AgentScopeMessage.message_id == payload["retry_message_id"])
@@ -164,8 +171,9 @@ def test_retry_run_request_sanitizes_internal_question_text(client, db_session):
     assert response.status_code == 200
     payload = response.json()
     assert payload["accepted"] is True
-    assert payload["run_request"]["question"] == "重试上一步"
-    assert "select" not in str(payload["run_request"]).lower()
+    assert payload["task_request"]["question"] == "重试上一步"
+    assert payload["run_request"] is None
+    assert "select" not in str(payload["task_request"]).lower()
 
 
 def test_retry_payload_rejects_internal_execution_keys(client, db_session):
@@ -205,6 +213,7 @@ def test_legacy_retry_returns_disabled_reason(client):
         "retry_message_id": None,
         "accepted": False,
         "disabled_reason": "旧会话为只读模式，不能直接发起 Workbench 重试。",
+        "task_request": None,
         "run_request": None,
     }
 

@@ -68,8 +68,7 @@ export async function del(path) {
 }
 
 /**
- * SSE 流式问数 — 三类事件：step（节点进度）/ token（LLM字符）/ final（结束）
- * 旧 callback 形式，datasets 页面还在用；新 ChatModelAdapter 改用 streamChatEvents
+ * 旧 /api/chat/stream callback 入口已下线；执行流统一迁移到 Agentic Shell task stream。
  * @param {object} payload - { question, conversation_id?, dataset_id? }
  * @param {object} callbacks
  * @param {function} callbacks.onToken - (token: string) => void，每个 LLM token 触发
@@ -77,93 +76,21 @@ export async function del(path) {
  * @param {function} callbacks.onDone  - (data: object) => void，final 事件触发
  * @param {function} callbacks.onError - (err: Error) => void
  */
-export function streamChat(payload, { onToken, onEvent, onError, onDone }) {
-  const controller = new AbortController();
-
-  fetch('/api/chat/stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: controller.signal,
-  }).then(async (res) => {
-    if (!res.ok) {
-      onError?.(new Error(`HTTP ${res.status}`));
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop(); // 保留不完整行
-
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        try {
-          const data = JSON.parse(line.slice(5).trim());
-          if (data.type === 'token') {
-            onToken?.(data.content);
-          } else if (
-            data.type === 'step' ||
-            data.type === 'route_decision' ||
-            data.type === 'lead_agent_tools'
-          ) {
-            onEvent?.(data);
-          } else if (data.type === 'final') {
-            onDone?.(data);
-          }
-        } catch {
-          // 忽略非 JSON 行
-        }
-      }
-    }
-  }).catch((err) => {
-    if (err.name !== 'AbortError') onError?.(err);
-  });
-
-  return controller;
+export function streamChat() {
+  throw new Error('CHAT_STREAM_REMOVED_USE_AGENTIC_SHELL_TASKS');
 }
 
 /**
- * SSE 流式问数 — async generator 版本
- * 新 ChatModelAdapter（assistant-ui）使用，yield 原始事件对象 {type, ...}
+ * 旧 /api/chat/stream async generator 已下线；ChatModelAdapter 使用 Agentic Shell task stream。
  * @param {object} payload - { question, conversation_id?, dataset_id? }
  * @param {object} opts
  * @param {AbortSignal} opts.signal - 用于中断
  */
-export async function* streamChatEvents(payload, { signal } = {}) {
-  const res = await fetch('/api/chat/stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal,
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      try {
-        yield JSON.parse(line.slice(5).trim());
-      } catch {
-        /* 忽略非 JSON 行 */
-      }
-    }
+export async function* streamChatEvents() {
+  for await (const item of []) {
+    yield item; // 保留 async generator 形状，让旧调用方进入迭代时收到明确迁移错误。
   }
+  throw new Error('CHAT_STREAM_REMOVED_USE_AGENTIC_SHELL_TASKS');
 }
 
 // ── 具体业务 API ─────────────────────────────────────

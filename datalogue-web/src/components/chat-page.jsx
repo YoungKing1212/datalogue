@@ -22,7 +22,7 @@ import { ThreadList } from '../assistant/ThreadList';
 import { MyComposer, DatasetChip } from '../assistant/MyComposer';
 import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
-import { getConversation, listDatasets, streamChatEvents } from '../api/client';
+import { getConversation, listDatasets } from '../api/client';
 import { normalizeWorkbenchThreadId } from '../assistant/workbench-api';
 import BILeadAgentFlow from './bi-lead-agent-flow';
 import WorkbenchPanel from './workbench-panel';
@@ -66,9 +66,13 @@ export function conversationRouteIdForDatasetRestore(routeId) {
   return legacyMatch ? legacyMatch[1] : null;
 }
 
-export function submitWorkbenchRetryRun(runRequest) {
-  return runWorkbenchRetryStream(runRequest).catch((e) => {
+export function submitWorkbenchRetryRun(taskRequest, { chatModelAdapter } = {}) {
+  if (!taskRequest || typeof chatModelAdapter?.runAgenticShellTask !== 'function') {
+    return Promise.resolve(null);
+  }
+  return chatModelAdapter.runAgenticShellTask(taskRequest).catch((e) => {
     console.error('[workbench] retry stream failed', e);
+    return null;
   });
 }
 
@@ -104,11 +108,12 @@ function dispatchWorkbenchTrace(event) {
 export async function runWorkbenchRetryStream(
   runRequest,
   {
-    streamEvents = streamChatEvents,
+    streamEvents,
     dispatchTrace = dispatchWorkbenchTrace,
   } = {},
 ) {
   if (!runRequest) return null;
+  if (typeof streamEvents !== 'function') return null;
   const threadId = safeRetryText(runRequest.thread_id);
   const retryCheckpointRef = safeRetryText(runRequest.retry_checkpoint_ref);
   if (!threadId || !retryCheckpointRef) return null;
@@ -327,7 +332,14 @@ function ComposerTextSetter({ register }) {
 /**
  * ChatPage 内部主体（在 AssistantRuntimeProvider 之内）
  */
-function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentVerbosity }) {
+function ChatPageInner({
+  routeId,
+  traceOpen,
+  setTraceOpen,
+  showFollowups,
+  agentVerbosity,
+  chatModelAdapter,
+}) {
   const [selectedDs, setSelectedDs] = useState(null);
   const [datasetList, setDatasetList] = useState([]);
 
@@ -559,9 +571,9 @@ function ChatPageInner({ routeId, traceOpen, setTraceOpen, showFollowups, agentV
 
   // 监听标题自动更新事件（首条消息后端写入 title 后）— 触发 thread list 重新拉取
   const aui = useAui();
-  const handleWorkbenchRetryRun = useCallback((runRequest) => {
-    submitWorkbenchRetryRun(runRequest);
-  }, []);
+  const handleWorkbenchRetryRun = useCallback((taskRequest) => {
+    submitWorkbenchRetryRun(taskRequest, { chatModelAdapter });
+  }, [chatModelAdapter]);
   useEffect(() => {
     const onRename = () => {
       // 后端已写入新 title；让 assistant-ui 重新拉一次 list，覆盖本地缓存
@@ -638,7 +650,8 @@ export function ChatPage({ traceOpen, setTraceOpen, showFollowups, agentVerbosit
 
   // datasetId 共享 ref：ChatPage 维护 selectedDs，通过 ref 传给 chat adapter
   const datasetIdRef = useRef(null);
-  const useChatRuntimeHook = () => useLocalRuntime(makeChatAdapter({ datasetIdRef }));
+  const chatModelAdapter = useMemo(() => makeChatAdapter({ datasetIdRef }), [datasetIdRef]);
+  const useChatRuntimeHook = () => useLocalRuntime(chatModelAdapter);
 
   // runtime 单例：只有 chatAdapter 通过 ref 拿到最新 datasetId
   const runtime = useRemoteThreadListRuntime({
@@ -658,6 +671,7 @@ export function ChatPage({ traceOpen, setTraceOpen, showFollowups, agentVerbosit
         setTraceOpen={setTraceOpen}
         showFollowups={showFollowups}
         agentVerbosity={agentVerbosity}
+        chatModelAdapter={chatModelAdapter}
       />
     </AssistantRuntimeProvider>
   );

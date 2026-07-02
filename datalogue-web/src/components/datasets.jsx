@@ -23,7 +23,6 @@ import {
   importDatasetYaml,
   exportDatasetYaml,
   previewTable,
-  streamChat,
   selectTablesForDataset,
   deselectTableFromDataset,
   listSelectedTables,
@@ -47,6 +46,8 @@ import {
   rollbackDatasetSubAgentManifest,
   routeCheckDatasetSubAgentManifest,
 } from '../api/client';
+import { streamAgenticShellTask } from '../assistant/agentic-shell-task-api';
+import { agenticEnvelopeToChatEvent } from '../assistant/agentic-shell-event-adapter';
 
 // ── DatasetsScreen — 语义层配置（三栏式）────────────────────
 
@@ -1153,13 +1154,31 @@ function DatasetsScreen() {
     setTestReport(null);
     setTestStepEvents([]);
 
-    const ctrl = streamChat(
-      { question, dataset_id: dsId },
-      {
-        onToken: (tok) => {
-          setTestResult(prev => (prev || '') + tok);
-        },
-        onEvent: (ev) => {
+    const ctrl = new AbortController();
+    testAbortRef.current = { abort: () => ctrl.abort() };
+    (async () => {
+      try {
+        for await (const rawEvent of streamAgenticShellTask(
+          {
+            task_source: 'chat',
+            task_type: 'bi_query',
+            question,
+            dataset_id: dsId,
+          },
+          { signal: ctrl.signal },
+        )) {
+          const ev = agenticEnvelopeToChatEvent(rawEvent);
+          if (ev.type === 'token') {
+            setTestResult(prev => (prev || '') + (ev.content || ''));
+            continue;
+          }
+          if (ev.type === 'final') {
+            setTestStreaming(false);
+            if (ev.sql) setTestSql(ev.sql);
+            if (ev.answer) setTestResult(ev.answer);
+            setTestReport(buildValidationReport({ question, finalData: ev, stepEvents }));
+            return;
+          }
           stepEvents.push(ev);
           setTestStepEvents([...stepEvents]);
           if (ev.step === 'dsl_compiler' && ev.status === 'done' && ev.output?.sql) {
@@ -1167,27 +1186,24 @@ function DatasetsScreen() {
           } else if (ev.node === 'dsl_compiler' && ev.status === 'done' && ev.sql) {
             setTestSql(ev.sql);
           }
-        },
-        onDone: (data) => {
+        }
+        setTestStreaming(false);
+      } catch (err) {
+        if (err.name === 'AbortError') {
           setTestStreaming(false);
-          if (data.sql) setTestSql(data.sql);
-          if (data.answer) setTestResult(data.answer);
-          setTestReport(buildValidationReport({ question, finalData: data, stepEvents }));
-        },
-        onError: (err) => {
-          setTestStreaming(false);
-          const message = '验证失败: ' + err.message;
-          setTestResult(message);
-          setTestReport(buildValidationReport({
-            question,
-            finalData: { answer: message, error: err.message },
-            stepEvents,
-            fallbackError: err.message,
-          }));
-        },
+          return;
+        }
+        setTestStreaming(false);
+        const message = '验证失败: ' + err.message;
+        setTestResult(message);
+        setTestReport(buildValidationReport({
+          question,
+          finalData: { answer: message, error: err.message },
+          stepEvents,
+          fallbackError: err.message,
+        }));
       }
-    );
-    testAbortRef.current = ctrl;
+    })();
   };
 
   const handleSaveValidationCase = async () => {

@@ -216,9 +216,9 @@ export function WorkbenchActions({ threadId, actions = [], onRetried, onRetryRun
                 selected_action: action.action_id === 'retry' ? 'retry_last_step' : action.action_id,
               });
               onRetried?.(response);
-              if (response?.accepted && response?.run_request) {
-                // Workbench 只发起恢复请求，真正重跑交回 Chat 主链和 retry checkpoint。
-                onRetryRun?.(response.run_request);
+              if (response?.accepted && response?.task_request) {
+                // Workbench retry 创建新的 AgenticShellTask，不再绕回旧 chat stream。
+                onRetryRun?.(response.task_request);
               }
             }}
           >

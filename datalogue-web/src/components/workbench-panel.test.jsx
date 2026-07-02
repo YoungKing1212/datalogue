@@ -181,7 +181,7 @@ describe('WorkbenchPanel', () => {
     expect(screen.queryByText('诊断详情')).not.toBeInTheDocument();
   });
 
-  it('passes accepted retry run request to chat shell without execution details', async () => {
+  it('passes accepted retry task request to chat shell without execution details', async () => {
     const onRetryRun = vi.fn();
     fetchWorkbenchThread.mockResolvedValueOnce({
       ...threadView,
@@ -210,14 +210,15 @@ describe('WorkbenchPanel', () => {
     requestWorkbenchRetry.mockResolvedValueOnce({
       accepted: true,
       retry_message_id: 'msg_retry',
-      run_request: {
-        question: '查询工作日志',
-        conversation_id: 31,
+      task_request: {
+        task_source: 'workbench',
+        task_type: 'bi_query',
+        question: '重试上一步',
         thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         retry_checkpoint_ref: 'checkpoint://retry',
-        dataset_id: 7,
-        display_text: '重试上一步',
+        client_context: { action: 'retry_last_step' },
       },
+      run_request: null,
     });
 
     render(<WorkbenchPanel threadId="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" onRetryRun={onRetryRun} />);
@@ -227,14 +228,12 @@ describe('WorkbenchPanel', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /重试/ }));
 
-    await waitFor(() => expect(onRetryRun).toHaveBeenCalledWith({
-      question: '查询工作日志',
-      conversation_id: 31,
+    await waitFor(() => expect(onRetryRun).toHaveBeenCalledWith(expect.objectContaining({
+      task_source: 'workbench',
+      task_type: 'bi_query',
       thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       retry_checkpoint_ref: 'checkpoint://retry',
-      dataset_id: 7,
-      display_text: '重试上一步',
-    }));
+    })));
     expect(requestWorkbenchRetry).toHaveBeenCalledWith({
       thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       message_id: 'msg_failed',

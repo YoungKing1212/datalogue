@@ -12,7 +12,8 @@
 // 每次 yield content 数组是完整覆盖，所以本地累加器维护 reasonings + accText。
 // 普通 Chat 用户可见层不透出 SQL 文本；SQL 只留在后端 control/trace 面。
 
-import { streamChatEvents } from '../api/client';
+import { agenticEnvelopeToChatEvent } from './agentic-shell-event-adapter';
+import { streamAgenticShellTask } from './agentic-shell-task-api';
 import { resolveRecentInitializedRemoteId, resolveRemoteId } from './thread-list-adapter';
 
 const BUSINESS_SESSION_PREFIX = 'assistant-thread';
@@ -690,20 +691,40 @@ export function makeChatAdapter({ datasetIdRef }) {
         window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = null;
       }
 
+      const taskRequest = {
+        task_source: 'chat',
+        task_type: 'bi_query',
+        question: effectiveQuestion,
+        session_id: businessSessionId,
+        conversation_id: convId,
+        thread_id: requestThreadId,
+        dataset_id: datasetId,
+        retry_checkpoint_ref: retryCheckpointRef,
+        clarification_response: clarificationResponse,
+      };
+
+      yield* this.runTaskStream(taskRequest, { abortSignal, unstable_threadId });
+    },
+
+    async runAgenticShellTask(taskRequest) {
+      let finalChunk = null;
+      const abortController = new AbortController();
+      for await (const chunk of this.runTaskStream(taskRequest, {
+        abortSignal: abortController.signal,
+        unstable_threadId: taskRequest?.thread_id,
+      })) {
+        finalChunk = chunk;
+      }
+      return finalChunk;
+    },
+
+    async *runTaskStream(taskRequest, {
+      abortSignal = new AbortController().signal,
+      unstable_threadId,
+    } = {}) {
       let stream;
       try {
-        stream = streamChatEvents(
-          {
-            question: effectiveQuestion,
-            session_id: businessSessionId,
-            conversation_id: convId,
-            thread_id: requestThreadId,
-            dataset_id: datasetId,
-            retry_checkpoint_ref: retryCheckpointRef,
-            clarification_response: clarificationResponse,
-          },
-          { signal: abortSignal },
-        );
+        stream = streamAgenticShellTask(taskRequest, { signal: abortSignal });
       } catch (err) {
         if (err.name !== 'AbortError') {
           yield {
@@ -731,8 +752,9 @@ export function makeChatAdapter({ datasetIdRef }) {
         { type: 'text', text: accText },
       ];
 
-      for await (const ev of stream) {
+      for await (const rawEvent of stream) {
         if (abortSignal.aborted) break;
+        const ev = agenticEnvelopeToChatEvent(rawEvent);
 
         if (ev.type === 'token') {
           accText += ev.content || '';

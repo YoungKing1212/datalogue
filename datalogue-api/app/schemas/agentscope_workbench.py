@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.agentic_shell_task import AgenticShellTaskRequest
+
 
 class AgentScopeThreadKind(str, Enum):
     AGENTSCOPE = "agentscope"
@@ -177,6 +179,7 @@ class WorkbenchRetryResponse(BaseModel):
     retry_message_id: str | None
     accepted: bool
     disabled_reason: str | None = None
+    task_request: AgenticShellTaskRequest | None = None
     run_request: WorkbenchRetryRunRequest | None = None
 
 
