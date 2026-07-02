@@ -110,8 +110,18 @@ def project_agentscope_event(
                 payload={"content": content},
                 legacy_payload=parsed,
             )
-        if legacy_type == "final":
-            answer = str(parsed.get("answer") or parsed.get("summary") or "")
+        event_envelope = parsed.get("event_envelope") if isinstance(parsed, dict) else None
+        event_type = event_envelope.get("event_type") if isinstance(event_envelope, dict) else parsed.get("event_type")
+        if legacy_type == "final" or event_type in {"answer.completed", "error.blocked"}:
+            envelope_payload = event_envelope.get("payload") if isinstance(event_envelope, dict) else {}
+            answer = str(
+                parsed.get("answer")
+                or parsed.get("summary")
+                or (envelope_payload or {}).get("answer")
+                or (envelope_payload or {}).get("summary")
+                or (envelope_payload or {}).get("error_summary")
+                or ""
+            )
             return build_task_envelope(
                 event_type="message.completed",
                 task_id=task_id,
@@ -122,8 +132,6 @@ def project_agentscope_event(
                 payload={"summary": answer or "任务已完成。"},
                 legacy_payload=parsed,
             )
-        event_envelope = parsed.get("event_envelope") if isinstance(parsed, dict) else None
-        event_type = event_envelope.get("event_type") if isinstance(event_envelope, dict) else parsed.get("event_type")
         if isinstance(event_type, str) and event_type.startswith("retry."):
             return build_task_envelope(
                 event_type=event_type,

@@ -17,7 +17,7 @@ export function agenticEnvelopeToChatEvent(streamEvent = {}) {
   if (envelope.event_type === 'message.delta') {
     return { type: 'token', content: payload.content || '' };
   }
-  if (envelope.event_type === 'message.completed' || envelope.event_type === 'task.completed') {
+  if (envelope.event_type === 'message.completed') {
     return {
       ...legacy,
       type: 'final',
@@ -35,6 +35,13 @@ export function agenticEnvelopeToChatEvent(streamEvent = {}) {
       task_id: streamEvent.task_id || envelope.task_id,
       trace_id: envelope.trace_id || null,
       entry_route: 'agentic_shell_failed',
+      event_envelope: envelope,
+    };
+  }
+  if (envelope.event_type?.startsWith('repair.')) {
+    return {
+      type: 'repair',
+      task_id: streamEvent.task_id || envelope.task_id,
       event_envelope: envelope,
     };
   }

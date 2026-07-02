@@ -95,3 +95,22 @@ def test_project_legacy_sse_final_to_message_completed():
     assert envelope.event_type == "message.completed"
     assert envelope.legacy_payload["answer"] == "合同总金额为 100 万元"
     assert envelope.trace_id == "trace-legacy"
+
+
+def test_project_legacy_answer_completed_envelope_to_message_completed():
+    envelope = project_agentscope_event(
+        {
+            "data": (
+                '{"answer":"合同总金额为 100 万元",'
+                '"event_envelope":{"event_type":"answer.completed","payload":{"answer":"合同总金额为 100 万元"}}}'
+            )
+        },
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="as_1",
+        message_id="msg-1",
+        selected_agent="bi_lead_agent",
+    )
+
+    assert envelope.event_type == "message.completed"
+    assert envelope.legacy_payload["answer"] == "合同总金额为 100 万元"

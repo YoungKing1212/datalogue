@@ -132,6 +132,7 @@
 - AS-R0 PR1.3-d `/chat/stream` 单数据集直通 DatasetAgent Runtime：显式 `dataset_id` 新查询绕过 legacy `build_workflow` 和 LeadAgent route，进入受控 atomic runtime，保留澄清、多轮、数据集选择等旧控制面；验证覆盖 atomic runtime cutover、compileall 和 diff check。
 - AS-R0 DatasetAgent `repair_dsl` 暴露完成：`repair_dsl` 从 future disabled tools 移入 BI tool whitelist 和 AgentScope external tool 序列，字段缺失后仅通过本会话 `compiled_query_ref` 受控修复，不暴露 SQL/schema/raw rows/query_plan/RepairPatch。
 - AS-R0 BI 原子工具 ToolBase/Toolkit 收口完成：`get_dataset_status/list_candidate_assets/compile_dsl_to_sql/execute_compiled_query/repair_dsl/create_query_artifact/get_artifact_summary` 迁入 `app.services.bi_tools` Toolkit，Runtime registry 不再把 Provider 作为主工具提供方。
+- AS-R0 direct 入口接入 AgentScope repair_dsl 链路完成：`POST /api/chat/dataset-runtime/direct` 切到 `AgentScopeDatasetRuntimeBridge.run_direct_query()`，compile/execute/repair_dsl/retry/artifact summary 均通过 AgentScope external execution event 状态机执行，direct 入口仍仅限非 production。
 
 ## 高价值判断
 
@@ -142,15 +143,6 @@
 - `localhost:8080` 等地址返回应用层 `Unauthorized` 时，优先判断服务已启动，继续排查认证、代理或路由，不要直接判定服务未启动。
 
 ## 最新详细记录
-
-### 2026-07-01 16:44 · direct 入口接入 AgentScope repair_dsl 链路
-
-- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/services/agentscope_dataset_runtime.py`、`datalogue-api/app/services/agentscope_middlewares/dataset_tool_logging.py`、`datalogue-api/app/services/agentscope_middlewares/safe_log_summary.py`、`datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`.codex/project-memory.md`
-- 关键改动：`POST /api/chat/dataset-runtime/direct` 从旧 `DatasetAgentToolCallRuntime` 切到 `AgentScopeDatasetRuntimeBridge.run_direct_query()`；direct 入口仍复用现有 DSL generator，但 compile、execute、`FIELD_NOT_FOUND` 后的 `repair_dsl`、重跑、artifact summary 均通过 AgentScope external execution event 状态机执行；返回新增 `execution_path=agentscope_dataset_runtime_direct` 和 `tool_results`，同时保留 `tool_calls` 兼容别名；后端日志收敛为 ToolMiddlewareBase 层工具调用安全摘要，不再补 event-level `DatasetRuntimeLoggingMiddleware`。
-- 安全边界：direct 入口继续仅限非 production；`repair_dsl` 仍只能使用当前会话 `compiled_query_ref`，不能由调用方传 SQL/schema/query_plan/RepairPatch；ToolResult 只返回状态、refs、row/column count 和受控错误码；工具调用日志直接使用 AgentScope 2.0 `ToolMiddlewareBase` 和 `ToolBase(middlewares=...)`，事件回填层不再使用 AgentScope `MiddlewareBase` 单独打印。
-- TDD 记录：先新增 direct endpoint repair 测试并确认 RED 为旧 `execution_path=dataset_agent_runtime_direct` 且无 `repair_dsl`；实现 bridge direct 驱动和 route 接线后转 GREEN；同步修正旧 direct 旁路测试为新 helper 口径，并为 AgentScope SDK middleware API 差异补兼容测试。
-- 验证方式：执行 `datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_as_r0_atomic_runtime_cutover.py datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py datalogue-api/tests/test_agentic_shell_contract.py datalogue-api/tests/test_agentscope_runtime_driver_contract.py -q`，33 条通过、5 个既有 warning。
-- 残留风险：`/chat/stream` 主链仍未切到 `AgentScopeDatasetRuntimeBridge`；direct endpoint 可用于你现在手工验证 repair_dsl，但生产流式问数要看到同样日志还需要后续把 stream atomic runtime 也切到 bridge。
 
 ### 2026-07-01 16:49 · 删除 Dataset Runtime event-level Middleware 日志
 
@@ -224,3 +216,11 @@
 - 安全边界：Datalogue Event Envelope 和前端可见层不暴露 SQL、schema、raw rows、DSL、query_plan、repair patch 或 tool input；`LegacyWorkflowTaskRunner` 仅作为迁移期内部执行适配器，不再保留旧 HTTP 执行入口；`BIWorkbenchTool` 缺少显式 stream callable 时 fail-closed，避免动态回退到旧 route。
 - 验证方式：后端统一入口回归 `tests/test_agentic_shell_task_contracts.py tests/test_agentic_shell_event_projection.py tests/test_agentic_shell_task_runtime.py tests/test_agentic_shell_task_api.py tests/test_agentic_shell_chat_stream_removed.py tests/test_workbench_agentic_task_actions.py tests/test_agentscope_mirror_models.py tests/test_workbench_view_api.py tests/test_as_r0_security_matrix.py -q` 为 `32 passed, 2 warnings`；前端 vitest 五组为 `49 passed`；`npm run build` 通过并保留既有 chunk warning；`npm run lint` 通过，`0 errors, 13 warnings`；硬切搜索只剩 `client.js` 下线抛错 helper 和旧 route 删除测试。
 - 残留风险：本次未执行真实浏览器页面验收；BI 执行体仍由 `LegacyWorkflowTaskRunner` 临时承接，完整 DatasetAgent AgentScope-owned stream run、Report/Python/Audit agent 和页面级发布验收仍需后续推进；既有 Vite chunk size warning 和 lint warnings 未在本次处理。
+
+### 2026-07-02 11:44 · Agentic Shell answer 投影与前端 final 覆盖修复
+
+- 涉及文件：`datalogue-api/app/services/agentic_shell_event_projection.py`、`datalogue-api/tests/test_agentic_shell_event_projection.py`、`datalogue-web/src/assistant/agentic-shell-event-adapter.js`、`datalogue-web/src/assistant/agentic-shell-event-adapter.test.js`、`.codex/project-memory.md`
+- 关键改动：修复 Agentic Shell 统一入口中旧主链 `event_envelope.event_type=answer.completed/error.blocked` 未被识别为 `message.completed` 的问题；前端 adapter 不再把 `task.completed` 转成 final answer，避免后续 task lifecycle 文案覆盖真实 AI answer；同时保留 `repair.*` envelope 为 repair 事件，避免 C2 repair timeline 被通用 step 分支吞掉。
+- 安全边界：继续只通过 Datalogue Event Envelope 和清洗后的 legacy payload 暴露 answer/summary，不恢复 SQL、schema、raw rows、query_plan 或 repair patch 主体。
+- 验证方式：先新增后端 legacy `answer.completed` projection 测试和前端 `task.completed` 非 final 测试并确认 RED；修复后 `python3 -m pytest tests/test_agentic_shell_event_projection.py tests/test_agentic_shell_task_runtime.py tests/test_agentic_shell_task_api.py tests/test_agentic_shell_chat_stream_removed.py -q` 为 `9 passed, 2 warnings`；`npx vitest run src/assistant/agentic-shell-event-adapter.test.js src/assistant/chat-adapter.test.js src/assistant/agentic-shell-task-api.test.js src/components/chat-page.test.jsx src/components/workbench-panel.test.jsx` 为 `51 passed`；`npm run build` 通过并保留既有 chunk warning；`npm run lint` 通过，`0 errors, 13 warnings`。
+- 残留风险：页面仍可能显示 `tool_planner/skill_selector`，根因是当前 `/api/agentic-shell/tasks/stream` 内部仍由 `LegacyWorkflowTaskRunner -> DatalogueChatStreamRuntime` 承接 BI 执行体；要彻底消除旧 planner 节点，需要后续把 BI stream 执行体从 legacy workflow 切到 AgentScope-owned DatasetAgent/BI LeadAgent runtime。
