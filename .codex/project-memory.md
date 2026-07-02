@@ -230,3 +230,11 @@
 - 安全边界：K3 不让 AgentScope session/event 取代 Datalogue DB 真相源；native event 映射只保留 handoff 状态、child_run_id、artifact/checkpoint refs、安全摘要和结果规模，继续过滤 SQL/schema/DSL/raw rows/result internals；BI LeadAgent 仍不直接调用 Dataset 原子工具。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest tests/test_bi_lead_agent_models.py tests/test_bi_lead_agent_capabilities.py tests/test_bi_lead_agent_services.py tests/test_bi_lead_agent_handoff_adapter.py tests/test_bi_lead_agent_api.py tests/test_bi_lead_agent_handoff_port.py tests/test_bi_lead_agent_native_handoff.py tests/test_bi_lead_agent_handoff_parity.py tests/test_agentscope_dataset_runtime_bridge.py tests/test_as_r0_security_matrix.py -q`，59 条通过、2 个既有 warning。
 - 残留风险：`agentscope_native` 默认不启用，生产切换前还需要真实凭据和 live smoke；完整 F3 长生命周期会话 Agent、Report/Python/Audit 可选 Agent 和多数据集 native handoff 仍是后续任务。
+
+### 2026-07-02 09:10 · BI LeadAgent K1/K2/K3 真实浏览器 E2E
+
+- 涉及文件：`datalogue-web/vite.config.js`、`.codex/project-memory.md`
+- 关键改动：为 Vite `/api/` 代理增加 `VITE_API_PROXY_TARGET` 覆盖能力，默认仍指向 `http://localhost:8000`；E2E 时在集成 worktree 使用隔离后端 `8002` 和前端 `5174`，避免误用主仓库已有 `8000/5173` 服务。
+- 验证方式：使用 `/tmp/datalogue-bi-lead-e2e.db` 种入 `E2E 销售分析数据集`，API 级跑通 `POST /api/bi-lead-agent/runs -> confirm -> handoff -> GET run`；浏览器打开 `/chat`，选择数据集、填写问题、创建 run、确认查询并触发 handoff；网络记录中 `/api/dataset`、`/api/bi-lead-agent/runs`、`confirm`、`handoff` 均为 200，无 console error/warning 和 request failed；桌面截图保存到 `/tmp/datalogue-bi-lead-e2e-desktop.png`，移动截图保存到 `/tmp/datalogue-bi-lead-e2e-mobile.png`；执行 `npm run build` 通过，仅保留既有 Vite chunk size warning。
+- 安全边界：页面确认卡片只展示数据集级摘要；终态面板只展示安全失败摘要；浏览器检查未发现 `select/from/schema_context/compiled_query/raw rows/candidate_assets/repair_patch` 等内部执行态泄露；落库确认 `handoff_id/parent_agent/child_agent/child_run_id/dataset_id/task_id/trace_id/handoff_status` 均写入。
+- 残留风险：当前 live handoff 真实执行失败，根因是 AgentScope DatasetAgent 调用模型 `MiniMax-M2.7` 时返回 401，缺少有效 Authorization；这次 E2E 验证的是无凭据环境下的安全失败闭环。移动视口无水平溢出，但受固定侧栏影响 BI LeadAgent 右侧面板宽度偏窄，后续移动端适配可单独优化。
