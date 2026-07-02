@@ -6,7 +6,7 @@
 # Responsibilities:
 #   - 验证内部 BI_SOUL 是不可越界协议 source of truth。
 #   - 验证 Hermes Skill SOUL 与内部契约同步。
-#   - 验证 AgentScope Shell policy 只保留 legacy compatibility 入口。
+#   - 验证 Agentic Shell policy 明确删除旧兼容入口。
 #
 # Author      : yangkai
 # Created On  : 2026-06-26
@@ -26,9 +26,9 @@ from app.services.soul_contract_sync import (
 def test_internal_bi_soul_is_source_of_truth_for_external_entries():
     internal = load_internal_bi_soul()
 
-    assert "LeadAgent 不看字段级 schema 明细" in internal
-    assert "legacy `ask_bi` 只作为兼容入口" in internal
-    assert "AS-R0 主 Runtime ownership 属于 Datalogue Agentic Shell" in internal
+    assert "BI LeadAgent 不看字段级 schema 明细" in internal
+    assert "legacy `ask_bi` 和旧 Chat stream 已删除" in internal
+    assert "主 Runtime ownership 属于 Datalogue Agentic Shell" in internal
     assert "LLM 不直接生成可执行 SQL" in internal
     assert "raw SQL / raw result / capsule / trace 主体属于 `control_plane`" in internal
 
@@ -41,11 +41,11 @@ def test_hermes_skill_soul_syncs_internal_bi_soul_contract():
     assert_hermes_soul_synced()
 
 
-def test_agentscope_shell_policy_marks_legacy_compatibility_and_hides_control_plane():
+def test_agentscope_shell_policy_marks_legacy_removed_and_hides_control_plane():
     policy = render_agentscope_shell_policy()
 
-    assert "compatibility_mode: legacy_compatibility" in policy
+    assert "compatibility_mode: removed_legacy_shell_adapter" in policy
     assert "runtime_owner: datalogue_agentic_shell" in policy
-    assert "owns_business_runtime: false" in policy
+    assert "owns_business_runtime: true" in policy
     assert "不得注册 schema、SQL、preview、database、artifact body 或 control_plane 工具" in policy
     assert "raw SQL / raw result / capsule / trace 主体属于 `control_plane`" in policy

@@ -64,6 +64,10 @@ def project_agentscope_event(
 ) -> DatalogueEventEnvelope:
     """把 AgentScope event 投影成 Datalogue envelope；未知事件降级为 trace.updated。"""
 
+    if isinstance(event, DatalogueEventEnvelope):
+        # 新 Agentic Shell runner 已经产出稳定 envelope 时直接透传，避免再走旧 SSE 字典兼容层。
+        return event
+
     if isinstance(event, RequireExternalExecutionEvent):
         return build_task_envelope(
             event_type="tool.external_required",

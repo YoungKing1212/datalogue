@@ -4,7 +4,7 @@
 #   BI 工作台外层工具契约与统一事件 envelope Schema。
 #
 # Responsibilities:
-#   - 定义 ask_bi 请求、响应、事件信封和产物引用结构。
+#   - 定义 Agentic Shell / Workbench 共用事件信封和产物引用结构。
 #   - 为 SSE 与未来 AgentScope event stream 复用同一业务事件协议。
 #   - 约束用户可见协议，避免 SQL、schema、capsule 和 control_plane 泄露。
 #
@@ -230,41 +230,6 @@ class DatalogueEventEnvelope(BaseModel):
             or _contains_forbidden_visible_detail(self.legacy_payload)
         ):
             raise ValueError("user_visible event contains forbidden internal details")
-        return self
-
-
-class AskBIRequest(BaseModel):
-    """ask_bi 唯一入口请求；caller 用于审计外层来源，不改变 BI 主链授权边界。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    question: str
-    conversation_id: int | None = None
-    caller: str
-    confirmed_dataset_id: int | None = None
-    context_refs: list[str | ArtifactRef] = Field(default_factory=list)
-    request_options: dict[str, Any] = Field(default_factory=dict)
-
-
-class AskBIResponse(BaseModel):
-    """ask_bi 外层响应；只包含稳定摘要、事件、候选数据集和引用句柄。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    task_id: str
-    event_envelope: DatalogueEventEnvelope
-    candidate_datasets: list[dict[str, Any]] = Field(default_factory=list)
-    answer: str | None = None
-    artifact_card: ArtifactCard | None = None
-    primary_ref: ArtifactRef | None = None
-    related_refs: list[ArtifactRef] = Field(default_factory=list)
-    status: Literal["completed", "waiting_user", "blocked"]
-    error: str | None = None
-
-    @model_validator(mode="after")
-    def _reject_internal_details(self) -> "AskBIResponse":
-        if _contains_forbidden_visible_detail(self.model_dump()):
-            raise ValueError("ask_bi response contains forbidden internal details")
         return self
 
 

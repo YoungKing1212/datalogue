@@ -49,3 +49,12 @@ def test_agentic_shell_task_stream_returns_task_envelopes(client, monkeypatch):
     assert "agent.selected" in event_types
     assert "task.completed" in event_types
     assert payloads[0]["task_id"].startswith("task-agentic-")
+
+
+def test_agentic_shell_default_runner_is_not_legacy_chat_runtime(db_session):
+    from app.api.agentic_shell import build_agentic_shell_task_runner
+    from app.services.agentic_shell_task_runtime import BILeadAgentTaskRunner
+
+    runner = build_agentic_shell_task_runner(db_session)
+
+    assert isinstance(runner, BILeadAgentTaskRunner)

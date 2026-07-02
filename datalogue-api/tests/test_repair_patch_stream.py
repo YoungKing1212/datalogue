@@ -184,7 +184,6 @@ async def test_workflow_e2e_repairs_injected_field_mapping_drift(
     )
 
     assert result["event_nodes"] == [
-        "lead_agent",
         "schema_recall",
         "dsl_generate",
         "dsl_validate",

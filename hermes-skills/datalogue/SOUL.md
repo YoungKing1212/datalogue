@@ -6,20 +6,20 @@ This skill injects Datalogue semantic-asset knowledge and guarded readonly SQL p
 
 Datalogue is an intelligent analytics system built around governed datasets, semantic metrics, dimensions, analysis blueprints, selected schema columns, business terms, and SubAgent Manifest governance.
 
-Hermes should treat this skill as a lightweight semantic catalog plus safe SQL preview tool, not as the LeadAgent executor.
+Hermes should treat this skill as a lightweight semantic catalog plus safe SQL preview tool, not as the BI LeadAgent executor.
 
 ## BI Soul Boundary
 
 The following block is synchronized from `datalogue-api/app/contracts/BI_SOUL.md`; update the internal source of truth first, then sync this external entry.
 
 <!-- BEGIN BI_SOUL_SYNC -->
-- LeadAgent 不看字段级 schema 明细；字段、指标、维度、术语、蓝图和 SQL 生成都留在 Dataset SubAgent / BI 内核内。
-- AS-R0 主 Runtime ownership 属于 Datalogue Agentic Shell；legacy `ask_bi` 只作为兼容入口，不再作为新主链工具。
+- BI LeadAgent 不看字段级 schema 明细；字段、指标、维度、术语、蓝图和 SQL 生成都留在 DatasetAgent / BI 内核内。
+- 主 Runtime ownership 属于 Datalogue Agentic Shell；legacy `ask_bi` 和旧 Chat stream 已删除。
 - 外层 Agent 不得绕过 Datalogue BI 内核直连 schema、SQL preview、数据库或 Chat 主链内部节点。
 - LLM 不直接生成可执行 SQL；SQL 只能在 BI 内核受控链路中生成，并经过 SQL Guard、执行适配和 artifact 持久化。
 - raw SQL / raw result / capsule / trace 主体属于 `control_plane`，只能写入后端状态、artifact、日志或观测链路，不进入外层 Agent 可见上下文。
 - ArtifactCard / event envelope / refs 只能承载 `llm_visible` 摘要、引用句柄和可展示状态，不承载 raw result、raw SQL、capsule 或 trace 主体。
-- AgentScopeShellAdapter 不替代 Datalogue 真相源；P2 起只保留 legacy compatibility 标记，不拥有业务 Runtime ownership。
+- 外层 AgentScope 适配器不替代 Datalogue 真相源；旧 AgentScopeShellAdapter 兼容壳已删除。
 <!-- END BI_SOUL_SYNC -->
 
 ## What Hermes Can Use
@@ -37,7 +37,7 @@ The following block is synchronized from `datalogue-api/app/contracts/BI_SOUL.md
 
 ## What Hermes Must Not Do
 
-- Do not load or summarize the full LeadAgent/LangGraph execution chain for normal semantic lookup.
+- Do not load or summarize the old LeadAgent/LangGraph execution chain for normal semantic lookup.
 - Do not call the Datalogue chat execution endpoint.
 - Do not execute SQL outside `scripts/api_assets.py execute-sql`.
 - Do not mutate metrics, dimensions, blueprints, schema, terms, or Manifest state.

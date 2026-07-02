@@ -21,7 +21,6 @@ import logging
 
 from app.core.config import get_settings
 from app.graph.nodes import (
-    lead_agent_node,
     schema_recall_node,
     dsl_generate_node,
     dsl_validate_node,
@@ -48,26 +47,8 @@ def _sql_max_retry_count() -> int:
     return value if value > 0 else DEFAULT_MAX_SQL_RETRY_COUNT
 
 
-def _lead_agent_router(state: AgentState) -> str:
-    """LeadAgent 入口节点路由器：按 state["entry_route"] 路由后续分支。
-
-    入口路由决策由 chat.py 通过 `route_query_intent` 一次性产出，写入 initial_state。
-    Phase 4: term 澄清已在 chat 层 `resolve_term_clarification` 处理完。
-    Phase 5: analysis_blueprint 已在 chat 层 `DatasetSubAgent.resolve_analysis_blueprint` 处理完。
-    LangGraph `lead_agent` 节点本身是 noop，仅保留 SSE 事件可见性。
-    """
-    entry = state.get("entry_route")
-    if entry in ("interpret_result", "analysis_blueprint"):
-        return "end"
-    if entry == "analysis_blueprint_execute":  # 兼容旧值（不应出现）
-        return "end"
-    if entry == "analysis_blueprint_semantic_execute":  # 兼容旧值
-        return "schema_recall"
-    return "schema_recall"
-
-
 def _should_skip_subagent_report(state: AgentState) -> bool:
-    """LeadAgent 自动路由场景由 LeadAgent 接管报告生成。"""
+    """显式跳过报告时不再生成 SubAgent 报告。"""
 
     explicit = state.get("skip_subagent_report")
     if explicit is not None:
@@ -159,14 +140,7 @@ def build_workflow(db: Session) -> Any:
     workflow = StateGraph(AgentState)
     logger.info("开始构建LangGraph工作流")
 
-    # 注册节点（Phase 3 改造：删 intent_recognition / entry_intent_classification / merge_prior_context，
-    # 合并为 lead_agent 入口。Phase 4 改造：删 clarification_resolution，由 chat 层 `resolve_term_clarification` 接管。
-    # Phase 5 改造：删 analysis_blueprint_execute，由 chat 层 `DatasetSubAgent.resolve_analysis_blueprint` 接管。
-    # Phase 6 改造：删 term_normalize_node，由 chat 层 `DatasetSubAgent.resolve_term_conflict` 接管。
-    # Phase 7 改造：删 semantic_asset_resolution_node，由 chat 层 `DatasetSubAgent.resolve_metric` 接管。
-    # 当前 LangGraph 节点数：9：lead_agent / schema_recall / dsl_generate / dsl_validate / dsl_compiler /
-    #   sql_execute / sql_audit / repair_patch_step / report_generator / increment_retry）
-    workflow.add_node("lead_agent", lead_agent_node)
+    # 旧 LeadAgent 入口已删除；保留底层 NL2SQL 图供 DatasetAgent Runtime 内部受控调用。
     workflow.add_node("schema_recall", schema_recall_node(db))
     workflow.add_node("dsl_generate", lambda state: dsl_generate_node(state, db=db))
     workflow.add_node("dsl_validate", dsl_validate_node)
@@ -184,16 +158,7 @@ def build_workflow(db: Session) -> Any:
     workflow.add_node("increment_retry", _increment_retry)
     logger.info("工作流节点注册完成")
 
-    # 设置入口（Phase 3：LeadAgent 总入口）
-    workflow.set_entry_point("lead_agent")
-    workflow.add_conditional_edges(
-        "lead_agent",
-        _lead_agent_router,
-        {
-            "schema_recall": "schema_recall",
-            "end": END,
-        },
-    )
+    workflow.set_entry_point("schema_recall")
 
     # Schema 召回 → DSL 生成
     workflow.add_edge("schema_recall", "dsl_generate")

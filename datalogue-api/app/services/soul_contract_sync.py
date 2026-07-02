@@ -6,7 +6,7 @@
 # Responsibilities:
 #   - 读取 Datalogue BI_SOUL 内部 source of truth。
 #   - 抽取并规范化外部入口同步块，校验 Hermes Skill 是否一致。
-#   - 为 legacy AgentScopeShellAdapter 提供 compatibility policy 文本。
+#   - 为 Agentic Shell / Hermes 外部入口提供统一边界文本。
 #
 # Author      : yangkai
 # Created On  : 2026-06-26
@@ -80,16 +80,16 @@ def assert_hermes_soul_synced(
 
 
 def render_agentscope_shell_policy() -> str:
-    """渲染 legacy AgentScopeShellAdapter compatibility policy，不创建 runtime/API。"""
+    """渲染 Agentic Shell 外部入口 policy，不创建旧 runtime/API。"""
 
     contract = normalize_contract(load_internal_bi_soul())
     return "\n".join(
         [
-            "AgentScopeShellAdapter legacy compatibility policy",
-            "compatibility_mode: legacy_compatibility",
+            "Agentic Shell external entry policy",
+            "compatibility_mode: removed_legacy_shell_adapter",
             "runtime_owner: datalogue_agentic_shell",
-            "owns_business_runtime: false",
+            "owns_business_runtime: true",
             "不得注册 schema、SQL、preview、database、artifact body 或 control_plane 工具",
-            contract,  # 关键边界直接来自内部契约，避免 adapter 侧另起一套说法。
+            contract,  # 关键边界直接来自内部契约，避免外部入口另起一套说法。
         ]
     )

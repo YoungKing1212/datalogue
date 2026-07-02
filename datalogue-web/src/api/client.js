@@ -67,32 +67,6 @@ export async function del(path) {
   return res.json();
 }
 
-/**
- * 旧 /api/chat/stream callback 入口已下线；执行流统一迁移到 Agentic Shell task stream。
- * @param {object} payload - { question, conversation_id?, dataset_id? }
- * @param {object} callbacks
- * @param {function} callbacks.onToken - (token: string) => void，每个 LLM token 触发
- * @param {function} callbacks.onEvent - (data: object) => void，step 事件触发
- * @param {function} callbacks.onDone  - (data: object) => void，final 事件触发
- * @param {function} callbacks.onError - (err: Error) => void
- */
-export function streamChat() {
-  throw new Error('CHAT_STREAM_REMOVED_USE_AGENTIC_SHELL_TASKS');
-}
-
-/**
- * 旧 /api/chat/stream async generator 已下线；ChatModelAdapter 使用 Agentic Shell task stream。
- * @param {object} payload - { question, conversation_id?, dataset_id? }
- * @param {object} opts
- * @param {AbortSignal} opts.signal - 用于中断
- */
-export async function* streamChatEvents() {
-  for await (const item of []) {
-    yield item; // 保留 async generator 形状，让旧调用方进入迭代时收到明确迁移错误。
-  }
-  throw new Error('CHAT_STREAM_REMOVED_USE_AGENTIC_SHELL_TASKS');
-}
-
 // ── 具体业务 API ─────────────────────────────────────
 
 /** 获取对话列表，archived=false 取常规，true 取归档 */

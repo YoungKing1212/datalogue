@@ -28,10 +28,6 @@ from app.prompts.dsl_generate import (
     build_semantic_system,
 )
 from app.prompts.intent_router import INTENT_RECOGNITION_SYSTEM
-from app.prompts.lead_agent import (
-    LEAD_AGENT_SKILL_SELECTOR_SYSTEM,
-    LEAD_AGENT_TOOL_PLANNER_SYSTEM,
-)
 from app.prompts.report_generate import _REPORT_BASE as REPORT_BASE
 from app.prompts.sql_audit import SQL_AUDIT_SYSTEM
 
@@ -153,20 +149,6 @@ def get_registered_prompts() -> list[RegisteredPrompt]:
             prompt=SQL_AUDIT_SYSTEM,
             description="SQL 执行失败后的根因诊断和修复建议。",
             tags=("datalogue", "sql-audit"),
-        ),
-        RegisteredPrompt(
-            name="lead_agent_skill_selector",
-            display_name="LeadAgent Skill 选择器",
-            prompt=LEAD_AGENT_SKILL_SELECTOR_SYSTEM,
-            description="LeadAgent 渐进式披露第一阶段，选择本轮需要启用的 Skill。",
-            tags=("datalogue", "lead-agent"),
-        ),
-        RegisteredPrompt(
-            name="lead_agent_tool_planner",
-            display_name="LeadAgent 工具规划器",
-            prompt=LEAD_AGENT_TOOL_PLANNER_SYSTEM,
-            description="LeadAgent 渐进式披露第二阶段，规划控制面工具调用。",
-            tags=("datalogue", "lead-agent"),
         ),
         RegisteredPrompt(
             name=DATALOGUE_COMPACTION_PROMPT_NAME,

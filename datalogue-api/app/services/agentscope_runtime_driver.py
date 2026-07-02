@@ -6,7 +6,7 @@
 # Responsibilities:
 #   - 将 DatalogueAgenticShell 的受控回合契约转换为 Runtime 可见的安全契约。
 #   - 只注册当前已实现且可安全暴露的 BI atomic tools。
-#   - 保持 AS-R0 不替换 /chat/stream、不调用旧 ask_bi Shell Adapter、不启动真实 runner。
+#   - 保持 Runtime 工具注册只暴露安全 BI atomic tool 描述，不回退旧 chat stream。
 #
 # Author      : yangkai
 # Created On  : 2026-07-01

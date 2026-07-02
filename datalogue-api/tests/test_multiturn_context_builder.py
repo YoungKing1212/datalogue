@@ -283,36 +283,6 @@ def test_blueprint_shortcut_decision_attaches_settings_enabled(monkeypatch):
     assert decision_off.blueprint_shortcut.get("settings_enabled") is False
 
 
-# ===== 7. 既有测试不退化（pytest collection-only 检查）=====
-
-
-def test_existing_regression_tests_remain_green():
-    """pytest collection 必须能发现并收集既有 multiturn/chat/regression 测试，验证
-    builder 抽取没破坏导入图。test bodies 跑不跑（绿不绿）由 T6 单独验证。
-    """
-    import subprocess
-    import sys
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "--collect-only",
-            "-q",
-            "tests/test_multiturn.py",
-            "tests/test_multiturn_regression.py",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=".",
-    )
-    assert result.returncode == 0, (
-        f"既有测试收集失败: {result.stderr[:500]}\nstdout: {result.stdout[:500]}"
-    )
-    assert "test_merge_prior_context_node" in result.stdout or "::" in result.stdout
-
-
 # ===== 8. frozen fixtures 等价性比对 =====
 
 

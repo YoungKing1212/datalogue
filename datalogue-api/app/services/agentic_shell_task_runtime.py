@@ -21,10 +21,13 @@ from typing import Any, Protocol
 from agentscope.message import UserMsg
 from sqlalchemy.orm import Session
 
-from app import schemas
 from app.models.agentic_shell_task import AgenticShellTask
 from app.schemas.agentic_shell_task import AgenticShellTaskRequest
+from app.schemas.bi_lead_agent import ConfirmBILeadAgentRunRequest, DatasetCapabilitySummary
 from app.schemas.bi_workbench import DatalogueEventEnvelope
+from app.services.bi_lead_agent.confirmation_service import BILeadAgentConfirmationService
+from app.services.bi_lead_agent.handoff_service import BIHandoffService
+from app.services.bi_lead_agent.run_service import BILeadAgentRunService
 from app.services.agentic_shell import DatalogueAgenticShell
 from app.services.agentic_shell_event_projection import build_task_envelope, project_agentscope_event
 from app.services.agentscope_mirror import (
@@ -48,15 +51,21 @@ class AgentScopeTaskRunner(Protocol):
         ...
 
 
-class LegacyWorkflowTaskRunner:
-    """迁移期执行适配器：入口 ownership 归 Agentic Shell，真实 BI 执行体临时复用现有 service runtime。"""
+class BILeadAgentTaskRunner:
+    """Agentic Shell 的 BI 执行 runner；只通过 BI LeadAgent handoff 契约进入 DatasetAgent。"""
 
     def __init__(
         self,
         *,
-        legacy_stream_factory: Callable[[schemas.ChatRequest], AsyncIterator[dict[str, Any]]],
+        db: Session,
+        run_service_factory: Callable[[Session], BILeadAgentRunService] = BILeadAgentRunService,
+        confirmation_service_factory: Callable[[Session], BILeadAgentConfirmationService] = BILeadAgentConfirmationService,
+        handoff_service_factory: Callable[[Session], BIHandoffService] = BIHandoffService,
     ) -> None:
-        self.legacy_stream_factory = legacy_stream_factory
+        self.db = db
+        self.run_service_factory = run_service_factory
+        self.confirmation_service_factory = confirmation_service_factory
+        self.handoff_service_factory = handoff_service_factory
 
     async def stream(
         self,
@@ -65,17 +74,113 @@ class LegacyWorkflowTaskRunner:
         task: AgenticShellTask,
         user_msg: UserMsg,
     ) -> AsyncIterator[Any]:
-        chat_payload = schemas.ChatRequest(
+        if request.dataset_id is None:
+            summary = "请选择一个数据集后再执行 BI 查询。"
+            yield build_task_envelope(
+                event_type="clarification.required",
+                task_id=task.task_id,
+                trace_id=task.trace_id,
+                thread_id=task.thread_id,
+                message_id=task.message_id,
+                selected_agent=task.selected_agent,
+                payload={
+                    "summary": summary,
+                    "reason": "dataset_required",
+                },
+            )
+            yield build_task_envelope(
+                event_type="message.completed",
+                task_id=task.task_id,
+                trace_id=task.trace_id,
+                thread_id=task.thread_id,
+                message_id=task.message_id,
+                selected_agent=task.selected_agent,
+                payload={"summary": summary},
+                legacy_payload={"type": "final", "answer": summary},
+            )
+            return
+
+        run_service = self.run_service_factory(self.db)
+        confirmation_service = self.confirmation_service_factory(self.db)
+        handoff_service = self.handoff_service_factory(self.db)
+
+        bi_run = run_service.create_run(
             question=request.question,
-            thread_id=request.thread_id,
-            session_id=request.session_id,
-            conversation_id=request.conversation_id,
-            dataset_id=request.dataset_id,
-            clarification_response=request.clarification_response,
-            retry_checkpoint_ref=request.retry_checkpoint_ref,
+            trace_id=task.trace_id,
+            task_id=task.task_id,
         )
-        async for legacy_event in self.legacy_stream_factory(chat_payload):
-            yield legacy_event
+        confirmation_service.confirm(
+            bi_run.id,
+            ConfirmBILeadAgentRunRequest(
+                dataset_id=request.dataset_id,
+                confirmed_question=request.question,
+                task_goal="执行单数据集问数",
+                capability_snapshot=DatasetCapabilitySummary(
+                    dataset_id=request.dataset_id,
+                    name=f"数据集 {request.dataset_id}",
+                    availability="confirmed",
+                ),
+                routing_rationale="Agentic Shell 已收到显式数据集，直接交接给 BI LeadAgent/DatasetAgent。",
+                risk_notice="本次只执行已确认数据集上的只读查询。",
+                user_decision="approved",
+            ),
+        )
+
+        yield build_task_envelope(
+            event_type="agent.handoff.started",
+            task_id=task.task_id,
+            trace_id=task.trace_id,
+            thread_id=task.thread_id,
+            message_id=task.message_id,
+            selected_agent=task.selected_agent,
+            payload={
+                "summary": "BI LeadAgent 已确认数据集，正在交接 DatasetAgent。",
+                "parent_agent": "bi_lead_agent",
+                "child_agent": "dataset_agent",
+                "dataset_id": request.dataset_id,
+            },
+        )
+
+        result = await handoff_service.query_dataset(run_id=bi_run.id)
+        summary = (
+            result.answer_summary
+            or result.error_summary
+            or ("BI LeadAgent handoff 已完成。" if result.handoff_status == "completed" else "BI LeadAgent handoff 已结束。")
+        )
+        if result.artifact_ref:
+            yield build_task_envelope(
+                event_type="artifact.created",
+                task_id=task.task_id,
+                trace_id=task.trace_id,
+                thread_id=task.thread_id,
+                message_id=task.message_id,
+                selected_agent=task.selected_agent,
+                payload={
+                    "summary": "BI 查询产物已生成。",
+                    "artifact_ref": result.artifact_ref,
+                    "checkpoint_ref": result.checkpoint_ref,
+                    "row_count": result.row_count,
+                    "column_count": result.column_count,
+                },
+            )
+
+        yield build_task_envelope(
+            event_type="message.completed",
+            task_id=task.task_id,
+            trace_id=task.trace_id,
+            thread_id=task.thread_id,
+            message_id=task.message_id,
+            selected_agent=task.selected_agent,
+            payload={
+                "summary": summary,
+                "handoff_status": result.handoff_status,
+                "artifact_ref": result.artifact_ref,
+                "checkpoint_ref": result.checkpoint_ref,
+                "row_count": result.row_count,
+                "column_count": result.column_count,
+            },
+            legacy_payload={"type": "final", "answer": summary},
+        )
 
 
 class AgenticShellTaskRuntime:

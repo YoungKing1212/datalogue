@@ -1688,41 +1688,6 @@ def _match_business_term(db: Session, dataset_id: int | None, question: str) -> 
     return None
 
 
-def intent_recognition_node(state: AgentState, db: Session | None = None) -> Dict[str, Any]:
-    """识别用户意图，判断是数据查询、闲聊还是功能操作。
-
-    DEPRECATED (Phase 3): 入口路由逻辑已上提到 app.services.lead_agent_routing.route_query_intent，
-    由 chat.py 在驱动 LangGraph 之前调用。本节点保留为 noop 兜底（返回 {}），仅供旧测试 import 路径不破。
-
-    实际逻辑迁出到 lead_agent_routing.py；该函数保留为空 stub。
-    """
-    return {}
-
-
-def entry_intent_classification_node(db: Session):
-    """构建 QueryGraph 前置入口分类节点。
-
-    DEPRECATED (Phase 3): 入口路由逻辑已上提到 app.services.lead_agent_routing.route_query_intent，
-    由 chat.py 在驱动 LangGraph 之前调用。本节点保留为 noop 兜底（返回 {}），仅供旧测试 import 路径不破。
-    """
-
-    def _node(state: AgentState) -> Dict[str, Any]:
-        return {}
-
-    return _node
-
-
-def lead_agent_node(state: AgentState) -> Dict[str, Any]:
-    """LeadAgent 总入口 noop 节点：入口路由决策已由 chat.py 在驱动 LangGraph 之前
-    通过 `route_query_intent` 完成。LangGraph 入口指向本节点仅用于：
-    1. 保留 SSE `lead_agent` 步骤事件，兼容前端按节点展示的约定
-    2. 作为 `_merge_prior_context_router` 的入口（按 state["entry_route"] 路由后续分支）
-
-    真正的工作流主线从 clarification_resolution 开始（query_graph 主链）。
-    """
-    return {"lead_agent_context": state.get("lead_agent_context") or {}}
-
-
 def analysis_blueprint_execute_node(db: Session):
     """执行已发布分析蓝图，或将手动语义蓝图交回 QueryGraph。"""
 
