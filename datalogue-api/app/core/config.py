@@ -14,6 +14,7 @@
 from functools import lru_cache
 from typing import Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -51,6 +52,10 @@ class Settings(BaseSettings):
     # LeadAgent Planner 输入投影灰度开关；默认关闭，生产按环境变量切流。
     LEAD_AGENT_PLANNER_USE_PROJECTION: bool = False
     LEAD_AGENT_ENABLE_DATASET_FANOUT: bool = False
+    # BI LeadAgent DatasetAgent fallback 默认关闭；dev_only 只允许本地开发显式打开，避免生产绕过 AgentScope handoff。
+    BI_LEAD_AGENT_DATASET_FALLBACK_MODE: str = "off"
+    # BI LeadAgent handoff 实现模式；默认保留 K1/K2 Host Adapter，K3 可显式切到 AgentScope native handoff。
+    BI_LEAD_AGENT_HANDOFF_MODE: str = "host_adapter"
     # AS-R0 影子路径开关：只生成 Agentic Shell -> Runtime driver 边界契约，不替换真实 /chat/stream 主链。
     AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED: bool = False
 
@@ -145,6 +150,22 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
+
+    @field_validator("BI_LEAD_AGENT_DATASET_FALLBACK_MODE")
+    @classmethod
+    def _validate_bi_lead_agent_dataset_fallback_mode(cls, value: str) -> str:
+        normalized = (value or "off").strip().lower()
+        if normalized not in {"off", "dev_only"}:
+            raise ValueError("BI_LEAD_AGENT_DATASET_FALLBACK_MODE must be 'off' or 'dev_only'")
+        return normalized
+
+    @field_validator("BI_LEAD_AGENT_HANDOFF_MODE")
+    @classmethod
+    def _validate_bi_lead_agent_handoff_mode(cls, value: str) -> str:
+        normalized = (value or "host_adapter").strip().lower()
+        if normalized not in {"host_adapter", "agentscope_native"}:
+            raise ValueError("BI_LEAD_AGENT_HANDOFF_MODE must be 'host_adapter' or 'agentscope_native'")
+        return normalized
 
 
 @lru_cache

@@ -7809,3 +7809,382 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 .candidate-dataset-option:hover .candidate-dataset-action {
   opacity: 1;
 }
+
+/* BI LeadAgent K2 右侧原型工作区：LeadAgent 确认闭环 + 现有 Workbench refs。 */
+.bi-lead-side-panel {
+  width: 360px;
+  flex: 0 0 360px;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--hairline);
+  background: var(--bg-1);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15,23,42,0.12) transparent;
+}
+
+.bi-lead-side-panel .workbench-panel {
+  width: auto;
+  flex: 0 0 auto;
+  max-height: none;
+  overflow: visible;
+  border-left: none;
+  border-top: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.bi-lead-agent-flow {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+}
+
+.bi-lead-agent-flow__header {
+  display: grid;
+  gap: 2px;
+}
+
+.bi-lead-agent-flow__header span {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.bi-lead-agent-flow__header h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bi-lead-agent-flow__form {
+  display: grid;
+  gap: 8px;
+}
+
+.bi-lead-agent-flow__form textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg-1);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.bi-lead-agent-flow__form textarea:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.bi-lead-agent-flow__hint,
+.bi-lead-agent-flow__error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.bi-lead-agent-flow__hint {
+  background: var(--bg-2);
+  color: var(--text-3);
+}
+
+.bi-lead-agent-flow__error {
+  background: var(--neg-soft);
+  color: var(--neg);
+}
+
+@media (max-width: 1180px) {
+  .bi-lead-side-panel {
+    width: 320px;
+    flex-basis: 320px;
+  }
+}
+
+@media (max-width: 900px) {
+  .bi-lead-side-panel {
+    width: 100%;
+    flex: 0 0 auto;
+    max-height: 44vh;
+    border-left: none;
+    border-top: 1px solid var(--hairline);
+  }
+
+  .bi-lead-side-panel .workbench-panel {
+    border-top: 1px solid var(--hairline);
+  }
+}
+
+/* BI LeadAgent 确认卡片：只承载路由级摘要，不展示执行层敏感字段。 */
+.bi-lead-confirmation-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  overflow-wrap: anywhere;
+}
+
+.bi-lead-confirmation-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bi-lead-confirmation-card__eyebrow {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.bi-lead-confirmation-card h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.bi-lead-confirmation-card__summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.bi-lead-confirmation-card__field {
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+}
+
+.bi-lead-confirmation-card__field dt,
+.bi-lead-confirmation-card__section-label,
+.bi-lead-confirmation-card__notice span {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.bi-lead-confirmation-card__field dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.bi-lead-confirmation-card__section {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bi-lead-confirmation-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bi-lead-confirmation-card__tags li {
+  max-width: 100%;
+  padding: 3px 7px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.bi-lead-confirmation-card__notice {
+  padding: 9px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+}
+
+.bi-lead-confirmation-card__notice--risk {
+  background: var(--warn);
+  background: color-mix(in oklch, var(--warn) 12%, white);
+}
+
+.bi-lead-confirmation-card__notice p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.bi-lead-confirmation-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .bi-lead-confirmation-card__summary {
+    grid-template-columns: 1fr;
+  }
+
+  .bi-lead-confirmation-card__actions {
+    justify-content: stretch;
+  }
+
+  .bi-lead-confirmation-card__actions .btn {
+    flex: 1;
+    justify-content: center;
+  }
+}
+
+/* BI LeadAgent run 状态面板：只展示安全摘要、结果规模和受控 refs。 */
+.bi-lead-run-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  overflow-wrap: anywhere;
+}
+
+.bi-lead-run-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bi-lead-run-panel__eyebrow {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.bi-lead-run-panel h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.bi-lead-run-panel__phase {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bi-lead-run-panel__summary {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.bi-lead-run-panel__meta {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bi-lead-run-panel__ref,
+.bi-lead-run-panel__shape {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.bi-lead-run-panel__ref span,
+.bi-lead-run-panel__shape span {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bi-lead-run-panel__ref code,
+.bi-lead-run-panel__shape strong {
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.bi-lead-run-panel--completed {
+  border-color: color-mix(in oklch, var(--pos) 30%, var(--hairline-strong));
+}
+
+.bi-lead-run-panel--blocked {
+  border-color: color-mix(in oklch, var(--warn) 45%, var(--hairline-strong));
+}
+
+.bi-lead-run-panel--failed {
+  border-color: color-mix(in oklch, var(--neg) 35%, var(--hairline-strong));
+}
+
+@media (max-width: 640px) {
+  .bi-lead-run-panel__header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .bi-lead-run-panel__phase {
+    align-self: flex-start;
+  }
+
+  .bi-lead-run-panel__ref,
+  .bi-lead-run-panel__shape {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
