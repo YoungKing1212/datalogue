@@ -98,7 +98,24 @@ async def test_bi_handoff_service_uses_injected_port(db_session, sample_dataset)
     assert run.handoff.handoff_id == "handoff-port-001"
 
 
-def test_default_handoff_port_uses_host_adapter_by_default(db_session, monkeypatch):
+def test_default_handoff_port_uses_native_by_default(db_session, monkeypatch):
+    native_port = FakePort()
+
+    class Settings:
+        BI_LEAD_AGENT_HANDOFF_MODE = "agentscope_native"
+
+    class FakeNativeHandoff:
+        @classmethod
+        def from_db(cls, db):
+            return native_port
+
+    monkeypatch.setattr(handoff_service_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.bi_lead_agent.native_handoff.AgentScopeNativeBIHandoff", FakeNativeHandoff)
+
+    assert _default_handoff_port(db_session) is native_port
+
+
+def test_default_handoff_port_can_still_use_host_adapter_when_explicit(db_session, monkeypatch):
     host_port = FakePort()
 
     class Settings:

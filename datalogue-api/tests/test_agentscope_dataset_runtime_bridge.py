@@ -469,3 +469,57 @@ async def test_agentscope_reply_stream_loop_resumes_agent_with_external_executio
     assert block.name == "get_dataset_status"
     assert block.state == ToolResultState.SUCCESS
     assert results[-1] == {"answer": "done"}
+
+
+@pytest.mark.asyncio
+async def test_agentscope_reply_stream_loop_drives_nested_external_execution_events(
+    db_session,
+    sample_dataset,
+):
+    class FakeDatasetAgent:
+        def __init__(self) -> None:
+            self.received_external_events: list[ExternalExecutionResultEvent] = []
+
+        async def reply_stream(self, _msg: Any):
+            yield RequireExternalExecutionEvent(
+                reply_id="reply-first",
+                tool_calls=[
+                    ToolCallBlock(id="tc-status", name="get_dataset_status", input=json.dumps({})),
+                ],
+            )
+
+        async def reply(self, event: ExternalExecutionResultEvent):
+            self.received_external_events.append(event)
+            if len(self.received_external_events) == 1:
+                async def next_tool_stream():
+                    yield RequireExternalExecutionEvent(
+                        reply_id="reply-second",
+                        tool_calls=[
+                            ToolCallBlock(id="tc-assets", name="list_candidate_assets", input=json.dumps({})),
+                        ],
+                    )
+
+                return next_tool_stream()
+            return {"answer": "done"}
+
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=lambda _sql: {"rows": []})
+    bridge = AgentScopeDatasetRuntimeBridge(toolkit=toolkit)
+    session = bridge.start_session(
+        dataset_id=sample_dataset.id,
+        question="查询账号明细",
+        agent_name="bi_lead_agent",
+    )
+    agent = FakeDatasetAgent()
+
+    results = await bridge.run_reply_stream(agent, msg={"role": "user", "content": "查询账号明细"}, session=session)
+
+    assert len(agent.received_external_events) == 2
+    assert [event.execution_results[0].name for event in agent.received_external_events] == [
+        "get_dataset_status",
+        "list_candidate_assets",
+    ]
+    assert [item["name"] for item in session.tool_results] == [
+        "get_dataset_status",
+        "list_candidate_assets",
+    ]
+    assert results[-1] == {"answer": "done"}

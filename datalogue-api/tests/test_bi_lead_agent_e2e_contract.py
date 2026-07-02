@@ -85,7 +85,14 @@ def test_bi_lead_agent_k2_create_confirm_handoff_get_contract(
     sample_dataset,
     monkeypatch,
 ):
+    class Settings:
+        BI_LEAD_AGENT_HANDOFF_MODE = "host_adapter"
+
     fake_adapter = FakeDatasetHandoffAdapter()
+    monkeypatch.setattr(
+        "app.services.bi_lead_agent.handoff_service.get_settings",
+        lambda: Settings(),
+    )
     monkeypatch.setattr(
         "app.services.bi_lead_agent.handoff_service.DatalogueBIHandoffAdapter.from_db",
         lambda db: fake_adapter,

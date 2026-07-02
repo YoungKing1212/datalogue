@@ -282,18 +282,27 @@ class AgentScopeDatasetRuntimeBridge:
         """驱动 AgentScope agent.reply_stream，并在外部工具事件处暂停/执行/回填。"""
 
         results: list[Any] = []
-        async for event in agent.reply_stream(msg):
+
+        async def drive_event(event: Any) -> None:
             if isinstance(event, RequireExternalExecutionEvent):
                 external_event = await self.handle_external_execution_event(session, event)
                 results.append(external_event)
                 reply_result = await agent.reply(external_event)
-                if hasattr(reply_result, "__aiter__"):
-                    async for item in reply_result:
-                        results.append(item)
-                else:
-                    results.append(reply_result)
-            else:
-                results.append(event)
+                await drive_reply_result(reply_result)
+                return
+            results.append(event)
+
+        async def drive_reply_result(reply_result: Any) -> None:
+            if hasattr(reply_result, "__aiter__"):
+                async for item in reply_result:
+                    # AgentScope 在收到 external result 后可能继续发起下一轮工具请求；
+                    # 必须递归执行并回填，不能只把事件追加到结果列表里。
+                    await drive_event(item)
+                return
+            await drive_event(reply_result)
+
+        async for event in agent.reply_stream(msg):
+            await drive_event(event)
         return results
 
     async def run_direct_query(
