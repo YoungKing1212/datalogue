@@ -16,14 +16,15 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.schemas.agentic_shell_task import AgenticShellTaskRequest, AgenticShellTaskStreamEvent
 from app.middlewares.lifecycle import log_lifecycle
-from app.runtime import AgenticShellTaskRuntime, BIAgentTaskRunner
+from app.runtime import AgenticShellTaskRuntime
 
 router = APIRouter()
 
@@ -32,14 +33,27 @@ def _sse_data(payload: dict) -> dict:
     return {"data": json.dumps(payload, ensure_ascii=False)}
 
 
-def build_agentic_shell_task_runner(db: Session) -> BIAgentTaskRunner:
-    """生产默认 runner：Shell 直接走 BI Agent，不再回调旧 chat stream。"""
+def build_agentic_shell_task_runner(*, base_url: str):
+    """生产默认 runner：Shell 主链交给 AgentScope Service 固定智能体团队。"""
 
-    return BIAgentTaskRunner(db=db)
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+
+    return AgentScopeServiceTaskRunner(base_url=base_url)
+
+
+def _agentscope_service_base_url(request: Request) -> str:
+    settings = get_settings()
+    if settings.AGENTSCOPE_SERVICE_BASE_URL:
+        return settings.AGENTSCOPE_SERVICE_BASE_URL.rstrip("/")
+    return f"{str(request.base_url).rstrip('/')}{settings.AGENTSCOPE_MOUNT_PATH}"
 
 
 @router.post("/tasks/stream")
-def stream_agentic_shell_task(payload: AgenticShellTaskRequest, db: Session = Depends(get_db)):
+def stream_agentic_shell_task(
+    payload: AgenticShellTaskRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     """唯一主执行入口；所有 Chat/Workbench 执行都从 AgenticShellTask 开始。"""
 
     async def event_generator():
@@ -50,7 +64,12 @@ def stream_agentic_shell_task(payload: AgenticShellTaskRequest, db: Session = De
             dataset_id=payload.dataset_id,
             question_length=len(payload.question or ""),
         )
-        runtime = AgenticShellTaskRuntime(db=db, runner=build_agentic_shell_task_runner(db))
+        runtime = AgenticShellTaskRuntime(
+            db=db,
+            runner=build_agentic_shell_task_runner(
+                base_url=_agentscope_service_base_url(request),
+            ),
+        )
         async for envelope in runtime.stream(payload):
             log_lifecycle(
                 "agentic_shell.api.stream.event",

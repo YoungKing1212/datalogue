@@ -1,0 +1,86 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: datalogue-db
+    environment:
+      POSTGRES_USER: datalogue
+      POSTGRES_PASSWORD: datalogue
+      POSTGRES_DB: datalogue
+    ports:
+      - "5432:5432"
+    volumes:
+      - datalogue_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datalogue -d datalogue"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: datalogue-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - datalogue_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./datalogue-api
+      dockerfile: Dockerfile
+    container_name: datalogue-api
+    env_file:
+      - ./datalogue-api/.env
+    environment:
+      DATABASE_URL: postgresql://datalogue:datalogue@db:5432/datalogue
+      AGENTSCOPE_SERVICE_ENABLED: "true"
+      AGENTSCOPE_MOUNT_PATH: /agentscope
+      AGENTSCOPE_SERVICE_BASE_URL: http://api:8000/agentscope
+      AGENTSCOPE_REDIS_HOST: redis
+      AGENTSCOPE_REDIS_PORT: "6379"
+      AGENTSCOPE_REDIS_DB: "0"
+      AGENTSCOPE_REDIS_PASSWORD: ""
+      AGENTSCOPE_REDIS_URL: redis://redis:6379/0
+      AGENTSCOPE_WORKSPACE_BASEDIR: /data/agentscope/workspaces
+      AGENTSCOPE_WORKSPACE_TTL_SECONDS: "3600"
+      LANGFUSE_ENABLED: "false"
+    ports:
+      - "8000:8000"
+    volumes:
+      - datalogue_agentscope_workspaces:/data/agentscope/workspaces
+      - datalogue_api_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build:
+      context: ./datalogue-web
+      dockerfile: Dockerfile
+    container_name: datalogue-web
+    environment:
+      VITE_API_PROXY_TARGET: http://api:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  datalogue_pgdata:
+  datalogue_redisdata:
+  datalogue_agentscope_workspaces:
+  datalogue_api_logs:

@@ -161,10 +161,8 @@ def test_p1_runtime_new_path_owns_thread_resolver():
 
 
 def test_p1_runtime_new_path_owns_agentic_shell_task_runtime():
-    from app.runtime import AgenticShellTaskRuntime, BIAgentTaskRunner
+    from app.runtime import AgenticShellTaskRuntime
     from app.runtime.task_runtime import AgenticShellTaskRuntime as DirectRuntime
-    from app.runtime.task_runtime import BIAgentTaskRunner as DirectRunner
 
     assert AgenticShellTaskRuntime is DirectRuntime
-    assert BIAgentTaskRunner is DirectRunner
     assert DirectRuntime.__module__ == "app.runtime.task_runtime"

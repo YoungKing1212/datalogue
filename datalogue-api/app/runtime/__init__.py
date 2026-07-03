@@ -17,7 +17,7 @@ from app.runtime.boundary import (
     DatalogueAgentScopeRuntimeDriver,
     RuntimeToolStatus,
 )
-from app.runtime.task_runtime import AgenticShellTaskRuntime, AgentScopeTaskRunner, BIAgentTaskRunner
+from app.runtime.task_runtime import AgenticShellTaskRuntime, AgentScopeTaskRunner
 from app.runtime.thread_resolver import new_agentscope_thread_id, normalize_thread_id, resolve_thread_ref
 
 __all__ = [
@@ -25,7 +25,6 @@ __all__ = [
     "AgentScopeRuntimeToolSpec",
     "AgenticShellTaskRuntime",
     "AgentScopeTaskRunner",
-    "BIAgentTaskRunner",
     "DatalogueAgentScopeRuntimeDriver",
     "RuntimeToolStatus",
     "new_agentscope_thread_id",

@@ -14,41 +14,32 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from agentscope.agent import Agent
-from agentscope.tool import ToolBase, Toolkit
+from agentscope.tool import Toolkit
 from sqlalchemy.orm import Session
 
 from app.agents.agentscope_model import build_agentscope_chat_model
-from app.bi.skill.runtime_bridge import (
-    AgentScopeDatasetRuntimeSession,
-    build_dataset_agentscope_tools,
-)
+from app.agentscope_service.tools import build_datalogue_query_dataset_tool
 
 
 BI_AGENT_DIRECT_QUERY_PROMPT = """
-你是 Datalogue BI Agent，负责执行最小直连问数链路。
+你是 Datalogue 固定注册 BI Agent，负责执行已确认的数据集问数任务。
 
-你必须按顺序使用已注册工具：
-1. get_dataset_status
-2. list_candidate_assets
-3. compile_dsl_to_sql
-4. execute_compiled_query
-5. create_query_artifact
-6. get_artifact_summary
-
-如果 execute_compiled_query 返回 FIELD_NOT_FOUND，并且工具链允许 repair，则调用 repair_dsl 后再次 execute_compiled_query。
+你只能使用 datalogue_query_dataset 这个工具。
 
 你必须遵守：
-- 不向最终回答输出 SQL。
-- 不向最终回答输出 schema。
-- 不向最终回答输出 raw rows。
-- 不向最终回答输出 compiled_query_ref。
+- 工具入参只放 dataset_id、confirmed_question、task_goal、user_confirmation_id、routing_rationale、trace_id、parent_run_id。
+- 不向最终回答输出查询语句。
+- 不向最终回答输出数据结构。
+- 不向最终回答输出明细行。
 - 最终只总结业务结果，并引用 artifact_ref、checkpoint_ref、row_count、column_count。
 """.strip()
 
 
 class BIAgentFactory:
-    """创建 AgentScope 2.0 BI Agent；Dataset tools 直接挂在 BI Agent 上。"""
+    """创建 AgentScope 2.0 BI Agent；只注册固定 Dataset 查询工具。"""
 
     def __init__(self, *, db: Session) -> None:
         self.db = db
@@ -56,15 +47,10 @@ class BIAgentFactory:
     def create(
         self,
         *,
-        session: AgentScopeDatasetRuntimeSession,
+        session: Any | None = None,
         model_config_id: int | None = None,
     ) -> Agent:
-        tools: list[ToolBase] = list(
-            build_dataset_agentscope_tools(
-                session=session,
-                agent_name="bi_agent",
-            )
-        )  # Dataset tools 绑定当前 runtime session，避免跨会话复用候选资产和私有执行句柄。
+        del session  # 固定工具内部由 Datalogue 适配器创建隔离执行会话，避免把私有状态暴露给 Agent。
         return Agent(
             name="bi_agent",
             system_prompt=BI_AGENT_DIRECT_QUERY_PROMPT,
@@ -74,5 +60,5 @@ class BIAgentFactory:
                 stream=True,
                 model_config_id=model_config_id,
             ),
-            toolkit=Toolkit(tools=tools),
+            toolkit=Toolkit(tools=[build_datalogue_query_dataset_tool(db=self.db)]),
         )

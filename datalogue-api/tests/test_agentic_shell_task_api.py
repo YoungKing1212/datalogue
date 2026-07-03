@@ -12,6 +12,7 @@
 # ============================================================
 
 import json
+from types import SimpleNamespace
 
 
 class FakeApiRunner:
@@ -30,7 +31,7 @@ def _sse_payloads(response):
 def test_agentic_shell_task_stream_returns_task_envelopes(client, monkeypatch):
     from app.api import agentic_shell
 
-    monkeypatch.setattr(agentic_shell, "build_agentic_shell_task_runner", lambda db: FakeApiRunner())
+    monkeypatch.setattr(agentic_shell, "build_agentic_shell_task_runner", lambda **_kwargs: FakeApiRunner())
 
     response = client.post(
         "/api/agentic-shell/tasks/stream",
@@ -51,10 +52,29 @@ def test_agentic_shell_task_stream_returns_task_envelopes(client, monkeypatch):
     assert payloads[0]["task_id"].startswith("task-agentic-")
 
 
-def test_agentic_shell_default_runner_is_not_legacy_chat_runtime(db_session):
+def test_agentic_shell_default_runner_uses_agentscope_service():
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
     from app.api.agentic_shell import build_agentic_shell_task_runner
-    from app.runtime import BIAgentTaskRunner
 
-    runner = build_agentic_shell_task_runner(db_session)
+    runner = build_agentic_shell_task_runner(base_url="http://testserver/agentscope")
 
-    assert isinstance(runner, BIAgentTaskRunner)
+    assert isinstance(runner, AgentScopeServiceTaskRunner)
+    assert runner.base_url == "http://testserver/agentscope"
+
+
+def test_agentscope_service_base_url_uses_request_mount_path(monkeypatch):
+    from app.api import agentic_shell
+    from app.core.config import Settings
+
+    # 这里验证的是按请求 base_url 推导挂载地址，必须隔离本地 .env 中显式配置的 service URL。
+    monkeypatch.setattr(
+        agentic_shell,
+        "get_settings",
+        lambda: Settings(
+            AGENTSCOPE_SERVICE_BASE_URL=None,
+            AGENTSCOPE_MOUNT_PATH="/agentscope",
+        ),
+    )
+    request = SimpleNamespace(base_url="http://testserver/")
+
+    assert agentic_shell._agentscope_service_base_url(request) == "http://testserver/agentscope"

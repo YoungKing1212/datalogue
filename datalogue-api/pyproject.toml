@@ -14,7 +14,7 @@ dependencies = [
     "pgvector==0.2.5",
     "pydantic>=2.11,<3",
     "pydantic-settings>=2.6,<3",
-    "agentscope==2.0.3",
+    "agentscope[service,storage]==2.0.3",
     "mcp>=1.28.1,<2",
     "langchain==0.2.0",
     "langchain-openai==0.1.7",

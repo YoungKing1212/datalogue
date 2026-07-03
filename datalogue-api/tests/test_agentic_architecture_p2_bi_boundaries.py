@@ -117,17 +117,14 @@ def test_p2_bi_agent_new_path_owns_business_agent_facade(db_session):
         assert forbidden not in manifest_text
 
 
-def test_p2_task_runner_defaults_use_bi_agent_services():
-    from app.agents.agentic_lead_agent.direct_query_runner import AgenticDirectQueryRunner
-    from app.agents.bi_agent import BIAgentConfirmationService, BIAgentRunService
-    from app.runtime import BIAgentTaskRunner, BIAgentTaskRunner
-    from app.runtime.task_runtime import BIAgentTaskRunner as DirectBIAgentTaskRunner
+def test_p2_task_runner_defaults_use_agentscope_service_runner():
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.api.agentic_shell import build_agentic_shell_task_runner
+    from app.runtime import AgenticShellTaskRuntime
+    from app.runtime.task_runtime import AgenticShellTaskRuntime as DirectRuntime
 
-    defaults = BIAgentTaskRunner.__init__.__kwdefaults__
+    runner = build_agentic_shell_task_runner(base_url="http://testserver/agentscope")
 
-    assert BIAgentTaskRunner is DirectBIAgentTaskRunner
-    assert BIAgentTaskRunner is BIAgentTaskRunner
-    assert DirectBIAgentTaskRunner.__module__ == "app.runtime.task_runtime"
-    assert defaults["run_service_factory"] is BIAgentRunService
-    assert defaults["confirmation_service_factory"] is BIAgentConfirmationService
-    assert defaults["direct_query_runner_factory"] is AgenticDirectQueryRunner
+    assert AgenticShellTaskRuntime is DirectRuntime
+    assert isinstance(runner, AgentScopeServiceTaskRunner)
+    assert runner.base_url == "http://testserver/agentscope"

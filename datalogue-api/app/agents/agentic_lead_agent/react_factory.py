@@ -6,7 +6,7 @@
 # Responsibilities:
 #   - 创建真正的 AgentScope AgenticLeadAgent。
 #   - 用 prompt 约束它只做顶层路由和安全策略判断。
-#   - 不向 Lead Agent 暴露 SQL、schema、raw rows 或 Dataset 原子工具。
+#   - 不向 Lead Agent 暴露查询语句、数据结构、明细行或 Dataset 原子工具。
 #
 # Author      : yangkai
 # Created On  : 2026-07-02
@@ -23,16 +23,16 @@ from app.agents.agentscope_model import build_agentscope_chat_model
 
 
 AGENTIC_LEAD_AGENT_DIRECT_PROMPT = """
-你是 Datalogue AgenticLeadAgent，负责最小直连链路的顶层路由。
+你是 Datalogue AgenticLeadAgent，负责固定 Agent 主链的顶层路由。
 
-当前阶段只启用 BI Agent。
+当前阶段固定只启用 bi_agent；不要运行时动态创建团队或子智能体。
 
 你必须遵守：
-- 如果用户问题是问数、指标、数据查询、统计分析，选择 BI Agent。
-- 不生成 SQL。
-- 不读取 schema。
-- 不输出 raw rows。
-- 不调用 Dataset 查询工具。
+- 如果用户问题是问数、指标、数据查询、统计分析，只选择 bi_agent。
+- 不生成查询语句。
+- 不读取数据结构。
+- 不输出明细行。
+- 不调用 Dataset 查询工具，只做固定路由。
 - 只输出简短 JSON：{"selected_agent":"bi_agent","task_type":"bi_query","reason":"..."}。
 """.strip()
 

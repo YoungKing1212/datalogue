@@ -20,6 +20,7 @@ from app.core.database import engine, Base
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api import router as api_router
+from app.agentscope_service import create_embedded_agentscope_app
 from app.middlewares.tracing import (
     configure_agentscope_otel,
     shutdown_agentscope_otel,
@@ -61,6 +62,27 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+
+
+def mount_agentscope_service(target_app: FastAPI, app_settings) -> None:
+    """按配置把 AgentScope Service 子应用挂到主应用下。"""
+
+    if not app_settings.AGENTSCOPE_SERVICE_ENABLED:
+        return
+
+    mount_path = app_settings.AGENTSCOPE_MOUNT_PATH
+    if any(route.path == mount_path for route in target_app.routes):
+        # 测试或 reload 场景可能重复调用，避免重复挂载同一路径。
+        return
+
+    target_app.mount(
+        mount_path,
+        create_embedded_agentscope_app(app_settings),
+        name="agentscope",
+    )
+
+
+mount_agentscope_service(app, settings)
 
 
 @app.get("/health")
