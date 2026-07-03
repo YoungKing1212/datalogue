@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -14,6 +14,7 @@ import {
 } from './chat-page.jsx';
 
 const navigateSpy = vi.hoisted(() => vi.fn());
+const composerHistoryKeyDownSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('react-router-dom', () => ({
   useParams: () => ({}),
@@ -49,6 +50,7 @@ vi.mock('@assistant-ui/react', () => {
         threadItems: [{ id: 'local-thread', remoteId: null }],
       },
     }),
+    unstable_useComposerInputHistory: () => ({ onKeyDown: composerHistoryKeyDownSpy }),
   };
 });
 
@@ -92,6 +94,7 @@ vi.mock('./icons', () => ({
 
 afterEach(() => {
   window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = null;
+  composerHistoryKeyDownSpy.mockClear();
   vi.restoreAllMocks();
 });
 
@@ -110,6 +113,22 @@ describe('ChatPage', () => {
       expect(screen.queryByText('确认后交接 DatasetAgent')).not.toBeInTheDocument();
     });
     expect(screen.queryByRole('button', { name: '创建 run' })).not.toBeInTheDocument();
+  });
+
+  it('wires assistant-ui input history into the welcome composer', async () => {
+    render(
+      <ChatPage
+        traceOpen={false}
+        setTraceOpen={vi.fn()}
+        showFollowups={false}
+        agentVerbosity="normal"
+      />,
+    );
+
+    const input = screen.getByPlaceholderText('例如：上周华东区销售为什么下降？哪个品类拖累最大？');
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+
+    expect(composerHistoryKeyDownSpy).toHaveBeenCalled();
   });
 });
 

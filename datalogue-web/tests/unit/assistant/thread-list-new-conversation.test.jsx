@@ -11,6 +11,8 @@ const assistantUiMocks = vi.hoisted(() => {
       newThreadId: null,
     },
     threadListItem: null,
+    persistedThreadRemoteId: '1',
+    persistedThreadTitle: '查询杨凯2025年的工作日志',
   };
   return {
     state,
@@ -32,8 +34,8 @@ vi.mock('@assistant-ui/react', () => ({
       const ThreadListItem = components?.ThreadListItem;
       assistantUiMocks.state.threadListItem = {
         id: 'conversation-1',
-        remoteId: '1',
-        title: '查询杨凯2025年的工作日志',
+        remoteId: assistantUiMocks.state.persistedThreadRemoteId,
+        title: assistantUiMocks.state.persistedThreadTitle,
       };
       return ThreadListItem ? <ThreadListItem /> : <div data-testid="persisted-thread-items" />;
     },
@@ -41,7 +43,9 @@ vi.mock('@assistant-ui/react', () => ({
   ThreadListItemPrimitive: {
     Root: ({ children, className }) => <div className={className}>{children}</div>,
     Trigger: ({ children, className, ...props }) => <button type="button" className={className} {...props}>{children}</button>,
-    Title: ({ fallback }) => <span>{assistantUiMocks.state.threadListItem?.title || fallback}</span>,
+    Title: ({ className, fallback }) => (
+      <span className={className}>{assistantUiMocks.state.threadListItem?.title || fallback}</span>
+    ),
     Delete: ({ children, className, ...props }) => <button type="button" className={className} {...props}>{children}</button>,
   },
   useAui: () => ({
@@ -128,6 +132,8 @@ describe('ThreadList draft item', () => {
     navigateMock.mockClear();
     assistantUiMocks.state.threads.mainThreadId = 'conversation-25';
     assistantUiMocks.state.threads.newThreadId = null;
+    assistantUiMocks.state.persistedThreadRemoteId = '1';
+    assistantUiMocks.state.persistedThreadTitle = '查询杨凯2025年的工作日志';
 
     render(<ThreadList />);
 
@@ -137,5 +143,34 @@ describe('ThreadList draft item', () => {
     fireEvent.click(persistedThread);
 
     expect(navigateMock).toHaveBeenCalledWith('/chat/1');
+  });
+
+  it('不渲染没有 remoteId 的本地悬空 thread，避免出现不可删除的新对话', () => {
+    navigateMock.mockClear();
+    assistantUiMocks.state.threads.mainThreadId = 'local-draft';
+    assistantUiMocks.state.threads.newThreadId = null;
+    assistantUiMocks.state.persistedThreadRemoteId = null;
+
+    render(<ThreadList />);
+
+    expect(screen.queryByRole('button', { name: /新对话，会话/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('查询杨凯2025年的工作日志')).not.toBeInTheDocument();
+
+    assistantUiMocks.state.persistedThreadRemoteId = '1';
+  });
+
+  it('历史会话标题使用单行省略样式承载长名称', () => {
+    navigateMock.mockClear();
+    assistantUiMocks.state.threads.mainThreadId = 'conversation-1';
+    assistantUiMocks.state.threads.newThreadId = null;
+    assistantUiMocks.state.persistedThreadRemoteId = '1';
+    assistantUiMocks.state.persistedThreadTitle = '这是一个非常长的 Thread 名称，用于验证左侧列表不要换行而是省略显示';
+
+    render(<ThreadList />);
+
+    const title = screen.getByText('这是一个非常长的 Thread 名称，用于验证左侧列表不要换行而是省略显示');
+    expect(title).toHaveClass('thread-list-item-title');
+
+    assistantUiMocks.state.persistedThreadTitle = '查询杨凯2025年的工作日志';
   });
 });

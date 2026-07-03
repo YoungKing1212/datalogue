@@ -440,6 +440,10 @@ input:focus, textarea:focus, button:focus { outline: none; }
   box-shadow: 0 0 0 0 var(--pos);
   animation: pulse 1.6s infinite;
 }
+.msg-timing {
+  font-size: 11px; color: var(--text-4);
+  margin-left: 6px;
+}
 @keyframes pulse {
   0%   { box-shadow: 0 0 0 0 oklch(0.55 0.13 165 / 0.5); }
   70%  { box-shadow: 0 0 0 6px oklch(0.55 0.13 165 / 0); }
@@ -817,17 +821,21 @@ input:focus, textarea:focus, button:focus { outline: none; }
 }
 .msg-row.msg-ai:hover .msg-actions,
 .msg-actions.visible { opacity: 1; }
-.msg-actions .icon-btn { width: 26px; height: 26px; color: var(--text-3); border-radius: 5px; }
-.msg-actions .icon-btn:hover { color: var(--text); background: var(--surface-2); }
-.msg-actions .save-card {
-  margin-left: auto;
-  font-size: 12px; color: var(--text-3);
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 0 10px;
-  border-radius: 6px;
+.msg-actions button {
+  width: 26px; height: 26px; color: var(--text-3); border-radius: 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: none; cursor: pointer; padding: 0;
 }
-.msg-actions .save-card:hover { color: var(--text); background: var(--surface); }
-.msg-actions .save-card .icon { width: 13px; height: 13px; }
+.msg-actions button:hover { color: var(--text); background: var(--surface-2); }
+.msg-actions button:disabled {
+  color: var(--text-4);
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.msg-actions .icon {
+  width: 14px;
+  height: 14px;
+}
 
 .message-trace-link {
   display: grid;
@@ -6591,6 +6599,7 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   padding: 0;
   border-radius: 6px;
   transition: background 0.1s;
@@ -6616,19 +6625,26 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   text-align: left;
   cursor: pointer;
   font-family: inherit;
+  overflow: hidden;
 }
+.thread-list-item-trigger > .icon {
+  flex: 0 0 auto;
+}
+.thread-list-item-title,
 .thread-list-item-trigger > span {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: block;
 }
 .thread-list-item.active .thread-list-item-trigger {
   color: var(--text);
   font-weight: 500;
 }
 .thread-list-item-del {
+  flex: 0 0 auto;
   width: 22px;
   height: 22px;
   display: flex;

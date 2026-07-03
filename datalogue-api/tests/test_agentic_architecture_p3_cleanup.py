@@ -44,7 +44,12 @@ def test_p3_dataset_bridge_owned_by_bi_skill_runtime_bridge():
         "app.services.agentic_shell_event_projection",
         "app.services.agentscope_event_projection",
         "app.services.agentic_shell_logging",
+        "app.services.observability",
         "app.services.observability.agentscope_otel",
+        "app.services.observability.context",
+        "app.services.observability.feedback",
+        "app.services.observability.masking",
+        "app.services.observability.tracer",
         "app.services.agentscope_dataset_runtime",
     ],
 )

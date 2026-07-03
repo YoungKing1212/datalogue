@@ -10,6 +10,10 @@ vi.mock('./agentic-shell-task-api', () => ({
   streamAgenticShellTask: vi.fn(),
 }));
 
+vi.mock('./agentic-direct-query-api', () => ({
+  streamAgenticDirectQuery: vi.fn(),
+}));
+
 vi.mock('./thread-list-adapter', async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -20,6 +24,7 @@ vi.mock('./thread-list-adapter', async (importOriginal) => {
 });
 
 const { streamAgenticShellTask } = await import('./agentic-shell-task-api');
+const { streamAgenticDirectQuery } = await import('./agentic-direct-query-api');
 
 async function* events(items) {
   for (const item of items) {
@@ -77,7 +82,7 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 } });
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 }, transport: 'stream' });
     const chunks = await collectRun(adapter, runInput({
       question: '统计双周会议数据记录数量',
       threadId: 'local-thread',
@@ -119,6 +124,7 @@ describe('chat-adapter C-ready metadata', () => {
     const adapter = makeChatAdapter({
       datasetIdRef: { current: 12 },
       modelConfigIdRef: { current: 8 },
+      transport: 'stream',
     });
     await collectRun(adapter, runInput({
       question: '用指定模型查询销售趋势',
@@ -133,6 +139,38 @@ describe('chat-adapter C-ready metadata', () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it('maps direct-query final conversation id back to the current local thread', async () => {
+    const resolvedListener = vi.fn();
+    const renameListener = vi.fn();
+    window.addEventListener('datalogue:conv-resolved', resolvedListener);
+    window.addEventListener('datalogue:thread-rename', renameListener);
+    streamAgenticDirectQuery.mockReturnValue(events([
+      {
+        type: 'final',
+        answer: '合同总金额为 100 万元。',
+        status: 'completed',
+        selected_agent: 'bi_agent',
+        conversation_id: 88,
+        title: '统计合同总金额',
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 } });
+    await collectRun(adapter, runInput({
+      question: '统计合同总金额',
+      threadId: 'local-thread',
+    }));
+
+    expect(resolvedListener).toHaveBeenCalledWith(expect.objectContaining({
+      detail: { localThreadId: 'local-thread', actualConvId: 88 },
+    }));
+    expect(renameListener).toHaveBeenCalledWith(expect.objectContaining({
+      detail: { remoteId: '88', title: '统计合同总金额' },
+    }));
+    window.removeEventListener('datalogue:conv-resolved', resolvedListener);
+    window.removeEventListener('datalogue:thread-rename', renameListener);
   });
 
   it('routes missing dataset through Agentic Shell so BI Agent can choose it', async () => {

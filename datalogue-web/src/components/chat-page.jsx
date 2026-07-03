@@ -14,6 +14,7 @@ import {
   useRemoteThreadListRuntime,
   useAui,
   useAuiState,
+  unstable_useComposerInputHistory,
 } from '@assistant-ui/react';
 import { DatalogueThreadListAdapter } from '../assistant/thread-list-adapter';
 import { makeChatAdapter } from '../assistant/chat-adapter';
@@ -223,6 +224,8 @@ function WelcomeHero({
   modelList,
   setComposerText,
 }) {
+  const inputHistory = unstable_useComposerInputHistory();
+
   // 4 个示例问题 — hue 决定图标块底色
   const presets = [
     { icon: 'thunder',    q: '上周整体销售为什么下降了 12%？', cat: '归因分析', hue: 245 },
@@ -252,6 +255,7 @@ function WelcomeHero({
               className="ce-input"
               rows={2}
               placeholder="例如：上周华东区销售为什么下降？哪个品类拖累最大？"
+              {...inputHistory}
             />
             <div className="ce-bar">
               <DatasetChip
@@ -612,11 +616,18 @@ function ChatPageInner({
     submitWorkbenchRetryRun(taskRequest, { chatModelAdapter });
   }, [chatModelAdapter]);
   useEffect(() => {
-    const onRename = () => {
+    const onRename = (event) => {
+      const remoteId = event.detail?.remoteId ? String(event.detail.remoteId) : null;
       // 后端已写入新 title；让 assistant-ui 重新拉一次 list，覆盖本地缓存
-      aui.threads().reload().catch((e) => {
-        console.error('[thread-list] reload failed', e);
-      });
+      aui.threads().reload()
+        .then(() => {
+          if (!remoteId) return null;
+          // 首轮 direct-query 会先在本地草稿中渲染，final 后必须切到真实会话，删除和深链才有后端 ID。
+          return aui.threads().switchToThread(remoteId);
+        })
+        .catch((e) => {
+          console.error('[thread-list] reload failed', e);
+        });
     };
     window.addEventListener('datalogue:thread-rename', onRename);
     return () => window.removeEventListener('datalogue:thread-rename', onRename);

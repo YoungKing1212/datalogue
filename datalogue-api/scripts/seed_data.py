@@ -46,12 +46,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text  # noqa: E402
 
-from app.core.config import get_settings
-from app.core.database import SessionLocal
-from app.core.security import encrypt_password
-from app import models
+from app.core.config import get_settings  # noqa: E402
+from app.core.database import SessionLocal  # noqa: E402
+from app.core.security import encrypt_password  # noqa: E402
+from app import models  # noqa: E402
 
 # ── 配置 ─────────────────────────────────────────────
 
@@ -333,7 +333,7 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
     logger.info("  GET  /api/datasource")
     logger.info("  GET  /api/dataset")
     logger.info(
-        f'  POST /api/chat/stream  {{"question": "最近30天各品类GMV", "dataset_id": {dataset.id}}}'
+        f'  POST /api/agentic-shell/tasks/stream  {{"task_source": "api", "question": "最近30天各品类GMV", "dataset_id": {dataset.id}}}'
     )
 
 

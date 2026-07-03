@@ -56,35 +56,8 @@ class Settings(BaseSettings):
     LEAD_AGENT_ENABLE_DATASET_FANOUT: bool = False
     # BI Agent DatasetAgent fallback 默认关闭；dev_only 只允许本地开发显式打开，避免生产绕过 AgentScope handoff。
     BI_LEAD_AGENT_DATASET_FALLBACK_MODE: str = "off"  # 兼容旧环境变量名；内部语义已迁为 BI Agent。
-    # BI Agent handoff 实现模式；K3 后默认直接启用 AgentScope native handoff。
-    BI_LEAD_AGENT_HANDOFF_MODE: str = (
-        "agentscope_native"  # 兼容旧环境变量名；内部语义已迁为 BI Agent。
-    )
     # AS-R0 历史影子开关：保留配置读取兼容，当前真实入口已切到 Agentic Shell task stream。
     AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED: bool = False
-
-    # AgentScope Service 基础层默认关闭；打开后 main.py 将官方 FastAPI 子应用挂载到指定路径。
-    AGENTSCOPE_SERVICE_ENABLED: bool = False
-    AGENTSCOPE_MOUNT_PATH: str = "/agentscope"
-    # Agentic Shell 主链调用 AgentScope Service 的外部地址；为空时按当前请求 base_url + mount_path 推导。
-    AGENTSCOPE_SERVICE_BASE_URL: Optional[str] = None
-    # Redis 同时支撑 AgentScope Service 的持久化 Storage 与 MessageBus。
-    AGENTSCOPE_REDIS_HOST: str = "localhost"
-    AGENTSCOPE_REDIS_PORT: int = 6379
-    AGENTSCOPE_REDIS_DB: int = 0
-    AGENTSCOPE_REDIS_PASSWORD: Optional[str] = None
-    # 预留给部署环境统一注入连接串；设置后优先于 host/port/db/password 逐项配置。
-    AGENTSCOPE_REDIS_URL: Optional[str] = None
-    # LocalWorkspaceManager 使用本地目录承载 workspace，TTL 控制空闲缓存回收时间。
-    AGENTSCOPE_WORKSPACE_BASEDIR: str = "data/agentscope/workspaces"
-    AGENTSCOPE_WORKSPACE_TTL_SECONDS: float = 3600.0
-
-    # AgentScope OpenTelemetry tracing；默认关闭，配置 OTLP endpoint 后自动启用。
-    OTEL_TRACES_ENABLED: bool = False
-    OTEL_SERVICE_NAME: str = "datalogue-api"
-    OTEL_TRACES_EXPORTER: str = "otlp"
-    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
-    OTEL_EXPORTER_OTLP_PROTOCOL: str = "http/protobuf"
 
     QUERY_ARTIFACT_TTL_SECONDS: int = 7 * 24 * 60 * 60
     QUERY_ARTIFACT_MAX_BYTES: int = 2 * 1024 * 1024
@@ -93,11 +66,7 @@ class Settings(BaseSettings):
 
     SUBAGENT_FANOUT_MAX_PARALLEL: int = 3
 
-    SUBAGENT_RUNNER_MODE: str = "in_process"
-    SUBAGENT_REMOTE_BASE_URL: Optional[str] = None
-    SUBAGENT_REMOTE_API_KEY: Optional[str] = None
-    SUBAGENT_REMOTE_TIMEOUT_SECONDS: float = 60.0
-    SUBAGENT_REMOTE_RETRIES: int = 0
+    QUERY_ARTIFACT_MAINTENANCE_API_KEY: Optional[str] = None
 
     SUBAGENT_PLANNER_DETAIL_LOOP_ENABLED: bool = False
     SUBAGENT_PLANNER_DETAIL_MAX_ROUNDS: int = 3
@@ -185,25 +154,6 @@ class Settings(BaseSettings):
         if normalized not in {"off", "dev_only"}:
             raise ValueError("BI_LEAD_AGENT_DATASET_FALLBACK_MODE must be 'off' or 'dev_only'")
         return normalized
-
-    @field_validator("BI_LEAD_AGENT_HANDOFF_MODE")
-    @classmethod
-    def _validate_bi_agent_handoff_mode(cls, value: str) -> str:
-        normalized = (value or "agentscope_native").strip().lower()
-        if normalized not in {"host_adapter", "agentscope_native"}:
-            raise ValueError(
-                "BI_LEAD_AGENT_HANDOFF_MODE must be 'host_adapter' or 'agentscope_native'"
-            )
-        return normalized
-
-    @field_validator("AGENTSCOPE_MOUNT_PATH")
-    @classmethod
-    def _validate_agentscope_mount_path(cls, value: str) -> str:
-        normalized = (value or "/agentscope").strip()
-        if not normalized.startswith("/") or normalized == "/":
-            raise ValueError("AGENTSCOPE_MOUNT_PATH must start with '/' and cannot be '/'")
-        return normalized.rstrip("/")
-
 
 @lru_cache
 def get_settings() -> Settings:

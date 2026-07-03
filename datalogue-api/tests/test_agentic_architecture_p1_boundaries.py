@@ -98,13 +98,6 @@ def test_p1_workbench_projection_new_path_preserves_legacy_sanitizer():
     assert safe_payload == {"summary": "完成", "artifact_ref": "artifact:1"}
 
 
-def test_p1_tracing_new_path_keeps_legacy_observability_import():
-    from app.middlewares import tracing
-
-    assert tracing.configure_agentscope_otel.__module__ == "app.middlewares.tracing"
-    assert tracing.shutdown_agentscope_otel.__module__ == "app.middlewares.tracing"
-
-
 def test_p1_runtime_boundary_new_path_owns_agentscope_runtime_driver():
     from app.runtime import DatalogueAgentScopeRuntimeDriver
     from app.runtime.boundary import DatalogueAgentScopeRuntimeDriver as DirectDriver

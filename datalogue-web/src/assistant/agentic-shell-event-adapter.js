@@ -28,12 +28,25 @@ export function agenticEnvelopeToChatEvent(streamEvent = {}) {
       checkpoint_ref: legacy.checkpoint_ref || payload.checkpoint_ref || null,
       row_count: legacy.row_count ?? payload.row_count ?? null,
       column_count: legacy.column_count ?? payload.column_count ?? null,
+      timing: payload.timing || legacy.timing || null,
       task_id: streamEvent.task_id || envelope.task_id,
       trace_id: legacy.trace_id || envelope.trace_id || null,
       thread_id: legacy.thread_id || envelope.thread_id || null,
       route_decision: legacy.route_decision || payload.route_decision || null,
       clarification: legacy.clarification || payload.clarification || null,
       route_payload: legacy.route_payload || payload.route_payload || null,
+      event_envelope: envelope,
+    };
+  }
+  if (envelope.event_type === 'agent.handoff.started') {
+    return {
+      type: 'agent_handoff',
+      from_agent: payload.from_agent || '',
+      to_agent: payload.to_agent || '',
+      reason: payload.reason || '',
+      dataset_id: payload.dataset_id || null,
+      task_id: streamEvent.task_id || envelope.task_id,
+      trace_id: envelope.trace_id || null,
       event_envelope: envelope,
     };
   }
@@ -55,6 +68,22 @@ export function agenticEnvelopeToChatEvent(streamEvent = {}) {
       ...(routeDecision && typeof routeDecision === 'object' ? routeDecision : {}),
       decision: routeDecision.decision || 'ambiguous',
       clarification: payload.clarification || null,
+      task_id: streamEvent.task_id || envelope.task_id,
+      trace_id: envelope.trace_id || null,
+      event_envelope: envelope,
+    };
+  }
+  if (
+    envelope.event_type === 'tool_call.started' ||
+    envelope.event_type === 'tool_call.completed' ||
+    envelope.event_type === 'tool_call.failed'
+  ) {
+    return {
+      type: envelope.event_type,
+      tool_name: payload.tool_name || '',
+      tool_call_id: payload.tool_call_id || '',
+      summary: payload.summary || '',
+      status: payload.status || '',
       task_id: streamEvent.task_id || envelope.task_id,
       trace_id: envelope.trace_id || null,
       event_envelope: envelope,

@@ -5,7 +5,7 @@
 #
 # Responsibilities:
 #   - 验证 BIAgentHandoffService 只依赖 query_dataset port。
-#   - 确保后续 Host Adapter 与 AgentScope native handoff 可互换。
+#   - 确保默认 handoff 入口固定走 AgentScope native handoff。
 #
 # Author      : yangkai
 # Created On  : 2026-07-01
@@ -21,7 +21,6 @@ from app.schemas.bi_agent import (
     DatasetCapabilitySummary,
 )
 from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService
-import app.agents.bi_agent.handoff_service as handoff_service_module
 from app.agents.bi_agent.handoff_port import BIHandoffPort
 from app.agents.bi_agent.handoff_service import BIAgentHandoffService, _default_handoff_port
 from app.agents.bi_agent.run_service import BIAgentRunService
@@ -40,7 +39,7 @@ class FakePort:
             task_id=task_id,
             trace_id=request.trace_id,
             handoff_status="completed",
-            answer_summary="native 和 host adapter 输出同构。",
+            answer_summary="native handoff 输出安全结果。",
             artifact_ref="artifact-port-001",
             checkpoint_ref="checkpoint-port-001",
             row_count=3,
@@ -101,48 +100,11 @@ async def test_bi_handoff_service_uses_injected_port(db_session, sample_dataset)
 def test_default_handoff_port_uses_native_by_default(db_session, monkeypatch):
     native_port = FakePort()
 
-    class Settings:
-        BI_LEAD_AGENT_HANDOFF_MODE = "agentscope_native"
-
     class FakeNativeHandoff:
         @classmethod
         def from_db(cls, db):
             return native_port
 
-    monkeypatch.setattr(handoff_service_module, "get_settings", lambda: Settings())
-    monkeypatch.setattr("app.agents.bi_agent.native_handoff.AgentScopeNativeBIHandoff", FakeNativeHandoff)
-
-    assert _default_handoff_port(db_session) is native_port
-
-
-def test_default_handoff_port_can_still_use_host_adapter_when_explicit(db_session, monkeypatch):
-    host_port = FakePort()
-
-    class Settings:
-        BI_LEAD_AGENT_HANDOFF_MODE = "host_adapter"
-
-    monkeypatch.setattr(handoff_service_module, "get_settings", lambda: Settings())
-    monkeypatch.setattr(
-        handoff_service_module.DatalogueBIHandoffAdapter,
-        "from_db",
-        lambda db: host_port,
-    )
-
-    assert _default_handoff_port(db_session) is host_port
-
-
-def test_default_handoff_port_uses_native_when_flag_enabled(db_session, monkeypatch):
-    native_port = FakePort()
-
-    class Settings:
-        BI_LEAD_AGENT_HANDOFF_MODE = "agentscope_native"
-
-    class FakeNativeHandoff:
-        @classmethod
-        def from_db(cls, db):
-            return native_port
-
-    monkeypatch.setattr(handoff_service_module, "get_settings", lambda: Settings())
     monkeypatch.setattr("app.agents.bi_agent.native_handoff.AgentScopeNativeBIHandoff", FakeNativeHandoff)
 
     assert _default_handoff_port(db_session) is native_port

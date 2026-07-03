@@ -13,8 +13,10 @@
 // 普通 Chat 用户可见层不透出 SQL 文本；SQL 只留在后端 control/trace 面。
 
 import { agenticEnvelopeToChatEvent } from './agentic-shell-event-adapter';
+import { streamAgenticDirectQuery } from './agentic-direct-query-api';
 import { streamAgenticShellTask } from './agentic-shell-task-api';
 import { resolveRecentInitializedRemoteId, resolveRemoteId } from './thread-list-adapter';
+import { getArtifact } from '../api/client';
 
 const BUSINESS_SESSION_PREFIX = 'assistant-thread';
 
@@ -41,6 +43,24 @@ const NODE_DISPLAY = {
   sql_audit: '结果诊断',
   repair_patch: '自动修复',
   report_generator: '结果整理',
+};
+
+// BI Agent 原子工具 → 用户可见中文名
+const TOOL_DISPLAY_NAMES = {
+  get_dataset_status: '检查数据集状态',
+  list_candidate_assets: '匹配数据资产',
+  compile_dsl_to_sql: '编译查询语句',
+  execute_compiled_query: '执行查询',
+  repair_dsl: '修复查询语句',
+  create_query_artifact: '创建查询产物',
+  get_artifact_summary: '获取结果摘要',
+};
+
+// Agent → 用户可见中文名
+const AGENT_DISPLAY_NAMES = {
+  agentic_lead_agent: '路由 Agent',
+  bi_agent: '问数 Agent',
+  dataset_query_skill: '数据查询技能',
 };
 
 function safeStepLabel(node, displayName) {
@@ -657,13 +677,232 @@ function normalizeModelConfigId(value) {
   return null;
 }
 
+function createDirectTraceId() {
+  const random =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `chat-direct-${normalizeSessionPart(random)}`;
+}
+
+const GENERIC_COMPLETED_SUMMARIES = new Set([
+  '查询已完成',
+  '查询已完成。',
+  '已完成查询',
+  '已完成查询。',
+]);
+
+const DIRECT_QUERY_TABLE_ROW_LIMIT = 100;
+const DIRECT_QUERY_CELL_LIMIT = 240;
+
+function isGenericDirectQuerySummary(text) {
+  const value = String(text || '').trim();
+  return (
+    !value
+    || GENERIC_COMPLETED_SUMMARIES.has(value)
+    || (/已完成/.test(value) && /系统已返回\s*\d+\s*条/.test(value))
+  );
+}
+
+function isSafeResultColumn(column) {
+  const value = String(column || '').trim().toLowerCase();
+  return !(
+    !value
+    || value.includes('sql')
+    || value.includes('schema')
+    || value.includes('raw')
+    || value.includes('hidden')
+    || value.includes('secret')
+    || value.includes('query_plan')
+    || value.includes('queryplan')
+    || value.includes('patch')
+    || value.includes('control')
+    || value.includes('dsl')
+  );
+}
+
+function directQueryRowsFromArtifact(artifact) {
+  const rows = artifact?.content_json?.rows;
+  return Array.isArray(rows) ? rows : [];
+}
+
+function directQueryColumnsFromArtifact(artifact) {
+  const json = artifact?.content_json;
+  const rows = directQueryRowsFromArtifact(artifact);
+  const declared = Array.isArray(json?.columns) ? json.columns : [];
+  const inferred = rows.length && rows[0] && typeof rows[0] === 'object' && !Array.isArray(rows[0])
+    ? Object.keys(rows[0])
+    : [];
+  const labels = json?.column_labels && typeof json.column_labels === 'object' ? json.column_labels : {};
+  const source = declared.length ? declared : inferred;
+  return source
+    .map((column, index) => {
+      const key = String(column || '').trim();
+      const rawLabel = labels[key] || labels[index] || key;
+      const label = String(rawLabel || key).trim();
+      return { key, index, label };
+    })
+    .filter((column) => isSafeResultColumn(column.key) && isSafeResultColumn(column.label));
+}
+
+function markdownCell(value) {
+  if (value === null || value === undefined) return '';
+  const raw = typeof value === 'string'
+    ? value
+    : typeof value === 'number' || typeof value === 'boolean'
+      ? String(value)
+      : JSON.stringify(value);
+  // 明细结果进入用户可见 Markdown 表格前仍做一层轻量裁剪，避免控制面字段混入正文。
+  const text = String(raw || '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim();
+  if (!text || INTERNAL_TEXT_PATTERN.test(text)) return '';
+  return text.length > DIRECT_QUERY_CELL_LIMIT
+    ? `${text.slice(0, DIRECT_QUERY_CELL_LIMIT)}...`
+    : text;
+}
+
+function rowValue(row, column) {
+  if (Array.isArray(row)) return row[column.index];
+  if (row && typeof row === 'object') return row[column.key];
+  return null;
+}
+
+function buildDirectQueryArtifactMarkdown(artifact, result = {}) {
+  const rows = directQueryRowsFromArtifact(artifact);
+  const columns = directQueryColumnsFromArtifact(artifact);
+  if (!rows.length || !columns.length) return null;
+
+  const visibleRows = rows.slice(0, DIRECT_QUERY_TABLE_ROW_LIMIT);
+  const declaredRowCount = Number(result.row_count ?? result.rowCount ?? artifact?.content_json?.row_count);
+  const rowCount = Number.isFinite(declaredRowCount) ? declaredRowCount : rows.length;
+  const declaredColumnCount = Number(result.column_count ?? result.columnCount ?? artifact?.content_json?.column_count);
+  const columnCount = Number.isFinite(declaredColumnCount) ? declaredColumnCount : columns.length;
+  const lines = [
+    '## 查询结果',
+    '',
+    `已返回 ${rowCount} 条记录，${columnCount} 个字段。`,
+    '',
+    `| ${columns.map((column) => markdownCell(column.label) || column.key).join(' | ')} |`,
+    `| ${columns.map(() => '---').join(' | ')} |`,
+    ...visibleRows.map((row) => (
+      `| ${columns.map((column) => markdownCell(rowValue(row, column))).join(' | ')} |`
+    )),
+  ];
+  if (rowCount > visibleRows.length) {
+    lines.push('', `> 当前直接展示前 ${visibleRows.length} 条，共 ${rowCount} 条。`);
+  }
+  return lines.join('\n');
+}
+
+async function buildDirectQueryAnswerText(result = {}) {
+  const artifactRef = result.artifact_ref || result.artifactRef || result.result_ref || null;
+  if (artifactRef) {
+    try {
+      const artifact = await getArtifact(artifactRef);
+      const tableMarkdown = buildDirectQueryArtifactMarkdown(artifact, result);
+      if (tableMarkdown) return tableMarkdown;
+    } catch (_e) {
+      // artifact 读取失败时仍返回业务摘要，避免对话流因为结果视图过期而中断。
+    }
+  }
+  const rawSummary = safeDisplayText(result.summary);
+  return rawSummary && !isGenericDirectQuerySummary(rawSummary)
+    ? rawSummary
+    : buildDirectQueryMarkdownFallback(result);
+}
+
+function buildDirectQueryMarkdownFallback(result = {}) {
+  const artifactRef = result.artifact_ref || result.artifactRef || result.result_ref || null;
+  const rowCount = result.row_count ?? result.rowCount ?? null;
+  const columnCount = result.column_count ?? result.columnCount ?? null;
+  const hasResultSignal = artifactRef || rowCount != null || columnCount != null;
+  if (result.status !== 'completed' || !hasResultSignal) {
+    return '查询未完成，请检查数据集后重试。';
+  }
+  const rowText = rowCount != null ? `${rowCount} 行` : '行数未返回';
+  const columnText = columnCount != null ? `${columnCount} 列` : '列数未返回';
+  const lines = [
+    '## 查询结果',
+    '',
+    '- **结论**：查询结果已生成。',
+    `- **数据规模**：返回 ${rowText}，${columnText}`,
+  ];
+  return lines.join('\n');
+}
+
+async function buildDirectQueryMessage(result = {}) {
+  const artifactRef = result.artifact_ref || result.artifactRef || null;
+  const summary = await buildDirectQueryAnswerText(result);
+  const taskTimeline = [
+    { type: 'task_understood', label: '任务理解', text: '已理解您的分析需求', status: 'done' },
+    { type: 'bi_execution', label: 'BI 执行', text: '已完成查询处理', status: 'done' },
+  ];
+  if (artifactRef) {
+    taskTimeline.push({
+      type: 'artifact_created',
+      label: '结果产物',
+      text: '已生成查询结果',
+      status: 'done',
+    });
+  }
+  taskTimeline.push({
+    type: 'next_action',
+    label: '下一步',
+    text: '您可以查看详细结果、继续追问或导出数据',
+    status: 'done',
+  });
+  return {
+    content: [{ type: 'text', text: summary }],
+    status: { type: 'complete', reason: 'stop' },
+    metadata: {
+      custom: {
+        resultRef: artifactRef,
+        reportRef: null,
+        subagentToolResults: null,
+        routeDecision: {
+          decision: 'selected',
+          dataset_id: result.dataset_id ?? result.datasetId ?? null,
+          dataset_name: null,
+          score: null,
+          candidates: [],
+        },
+        routePayload: null,
+        clarification: null,
+        messageId: null,
+        stepTrace: [],
+        taskTimeline,
+        artifactCard: null,
+        candidateDatasets: null,
+        repairPlan: null,
+        repairTimeline: [],
+      },
+    },
+  };
+}
+
+function directReasoningNode(event = {}) {
+  if (event.agent === 'agentic_lead_agent') return 'lead_agent_tools';
+  if (event.phase === 'tool_progress' || event.phase?.startsWith('controlled_tail')) return 'sql_execute';
+  return 'query_plan';
+}
+
+function formatDirectQueryEventAsReasoning(event = {}) {
+  const agentLabel = event.agent === 'agentic_lead_agent' ? 'AgenticLeadAgent' : 'BI Agent';
+  const title = safeDisplayText(event.title) || agentLabel;
+  const content = safeDisplayText(event.content) || '正在处理当前步骤';
+  return `${title}：${content}`;
+}
+
 /**
  * 构造 ChatModelAdapter
  * @param {object} opts
  * @param {{current: string|null}} opts.datasetIdRef - 数据集 ID 共享 ref，ChatPage 更新
  * @param {{current: number|null}} opts.modelConfigIdRef - 本轮模型配置 ID；null 表示后端默认模型
+ * @param {'direct'|'stream'} opts.transport - direct 是主聊天入口，stream 仅保留给旧任务流测试/兼容调用。
  */
-export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
+export function makeChatAdapter({ datasetIdRef, modelConfigIdRef, transport = 'direct' }) {
   const fallbackSessionId = createFallbackBusinessSessionId();
 
   return {
@@ -721,7 +960,112 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         taskRequest.model_config_id = modelConfigId;
       }
 
-      yield* this.runTaskStream(taskRequest, { abortSignal, unstable_threadId });
+      if (transport === 'stream' || !datasetId || selectedDatasetId) {
+        yield* this.runTaskStream(taskRequest, { abortSignal, unstable_threadId });
+        return;
+      }
+      yield* this.runDirectQuery(taskRequest, { abortSignal, unstable_threadId });
+    },
+
+    async *runDirectQuery(taskRequest, {
+      abortSignal = new AbortController().signal,
+      unstable_threadId,
+    } = {}) {
+      const datasetId = normalizeDatasetId(taskRequest?.dataset_id);
+      if (!datasetId) {
+        yield await buildDirectQueryMessage({
+          status: 'blocked',
+          selected_agent: 'bi_agent',
+          summary: '请选择一个数据集后再执行 BI 查询。',
+        });
+        return;
+      }
+      try {
+        const reasonings = [];
+        let finalResult = null;
+        const buildContent = () => [
+          ...reasonings,
+          { type: 'text', text: finalResult?.answer || '' },
+        ];
+        const stream = streamAgenticDirectQuery({
+          question: taskRequest.question,
+          dataset_id: datasetId,
+          conversation_id: taskRequest.conversation_id,
+          trace_id: createDirectTraceId(),
+          ...(taskRequest.model_config_id != null ? { model_config_id: taskRequest.model_config_id } : {}),
+        }, { signal: abortSignal });
+
+        for await (const event of stream) {
+          if (abortSignal.aborted) break;
+          if (event.type === 'agent_message' || event.type === 'agent_event') {
+            emitTrace(event);
+            reasonings.push({
+              type: 'reasoning',
+              text: formatDirectQueryEventAsReasoning(event),
+              parentId: directReasoningNode(event),
+            });
+            yield { content: buildContent() };
+          } else if (event.type === 'final') {
+            finalResult = event;
+          }
+        }
+
+        if (abortSignal.aborted) {
+          yield {
+            content: buildContent(),
+            status: { type: 'incomplete', reason: 'cancelled' },
+          };
+          return;
+        }
+
+        const result = finalResult
+          ? {
+              status: finalResult.status,
+              selected_agent: finalResult.selected_agent,
+              summary: finalResult.answer,
+              conversation_id: finalResult.conversation_id,
+              title: finalResult.title,
+              artifact_ref: finalResult.artifact_ref || finalResult.result_ref,
+              checkpoint_ref: finalResult.checkpoint_ref,
+              row_count: finalResult.row_count,
+              column_count: finalResult.column_count,
+            }
+          : {
+              status: 'blocked',
+              selected_agent: 'bi_agent',
+              summary: '查询未完成，请稍后重试。',
+            };
+        if (result.conversation_id) {
+          emitResolvedConversation(unstable_threadId, result.conversation_id);
+          try {
+            window.dispatchEvent(
+              new CustomEvent('datalogue:thread-rename', {
+                detail: {
+                  remoteId: String(result.conversation_id),
+                  title: result.title || '新对话',
+                },
+              }),
+            );
+          } catch (_e) {
+            /* SSR 保护 */
+          }
+        }
+        const finalMessage = await buildDirectQueryMessage(result);
+        yield {
+          ...finalMessage,
+          content: [
+            ...reasonings,
+            ...(finalMessage.content || []),
+          ],
+        };
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          yield {
+            content: [{ type: 'text', text: `连接失败：${err.message}` }],
+            status: { type: 'incomplete', reason: 'error' },
+          };
+        }
+      }
     },
 
     async runAgenticShellTask(taskRequest) {
@@ -855,6 +1199,32 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
               status: eventType === 'repair.rerun_completed' || eventType === 'repair.patch_applied' ? 'done' : 'running',
             });
           }
+        } else if (ev.type === 'agent_handoff') {
+          const toLabel = AGENT_DISPLAY_NAMES[ev.to_agent] || ev.to_agent || '执行 Agent';
+          reasonings.push({
+            type: 'reasoning',
+            text: `已转交 ${toLabel}`,
+            parentId: 'agent_handoff',
+          });
+          yield { content: buildContent() };
+        } else if (ev.type === 'tool_call.started') {
+          // 工具调用开始：产出 reasoning part 通知用户当前进度
+          const toolLabel = TOOL_DISPLAY_NAMES[ev.tool_name] || ev.tool_name || '工具';
+          reasonings.push({
+            type: 'reasoning',
+            text: `${toolLabel} 执行中…`,
+            parentId: 'tool_progress',
+          });
+          yield { content: buildContent() };
+        } else if (ev.type === 'tool_call.completed' || ev.type === 'tool_call.failed') {
+          const toolLabel = TOOL_DISPLAY_NAMES[ev.tool_name] || ev.tool_name || '工具';
+          const status = ev.type === 'tool_call.completed' ? '已完成' : '失败';
+          reasonings.push({
+            type: 'reasoning',
+            text: `${toolLabel} ${status}`,
+            parentId: 'tool_progress',
+          });
+          yield { content: buildContent() };
         } else if (ev.type === 'final') {
           finalPayload = ev;
         }
@@ -964,6 +1334,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           content: [...reasonings, { type: 'text', text: finalText }],
           status: { type: 'complete', reason: 'stop' },
           metadata: {
+            timing: finalPayload.timing || null,
             custom: {
               answerExplanation: safeAnswerExplanation(finalPayload),
               queryCaliber: safeQueryCaliber(finalPayload),

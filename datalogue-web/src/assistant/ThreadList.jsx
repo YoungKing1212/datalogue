@@ -23,8 +23,8 @@ function ThreadListItem() {
   );
   const remoteId = useAuiState((s) => s.threadListItem?.remoteId);
   const title = useAuiState((s) => s.threadListItem?.title);
+  if (!remoteId) return null; // 只渲染后端已持久化的会话；本地草稿由 DraftThreadListItem 单独承载。
   const onClick = () => {
-    if (!remoteId) return;
     navigate(`/chat/${remoteId}`); // 点击历史会话时同步地址栏，避免消息区已切换但深链仍停在旧会话。
   };
   return (
@@ -36,7 +36,7 @@ function ThreadListItem() {
         onClick={onClick}
       >
         <Icon name="chat" style={{ width: 13, height: 13, color: 'var(--text-3)' }} />
-        <ThreadListItemPrimitive.Title fallback="新对话" />
+        <span className="thread-list-item-title">{title || '新对话'}</span>
       </ThreadListItemPrimitive.Trigger>
       <ThreadListItemPrimitive.Delete className="thread-list-item-del" aria-label="删除对话">
         <Icon name="trash" style={{ width: 12, height: 12 }} />
@@ -71,7 +71,7 @@ function DraftThreadListItem() {
         onClick={onClick}
       >
         <Icon name="chat" style={{ width: 13, height: 13, color: 'var(--text-3)' }} />
-        <span>新对话</span>
+        <span className="thread-list-item-title">新对话</span>
       </button>
     </div>
   );

@@ -95,7 +95,7 @@ class FakeBridge:
         self.calls.append({"method": "start_session", "kwargs": kwargs})
         return self.session
 
-    async def run_reply_stream(self, agent, *, msg, session):
+    async def run_reply_stream(self, agent, *, msg, session, on_tool_call=None):
         self.calls.append({"method": "run_reply_stream", "agent": agent, "msg": msg, "session": session})
         return self.events
 

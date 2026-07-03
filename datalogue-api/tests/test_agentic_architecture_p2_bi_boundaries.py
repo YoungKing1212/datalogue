@@ -68,8 +68,8 @@ def test_p2_bi_skill_new_path_owns_dataset_query_skill(db_session):
         assert forbidden not in manifest_text
 
 
-def test_p2_handoff_factories_build_dataset_bridge_through_skill(monkeypatch, db_session):
-    from app.agents.bi_agent import handoff_adapter, native_handoff
+def test_p2_native_handoff_factory_builds_dataset_bridge_through_skill(monkeypatch, db_session):
+    from app.agents.bi_agent import native_handoff
 
     class FakeDatasetQuerySkill:
         calls: list[str] = []
@@ -86,45 +86,25 @@ def test_p2_handoff_factories_build_dataset_bridge_through_skill(monkeypatch, db
         def __init__(self, db):
             self.db = db
 
-    monkeypatch.setattr(handoff_adapter, "DatasetQuerySkill", FakeDatasetQuerySkill)
-    monkeypatch.setattr(handoff_adapter, "AgentScopeDatasetAgentFactory", FakeDatasetAgentFactory)
     monkeypatch.setattr(native_handoff, "DatasetQuerySkill", FakeDatasetQuerySkill)
     monkeypatch.setattr(native_handoff, "AgentScopeDatasetAgentFactory", FakeDatasetAgentFactory)
 
-    adapter = handoff_adapter.DatalogueBIHandoffAdapter.from_db(db_session)
     native = native_handoff.AgentScopeNativeBIHandoff.from_db(db_session)
 
-    assert adapter.bridge == "bridge-from-skill"
     assert native.bridge == "bridge-from-skill"
-    assert FakeDatasetQuerySkill.calls.count("build_runtime_bridge") == 2
+    assert FakeDatasetQuerySkill.calls.count("build_runtime_bridge") == 1
 
 
-def test_p2_bi_agent_new_path_owns_business_agent_facade(db_session):
-    from app.agents.bi_agent import BIAgent
-    from app.agents.bi_agent.agent import BIAgent as DirectBIAgent
-    from app.bi.skill import DatasetQuerySkill
+def test_p2_task_runner_defaults_use_bi_agent_services():
+    from app.agents.agentic_lead_agent.direct_query_runner import AgenticDirectQueryRunner
+    from app.agents.bi_agent import BIAgentConfirmationService, BIAgentRunService
+    from app.runtime import BIAgentTaskRunner
+    from app.runtime.task_runtime import BIAgentTaskRunner as DirectBIAgentTaskRunner
 
-    agent = BIAgent(db=db_session)
-    manifest = agent.capability_manifest()
+    defaults = BIAgentTaskRunner.__init__.__kwdefaults__
 
-    assert BIAgent is DirectBIAgent
-    assert DirectBIAgent.__module__ == "app.agents.bi_agent.agent"
-    assert manifest["agent_name"] == "bi_agent"
-    assert manifest["skill_names"] == [DatasetQuerySkill.skill_name]
-    assert manifest["default_skill"] == DatasetQuerySkill.skill_name
-    manifest_text = str(manifest).lower()
-    for forbidden in ("select ", " from ", "schema_context", "raw_rows", "query_plan"):
-        assert forbidden not in manifest_text
-
-
-def test_p2_task_runner_defaults_use_agentscope_service_runner():
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
-    from app.api.agentic_shell import build_agentic_shell_task_runner
-    from app.runtime import AgenticShellTaskRuntime
-    from app.runtime.task_runtime import AgenticShellTaskRuntime as DirectRuntime
-
-    runner = build_agentic_shell_task_runner(base_url="http://testserver/agentscope")
-
-    assert AgenticShellTaskRuntime is DirectRuntime
-    assert isinstance(runner, AgentScopeServiceTaskRunner)
-    assert runner.base_url == "http://testserver/agentscope"
+    assert BIAgentTaskRunner is DirectBIAgentTaskRunner
+    assert DirectBIAgentTaskRunner.__module__ == "app.runtime.task_runtime"
+    assert defaults["run_service_factory"] is BIAgentRunService
+    assert defaults["confirmation_service_factory"] is BIAgentConfirmationService
+    assert defaults["direct_query_runner_factory"] is AgenticDirectQueryRunner

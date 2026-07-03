@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from agentscope.event import ExternalExecutionResultEvent, RequireExternalExecutionEvent
 from agentscope.message import TextBlock, ToolCallBlock, ToolResultBlock, ToolResultState
@@ -236,8 +236,14 @@ class AgentScopeDatasetRuntimeBridge:
         self,
         session: AgentScopeDatasetRuntimeSession,
         event: RequireExternalExecutionEvent,
+        *,
+        on_tool_call: Callable | None = None,
     ) -> ExternalExecutionResultEvent:
-        """执行 AgentScope 外部工具事件，并生成可回填给 Agent 的安全结果块。"""
+        """执行 AgentScope 外部工具事件，并生成可回填给 Agent 的安全结果块。
+
+        on_tool_call 可选回调，签名: (event_type: str, tool_name: str,
+        tool_call_id: str, payload: dict) -> None
+        """
 
         log_lifecycle(
             "dataset_agent.runtime.external_event.received",
@@ -286,12 +292,28 @@ class AgentScopeDatasetRuntimeBridge:
                     tool_name=tool_call.name,
                     expected_tool=session.expected_tool_name,
                 )
+                if on_tool_call is not None:
+                    on_tool_call("tool_call.started", tool_call.name, tool_call.id, {
+                        "summary": f"正在执行 {tool_call.name} …",
+                    })
                 payload = self._execute_tool(session, tool_call.name, tool_input)
                 state = ToolResultState.SUCCESS if payload.get("status") != "blocked" else ToolResultState.DENIED
+                if on_tool_call is not None:
+                    status_label = "completed" if state == ToolResultState.SUCCESS else "blocked"
+                    on_tool_call(f"tool_call.{status_label}", tool_call.name, tool_call.id, {
+                        "summary": f"{tool_call.name} 已完成",
+                        "status": str(state.value if hasattr(state, "value") else state),
+                        "has_artifact": bool(payload.get("artifact_ref")),
+                    })
             except Exception as exc:  # pragma: no cover - 防御外部 SDK/DB 异常，确保回填仍安全。
                 logger.exception("AgentScope DatasetAgent external tool execution failed: %s", tool_call.name)
                 payload = self._blocked_payload("EXTERNAL_TOOL_EXECUTION_FAILED", error_summary=str(exc))
                 state = ToolResultState.ERROR
+                if on_tool_call is not None:
+                    on_tool_call("tool_call.failed", tool_call.name, tool_call.id, {
+                        "summary": f"{tool_call.name} 执行失败",
+                        "error_code": "EXTERNAL_TOOL_EXECUTION_FAILED",
+                    })
 
             self._advance_session_after_tool(
                 session=session,
@@ -346,8 +368,13 @@ class AgentScopeDatasetRuntimeBridge:
         *,
         msg: Any,
         session: AgentScopeDatasetRuntimeSession,
+        on_tool_call: Callable | None = None,
     ) -> list[Any]:
-        """驱动 AgentScope agent.reply_stream，并在外部工具事件处暂停/执行/回填。"""
+        """驱动 AgentScope agent.reply_stream，并在外部工具事件处暂停/执行/回填。
+
+        on_tool_call 可选回调，签名: (event_type: str, tool_name: str,
+        tool_call_id: str, payload: dict) -> None
+        """
 
         results: list[Any] = []
         log_lifecycle(
@@ -366,7 +393,9 @@ class AgentScopeDatasetRuntimeBridge:
                     reply_id=event.reply_id,
                     tool_count=len(event.tool_calls),
                 )
-                external_event = await self.handle_external_execution_event(session, event)
+                external_event = await self.handle_external_execution_event(
+                    session, event, on_tool_call=on_tool_call,
+                )
                 results.append(external_event)
                 reply_result = await agent.reply(external_event)
                 await drive_reply_result(reply_result)

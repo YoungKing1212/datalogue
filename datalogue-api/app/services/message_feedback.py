@@ -1,14 +1,14 @@
 # ============================================================
-# File Name   : feedback.py
+# File Name   : message_feedback.py
 # Description:
 #   问数回答反馈本地写入服务。
 #
 # Responsibilities:
 #   - 校验 assistant message 并更新本地 response_metadata。
-#   - 暂不把反馈同步到外部 Trace/Score 系统。
+#   - 保持反馈能力独立于已下线的 Trace/Observability 子包。
 #
 # Author      : yangkai
-# Created On  : 2026-06-11
+# Created On  : 2026-07-04
 # ============================================================
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app import models
+
 ACTION_TO_SCORE = {
     "approve": 1,
     "thumbs_up": 1,

@@ -148,6 +148,60 @@ def project_agentscope_event(
     if isinstance(event, dict):
         parsed = _parse_legacy_sse_payload(event)
         legacy_type = parsed.get("type")
+        # agent_message 事件包含 LLM 推理/响应内容，映射为 reasoning.delta
+        if legacy_type == "agent_message":
+            reasoning_content = str(parsed.get("content") or "")
+            phase = str(parsed.get("phase") or "")
+            agent_name = str(parsed.get("agent") or "unknown")
+            if reasoning_content.strip():
+                return build_task_envelope(
+                    event_type="reasoning.delta",
+                    task_id=task_id,
+                    trace_id=parsed.get("trace_id") or trace_id,
+                    thread_id=thread_id,
+                    message_id=message_id,
+                    selected_agent=selected_agent,
+                    payload={
+                        "content": reasoning_content,
+                        "phase": phase,
+                        "agent": agent_name,
+                    },
+                    legacy_payload=parsed,
+                )
+        # agent.handoff 事件
+        if legacy_type == "agent.handoff.started":
+            return build_task_envelope(
+                event_type="agent.handoff.started",
+                task_id=task_id,
+                trace_id=parsed.get("trace_id") or trace_id,
+                thread_id=thread_id,
+                message_id=message_id,
+                selected_agent=selected_agent,
+                payload={
+                    "from_agent": parsed.get("from_agent") or "",
+                    "to_agent": parsed.get("to_agent") or "",
+                    "reason": parsed.get("reason") or "",
+                    "dataset_id": (parsed.get("payload") or {}).get("dataset_id") if isinstance(parsed.get("payload"), dict) else None,
+                },
+                legacy_payload=parsed,
+            )
+        # tool_call.* 事件透传
+        if legacy_type in {"tool_call.started", "tool_call.completed", "tool_call.failed"}:
+            return build_task_envelope(
+                event_type=legacy_type,
+                task_id=task_id,
+                trace_id=parsed.get("trace_id") or trace_id,
+                thread_id=thread_id,
+                message_id=message_id,
+                selected_agent=selected_agent,
+                payload={
+                    "tool_name": parsed.get("tool_name") or "",
+                    "tool_call_id": parsed.get("tool_call_id") or "",
+                    "summary": parsed.get("payload", {}).get("summary") if isinstance(parsed.get("payload"), dict) else "",
+                    "status": parsed.get("payload", {}).get("status") if isinstance(parsed.get("payload"), dict) else "",
+                },
+                legacy_payload=parsed,
+            )
         if legacy_type == "token":
             content = str(parsed.get("content") or parsed.get("token") or "")
             return build_task_envelope(

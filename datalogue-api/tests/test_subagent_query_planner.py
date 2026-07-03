@@ -1,10 +1,6 @@
 import json
 from types import SimpleNamespace
 
-from app.services.observability.context import (
-    ObservabilityRequestContext,
-    set_observability_context,
-)
 from app.services.subagent_planning.contracts import (
     CandidateAsset,
     QueryPlan,
@@ -83,19 +79,6 @@ class FakeOpenAIAPIConnectionError(Exception):
 
 
 FakeOpenAIAPIConnectionError.__module__ = "openai"
-
-
-class FakeTracer:
-    def __init__(self):
-        self.started_generations = []
-        self.ended_generations = []
-
-    def start_generation(self, **kwargs):
-        self.started_generations.append(kwargs)
-        return {"handle": len(self.started_generations)}
-
-    def end_generation(self, handle, **kwargs):
-        self.ended_generations.append({"handle": handle, **kwargs})
 
 
 def _field(name="created_at"):
@@ -901,47 +884,6 @@ def test_plan_query_falls_back_when_llm_clarifies_detail_query_with_field_table(
 
     assert plan.planner_source == "deterministic"
     assert plan.execution_strategy == "query_graph"
-
-
-def test_plan_query_records_llm_generation_with_fallback_metadata(monkeypatch, db_session):
-    fake_tracer = FakeTracer()
-    monkeypatch.setattr(
-        "app.services.subagent_planning.planner.get_observability_tracer",
-        lambda: fake_tracer,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.services.subagent_planning.planner.get_llm",
-        lambda temperature=0.0, **kwargs: FakeLLM("not-json"),
-    )
-
-    request_context = ObservabilityRequestContext(
-        trace_id="trace-test",
-        session_id="session-test",
-        conversation_id=1,
-        dataset_id=10,
-        user_id="tester",
-        tenant_id="default",
-        active=True,
-        enabled=True,
-    )
-    with set_observability_context(request_context):
-        plan = plan_query(
-            db=db_session,
-            question="规划复杂查询",
-            routing={"route": "dataset_subagent"},
-            candidate_assets={"assets": [_field().to_dict(), _table()]},
-        )
-
-    assert plan.planner_source == "fallback"
-    assert plan.debug["validation_error"].startswith("Expecting value")
-    assert fake_tracer.started_generations[0]["name"] == "llm.subagent_query_planner"
-    assert fake_tracer.started_generations[0]["model"] == "fake-planner-model"
-    metadata = fake_tracer.ended_generations[0]["metadata"]
-    assert metadata["status"] == "fallback"
-    assert metadata["fallback_reason"] == plan.fallback_reason
-    assert metadata["validation_error"] == plan.debug["validation_error"]
-    assert metadata["fallback_execution_strategy"] == "reject"
 
 
 def test_planner_human_prompt_uses_lightweight_whitelists():

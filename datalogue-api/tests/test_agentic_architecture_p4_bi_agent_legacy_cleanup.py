@@ -27,7 +27,6 @@ def test_p4_bi_agent_application_services_owned_by_agents_package():
     )
     from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService as DirectConfirmationService
     from app.agents.bi_agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
-    from app.agents.bi_agent.handoff_adapter import DatalogueBIHandoffAdapter
     from app.agents.bi_agent.handoff_port import BIHandoffPort
     from app.agents.bi_agent.handoff_service import BIAgentHandoffService as DirectHandoffService
     from app.agents.bi_agent.native_handoff import AgentScopeNativeBIHandoff
@@ -39,7 +38,6 @@ def test_p4_bi_agent_application_services_owned_by_agents_package():
     assert DirectRunService.__module__ == "app.agents.bi_agent.run_service"
     assert DirectConfirmationService.__module__ == "app.agents.bi_agent.confirmation_service"
     assert DirectHandoffService.__module__ == "app.agents.bi_agent.handoff_service"
-    assert DatalogueBIHandoffAdapter.__module__ == "app.agents.bi_agent.handoff_adapter"
     assert AgentScopeNativeBIHandoff.__module__ == "app.agents.bi_agent.native_handoff"
     assert AgentScopeDatasetAgentFactory.__module__ == "app.agents.bi_agent.dataset_agent_factory"
     assert BIHandoffPort.__module__ == "app.agents.bi_agent.handoff_port"
@@ -70,6 +68,7 @@ def test_p4_bi_agent_api_owned_by_bi_agent_module():
         "app.services.bi_agent.handoff_service",
         "app.services.bi_agent.native_handoff",
         "app.services.bi_lead_agent.run_service",
+        "app.agents.bi_agent.handoff_adapter",
     ],
 )
 def test_p4_old_bi_lead_agent_services_package_is_not_importable(module_name):

@@ -4,7 +4,7 @@
 // 两种 variant：hero（欢迎屏中央）/ composer（消息列表底部固定）
 
 import React, { useState } from 'react';
-import { ComposerPrimitive, useAuiState } from '@assistant-ui/react';
+import { ComposerPrimitive, useAuiState, unstable_useComposerInputHistory } from '@assistant-ui/react';
 import { Icon } from '../components/icons';
 
 /**
@@ -171,6 +171,8 @@ export function MyComposer({
   modelList = [],
   variant = 'composer',
 }) {
+  const inputHistory = unstable_useComposerInputHistory();
+
   if (variant === 'hero') {
     return (
       <ComposerPrimitive.Root className="ask-hero">
@@ -178,6 +180,7 @@ export function MyComposer({
           className="ask-input"
           rows={2}
           placeholder="例如：上周华东区销售为什么下降？"
+          {...inputHistory}
         />
         <div className="toolbar">
           <DatasetChip
@@ -214,6 +217,7 @@ export function MyComposer({
             className="composer-input"
             rows={1}
             placeholder="问个数，或者点击上面的快捷词"
+            {...inputHistory}
           />
           <div className="composer-toolbar">
             <DatasetChip

@@ -9,19 +9,19 @@ import {
   useAuiState,
   useAui,
   MessagePrimitive,
+  ActionBarPrimitive,
+  groupPartByType,
+  useMessageTiming,
 } from '@assistant-ui/react';
-import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown';
+import { StreamdownTextPrimitive } from '@assistant-ui/react-streamdown';
+import { code } from '@streamdown/code';
+import { math } from '@streamdown/math';
 import { Collapse, Timeline, Tag, Typography } from 'antd';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import rehypeHighlight from 'rehype-highlight';
 import 'katex/dist/katex.min.css';
-import 'highlight.js/styles/github-dark.css';
 import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
 import ArtifactCard from '../components/artifact-card';
-import { getArtifact, submitMessageFeedback } from '../api/client';
+import { getArtifact } from '../api/client';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
@@ -114,7 +114,7 @@ export function StepCard({ node, display_name, status, elapsed_ms }) {
 /**
  * ChainOfThought 包装组件 — assistant-ui 提供 reasoning parts，Ant Design 负责可见 UI。
  */
-function ChainOfThought() {
+function ChainOfThought({ children: _children }) {
   const message = useAuiState((s) => s.message);
   const reasonings = (message?.content || []).filter((part) => part.type === 'reasoning');
   const isStreaming = message?.status?.type === 'running';
@@ -170,10 +170,9 @@ function ChainOfThought() {
  */
 function MessageTextPart() {
   return (
-    <MarkdownTextPrimitive
-      className="ai-message md-body"
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex, rehypeHighlight]}
+    <StreamdownTextPrimitive
+      containerClassName="ai-message md-body"
+      plugins={{ code, math }}
       components={markdownComponents}
       preprocess={preprocessAssistantMarkdown}
     />
@@ -847,11 +846,10 @@ function RepairPlanCard({ repairPlan }) {
 export function AIMessage() {
   const api = useAui();
   const message = useAuiState((s) => s.message);
-  const [showActions, setShowActions] = useState(false);
-  const [feedbackState, setFeedbackState] = useState(null);
   const [artifactDetail, setArtifactDetail] = useState({ status: 'idle' });
 
   const isStreaming = message?.status?.type === 'running';
+  const timing = useMessageTiming();
   const custom = message?.metadata?.custom || {};
   const chartType = custom.chartType || null;
   const chartTitle = custom.chartTitle || null;
@@ -861,8 +859,6 @@ export function AIMessage() {
   const answerExplanation = custom.answerExplanation || null;
   const routePayload = custom.routePayload || null;
   const clarification = custom.clarification || null;
-  const messageId = custom.messageId || null;
-  const savedFeedback = custom.feedback || null;
   // C-ready 数据结构
   const artifactCard = custom.artifactCard || null;
   const candidateDatasets = custom.candidateDatasets || null;
@@ -881,30 +877,6 @@ export function AIMessage() {
     window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
       detail: { text: `选择：${label}` },
     }));
-  };
-
-  const handleCopy = () => {
-    const text = (message?.content || [])
-      .filter((p) => p.type === 'text')
-      .map((p) => p.text)
-      .join('');
-    navigator.clipboard.writeText(text).catch(console.error);
-  };
-
-  const handleFeedback = async (action) => {
-    if (!messageId) {
-      setFeedbackState('当前消息暂不支持反馈');
-      return;
-    }
-    setFeedbackState('提交中...');
-    try {
-      await submitMessageFeedback(messageId, {
-        action,
-      });
-      setFeedbackState(action === 'approve' ? '已点赞' : '已点踩');
-    } catch (_e) {
-      setFeedbackState('反馈失败');
-    }
   };
 
   const handleRegenerate = () => {
@@ -944,11 +916,7 @@ export function AIMessage() {
   };
 
   return (
-    <div
-      className="msg-row msg-ai"
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
-    >
+    <div className="msg-row msg-ai">
       <div className="ai-head">
         <div className="ai-mark" />
         <span className="name">数语</span>
@@ -962,18 +930,33 @@ export function AIMessage() {
             <>
               <Icon name="check" style={{ width: 11, height: 11, color: 'var(--pos)' }} />
               已生成
+              {timing && (
+                <span className="msg-timing">
+                  {timing.totalStreamTime ? `${(timing.totalStreamTime / 1000).toFixed(1)}s` : ''}
+                  {timing.tokenCount ? ` · ${timing.tokenCount} 字符` : ''}
+                </span>
+              )}
             </>
           )}
         </span>
       </div>
 
       {/* 内容区 — reasoning 由 ChainOfThought 接管，text 走 markdown */}
-      <MessagePrimitive.Parts
-        components={{
-          ChainOfThought,
-          Text: MessageTextPart,
+      <MessagePrimitive.GroupedParts
+        groupBy={groupPartByType({
+          reasoning: ['group-reasoning'],
+          'tool-call': ['group-tool'],
+        })}
+      >
+        {({ part, children }) => {
+          if (part.type === 'group-reasoning') return <ChainOfThought>{children}</ChainOfThought>;
+          if (part.type === 'group-tool') return <div className="tool-group">{children}</div>;
+          if (part.type === 'text') return <MessageTextPart />;
+          if (part.type === 'reasoning') return null;
+          if (part.type === 'tool-call') return null;
+          return null;
         }}
-      />
+      </MessagePrimitive.GroupedParts>
 
       <QueryCaliberCard custom={custom} onRerun={handleRegenerate} />
 
@@ -1051,23 +1034,21 @@ export function AIMessage() {
         </div>
       )}
 
-      {/* 操作栏 — hover 显示 */}
-      {!isStreaming && (
-        <div className={`msg-actions ${showActions ? 'visible' : ''}`}>
-          <button className="action-btn" title="复制回答" onClick={handleCopy}>
-            <Icon name="copy" />
-          </button>
-          <button className="action-btn" title={feedbackState || savedFeedback?.action || '点赞'} onClick={() => handleFeedback('approve')}>
-            <Icon name="thumbs_up" />
-          </button>
-          <button className="action-btn" title={feedbackState || savedFeedback?.action || '点踩'} onClick={() => handleFeedback('reject')}>
-            <Icon name="thumbs_down" />
-          </button>
-          <button className="action-btn" title="重新生成" onClick={handleRegenerate}>
-            <Icon name="refresh" />
-          </button>
-        </div>
-      )}
+      {/* 操作栏 — assistant-ui ActionBarPrimitive */}
+      <ActionBarPrimitive.Root hideWhenRunning className="msg-actions">
+        <ActionBarPrimitive.Copy className="icon-btn" title="复制回答" aria-label="复制回答">
+          <Icon name="copy" />
+        </ActionBarPrimitive.Copy>
+        <ActionBarPrimitive.Reload className="icon-btn" title="重新生成" aria-label="重新生成">
+          <Icon name="refresh" />
+        </ActionBarPrimitive.Reload>
+        <ActionBarPrimitive.Speak className="icon-btn" title="朗读回答" aria-label="朗读回答">
+          <Icon name="play" />
+        </ActionBarPrimitive.Speak>
+        <ActionBarPrimitive.Edit className="icon-btn" title="编辑消息" aria-label="编辑消息">
+          <Icon name="edit" />
+        </ActionBarPrimitive.Edit>
+      </ActionBarPrimitive.Root>
     </div>
   );
 }

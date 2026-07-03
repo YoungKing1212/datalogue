@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
@@ -134,6 +135,9 @@ class AgenticShellTaskRuntime:
         message_completed_emitted = False
         primary_artifact_ref: str | None = None
         latest_checkpoint_ref: str | None = None
+        # 消息计时打点
+        task_started_at = time.time()
+        first_delta_at: float | None = None
         try:
             user_msg = UserMsg(name="user", content=request.question)
             async for event in self.runner.stream(request=request, task=task, user_msg=user_msg):
@@ -145,11 +149,22 @@ class AgenticShellTaskRuntime:
                     message_id=assistant_message.message_id,
                     selected_agent=selected_agent,
                 )
-                if envelope.event_type == "message.delta":
-                    accumulated_text += str(envelope.payload.get("content") or "")
+                if envelope.event_type in {"message.delta", "reasoning.delta"}:
+                    if first_delta_at is None:
+                        first_delta_at = time.time()
+                    if envelope.event_type == "message.delta":
+                        accumulated_text += str(envelope.payload.get("content") or "")
                 if envelope.event_type == "message.completed":
                     message_completed_emitted = True
                     accumulated_text = str(envelope.payload.get("summary") or accumulated_text)
+                    # 嵌入消息计时元数据
+                    if first_delta_at is not None:
+                        timing = {
+                            "ttft_ms": round((first_delta_at - task_started_at) * 1000),
+                            "total_duration_ms": round((time.time() - task_started_at) * 1000),
+                            "token_count": len(accumulated_text),
+                        }
+                        envelope.payload["timing"] = timing
                     log_output(
                         event_type=envelope.event_type,
                         task_id=task.task_id,
@@ -226,7 +241,14 @@ class AgenticShellTaskRuntime:
                     thread_id=session.thread_id,
                     message_id=assistant_message.message_id,
                     selected_agent=selected_agent,
-                    payload={"summary": accumulated_text or "任务已完成。"},
+                    payload={
+                        "summary": accumulated_text or "任务已完成。",
+                        "timing": {
+                            "ttft_ms": round((first_delta_at - task_started_at) * 1000) if first_delta_at else 0,
+                            "total_duration_ms": round((time.time() - task_started_at) * 1000),
+                            "token_count": len(accumulated_text),
+                        },
+                    },
                     legacy_payload={"type": "final", "answer": accumulated_text},
                 )
             yield build_task_envelope(

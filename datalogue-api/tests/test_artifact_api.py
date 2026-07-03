@@ -91,11 +91,11 @@ def test_internal_purge_expired_artifacts(client, db_session, sample_dataset, mo
     from app.core.config import Settings
 
     monkeypatch.setattr(
-        "app.api.internal_subagent.get_settings",
-        lambda: Settings(SUBAGENT_REMOTE_API_KEY="test-internal-token"),
+        "app.api.artifacts.get_settings",
+        lambda: Settings(QUERY_ARTIFACT_MAINTENANCE_API_KEY="test-internal-token"),
     )
     response = client.post(
-        "/api/internal/artifacts/purge-expired",
+        "/api/artifacts/purge-expired",
         headers={"X-Datalogue-Internal-Token": "test-internal-token"},
     )
 

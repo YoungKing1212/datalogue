@@ -22,8 +22,6 @@ from app.schemas.bi_workbench import DatalogueEventEnvelope
 
 AgenticShellTaskSource = Literal["chat", "workbench", "api"]
 AgenticShellTaskType = Literal["bi_query", "report", "python_analysis", "audit", "unsupported"]
-AgenticShellTaskStatus = Literal["created", "running", "completed", "failed", "cancelled"]
-
 _FORBIDDEN_TASK_KEYS = {
     "capsule",
     "control_plane",
@@ -112,23 +110,6 @@ class AgenticShellTaskRequest(BaseModel):
         if _contains_internal_payload(self.model_dump()):
             raise ValueError("AGENTIC_SHELL_TASK_INTERNAL_PAYLOAD_REJECTED")
         return self
-
-
-class AgenticShellTaskOut(BaseModel):
-    """面向 API/Workbench 的 task 状态摘要。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    task_id: str
-    task_source: AgenticShellTaskSource
-    task_type: AgenticShellTaskType
-    status: AgenticShellTaskStatus
-    selected_agent: str
-    thread_id: str | None = None
-    message_id: str | None = None
-    trace_id: str | None = None
-    artifact_refs: list[str] = Field(default_factory=list)
-    checkpoint_refs: list[str] = Field(default_factory=list)
 
 
 class AgenticShellTaskStreamEvent(BaseModel):

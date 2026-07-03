@@ -1,37 +1,19 @@
 # ============================================================
 # File Name   : chat.py
 # Description:
-#   聊天请求和响应的 Pydantic Schema。
+#   消息反馈相关 Pydantic Schema。
 #
 # Responsibilities:
-#   - 校验聊天输入参数。
-#   - 序列化聊天回答、SQL 和执行元数据。
+#   - 校验 assistant 消息反馈请求。
+#   - 保留当前 /api/messages/{message_id}/feedback 使用的 DTO。
 #
 # Author      : yangkai
 # Created On  : 2026-06-05
 # ============================================================
 
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel
-
-
-class ClarificationResponse(BaseModel):
-    clarification_id: Optional[int] = None
-    selected_term_id: Optional[int] = None
-    selected_dataset_id: Optional[int] = None
-    selected_index: Optional[int] = None
-    selected_text: Optional[str] = None
-
-
-class ChatRequest(BaseModel):
-    question: str
-    thread_id: Optional[str] = None
-    session_id: Optional[str] = None
-    conversation_id: Optional[int] = None
-    dataset_id: Optional[int] = None
-    clarification_response: Optional[ClarificationResponse | dict[str, Any]] = None
-    retry_checkpoint_ref: Optional[str] = None
 
 
 class ChatFeedback(BaseModel):

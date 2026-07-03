@@ -75,12 +75,10 @@ from .conversation import (
     ConversationCreate,
     ConversationRename,
 )
-from .chat import ChatRequest, ChatFeedback, ClarificationResponse
+from .chat import ChatFeedback
 from .agentic_shell_task import (
-    AgenticShellTaskOut,
     AgenticShellTaskRequest,
     AgenticShellTaskSource,
-    AgenticShellTaskStatus,
     AgenticShellTaskStreamEvent,
     AgenticShellTaskType,
 )
@@ -96,7 +94,6 @@ from .bi_workbench import (
     validate_event_visibility,
 )
 from .repair_plan import RepairAction, RepairFailureClass, RepairPlan, RepairStatus
-from .capsule import CapsuleMeta, QueryContext, ResultDigest, SubAgentCapsule
 from .llm import (
     LLMModelConfigCreate,
     LLMModelConfigUpdate,
@@ -166,23 +163,15 @@ __all__ = [
     "ConversationDetailOut",
     "ConversationCreate",
     "ConversationRename",
-    "ChatRequest",
     "ChatFeedback",
-    "ClarificationResponse",
-    "AgenticShellTaskOut",
     "AgenticShellTaskRequest",
     "AgenticShellTaskSource",
-    "AgenticShellTaskStatus",
     "AgenticShellTaskStreamEvent",
     "AgenticShellTaskType",
     "ArtifactAction",
     "ArtifactCard",
     "ArtifactRef",
     "DatalogueEventEnvelope",
-    "CapsuleMeta",
-    "QueryContext",
-    "ResultDigest",
-    "SubAgentCapsule",
     "DatalogueEventType",
     "DatalogueEventVisibility",
     "build_datalogue_event_envelope",

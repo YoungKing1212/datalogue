@@ -1,19 +1,14 @@
 # ============================================================
 # File Name   : __init__.py
 # Description:
-#   标记图工作流包。
+#   LLM 适配包兼容入口。
 #
 # Responsibilities:
-#   - 组织 LangGraph 状态、节点、工作流和 LLM 辅助模块。
-#   - 保持工作流相关导入结构清晰。
+#   - 保留 app.graph.llm 的历史导入路径，避免一次性迁移所有 LLM 调用方。
+#   - 明确旧 LangGraph workflow/nodes/state 已退役，不再从包入口导出。
 #
 # Author      : yangkai
 # Created On  : 2026-06-05
 # ============================================================
 
-# LangGraph Agent 工作流模块
-
-from app.graph.workflow import build_workflow
-from app.graph.state import AgentState
-
-__all__ = ["build_workflow", "AgentState"]
+__all__ = []

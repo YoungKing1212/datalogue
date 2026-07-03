@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app import schemas
 from app.core.database import get_db
-from app.services.observability.feedback import submit_message_feedback
+from app.services.message_feedback import submit_message_feedback
 
 router = APIRouter()
 
@@ -27,7 +27,7 @@ def message_feedback(
     payload: schemas.ChatFeedback,
     db: Session = Depends(get_db),
 ):
-    """提交 assistant 消息反馈，并尽力写入 Observability score。"""
+    """提交 assistant 消息反馈，并写入本地消息 metadata。"""
 
     return submit_message_feedback(
         db,

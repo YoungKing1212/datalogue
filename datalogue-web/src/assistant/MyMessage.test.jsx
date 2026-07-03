@@ -19,14 +19,24 @@ vi.mock('@assistant-ui/react', () => ({
     message: () => ({ reload: vi.fn() }),
   }),
   MessagePrimitive: {
+    GroupedParts: ({ children: _children }) => <div data-testid="message-parts" />,
     Parts: ({ components: _components }) => <div data-testid="message-parts" />,
     Root: ({ children }) => <div>{children}</div>,
   },
+  groupPartByType: () => () => [],
   ChainOfThoughtPrimitive: {
     Root: ({ children }) => <div>{children}</div>,
     AccordionTrigger: ({ children }) => <div>{children}</div>,
     Parts: ({ components: _components }) => <div data-testid="cot-parts" />,
   },
+  ActionBarPrimitive: {
+    Root: ({ children }) => <div>{children}</div>,
+    Copy: ({ children, ...props }) => <button data-testid="actionbar-copy" {...props}>{children}</button>,
+    Reload: ({ children, ...props }) => <button data-testid="actionbar-reload" {...props}>{children}</button>,
+    Speak: ({ children, ...props }) => <button data-testid="actionbar-speak" {...props}>{children}</button>,
+    Edit: ({ children, ...props }) => <button data-testid="actionbar-edit" {...props}>{children}</button>,
+  },
+  useMessageTiming: () => null,
 }));
 
 // Mock 子组件
@@ -120,6 +130,17 @@ describe('MyMessage — C-ready 渲染', () => {
     render(<AIMessage />);
     expect(screen.getByTestId('artifact-card')).toBeInTheDocument();
     expect(screen.getByText('查询结果')).toBeInTheDocument();
+  });
+
+  it('renders visible assistant-ui action bar icons', () => {
+    setMockMessage();
+
+    render(<AIMessage />);
+
+    expect(screen.getByRole('button', { name: '复制回答' })).toContainElement(screen.getByTestId('icon-copy'));
+    expect(screen.getByRole('button', { name: '重新生成' })).toContainElement(screen.getByTestId('icon-refresh'));
+    expect(screen.getByRole('button', { name: '朗读回答' })).toContainElement(screen.getByTestId('icon-play'));
+    expect(screen.getByRole('button', { name: '编辑消息' })).toContainElement(screen.getByTestId('icon-edit'));
   });
 
   it('loads query artifact rows when artifact view action is clicked', async () => {

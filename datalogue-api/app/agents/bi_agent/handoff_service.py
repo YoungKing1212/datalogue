@@ -17,12 +17,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.models.bi_agent import BIAgentHandoff, BIAgentRun
 from app.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
 from app.middlewares.lifecycle import log_lifecycle
 from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService
-from app.agents.bi_agent.handoff_adapter import DatalogueBIHandoffAdapter
 from app.agents.bi_agent.handoff_port import BIHandoffPort
 from app.agents.bi_agent.run_service import BIAgentRunService
 
@@ -139,9 +137,6 @@ class BIAgentHandoffService:
 
 
 def _default_handoff_port(db: Session) -> BIHandoffPort:
-    settings = get_settings()
-    if settings.BI_LEAD_AGENT_HANDOFF_MODE == "agentscope_native":
-        from app.agents.bi_agent.native_handoff import AgentScopeNativeBIHandoff
+    from app.agents.bi_agent.native_handoff import AgentScopeNativeBIHandoff
 
-        return AgentScopeNativeBIHandoff.from_db(db)
-    return DatalogueBIHandoffAdapter.from_db(db)
+    return AgentScopeNativeBIHandoff.from_db(db)

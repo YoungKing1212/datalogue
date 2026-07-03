@@ -15,11 +15,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hmac
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.services.artifact_store import ArtifactStore
 from app.services.repair_plan import sanitize_repair_plan_artifact_payload
@@ -32,6 +34,27 @@ def _is_expired(expires_at: datetime | None) -> bool:
         return True
     value = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=UTC)
     return value <= datetime.now(UTC)
+
+
+def _verify_artifact_maintenance_token(token: str | None) -> None:
+    expected_token = get_settings().QUERY_ARTIFACT_MAINTENANCE_API_KEY
+    if not expected_token:
+        raise HTTPException(status_code=401, detail="artifact maintenance token not configured")
+    if not hmac.compare_digest(token or "", expected_token):
+        raise HTTPException(status_code=401, detail="invalid artifact maintenance token")
+
+
+@router.post("/purge-expired")
+def purge_expired_artifacts(
+    db: Session = Depends(get_db),
+    x_datalogue_internal_token: str | None = Header(default=None),
+):
+    """内部维护接口：按 TTL 清理已过期 artifact。"""
+
+    _verify_artifact_maintenance_token(x_datalogue_internal_token)
+    deleted = ArtifactStore(db).purge_expired()
+    db.commit()
+    return {"deleted": deleted}
 
 
 @router.get("/{artifact_ref}")

@@ -25,8 +25,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.core.config import get_settings
 from app.graph.llm import get_llm
-from app.services.observability.context import current_observability_context
-from app.services.observability.tracer import get_observability_tracer
 from app.services.subagent_planning.asset_detail import AssetDetailRequest
 from app.services.subagent_planning.contracts import (
     CANDIDATE_ASSET_TYPES,
@@ -1573,32 +1571,8 @@ def _is_llm_call_error(exc: BaseException) -> bool:
     return False
 
 
-def _planner_model_name(llm: Any) -> str | None:
-    return getattr(llm, "model_name", None) or getattr(llm, "model", None)
-
-
 def _planner_response_content(response: Any) -> Any:
     return getattr(response, "content", response)
-
-
-def _planner_generation_base_metadata(
-    *,
-    question: str,
-    routing: Any,
-    candidate_assets: CandidateAssetInput,
-) -> dict[str, Any]:
-    routing_payload = routing if isinstance(routing, dict) else {}
-    summary = candidate_assets.get("summary") if isinstance(candidate_assets, dict) else {}
-    return {
-        "path": "subagent.query_plan",
-        "planner": "subagent_query_planner",
-        "question": question,
-        "entry_route": routing_payload.get("entry_route") or routing_payload.get("route"),
-        "entry_intent": routing_payload.get("entry_intent"),
-        "blueprint_id": routing_payload.get("blueprint_id"),
-        "candidate_asset_count": len(_asset_items(candidate_assets)),
-        "candidate_asset_summary": summary or {},
-    }
 
 
 def _with_validation_error(plan: QueryPlan, validation_error: str | None) -> QueryPlan:
@@ -1649,13 +1623,6 @@ def plan_query(
             )
         ),
     ]
-    tracer = get_observability_tracer()
-    generation = None
-    generation_base_metadata = _planner_generation_base_metadata(
-        question=question,
-        routing=routing,
-        candidate_assets=candidate_assets,
-    )
     try:
         llm = get_llm(temperature=0.0, role="lead_agent", db=db)
     except Exception as exc:
@@ -1672,35 +1639,10 @@ def plan_query(
             validation_error,
         )
 
-    active_obs_context = current_observability_context.get()
-    if active_obs_context and active_obs_context.active:
-        try:
-            generation = tracer.start_generation(
-                name="llm.subagent_query_planner",
-                model=_planner_model_name(llm),
-                messages=messages,
-                metadata={**generation_base_metadata, "status": "running"},
-            )
-        except Exception:
-            generation = None
-
     try:
         response = llm.invoke(messages)
     except Exception as exc:
         if not _is_llm_call_error(exc):
-            try:
-                tracer.end_generation(
-                    generation,
-                    output=repr(exc),
-                    metadata={
-                        **generation_base_metadata,
-                        "status": "error",
-                        "validation_error": _compact_error_text(exc),
-                        "error_stage": "llm_call",
-                    },
-                )
-            except Exception:
-                pass
             raise
         validation_error = _compact_error_text(exc)
         logger.warning(
@@ -1724,21 +1666,6 @@ def plan_query(
             (plan.explanation or {}).get("summary"),
             plan.fallback_reason,
         )
-        try:
-            tracer.end_generation(
-                generation,
-                output=validation_error,
-                metadata={
-                    **generation_base_metadata,
-                    "status": "fallback",
-                    "fallback_reason": plan.fallback_reason,
-                    "validation_error": validation_error,
-                    "error_stage": "llm_call",
-                    "fallback_execution_strategy": plan.execution_strategy,
-                },
-            )
-        except Exception:
-            pass
         return plan
 
     response_content = _planner_response_content(response)
@@ -1758,21 +1685,6 @@ def plan_query(
             plan.confidence,
             len(plan.selected_assets),
         )
-        try:
-            tracer.end_generation(
-                generation,
-                output=response_content,
-                metadata={
-                    **generation_base_metadata,
-                    "status": "success",
-                    "execution_strategy": plan.execution_strategy,
-                    "query_type": plan.query_type,
-                    "confidence": plan.confidence,
-                    "planner_source": plan.planner_source,
-                },
-            )
-        except Exception:
-            pass
         return plan
     except (JSONDecodeError, QueryPlanValidationError, ValueError, TypeError) as exc:
         validation_error = _compact_error_text(exc)
@@ -1803,21 +1715,6 @@ def plan_query(
             (plan.explanation or {}).get("summary"),
             plan.fallback_reason,
         )
-        try:
-            tracer.end_generation(
-                generation,
-                output=response_content,
-                metadata={
-                    **generation_base_metadata,
-                    "status": "fallback",
-                    "fallback_reason": plan.fallback_reason,
-                    "validation_error": validation_error,
-                    "error_stage": "validation",
-                    "fallback_execution_strategy": plan.execution_strategy,
-                },
-            )
-        except Exception:
-            pass
         return plan
 
 
@@ -1854,19 +1751,6 @@ def plan_query_with_detail_context(
             )
         ),
     ]
-    tracer = get_observability_tracer()
-    generation = None
-    generation_base_metadata = {
-        **_planner_generation_base_metadata(
-            question=question,
-            routing=routing,
-            candidate_assets=lightweight_catalog,
-        ),
-        "detail_loop": True,
-        "asset_detail_count": len(asset_details),
-        "previous_detail_request_count": len(previous_detail_requests),
-        "detail_warning_count": len(warnings),
-    }
     try:
         llm = get_llm(temperature=0.0, role="lead_agent", db=db)
     except Exception as exc:
@@ -1883,35 +1767,10 @@ def plan_query_with_detail_context(
             validation_error,
         )
 
-    active_obs_context = current_observability_context.get()
-    if active_obs_context and active_obs_context.active:
-        try:
-            generation = tracer.start_generation(
-                name="llm.subagent_query_planner",
-                model=_planner_model_name(llm),
-                messages=messages,
-                metadata={**generation_base_metadata, "status": "running"},
-            )
-        except Exception:
-            generation = None
-
     try:
         response = llm.invoke(messages)
     except Exception as exc:
         if not _is_llm_call_error(exc):
-            try:
-                tracer.end_generation(
-                    generation,
-                    output=repr(exc),
-                    metadata={
-                        **generation_base_metadata,
-                        "status": "error",
-                        "validation_error": _compact_error_text(exc),
-                        "error_stage": "llm_call",
-                    },
-                )
-            except Exception:
-                pass
             raise
         validation_error = _compact_error_text(exc)
         plan = _with_validation_error(
@@ -1923,21 +1782,6 @@ def plan_query_with_detail_context(
             ),
             validation_error,
         )
-        try:
-            tracer.end_generation(
-                generation,
-                output=validation_error,
-                metadata={
-                    **generation_base_metadata,
-                    "status": "fallback",
-                    "fallback_reason": plan.fallback_reason,
-                    "validation_error": validation_error,
-                    "error_stage": "llm_call",
-                    "fallback_execution_strategy": plan.execution_strategy,
-                },
-            )
-        except Exception:
-            pass
         return plan
 
     response_content = _planner_response_content(response)
@@ -1948,18 +1792,6 @@ def plan_query_with_detail_context(
     try:
         payload = _safe_json_parse(response_content)
         if parse_asset_detail_requests(payload):
-            try:
-                tracer.end_generation(
-                    generation,
-                    output=response_content,
-                    metadata={
-                        **generation_base_metadata,
-                        "status": "detail_request",
-                        "asset_detail_request_count": len(parse_asset_detail_requests(payload)),
-                    },
-                )
-            except Exception:
-                pass
             return payload
 
         plan = normalize_query_plan(payload)
@@ -1976,21 +1808,6 @@ def plan_query_with_detail_context(
             plan.confidence,
             len(plan.selected_assets),
         )
-        try:
-            tracer.end_generation(
-                generation,
-                output=response_content,
-                metadata={
-                    **generation_base_metadata,
-                    "status": "success",
-                    "execution_strategy": plan.execution_strategy,
-                    "query_type": plan.query_type,
-                    "confidence": plan.confidence,
-                    "planner_source": plan.planner_source,
-                },
-            )
-        except Exception:
-            pass
         return plan
     except (JSONDecodeError, QueryPlanValidationError, ValueError, TypeError) as exc:
         validation_error = _compact_error_text(exc)
@@ -2019,19 +1836,4 @@ def plan_query_with_detail_context(
             (plan.explanation or {}).get("summary"),
             plan.fallback_reason,
         )
-        try:
-            tracer.end_generation(
-                generation,
-                output=response_content,
-                metadata={
-                    **generation_base_metadata,
-                    "status": "fallback",
-                    "fallback_reason": plan.fallback_reason,
-                    "validation_error": validation_error,
-                    "error_stage": "validation",
-                    "fallback_execution_strategy": plan.execution_strategy,
-                },
-            )
-        except Exception:
-            pass
         return plan
