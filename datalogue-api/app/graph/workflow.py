@@ -140,7 +140,7 @@ def build_workflow(db: Session) -> Any:
     workflow = StateGraph(AgentState)
     logger.info("开始构建LangGraph工作流")
 
-    # 旧 LeadAgent 入口已删除；保留底层 NL2SQL 图供 DatasetAgent Runtime 内部受控调用。
+    # 旧 LeadAgent 入口已删除；保留底层 NL2SQL 图供 Dataset Query Skill 的受控 toolchain 调用。
     workflow.add_node("schema_recall", schema_recall_node(db))
     workflow.add_node("dsl_generate", lambda state: dsl_generate_node(state, db=db))
     workflow.add_node("dsl_validate", dsl_validate_node)

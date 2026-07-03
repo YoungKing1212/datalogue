@@ -328,10 +328,12 @@ function safeArtifactCard(artifactCard) {
       : [],
     actions: Array.isArray(artifactCard.actions)
       ? artifactCard.actions.map((action) => ({
-          action_type: safeDisplayText(action?.action_type || action?.actionType) || null,
+          action_type: safeDisplayText(
+            action?.action_type || action?.actionType || action?.action_id || action?.actionId,
+          ) || null,
           label: safeDisplayText(action?.label) || null,
-          ref: action?.ref || '',
-          disabled: Boolean(action?.disabled),
+          ref: action?.ref || action?.payload_ref || action?.payloadRef || '',
+          disabled: Boolean(action?.disabled || action?.enabled === false),
         }))
       : [],
   };

@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : test_bi_lead_agent_models.py
 # Description:
-#   BI LeadAgent K1 数据模型测试。
+#   BI Agent K1 数据模型测试。
 #
 # Responsibilities:
 #   - 验证 run、confirmation、handoff 三张表可在 SQLite 测试库中写入和关联。
@@ -14,11 +14,11 @@
 from sqlalchemy import inspect, select, text
 
 from app.core.database import Base
-from app.models.bi_lead_agent import BIAgentHandoff, BILeadAgentConfirmation, BILeadAgentRun
+from app.models.bi_agent import BIAgentHandoff, BIAgentConfirmation, BIAgentRun
 
 
 def test_bi_lead_agent_models_persist_k1_contract(db_session):
-    run = BILeadAgentRun(
+    run = BIAgentRun(
         status="waiting_confirmation",
         phase="confirm_run",
         question="统计 2026 年订单金额",
@@ -28,7 +28,7 @@ def test_bi_lead_agent_models_persist_k1_contract(db_session):
     db_session.add(run)
     db_session.flush()
 
-    confirmation = BILeadAgentConfirmation(
+    confirmation = BIAgentConfirmation(
         run_id=run.id,
         dataset_id=12,
         confirmed_question="统计 2026 年订单金额",
@@ -52,7 +52,7 @@ def test_bi_lead_agent_models_persist_k1_contract(db_session):
     handoff = BIAgentHandoff(
         run_id=run.id,
         handoff_id="handoff-001",
-        parent_agent="bi_lead_agent",
+        parent_agent="bi_agent",
         child_run_id="dataset-run-001",
         dataset_id=12,
         task_id="task-bi-001",
@@ -67,7 +67,7 @@ def test_bi_lead_agent_models_persist_k1_contract(db_session):
     db_session.add(handoff)
     db_session.commit()
 
-    saved = db_session.query(BILeadAgentRun).filter_by(trace_id="trace-bi-001").one()
+    saved = db_session.query(BIAgentRun).filter_by(trace_id="trace-bi-001").one()
     assert saved.status == "waiting_confirmation"
     assert saved.phase == "confirm_run"
     assert saved.confirmation.dataset_id == 12
@@ -92,7 +92,7 @@ def test_bi_lead_agent_confirmation_raw_insert_defaults_snapshot(db_session):
         },
     )
     run_id = db_session.execute(
-        select(BILeadAgentRun.id).where(BILeadAgentRun.trace_id == "trace-bi-core-001")
+        select(BIAgentRun.id).where(BIAgentRun.trace_id == "trace-bi-core-001")
     ).scalar_one()
 
     db_session.execute(
@@ -131,8 +131,8 @@ def test_bi_lead_agent_confirmation_raw_insert_defaults_snapshot(db_session):
     db_session.commit()
 
     snapshot = db_session.execute(
-        select(BILeadAgentConfirmation.capability_snapshot_json).where(
-            BILeadAgentConfirmation.run_id == run_id
+        select(BIAgentConfirmation.capability_snapshot_json).where(
+            BIAgentConfirmation.run_id == run_id
         )
     ).scalar_one()
     assert snapshot == {}

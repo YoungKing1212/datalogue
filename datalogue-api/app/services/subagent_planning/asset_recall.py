@@ -26,6 +26,18 @@ LIGHTWEIGHT_CONTEXT_TOKEN_BUDGET = 2500
 SCORE_MODEL_VERSION = "candidate_asset_score_v2"
 MAX_CONFIDENCE = 0.99
 
+BLUEPRINT_CANDIDATE_METADATA_KEYS = {
+    "id",
+    "name",
+    "display_name",
+    "description",
+    "when_to_use",
+    "implementation_type",
+    "trigger_keywords",
+    "trigger_examples",
+    "parameters",
+}
+
 SIGNAL_WEIGHTS = {
     "exact": 0.55,
     "contains": 0.28,
@@ -87,6 +99,17 @@ def _text_values(*values: Any) -> list[str]:
 
 def _norm(text: Any) -> str:
     return re.sub(r"[\s_`'\".]+", "", str(text or "").strip().lower())
+
+
+def _blueprint_candidate_metadata(blueprint: dict[str, Any]) -> dict[str, Any]:
+    """只保留规划判断所需蓝图摘要；SQL 模板和步骤主体留在 DatasetAgent 内部执行层。"""
+
+    metadata: dict[str, Any] = {}
+    for key in BLUEPRINT_CANDIDATE_METADATA_KEYS:
+        value = blueprint.get(key)
+        if value not in (None, "", [], {}):
+            metadata[key] = value
+    return metadata
 
 
 def _has_cjk(text: str) -> bool:
@@ -365,7 +388,7 @@ def build_candidate_assets_from_context(
             _score_input("alias", blueprint.get("trigger_keywords")),
             _score_input("trigger_example", blueprint.get("trigger_examples")),
         )
-        metadata = dict(blueprint)
+        metadata = _blueprint_candidate_metadata(blueprint)
         assets.append(
             _asset(
                 "blueprint",

@@ -267,6 +267,18 @@ def render_blueprint_sql_preview(sql: str, params: dict[str, Any]) -> str:
 def _extract_date_range(question: str) -> tuple[str | None, str | None]:
     """从中文问题中提取常见年份/月度日期范围。"""
     text = question or ""
+    today = date.today()
+    relative_years = {
+        "今年": today.year,
+        "本年": today.year,
+        "去年": today.year - 1,
+        "上年": today.year - 1,
+        "前年": today.year - 2,
+    }
+    for marker, year in relative_years.items():
+        if marker in text:
+            return f"{year:04d}-01-01", f"{year:04d}-12-31"
+
     month_match = re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月", text)
     if month_match:
         year = int(month_match.group(1))
@@ -286,10 +298,12 @@ def _extract_date_range(question: str) -> tuple[str | None, str | None]:
 def _extract_person_name(question: str) -> str | None:
     """从“某人的日报/任务/记录”等问法中提取人员姓名。"""
     text = re.sub(r"\d{4}\s*年\s*(?:\d{1,2}\s*月)?", "", question or "")
+    # 相对时间词不属于姓名；先移除后再按“某人的日志/任务”模式提取。
+    text = re.sub(r"(?:今年|本年|去年|上年|前年)", "", text)
     text = re.sub(r"^(?:我要|我想|帮我)?(?:查询|查看|查一下|查)", "", text)
     patterns = (
         # "XXX的[工作]日报" — 允许"的"和关键词之間有 0-2 个修饰字（工作、每日等）
-        r"([\u4e00-\u9fa5]{2,4})的[\u4e00-\u9fa5]{0,2}(?:日报|周报|月报|任务|记录|明细)",
+        r"([\u4e00-\u9fa5]{2,4})的[\u4e00-\u9fa5]{0,2}(?:日报|周报|月报|日志|任务|记录|明细)",
         r"(?:查询|查看|查一下|查|我要查询)([\u4e00-\u9fa5]{2,4})(?:在|的|$)",
     )
     for pattern in patterns:

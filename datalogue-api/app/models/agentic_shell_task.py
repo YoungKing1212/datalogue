@@ -35,7 +35,7 @@ class AgenticShellTask(Base):
     task_source = Column(String(40), nullable=False, index=True, comment="任务来源，字典：chat=聊天入口，workbench=工作台动作，dataset=数据集试问")
     task_type = Column(String(40), nullable=False, index=True, comment="任务类型，字典：bi_query=BI 问数任务")
     status = Column(String(40), nullable=False, default="created", index=True, comment="任务状态，字典：created/running/completed/failed/cancelled")
-    selected_agent = Column(String(80), nullable=False, default="bi_lead_agent", index=True, comment="本次任务选择的业务 Agent")
+    selected_agent = Column(String(80), nullable=False, default="bi_agent", index=True, comment="本次任务选择的业务 Agent")
     parent_task_id = Column(String(80), nullable=True, index=True, comment="父任务 ID，用于 retry/handoff 追溯")
     agent_scope_session_id = Column(String(120), nullable=True, index=True, comment="关联的 AgentScope mirror session ID")
     thread_id = Column(String(120), nullable=True, index=True, comment="前端工作线程或会话线程 ID")

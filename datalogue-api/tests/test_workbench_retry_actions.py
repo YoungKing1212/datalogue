@@ -74,11 +74,12 @@ def test_retry_action_creates_new_running_message(client, db_session):
         "thread_id": thread_id,
         "clarification_response": None,
         "retry_checkpoint_ref": checkpoint_ref,
-        "artifact_ref": None,
-        "dataset_id": None,
-        "user_confirmation": None,
-        "client_context": {"action": "retry_last_step"},
-    }
+            "artifact_ref": None,
+            "dataset_id": None,
+            "model_config_id": None,
+            "user_confirmation": None,
+            "client_context": {"action": "retry_last_step"},
+        }
     assert payload["run_request"] is None
     assert "sql" not in str(payload["task_request"]).lower()
     retry_message = (

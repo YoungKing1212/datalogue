@@ -65,6 +65,74 @@ export function DatasetChip({
 }
 
 /**
+ * ModelChip — 选择本轮对话使用的 LLM 配置；空值表示沿用后端角色绑定默认模型。
+ */
+export function ModelChip({
+  selectedModel,
+  setSelectedModel = () => {},
+  modelList = [],
+  variant = 'tool',
+}) {
+  const [open, setOpen] = useState(false);
+  const isCe = variant === 'ce';
+  const btnClass = isCe
+    ? `ce-pill${selectedModel ? ' on' : ''}`
+    : `tool-chip${selectedModel ? ' on' : ''}`;
+  const activeModels = modelList.filter((model) => model.status === 'active');
+  const label = selectedModel ? selectedModel.name : '默认模型';
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className={btnClass}
+        onClick={() => setOpen((v) => !v)}
+        title={label}
+      >
+        <Icon name="brain" />
+        <span>{label}</span>
+        {isCe ? (
+          <Icon name="chev_down" className="chev" />
+        ) : (
+          <span className="chip-caret">▾</span>
+        )}
+      </button>
+      {open && (
+        <div className="ds-dropdown model-dropdown">
+          <div className="ds-dropdown-head">选择模型</div>
+          <div
+            className={`ds-dropdown-item${selectedModel ? '' : ' active'}`}
+            onClick={() => {
+              setSelectedModel(null);
+              setOpen(false);
+            }}
+          >
+            <div className="model-option-name">默认模型</div>
+            <div className="model-option-meta">沿用系统角色绑定</div>
+          </div>
+          {activeModels.length === 0 && (
+            <div className="ds-dropdown-item muted">暂无启用模型</div>
+          )}
+          {activeModels.map((model) => (
+            <div
+              key={model.id}
+              className={`ds-dropdown-item ${selectedModel?.id === model.id ? 'active' : ''}`}
+              onClick={() => {
+                // 只保存模型配置 ID 对应的行，发送时由后端解析真实密钥和 Base URL。
+                setSelectedModel(model);
+                setOpen(false);
+              }}
+            >
+              <div className="model-option-name">{model.name}</div>
+              <div className="model-option-meta">{model.provider} · {model.model}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * SendOrCancelButton — 圆形浮动按钮（运行时切 Cancel）
  */
 function SendOrCancelButton() {
@@ -94,7 +162,15 @@ function ComposerIf({ children }) {
 /**
  * MyComposer 主组件
  */
-export function MyComposer({ selectedDs, setSelectedDs, datasetList, variant = 'composer' }) {
+export function MyComposer({
+  selectedDs,
+  setSelectedDs,
+  datasetList,
+  selectedModel,
+  setSelectedModel = () => {},
+  modelList = [],
+  variant = 'composer',
+}) {
   if (variant === 'hero') {
     return (
       <ComposerPrimitive.Root className="ask-hero">
@@ -108,6 +184,11 @@ export function MyComposer({ selectedDs, setSelectedDs, datasetList, variant = '
             selectedDs={selectedDs}
             setSelectedDs={setSelectedDs}
             datasetList={datasetList}
+          />
+          <ModelChip
+            selectedModel={selectedModel}
+            setSelectedModel={setSelectedModel}
+            modelList={modelList}
           />
           <button type="button" className="tool-chip">
             <Icon name="calendar" />
@@ -139,6 +220,11 @@ export function MyComposer({ selectedDs, setSelectedDs, datasetList, variant = '
               selectedDs={selectedDs}
               setSelectedDs={setSelectedDs}
               datasetList={datasetList}
+            />
+            <ModelChip
+              selectedModel={selectedModel}
+              setSelectedModel={setSelectedModel}
+              modelList={modelList}
             />
             <button type="button" className="tool-chip">
               <Icon name="calendar" />

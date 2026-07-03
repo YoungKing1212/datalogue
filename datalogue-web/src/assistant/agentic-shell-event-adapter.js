@@ -18,13 +18,45 @@ export function agenticEnvelopeToChatEvent(streamEvent = {}) {
     return { type: 'token', content: payload.content || '' };
   }
   if (envelope.event_type === 'message.completed') {
+    const artifactRef = legacy.result_ref || legacy.artifact_ref || payload.result_ref || payload.artifact_ref || null;
     return {
       ...legacy,
       type: 'final',
       answer: legacy.answer || payload.answer || payload.summary || '',
+      result_ref: artifactRef,
+      artifact_ref: artifactRef,
+      checkpoint_ref: legacy.checkpoint_ref || payload.checkpoint_ref || null,
+      row_count: legacy.row_count ?? payload.row_count ?? null,
+      column_count: legacy.column_count ?? payload.column_count ?? null,
       task_id: streamEvent.task_id || envelope.task_id,
       trace_id: legacy.trace_id || envelope.trace_id || null,
       thread_id: legacy.thread_id || envelope.thread_id || null,
+      route_decision: legacy.route_decision || payload.route_decision || null,
+      clarification: legacy.clarification || payload.clarification || null,
+      route_payload: legacy.route_payload || payload.route_payload || null,
+      event_envelope: envelope,
+    };
+  }
+  if (envelope.event_type === 'dataset.selected') {
+    const routeDecision = payload.route_decision || {};
+    return {
+      type: 'route_decision',
+      ...(routeDecision && typeof routeDecision === 'object' ? routeDecision : {}),
+      decision: routeDecision.decision || 'selected',
+      task_id: streamEvent.task_id || envelope.task_id,
+      trace_id: envelope.trace_id || null,
+      event_envelope: envelope,
+    };
+  }
+  if (envelope.event_type === 'clarification.required') {
+    const routeDecision = payload.route_decision || {};
+    return {
+      type: 'route_decision',
+      ...(routeDecision && typeof routeDecision === 'object' ? routeDecision : {}),
+      decision: routeDecision.decision || 'ambiguous',
+      clarification: payload.clarification || null,
+      task_id: streamEvent.task_id || envelope.task_id,
+      trace_id: envelope.trace_id || null,
       event_envelope: envelope,
     };
   }

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.schemas.agentscope_workbench import AgentScopeThreadKind
 from app.schemas.bi_workbench import DatalogueEventEnvelope
-from app.services.agentscope_event_projection import project_event_envelope_to_agentscope
+from app.events.projection import project_event_envelope_to_agentscope
 from app.services.agentscope_mirror import (
     append_user_message,
     create_agentscope_session,
@@ -27,7 +27,7 @@ from app.services.agentscope_mirror import (
     mark_message_failed,
     mark_message_interrupted,
 )
-from app.services.agentscope_thread_resolver import resolve_thread_ref
+from app.runtime.thread_resolver import resolve_thread_ref
 
 _INTERNAL_TEXT_RE = re.compile(
     r"(\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b)"

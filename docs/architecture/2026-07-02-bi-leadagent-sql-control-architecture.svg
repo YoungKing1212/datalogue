@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1120" viewBox="0 0 1800 1120">
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 700 36px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #101828; }
+      .subtitle { font: 500 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475467; }
+      .box { fill: #ffffff; stroke-width: 3; rx: 16; }
+      .blue { stroke: #2f5be8; }
+      .orange { stroke: #f97316; }
+      .green { stroke: #159947; }
+      .purple { stroke: #7c3aed; }
+      .gray { stroke: #98a2b3; }
+      .red { stroke: #dc2626; }
+      .box-title { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #101828; }
+      .box-sub { font: 600 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344054; }
+      .text { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344054; }
+      .small { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475467; }
+      .tiny { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667085; }
+      .tag { font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .pill-blue { fill: #2f5be8; }
+      .pill-orange { fill: #f97316; }
+      .pill-green { fill: #159947; }
+      .pill-purple { fill: #7c3aed; }
+      .pill-red { fill: #dc2626; }
+      .line { stroke: #344054; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #2f5be8; stroke-width: 3; fill: none; marker-end: url(#arrowBlue); }
+      .line-orange { stroke: #f97316; stroke-width: 3; fill: none; marker-end: url(#arrowOrange); }
+      .line-green { stroke: #159947; stroke-width: 3; fill: none; marker-end: url(#arrowGreen); }
+      .line-dash { stroke: #98a2b3; stroke-width: 3; fill: none; stroke-dasharray: 8 8; marker-end: url(#arrowGray); }
+      .line-red { stroke: #dc2626; stroke-width: 3; fill: none; stroke-dasharray: 9 8; marker-end: url(#arrowRed); }
+      .note { fill: #fff7ed; stroke: #f97316; stroke-width: 2; rx: 12; }
+      .guard { fill: #fef2f2; stroke: #dc2626; stroke-width: 2; rx: 12; }
+      .safe { fill: #f0fdf4; stroke: #159947; stroke-width: 2; rx: 12; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#344054"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2f5be8"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#f97316"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#159947"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#98a2b3"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1800" height="1120"/>
+
+  <text class="title" x="900" y="58" text-anchor="middle">Hermes-like 架构：上层 ReAct Supervisor + BI LeadAgent SQL 控制面 + Skill-backed DatasetAgentRuntime</text>
+  <text class="subtitle" x="900" y="92" text-anchor="middle">核心变化：SQL 可以归 BI LeadAgent 管，但必须作为 control_plane 对象流转；用户可见层永远只拿摘要、引用和产物。</text>
+
+  <!-- User / UI -->
+  <rect class="box blue" x="44" y="150" width="250" height="530" rx="16"/>
+  <rect class="pill-blue" x="74" y="178" width="122" height="30" rx="15"/>
+  <text class="tag" x="135" y="199" text-anchor="middle">用户入口</text>
+  <text class="box-title" x="169" y="242" text-anchor="middle">Chat / Workbench</text>
+  <text class="text" x="74" y="292">提交自然语言任务</text>
+  <text class="text" x="74" y="326">查看进度、答案、图表</text>
+  <text class="text" x="74" y="360">打开 artifact / checkpoint</text>
+  <text class="text" x="74" y="394">触发 retry 或追问</text>
+  <rect class="guard" x="70" y="470" width="198" height="144" rx="12"/>
+  <text class="box-sub" x="169" y="505" text-anchor="middle">用户不可见</text>
+  <text class="small" x="92" y="542">raw SQL</text>
+  <text class="small" x="92" y="570">full schema</text>
+  <text class="small" x="92" y="598">raw rows / query_plan</text>
+
+  <!-- Supervisor -->
+  <rect class="box blue" x="360" y="140" width="360" height="560" rx="16"/>
+  <rect class="pill-blue" x="392" y="168" width="168" height="30" rx="15"/>
+  <text class="tag" x="476" y="189" text-anchor="middle">上层调度层</text>
+  <text class="box-title" x="540" y="232" text-anchor="middle">ReAct Supervisor</text>
+  <text class="box-sub" x="392" y="284">职责</text>
+  <text class="text" x="392" y="320">判断任务类型：问数 / 报告 / Python / 审计</text>
+  <text class="text" x="392" y="354">选择调用哪个 Agent</text>
+  <text class="text" x="392" y="388">维护跨 Agent 任务进度</text>
+  <text class="text" x="392" y="422">写回 session / event / action / checkpoint</text>
+
+  <rect class="safe" x="390" y="468" width="300" height="118" rx="12"/>
+  <text class="box-sub" x="540" y="502" text-anchor="middle">默认只可见</text>
+  <text class="small" x="415" y="538">sql_ref / sql_summary / guard_status</text>
+  <text class="small" x="415" y="566">artifact_ref / answer_summary</text>
+
+  <rect class="guard" x="390" y="606" width="300" height="64" rx="12"/>
+  <text class="small" x="415" y="632">不默认持有 raw SQL；诊断时走受控视图</text>
+  <text class="small" x="415" y="658">不能把 control_plane 转发给用户</text>
+
+  <!-- BI LeadAgent -->
+  <rect class="box orange" x="790" y="120" width="450" height="650" rx="16"/>
+  <rect class="pill-orange" x="822" y="148" width="160" height="30" rx="15"/>
+  <text class="tag" x="902" y="169" text-anchor="middle">问数主 Agent</text>
+  <text class="box-title" x="1015" y="214" text-anchor="middle">BI LeadAgent</text>
+  <text class="subtitle" x="1015" y="244" text-anchor="middle">数据查询控制面，允许持有 SQL</text>
+
+  <text class="box-sub" x="830" y="300">可做</text>
+  <text class="text" x="830" y="336">理解指标、维度、过滤、时间范围</text>
+  <text class="text" x="830" y="370">选择 / 确认 dataset</text>
+  <text class="text" x="830" y="404">生成或审查查询计划</text>
+  <text class="text" x="830" y="438">持有 SQL control_plane 对象</text>
+  <text class="text" x="830" y="472">根据 guard / 执行结果要求修复</text>
+  <text class="text" x="830" y="506">汇总业务答案</text>
+
+  <rect class="note" x="820" y="548" width="390" height="158" rx="12"/>
+  <text class="box-sub" x="1015" y="582" text-anchor="middle">SQL 控制面对象</text>
+  <text class="small" x="850" y="620">visibility = control_plane</text>
+  <text class="small" x="850" y="648">owner = bi_lead_agent</text>
+  <text class="small" x="850" y="676">raw_sql / sql_ast / compiled_query_ref / guard_result</text>
+  <text class="small" x="850" y="704">may_display_to_user = false</text>
+
+  <!-- Dataset Runtime -->
+  <rect class="box green" x="1310" y="120" width="430" height="650" rx="16"/>
+  <rect class="pill-green" x="1342" y="148" width="205" height="30" rx="15"/>
+  <text class="tag" x="1444" y="169" text-anchor="middle">Skill-backed 执行层</text>
+  <text class="box-title" x="1525" y="214" text-anchor="middle">DatasetAgentRuntime</text>
+  <text class="subtitle" x="1525" y="244" text-anchor="middle">AgentScope Agent + Toolkit + Skill / SOUL</text>
+
+  <rect class="safe" x="1340" y="292" width="170" height="54" rx="12"/>
+  <text class="small" x="1425" y="324" text-anchor="middle">Skill / SOUL.md</text>
+  <rect class="safe" x="1530" y="292" width="170" height="54" rx="12"/>
+  <text class="small" x="1615" y="324" text-anchor="middle">capability_manifest</text>
+
+  <text class="box-sub" x="1340" y="394">执行序列</text>
+  <text class="text" x="1340" y="430">1. 读取数据集能力和资产目录</text>
+  <text class="text" x="1340" y="464">2. 生成 DSL / QueryGraph</text>
+  <text class="text" x="1340" y="498">3. 编译 SQL 并做方言适配</text>
+  <text class="text" x="1340" y="532">4. SQL Guard / 权限校验</text>
+  <text class="text" x="1340" y="566">5. 执行查询 / 修复 / 重跑</text>
+  <text class="text" x="1340" y="600">6. 写 ArtifactStore / checkpoint</text>
+  <text class="text" x="1340" y="634">7. 返回 answer_summary + refs</text>
+
+  <rect class="guard" x="1340" y="674" width="360" height="58" rx="12"/>
+  <text class="small" x="1364" y="699">raw rows、full schema、repair patch 默认不出执行层</text>
+  <text class="small" x="1364" y="723">SQL 通过 control_plane 返回 BI LeadAgent</text>
+
+  <!-- Truth source / stores -->
+  <rect class="box purple" x="360" y="830" width="1380" height="190" rx="16"/>
+  <rect class="pill-purple" x="392" y="858" width="208" height="30" rx="15"/>
+  <text class="tag" x="496" y="879" text-anchor="middle">Datalogue 真相源</text>
+  <text class="box-title" x="1050" y="920" text-anchor="middle">DB / ArtifactStore / Trace / Audit</text>
+  <text class="text" x="420" y="970">conversation_state</text>
+  <text class="text" x="660" y="970">query_artifact</text>
+  <text class="text" x="870" y="970">compiled_query_ref</text>
+  <text class="text" x="1110" y="970">SQL audit / guard</text>
+  <text class="text" x="1340" y="970">checkpoint_ref</text>
+  <text class="text" x="1540" y="970">trace span</text>
+
+  <!-- Output sanitizer -->
+  <rect class="box red" x="44" y="805" width="250" height="215" rx="16"/>
+  <rect class="pill-red" x="74" y="833" width="146" height="30" rx="15"/>
+  <text class="tag" x="147" y="854" text-anchor="middle">输出硬拦截</text>
+  <text class="box-title" x="169" y="900" text-anchor="middle">Output Sanitizer</text>
+  <text class="small" x="74" y="944">拦截 control_plane</text>
+  <text class="small" x="74" y="972">拦截 raw_sql / schema / raw rows</text>
+  <text class="small" x="74" y="1000">只放业务摘要、refs、图表</text>
+
+  <!-- Arrows -->
+  <path class="line-blue" d="M294 380 C320 380, 330 380, 360 380"/>
+  <text class="tiny" x="327" y="360" text-anchor="middle">自然语言任务</text>
+
+  <path class="line-orange" d="M720 382 C750 382, 758 382, 790 382"/>
+  <text class="tiny" x="755" y="360" text-anchor="middle">call bi.query</text>
+
+  <path class="line-green" d="M1240 418 C1270 418, 1280 418, 1310 418"/>
+  <text class="tiny" x="1275" y="396" text-anchor="middle">Skill / Tool 调用</text>
+
+  <path class="line-orange" d="M1310 562 C1280 562, 1270 562, 1240 562"/>
+  <text class="tiny" x="1275" y="544" text-anchor="middle">control_plane SQL / refs</text>
+
+  <path class="line-dash" d="M790 630 C760 630, 750 630, 720 630"/>
+  <text class="tiny" x="755" y="610" text-anchor="middle">摘要 / 引用</text>
+
+  <path class="line-green" d="M1525 770 C1525 805, 1525 805, 1525 830"/>
+  <text class="tiny" x="1565" y="807">artifact / checkpoint / trace</text>
+
+  <path class="line-orange" d="M1015 770 C1015 805, 1015 805, 1015 830"/>
+  <text class="tiny" x="1055" y="807">SQL control_plane 审计</text>
+
+  <path class="line-blue" d="M540 700 C540 760, 520 790, 500 830"/>
+  <text class="tiny" x="580" y="772">session / event 写回</text>
+
+  <path class="line-red" d="M360 585 C305 585, 305 890, 294 890"/>
+  <text class="tiny" x="330" y="745" text-anchor="middle">用户输出前清洗</text>
+
+  <path class="line-blue" d="M169 805 C169 760, 169 725, 169 680"/>
+  <text class="tiny" x="205" y="752">安全结果展示</text>
+
+  <!-- Red boundary line -->
+  <path class="line-red" d="M682 155 C760 90, 1280 90, 1370 150"/>
+  <text class="small" x="1025" y="112" text-anchor="middle" fill="#dc2626">raw SQL 不作为普通消息跨层传播；只能作为带权限标签的 control_plane 对象</text>
+
+  <!-- Legend -->
+  <rect x="44" y="1040" width="1696" height="48" rx="12" fill="#ffffff" stroke="#d0d5dd" stroke-width="2"/>
+  <text class="small" x="78" y="1070">实线：主调用链</text>
+  <text class="small" x="230" y="1070">虚线：摘要 / 引用回传</text>
+  <text class="small" x="430" y="1070" fill="#dc2626">红线：禁止 raw SQL 普通消息传播 / 禁止用户可见</text>
+  <text class="small" x="880" y="1070" fill="#f97316">橙色：BI LeadAgent SQL 控制面</text>
+  <text class="small" x="1190" y="1070" fill="#159947">绿色：DatasetAgentRuntime Skill-backed 执行层</text>
+</svg>

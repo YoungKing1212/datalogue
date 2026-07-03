@@ -53,8 +53,8 @@ def test_agentic_shell_task_stream_returns_task_envelopes(client, monkeypatch):
 
 def test_agentic_shell_default_runner_is_not_legacy_chat_runtime(db_session):
     from app.api.agentic_shell import build_agentic_shell_task_runner
-    from app.services.agentic_shell_task_runtime import BILeadAgentTaskRunner
+    from app.runtime import BIAgentTaskRunner
 
     runner = build_agentic_shell_task_runner(db_session)
 
-    assert isinstance(runner, BILeadAgentTaskRunner)
+    assert isinstance(runner, BIAgentTaskRunner)

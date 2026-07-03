@@ -100,6 +100,7 @@ class AgenticShellTaskRequest(BaseModel):
     conversation_id: int | None = None
     session_id: str | None = None
     thread_id: str | None = None
+    model_config_id: int | None = Field(default=None, gt=0)
     clarification_response: dict[str, Any] | None = None
     retry_checkpoint_ref: str | None = None
     artifact_ref: str | None = None

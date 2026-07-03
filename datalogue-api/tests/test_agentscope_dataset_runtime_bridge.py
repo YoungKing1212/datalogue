@@ -24,13 +24,13 @@ from agentscope.message import TextBlock, ToolCallBlock, ToolResultBlock, ToolRe
 from agentscope.permission import PermissionBehavior, PermissionContext
 from agentscope.tool import ToolBase, ToolChunk, ToolMiddlewareBase, Toolkit
 
-from app.services.agentscope_middlewares import DatasetRuntimeToolLoggingMiddleware
-from app.services.agentscope_dataset_runtime import (
+from app.middlewares import DatasetRuntimeToolLoggingMiddleware
+from app.bi.skill.runtime_bridge import (
     AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE,
     AgentScopeDatasetRuntimeBridge,
     build_dataset_agentscope_tools,
 )
-from app.services.bi_tools import DatalogueBIAtomicToolkit, build_bi_atomic_toolkit
+from app.bi.toolkit import DatalogueBIAtomicToolkit, build_bi_atomic_toolkit
 from app.services.subagent_planning import CandidateAsset, QueryPlan
 
 def _field_asset(name: str, table_name: str, column_name: str) -> CandidateAsset:
@@ -46,6 +46,24 @@ def _field_asset(name: str, table_name: str, column_name: str) -> CandidateAsset
     )
 
 
+def _field_asset_with_sensitive_metadata(name: str, table_name: str, column_name: str) -> CandidateAsset:
+    return CandidateAsset(
+        asset_type="field",
+        asset_id=f"{table_name}.{column_name}",
+        name=name,
+        display_name=name,
+        source="schema",
+        confidence=0.9,
+        metadata={
+            "table_name": table_name,
+            "column_name": column_name,
+            "raw_sql": "SELECT * FROM user_logs",
+            "blueprint_body": {"sql": "SELECT * FROM hidden_table"},
+        },
+        usage="selected",
+    )
+
+
 def _valid_dsl() -> QueryPlan:
     return QueryPlan(
         query_type="detail_query",
@@ -53,6 +71,16 @@ def _valid_dsl() -> QueryPlan:
         confidence=0.91,
         selected_assets=[_field_asset("账号", "user_logs", "account")],
         debug={"selected_main_table": "user_logs"},
+    )
+
+
+def _legacy_sensitive_dsl() -> QueryPlan:
+    return QueryPlan(
+        query_type="detail_query",
+        execution_strategy="query_graph",
+        confidence=0.91,
+        selected_assets=[_field_asset_with_sensitive_metadata("账号", "user_logs", "account")],
+        debug={"selected_main_table": "user_logs", "raw_sql": "SELECT * FROM user_logs"},
     )
 
 
@@ -122,7 +150,7 @@ async def test_dataset_runtime_tool_logging_middleware_wraps_toolbase_calls(capl
     middleware = tool._middlewares[0]
     assert isinstance(middleware, ToolMiddlewareBase)
 
-    with caplog.at_level(logging.INFO, logger="app.services.agentscope_middlewares.dataset_tool_logging"):
+    with caplog.at_level(logging.INFO, logger="app.middlewares.dataset_tool_logging"):
         chunks = [
             chunk
             async for chunk in await tool(
@@ -150,7 +178,7 @@ async def test_agentscope_dataset_tools_are_external_toolbase_with_fail_closed_p
     bridge = AgentScopeDatasetRuntimeBridge(toolkit=toolkit)
     session = bridge.start_session(dataset_id=sample_dataset.id, question="查询账号明细")
 
-    tools = build_dataset_agentscope_tools(session=session, agent_name="bi_lead_agent")
+    tools = build_dataset_agentscope_tools(session=session, agent_name="bi_agent")
     assert [tool.name for tool in tools] == list(AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE)
     assert all(isinstance(tool, ToolBase) for tool in tools)
     assert all(tool.is_external_tool is True for tool in tools)
@@ -184,6 +212,40 @@ async def test_agentscope_dataset_tools_are_external_toolbase_with_fail_closed_p
 
 
 @pytest.mark.asyncio
+async def test_agentscope_external_execution_logs_permission_denial_without_sensitive_input(
+    db_session,
+    sample_dataset,
+    caplog,
+):
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=lambda _sql: {"rows": []})
+    bridge = AgentScopeDatasetRuntimeBridge(toolkit=toolkit)
+    session = bridge.start_session(
+        dataset_id=sample_dataset.id,
+        question="查询账号明细",
+        agent_name="bi_agent",
+        trace_id="trace-runtime-log",
+    )
+    event = RequireExternalExecutionEvent(
+        reply_id="reply-sensitive",
+        tool_calls=[
+            ToolCallBlock(
+                id="tc-sensitive",
+                name="get_dataset_status",
+                input=json.dumps({"sql": "SELECT * FROM user_logs"}),
+            ),
+        ],
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.middlewares.lifecycle"):
+        result_event = await bridge.handle_external_execution_event(session, event)
+
+    assert result_event.execution_results[0].state == ToolResultState.DENIED
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "SELECT" not in logs
+    assert "user_logs" not in logs
+
+
+@pytest.mark.asyncio
 async def test_agentscope_external_execution_event_returns_safe_tool_result_blocks(
     db_session,
     sample_dataset,
@@ -193,7 +255,7 @@ async def test_agentscope_external_execution_event_returns_safe_tool_result_bloc
     session = bridge.start_session(
         dataset_id=sample_dataset.id,
         question="查询账号明细",
-        agent_name="bi_lead_agent",
+        agent_name="bi_agent",
     )
     event = RequireExternalExecutionEvent(
         reply_id="reply-1",
@@ -237,7 +299,7 @@ async def test_agentscope_compile_and_execute_flow_only_exposes_compiled_query_r
     session = bridge.start_session(
         dataset_id=sample_dataset.id,
         question="查询账号明细",
-        agent_name="bi_lead_agent",
+        agent_name="bi_agent",
         sql_generation_context={"table_schemas": [{"table_name": "user_logs"}]},
         allowed_tables=["user_logs"],
     )
@@ -432,9 +494,94 @@ async def test_agentscope_execute_field_missing_returns_blocked_repair_signal(
 
 
 @pytest.mark.asyncio
+async def test_direct_query_repairs_structured_sql_preview_field_missing_error(
+    db_session,
+    sample_dataset,
+):
+    executed_sql: list[str] = []
+
+    def structured_error_executor(sql: str) -> dict[str, Any]:
+        executed_sql.append(sql)
+        if "`ZTGZL`" in sql:
+            return {
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "error": (
+                    "SQL 执行失败: (pymysql.err.OperationalError) "
+                    "(1054, \"Unknown column 'project_manager.ZTGZL' in 'field list'\")"
+                ),
+            }
+        return {"columns": ["项目总体工作量"], "rows": [{"项目总体工作量": 1}], "row_count": 1}
+
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=structured_error_executor)
+    bridge = AgentScopeDatasetRuntimeBridge(toolkit=toolkit)
+    session = bridge.start_session(
+        dataset_id=sample_dataset.id,
+        question="查询项目总体工作量",
+        sql_generation_context={
+            "table_schemas": [
+                {
+                    "table_name": "project_manager",
+                    "fields": [
+                        {
+                            "name": "ZTGZL_NEW",
+                            "column_name": "ZTGZL_NEW",
+                            "display_name": "项目总体工作量",
+                        },
+                    ],
+                }
+            ]
+        },
+        dialect="mysql",
+        allowed_tables=["project_manager"],
+    )
+
+    result = await bridge.run_direct_query(session=session, dsl=_repairable_dsl())
+
+    assert result["status"] == "completed"
+    assert result["row_count"] == 1
+    assert result["artifact_ref"].startswith("artifact:")
+    assert any("ZTGZL_NEW" in sql for sql in executed_sql)
+    assert not any(item.get("row_count") == 0 and item.get("status") == "completed" for item in result["tool_results"])
+
+
+@pytest.mark.asyncio
+async def test_direct_query_sanitizes_legacy_sensitive_dsl_before_compile(
+    db_session,
+    sample_dataset,
+):
+    executed_sql: list[str] = []
+
+    def fake_executor(sql: str) -> dict[str, Any]:
+        executed_sql.append(sql)
+        return {"columns": ["账号"], "rows": [{"账号": "alice"}], "row_count": 1}
+
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=fake_executor)
+    bridge = AgentScopeDatasetRuntimeBridge(toolkit=toolkit)
+    session = bridge.start_session(
+        dataset_id=sample_dataset.id,
+        question="查询账号明细",
+        agent_name="bi_agent",
+        sql_generation_context={"table_schemas": [{"table_name": "user_logs"}]},
+        allowed_tables=["user_logs"],
+    )
+
+    result = await bridge.run_direct_query(session=session, dsl=_legacy_sensitive_dsl())
+
+    assert result["status"] == "completed"
+    assert result["artifact_ref"].startswith("artifact:")
+    assert executed_sql and "SELECT" in executed_sql[0]
+    assert not any(item.get("code") == "SENSITIVE_TOOL_ARGUMENT" for item in result["tool_results"])
+    assert "raw_sql" not in json.dumps(toolkit.context.compiled_queries, ensure_ascii=False)
+    assert "blueprint_body" not in json.dumps(toolkit.context.compiled_queries, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
 async def test_agentscope_reply_stream_loop_resumes_agent_with_external_execution_results(
     db_session,
     sample_dataset,
+    caplog,
 ):
     class FakeDatasetAgent:
         def __init__(self) -> None:
@@ -457,11 +604,12 @@ async def test_agentscope_reply_stream_loop_resumes_agent_with_external_executio
     session = bridge.start_session(
         dataset_id=sample_dataset.id,
         question="查询账号明细",
-        agent_name="bi_lead_agent",
+        agent_name="bi_agent",
     )
     agent = FakeDatasetAgent()
 
-    results = await bridge.run_reply_stream(agent, msg={"role": "user", "content": "查询账号明细"}, session=session)
+    with caplog.at_level(logging.INFO, logger="app.middlewares.lifecycle"):
+        results = await bridge.run_reply_stream(agent, msg={"role": "user", "content": "查询账号明细"}, session=session)
 
     assert len(agent.received_external_events) == 1
     assert isinstance(agent.received_external_events[0], ExternalExecutionResultEvent)
@@ -469,6 +617,8 @@ async def test_agentscope_reply_stream_loop_resumes_agent_with_external_executio
     assert block.name == "get_dataset_status"
     assert block.state == ToolResultState.SUCCESS
     assert results[-1] == {"answer": "done"}
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "SELECT" not in logs
 
 
 @pytest.mark.asyncio
@@ -507,7 +657,7 @@ async def test_agentscope_reply_stream_loop_drives_nested_external_execution_eve
     session = bridge.start_session(
         dataset_id=sample_dataset.id,
         question="查询账号明细",
-        agent_name="bi_lead_agent",
+        agent_name="bi_agent",
     )
     agent = FakeDatasetAgent()
 

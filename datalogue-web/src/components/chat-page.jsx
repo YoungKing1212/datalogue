@@ -19,12 +19,11 @@ import { DatalogueThreadListAdapter } from '../assistant/thread-list-adapter';
 import { makeChatAdapter } from '../assistant/chat-adapter';
 import { Thread, TraceProvider } from '../assistant/Thread';
 import { ThreadList } from '../assistant/ThreadList';
-import { MyComposer, DatasetChip } from '../assistant/MyComposer';
+import { MyComposer, DatasetChip, ModelChip } from '../assistant/MyComposer';
 import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
-import { getConversation, listDatasets } from '../api/client';
+import { getConversation, listDatasets, listLLMModels } from '../api/client';
 import { normalizeWorkbenchThreadId } from '../assistant/workbench-api';
-import BILeadAgentFlow from './bi-lead-agent-flow';
 import WorkbenchPanel from './workbench-panel';
 
 // 单例 adapter（避免每次渲染重建）
@@ -215,7 +214,15 @@ function UrlSync({ routeId }) {
  *      + hero composer（textarea + 3 个 pill + 圆形 send 按钮）
  *      + 4 张带色相 hue 的预设问题卡
  */
-function WelcomeHero({ selectedDs, setSelectedDs, datasetList, setComposerText }) {
+function WelcomeHero({
+  selectedDs,
+  setSelectedDs,
+  datasetList,
+  selectedModel,
+  setSelectedModel,
+  modelList,
+  setComposerText,
+}) {
   // 4 个示例问题 — hue 决定图标块底色
   const presets = [
     { icon: 'thunder',    q: '上周整体销售为什么下降了 12%？', cat: '归因分析', hue: 245 },
@@ -252,6 +259,12 @@ function WelcomeHero({ selectedDs, setSelectedDs, datasetList, setComposerText }
                 selectedDs={selectedDs}
                 setSelectedDs={setSelectedDs}
                 datasetList={datasetList}
+              />
+              <ModelChip
+                variant="ce"
+                selectedModel={selectedModel}
+                setSelectedModel={setSelectedModel}
+                modelList={modelList}
               />
               <button type="button" className="ce-pill">
                 <Icon name="calendar" />
@@ -339,9 +352,12 @@ function ChatPageInner({
   showFollowups,
   agentVerbosity,
   chatModelAdapter,
+  modelConfigIdRef,
 }) {
   const [selectedDs, setSelectedDs] = useState(null);
   const [datasetList, setDatasetList] = useState([]);
+  const [selectedModel, setSelectedModel] = useState(null);
+  const [modelList, setModelList] = useState([]);
 
   // AgentPanel 数据 —— 来自 window 'datalogue:trace' 事件
   const [traceSteps, setTraceSteps] = useState([]);
@@ -361,6 +377,22 @@ function ChatPageInner({
   useEffect(() => {
     listDatasets().then(setDatasetList).catch(console.error);
   }, []);
+
+  // 拉取模型配置列表；选择器只展示 active 配置，默认模型仍由后端角色绑定决定。
+  useEffect(() => {
+    listLLMModels().then(setModelList).catch((err) => {
+      console.error('加载 LLM 模型配置失败', err);
+    });
+  }, []);
+
+  // 设置页停用或删除已选模型后，回落到默认模型，避免发送失效配置 ID。
+  useEffect(() => {
+    if (!selectedModel) return;
+    const stillActive = modelList.some((model) => (
+      model.id === selectedModel.id && model.status === 'active'
+    ));
+    if (!stillActive) setSelectedModel(null);
+  }, [modelList, selectedModel]);
 
   // 切换历史会话时恢复该会话绑定的数据集，保证后续追问仍带 dataset_id
   useEffect(() => {
@@ -394,6 +426,11 @@ function ChatPageInner({
       }),
     );
   }, [selectedDs]);
+
+  // 模型选择直接写入 ref，chat adapter 发送时读取；null 表示保持后端默认模型策略。
+  useEffect(() => {
+    modelConfigIdRef.current = selectedModel?.id ?? null;
+  }, [modelConfigIdRef, selectedModel]);
 
   // 监听 SSE 转发的 trace 事件
   useEffect(() => {
@@ -607,6 +644,9 @@ function ChatPageInner({
                 selectedDs={selectedDs}
                 setSelectedDs={setSelectedDs}
                 datasetList={datasetList}
+                selectedModel={selectedModel}
+                setSelectedModel={setSelectedModel}
+                modelList={modelList}
                 setComposerText={(t) => setComposerTextRef.current(t)}
               />
             }
@@ -615,17 +655,19 @@ function ChatPageInner({
                 selectedDs={selectedDs}
                 setSelectedDs={setSelectedDs}
                 datasetList={datasetList}
+                selectedModel={selectedModel}
+                setSelectedModel={setSelectedModel}
+                modelList={modelList}
               />
             }
           />
         </TraceProvider>
 
-        <aside className="bi-lead-side-panel" aria-label="BI LeadAgent 与 Workbench">
-          <BILeadAgentFlow selectedDataset={selectedDs} />
-          {workbenchThreadId && (
+        {workbenchThreadId && (
+          <aside className="bi-agent-side-panel" aria-label="Workbench">
             <WorkbenchPanel threadId={workbenchThreadId} onRetryRun={handleWorkbenchRetryRun} />
-          )}
-        </aside>
+          </aside>
+        )}
 
         <AgentPanel
           open={traceOpen}
@@ -650,7 +692,11 @@ export function ChatPage({ traceOpen, setTraceOpen, showFollowups, agentVerbosit
 
   // datasetId 共享 ref：ChatPage 维护 selectedDs，通过 ref 传给 chat adapter
   const datasetIdRef = useRef(null);
-  const chatModelAdapter = useMemo(() => makeChatAdapter({ datasetIdRef }), [datasetIdRef]);
+  const modelConfigIdRef = useRef(null);
+  const chatModelAdapter = useMemo(
+    () => makeChatAdapter({ datasetIdRef, modelConfigIdRef }),
+    [datasetIdRef, modelConfigIdRef],
+  );
   const useChatRuntimeHook = () => useLocalRuntime(chatModelAdapter);
 
   // runtime 单例：只有 chatAdapter 通过 ref 拿到最新 datasetId
@@ -672,6 +718,7 @@ export function ChatPage({ traceOpen, setTraceOpen, showFollowups, agentVerbosit
         showFollowups={showFollowups}
         agentVerbosity={agentVerbosity}
         chatModelAdapter={chatModelAdapter}
+        modelConfigIdRef={modelConfigIdRef}
       />
     </AssistantRuntimeProvider>
   );

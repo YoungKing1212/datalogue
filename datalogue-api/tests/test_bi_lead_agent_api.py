@@ -1,10 +1,10 @@
 # ============================================================
-# File Name   : test_bi_lead_agent_api.py
+# File Name   : test_bi_agent_api.py
 # Description:
-#   BI LeadAgent K1 run-centric API 测试。
+#   BI Agent K1 run-centric API 测试。
 #
 # Responsibilities:
-#   - 验证 LeadAgent run 创建、确认和读取的最小 API 生命周期。
+#   - 验证 BI Agent run 创建、确认和读取的最小 API 生命周期。
 #   - 验证 API 响应不会泄露 DatasetAgent 内部工具名和执行字段。
 #
 # Author      : yangkai
@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
-from app.models.bi_lead_agent import BIAgentHandoff, BILeadAgentRun
+import logging
+
+from app.models.bi_agent import BIAgentHandoff, BIAgentRun
 
 
 FORBIDDEN_DATASET_INTERNALS = (
@@ -33,7 +35,7 @@ def _assert_no_dataset_internals(response_text: str) -> None:
 
 def _create_run(client):
     return client.post(
-        "/api/bi-lead-agent/runs",
+        "/api/bi-agent/runs",
         json={
             "question": "统计 2026 年订单金额",
             "trace_id": "trace-bi-k1-api",
@@ -63,7 +65,8 @@ def _confirmation_payload(dataset_id: int, capability_dataset_id: int | None = N
     }
 
 
-def test_bi_lead_agent_api_lifecycle_create_confirm_get(client, sample_dataset):
+def test_bi_agent_api_lifecycle_create_confirm_get(client, sample_dataset, caplog):
+    caplog.set_level(logging.INFO)
     create_response = _create_run(client)
 
     assert create_response.status_code == 200
@@ -76,7 +79,7 @@ def test_bi_lead_agent_api_lifecycle_create_confirm_get(client, sample_dataset):
     assert created["task_id"] == "task-bi-k1-api"
 
     confirm_response = client.post(
-        f"/api/bi-lead-agent/runs/{created['run_id']}/confirm",
+        f"/api/bi-agent/runs/{created['run_id']}/confirm",
         json=_confirmation_payload(sample_dataset.id),
     )
 
@@ -89,26 +92,26 @@ def test_bi_lead_agent_api_lifecycle_create_confirm_get(client, sample_dataset):
     assert confirmed["phase"] == "confirm_run"
     assert confirmed["status_reason"] == "confirmation_approved"
 
-    get_response = client.get(f"/api/bi-lead-agent/runs/{created['run_id']}")
+    get_response = client.get(f"/api/bi-agent/runs/{created['run_id']}")
 
     assert get_response.status_code == 200
     _assert_no_dataset_internals(get_response.text)
     assert get_response.json() == confirmed
 
 
-def test_bi_lead_agent_get_missing_run_returns_404(client):
-    response = client.get("/api/bi-lead-agent/runs/999999")
+def test_bi_agent_get_missing_run_returns_404(client):
+    response = client.get("/api/bi-agent/runs/999999")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "BI_LEAD_AGENT_RUN_NOT_FOUND"
 
 
-def test_bi_lead_agent_confirm_dataset_mismatch_returns_400(client, sample_dataset):
+def test_bi_agent_confirm_dataset_mismatch_returns_400(client, sample_dataset):
     create_response = _create_run(client)
     run_id = create_response.json()["run_id"]
 
     response = client.post(
-        f"/api/bi-lead-agent/runs/{run_id}/confirm",
+        f"/api/bi-agent/runs/{run_id}/confirm",
         json=_confirmation_payload(
             sample_dataset.id,
             capability_dataset_id=sample_dataset.id + 1000,
@@ -119,27 +122,28 @@ def test_bi_lead_agent_confirm_dataset_mismatch_returns_400(client, sample_datas
     assert response.json()["detail"] == "DATASET_CONFIRMATION_MISMATCH"
 
 
-def test_bi_lead_agent_handoff_requires_confirmed_run(client):
+def test_bi_agent_handoff_requires_confirmed_run(client):
     create_response = _create_run(client)
     run_id = create_response.json()["run_id"]
 
-    response = client.post(f"/api/bi-lead-agent/runs/{run_id}/handoff")
+    response = client.post(f"/api/bi-agent/runs/{run_id}/handoff")
 
     assert response.status_code == 400
     assert response.json()["detail"] == "USER_CONFIRMATION_REQUIRED"
 
 
-def test_bi_lead_agent_handoff_endpoint_returns_safe_refs(client, sample_dataset, monkeypatch):
+def test_bi_agent_handoff_endpoint_returns_safe_refs(client, sample_dataset, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
     class FakeBIHandoffService:
         def __init__(self, db):
             self.db = db
 
         async def query_dataset(self, *, run_id: int):
-            run = self.db.get(BILeadAgentRun, run_id)
+            run = self.db.get(BIAgentRun, run_id)
             handoff = BIAgentHandoff(
                 run_id=run_id,
                 handoff_id="handoff-api-safe",
-                parent_agent="bi_lead_agent",
+                parent_agent="bi_agent",
                 child_agent="dataset_agent",
                 child_run_id="dataset-run-api-safe",
                 dataset_id=sample_dataset.id,
@@ -163,18 +167,18 @@ def test_bi_lead_agent_handoff_endpoint_returns_safe_refs(client, sample_dataset
             self.db.commit()
             return handoff
 
-    monkeypatch.setattr("app.api.bi_lead_agent.BIHandoffService", FakeBIHandoffService)
+    monkeypatch.setattr("app.api.bi_agent.BIAgentHandoffService", FakeBIHandoffService)
     create_response = _create_run(client)
     run_id = create_response.json()["run_id"]
     confirm_response = client.post(
-        f"/api/bi-lead-agent/runs/{run_id}/confirm",
+        f"/api/bi-agent/runs/{run_id}/confirm",
         json=_confirmation_payload(sample_dataset.id),
     )
     assert confirm_response.status_code == 200
 
-    response = client.post(f"/api/bi-lead-agent/runs/{run_id}/handoff")
+    response = client.post(f"/api/bi-agent/runs/{run_id}/handoff")
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     _assert_no_dataset_internals(response.text)
     payload = response.json()
     assert payload["phase"] == "summarize_run"

@@ -1,12 +1,12 @@
 # ============================================================
 # File Name   : test_lead_agent_capability_router.py
 # Description:
-#   LeadAgent Capability Router 回归测试。
+#   数据集 Capability Router 回归测试。
 #
 # Responsibilities:
-#   - 验证 LeadAgent 数据集路由只暴露 capability manifest 级候选摘要。
-#   - 覆盖单数据集、跨数据集、低置信澄清和无 Manifest 四类路径。
-#   - 固定低置信/歧义路径不能继续 fan-out 到 DatasetAgent。
+#   - 验证数据集路由只暴露 capability manifest 级候选摘要。
+#   - 覆盖单数据集、跨数据集、低置信和无 Manifest 四类路径。
+#   - 固定低置信/歧义路径只返回候选，不泄露 schema、SQL 或资产详情。
 #
 # Author      : yangkai
 # Created On  : 2026-06-26
@@ -16,12 +16,6 @@ from __future__ import annotations
 
 from app import models
 from app.services.dataset_router import route_dataset_for_question
-from app.services.lead_agent_routing import _classify_entry_intent
-from app.services.lead_agent import (
-    build_clarification,
-    build_subagent_dispatch,
-    check_schema_status,
-)
 
 
 CAPABILITY_CANDIDATE_KEYS = {
@@ -139,23 +133,10 @@ def test_cross_dataset_close_scores_require_confirmation(
     )
 
     decision = route_dataset_for_question(db_session, "最近30日GMV趋势如何")
-    schema_status = check_schema_status(db_session, decision)
-    clarification = build_clarification(decision, schema_status)
-    dispatch = build_subagent_dispatch(
-        question="最近30日GMV趋势如何",
-        route_decision=decision,
-        time_context={},
-        thread_context={},
-        schema_status=schema_status,
-        manifest_guard={"status": "ok"},
-    )
-
     assert decision["decision"] == "ambiguous"
     assert decision["dataset_id"] is None
     assert all(keys == CAPABILITY_CANDIDATE_KEYS for keys in _candidate_keys(decision))
     assert all(candidate["requires_confirmation"] is True for candidate in decision["candidates"])
-    assert clarification["kind"] == "dataset_choice"
-    assert dispatch is None
 
 
 def test_low_confidence_candidate_requires_confirmation_without_dispatch(db_session, sample_dataset):
@@ -170,23 +151,10 @@ def test_low_confidence_candidate_requires_confirmation_without_dispatch(db_sess
     )
 
     decision = route_dataset_for_question(db_session, "库存周转率是多少")
-    schema_status = check_schema_status(db_session, decision)
-    clarification = build_clarification(decision, schema_status)
-    dispatch = build_subagent_dispatch(
-        question="库存周转率是多少",
-        route_decision=decision,
-        time_context={},
-        thread_context={},
-        schema_status=schema_status,
-        manifest_guard={"status": "ok"},
-    )
-
     assert decision["decision"] == "no_match"
     assert decision["dataset_id"] is None
     assert _candidate_keys(decision) == [CAPABILITY_CANDIDATE_KEYS]
     assert decision["candidates"][0]["requires_confirmation"] is True
-    assert clarification["kind"] == "dataset_missing"
-    assert dispatch is None
 
 
 def test_no_current_manifest_returns_no_match_without_candidates(db_session):
@@ -197,51 +165,3 @@ def test_no_current_manifest_returns_no_match_without_candidates(db_session):
     assert decision["decision"] == "no_match"
     assert decision["dataset_id"] is None
     assert decision["candidates"] == []
-
-
-def test_entry_router_requires_dataset_before_query_graph():
-    """未选定数据集时，入口路由不能仅凭指标词进入 QueryGraph。"""
-
-    result = _classify_entry_intent(
-        db=None,
-        question="最近30日GMV趋势如何",
-        intent="query",
-        entities={"metrics": ["GMV"]},
-        dataset_id=None,
-        history=[],
-        multiturn_context={},
-        clarification_response=None,
-        lead_agent_context={},
-    )
-
-    assert result["entry_intent"] == "clarification"
-    assert result["entry_route"] == "clarify"
-    assert result["route_payload"] == {
-        "kind": "clarification",
-        "missing": ["dataset"],
-    }
-
-
-def test_route_block_answer_uses_capability_candidate_summary():
-    """聊天阻断提示只读取 capability 候选摘要字段。"""
-
-    from app.api.chat import _route_block_answer
-
-    answer = _route_block_answer(
-        {
-            "decision": "no_match",
-            "candidates": [
-                {
-                    "dataset_id": 1,
-                    "dataset_name": "订单销售",
-                    "reason": "未命中 manifest 中的稳定路由证据。",
-                    "confidence": 0.2,
-                    "requires_confirmation": True,
-                }
-            ],
-        }
-    )
-
-    assert "订单销售" in answer
-    assert "置信度 0.2" in answer
-    assert "得分" not in answer

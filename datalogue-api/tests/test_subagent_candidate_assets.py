@@ -58,6 +58,55 @@ def test_build_candidate_assets_from_structured_context_keeps_six_types():
     assert assets["recall_debug"]["schema_source"] == "lightweight_schema_recall"
 
 
+def test_blueprint_candidate_metadata_excludes_sql_body():
+    context = {
+        "schema_structured": {
+            "blueprints": [
+                {
+                    "id": 4,
+                    "name": "个人日报查询",
+                    "display_name": "个人日报查询",
+                    "description": "查询个人日报",
+                    "when_to_use": "用户询问个人日报时使用",
+                    "implementation_type": "sql_template",
+                    "trigger_keywords": ["日报"],
+                    "trigger_examples": ["查询张三今年的日报"],
+                    "parameters": [{"name": "person_name", "required": True}],
+                    "call_template": "SELECT * FROM daily_report WHERE person_name = :person_name",
+                    "raw_sql": "SELECT * FROM daily_report WHERE person_name = '张三'",
+                    "sql_template": "SELECT * FROM daily_report",
+                    "steps": [{"sql": "SELECT * FROM daily_report"}],
+                    "blueprint_body": {"raw_sql": "SELECT * FROM hidden_table"},
+                }
+            ],
+        }
+    }
+
+    result = build_candidate_assets_from_context(
+        question="查询张三今年的日报",
+        dataset_id=10,
+        context=context,
+        manifest_version="v1",
+        bound_schema_version="schema-1",
+    )
+
+    blueprint = next(asset for asset in result["assets"] if asset["asset_type"] == "blueprint")
+    metadata = blueprint["metadata"]
+
+    assert metadata == {
+        "id": 4,
+        "name": "个人日报查询",
+        "display_name": "个人日报查询",
+        "description": "查询个人日报",
+        "when_to_use": "用户询问个人日报时使用",
+        "implementation_type": "sql_template",
+        "trigger_keywords": ["日报"],
+        "trigger_examples": ["查询张三今年的日报"],
+        "parameters": [{"name": "person_name", "required": True}],
+    }
+    assert "SELECT" not in str(metadata)
+
+
 def test_recall_candidate_assets_uses_lightweight_token_budget(db_session, monkeypatch):
     captured = {}
 

@@ -1,6 +1,9 @@
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ChatPage,
   conversationRouteIdForDatasetRestore,
   resolveUrlSyncTarget,
   resolveWorkbenchThreadId,
@@ -10,9 +13,104 @@ import {
   submitWorkbenchRetryRun,
 } from './chat-page.jsx';
 
+const navigateSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('react-router-dom', () => ({
+  useParams: () => ({}),
+  useNavigate: () => navigateSpy,
+}));
+
+vi.mock('@assistant-ui/react', () => {
+  const ComposerPrimitive = {
+    Root: ({ children, className }) => <div className={className}>{children}</div>,
+    Input: (props) => <textarea {...props} />,
+    Send: ({ children, ...props }) => <button type="button" {...props}>{children}</button>,
+    Cancel: ({ children, ...props }) => <button type="button" {...props}>{children}</button>,
+  };
+  return {
+    AssistantRuntimeProvider: ({ children }) => <>{children}</>,
+    ComposerPrimitive,
+    useLocalRuntime: () => ({ kind: 'local-runtime' }),
+    useRemoteThreadListRuntime: () => ({ kind: 'thread-list-runtime' }),
+    useAui: () => ({
+      composer: () => ({
+        setText: vi.fn(),
+        send: vi.fn(),
+      }),
+      threads: () => ({
+        reload: vi.fn().mockResolvedValue(undefined),
+        switchToThread: vi.fn().mockResolvedValue(undefined),
+      }),
+    }),
+    useAuiState: (selector) => selector({
+      thread: { isRunning: false },
+      threads: {
+        mainThreadId: 'local-thread',
+        threadItems: [{ id: 'local-thread', remoteId: null }],
+      },
+    }),
+  };
+});
+
+vi.mock('../assistant/Thread', () => ({
+  Thread: ({ empty, composer }) => (
+    <main>
+      {empty}
+      {composer}
+    </main>
+  ),
+  TraceProvider: ({ children }) => <>{children}</>,
+}));
+
+vi.mock('../assistant/ThreadList', () => ({
+  ThreadList: () => <nav aria-label="会话列表" />,
+}));
+
+vi.mock('../api/client', () => ({
+  getConversation: vi.fn(),
+  listDatasets: vi.fn().mockResolvedValue([]),
+  listLLMModels: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../assistant/chat-adapter', () => ({
+  makeChatAdapter: () => ({
+    runAgenticShellTask: vi.fn(),
+  }),
+}));
+
+vi.mock('../assistant/thread-list-adapter', () => ({
+  DatalogueThreadListAdapter: class DatalogueThreadListAdapter {},
+}));
+
+vi.mock('../assistant/workbench-api', () => ({
+  normalizeWorkbenchThreadId: (value) => (value && /^\d+$/.test(value) ? `conv_${value}` : value || null),
+}));
+
+vi.mock('./icons', () => ({
+  Icon: ({ name }) => <span data-testid={`icon-${name}`} />,
+}));
+
 afterEach(() => {
   window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = null;
   vi.restoreAllMocks();
+});
+
+describe('ChatPage', () => {
+  it('does not expose the DatasetAgent prototype test entry in the chat surface', async () => {
+    render(
+      <ChatPage
+        traceOpen={false}
+        setTraceOpen={vi.fn()}
+        showFollowups={false}
+        agentVerbosity="normal"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText('确认后交接 DatasetAgent')).not.toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: '创建 run' })).not.toBeInTheDocument();
+  });
 });
 
 describe('shouldSwitchToRouteThread', () => {

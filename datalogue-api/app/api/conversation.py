@@ -467,10 +467,45 @@ def unarchive_conversation(conv_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/{conv_id}")
 def delete_conversation(conv_id: int, db: Session = Depends(get_db)):
+    """删除会话及其关联的全部数据。
+
+    删除顺序：先清理外键依赖表，再删 messages，最后删 conversation。
+    """
     conv = db.get(models.Conversation, conv_id)
     if not conv:
         raise HTTPException(status_code=404, detail="对话不存在")
-    db.query(models.Message).filter(models.Message.conversation_id == conv_id).delete()
+
+    # 1) 可观测性追溯索引（引用 message.id + conversation.id）
+    db.query(models.ObservabilityTraceIndex).filter(
+        models.ObservabilityTraceIndex.conversation_id == conv_id
+    ).delete()
+
+    # 2) 标注候选（引用 message.id + conversation.id）
+    db.query(models.TraceAnnotationCandidate).filter(
+        models.TraceAnnotationCandidate.conversation_id == conv_id
+    ).delete()
+
+    # 3) 查询产物（引用 message.id + conversation.id）
+    db.query(models.QueryArtifact).filter(
+        models.QueryArtifact.conversation_id == conv_id
+    ).delete()
+
+    # 4) SQL 诊断日志（引用 conversation.id）
+    db.query(models.SQLDiagnosisLog).filter(
+        models.SQLDiagnosisLog.conversation_id == conv_id
+    ).delete()
+
+    # 5) 待处理澄清（引用 conversation.id）
+    db.query(models.PendingClarification).filter(
+        models.PendingClarification.conversation_id == conv_id
+    ).delete()
+
+    # 6) 消息（Conversation 的 cascade 会处理，但显式先删避免 bulk-delete 侧漏）
+    db.query(models.Message).filter(
+        models.Message.conversation_id == conv_id
+    ).delete()
+
+    # 7) 会话本体
     db.delete(conv)
     db.commit()
     return {"ok": True}

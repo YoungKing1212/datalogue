@@ -26,7 +26,7 @@ from app.services.soul_contract_sync import (
 def test_internal_bi_soul_is_source_of_truth_for_external_entries():
     internal = load_internal_bi_soul()
 
-    assert "BI LeadAgent 不看字段级 schema 明细" in internal
+    assert "BI Agent 不看字段级 schema 明细" in internal
     assert "legacy `ask_bi` 和旧 Chat stream 已删除" in internal
     assert "主 Runtime ownership 属于 Datalogue Agentic Shell" in internal
     assert "LLM 不直接生成可执行 SQL" in internal

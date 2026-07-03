@@ -31,9 +31,9 @@ from app.services.agentscope_mirror import (
     find_expired_running_messages,
     record_agentscope_ref,
 )
-from app.services.agentscope_thread_resolver import normalize_thread_id
-from app.services.agentic_shell import DatalogueAgenticShell
-from app.services.agentic_shell_writers import AgentScopeMirrorShellWriter
+from app.runtime.thread_resolver import normalize_thread_id
+from app.agents.agentic_lead_agent import AgenticLeadAgent
+from app.persistence import AgentScopeMirrorShellWriter
 
 
 _INTERNAL_RETRY_TEXT_RE = re.compile(
@@ -140,7 +140,7 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
         ref_value=request.checkpoint_ref,
         relation="checkpoint",
     )
-    DatalogueAgenticShell(
+    AgenticLeadAgent(
         writer=AgentScopeMirrorShellWriter(
             db,
             thread_id=normalized_thread_id,

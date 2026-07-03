@@ -19,12 +19,12 @@ from typing import Any
 
 import pytest
 
-from app.services.agentic_dataset_runtime import (
+from app.bi.toolchain import (
     DatasetAgentNextToolCall,
     DatasetAgentToolCallRuntime,
 )
 from app.services.artifact_store import ArtifactStore
-from app.services.bi_tools import build_bi_atomic_toolkit
+from app.bi.toolkit import build_bi_atomic_toolkit
 from app.services.subagent_planning import CandidateAsset, QueryPlan
 
 
@@ -102,10 +102,10 @@ def test_dataset_agent_tool_runtime_runs_atomic_tool_chain_to_artifact_summary(
 
 
 def test_agentscope_middlewares_exports_only_tool_logging_middleware():
-    from app.services import agentscope_middlewares
+    from app import middlewares
 
-    assert hasattr(agentscope_middlewares, "DatasetRuntimeToolLoggingMiddleware")
-    assert not hasattr(agentscope_middlewares, "DatasetRuntimeLoggingMiddleware")
+    assert hasattr(middlewares, "DatasetRuntimeToolLoggingMiddleware")
+    assert not hasattr(middlewares, "DatasetRuntimeLoggingMiddleware")
 
 
 def test_dataset_agent_runtime_does_not_emit_runtime_logs(
@@ -128,7 +128,7 @@ def test_dataset_agent_runtime_does_not_emit_runtime_logs(
     toolkit = build_bi_atomic_toolkit(db_session, query_executor=fake_executor)
     runtime = DatasetAgentToolCallRuntime(toolkit=toolkit, dsl_generator=fake_dsl_generator)
 
-    with caplog.at_level(logging.INFO, logger="app.services.agentic_dataset_runtime"):
+    with caplog.at_level(logging.INFO, logger="app.bi.toolchain.dataset_runtime"):
         result = runtime.run_query(
             dataset_id=sample_dataset.id,
             question="查询账号明细",

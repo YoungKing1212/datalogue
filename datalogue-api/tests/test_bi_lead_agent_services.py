@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : test_bi_lead_agent_services.py
 # Description:
-#   BI LeadAgent K1 Run 与确认服务测试。
+#   BI Agent K1 Run 与确认服务测试。
 #
 # Responsibilities:
 #   - 验证 LeadAgent run 创建、用户确认状态流转和确认门禁。
@@ -13,20 +13,20 @@
 
 import pytest
 
-from app.models.bi_lead_agent import BIAgentHandoff, BILeadAgentRun
-from app.schemas.bi_lead_agent import BILeadAgentHandoffResult
-from app.schemas.bi_lead_agent import ConfirmBILeadAgentRunRequest, DatasetCapabilitySummary
-from app.services.bi_lead_agent.confirmation_service import BILeadAgentConfirmationService
-from app.services.bi_lead_agent.handoff_service import BIHandoffService
-from app.services.bi_lead_agent.run_service import BILeadAgentRunService
+from app.models.bi_agent import BIAgentHandoff, BIAgentRun
+from app.schemas.bi_agent import BIAgentHandoffResult
+from app.schemas.bi_agent import ConfirmBIAgentRunRequest, DatasetCapabilitySummary
+from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService
+from app.agents.bi_agent.handoff_service import BIAgentHandoffService
+from app.agents.bi_agent.run_service import BIAgentRunService
 
 
 def _confirmation_request(
     dataset_id: int,
     user_decision: str = "approved",
     capability_dataset_id: int | None = None,
-) -> ConfirmBILeadAgentRunRequest:
-    return ConfirmBILeadAgentRunRequest(
+) -> ConfirmBIAgentRunRequest:
+    return ConfirmBIAgentRunRequest(
         dataset_id=dataset_id,
         confirmed_question="统计 2026 年订单金额",
         task_goal="按确认的数据集执行单数据集问数",
@@ -47,13 +47,13 @@ def _confirmation_request(
 
 
 class FakeHandoffAdapter:
-    def __init__(self, result: BILeadAgentHandoffResult | None = None) -> None:
+    def __init__(self, result: BIAgentHandoffResult | None = None) -> None:
         self.calls = []
         self.result = result
 
     async def query_dataset(self, request, task_id: str | None = None):
         self.calls.append({"request": request, "task_id": task_id})
-        return self.result or BILeadAgentHandoffResult(
+        return self.result or BIAgentHandoffResult(
             handoff_id="handoff-bi-k1-service",
             child_run_id="dataset-run-bi-k1-service",
             dataset_id=request.dataset_id,
@@ -69,7 +69,7 @@ class FakeHandoffAdapter:
 
 
 def test_create_run_persists_created_route_run_with_given_trace_and_task(db_session):
-    service = BILeadAgentRunService(db_session)
+    service = BIAgentRunService(db_session)
 
     run = service.create_run(
         question="统计 2026 年订单金额",
@@ -85,7 +85,7 @@ def test_create_run_persists_created_route_run_with_given_trace_and_task(db_sess
 
 
 def test_create_run_generates_trace_and_task_when_missing(db_session):
-    service = BILeadAgentRunService(db_session)
+    service = BIAgentRunService(db_session)
 
     run = service.create_run(question="统计 2026 年订单金额")
 
@@ -96,7 +96,7 @@ def test_create_run_generates_trace_and_task_when_missing(db_session):
 
 
 def test_mark_phase_persists_run_status_fields(db_session):
-    service = BILeadAgentRunService(db_session)
+    service = BIAgentRunService(db_session)
     run = service.create_run(question="统计 2026 年订单金额")
     run_id = run.id
 
@@ -108,7 +108,7 @@ def test_mark_phase_persists_run_status_fields(db_session):
     )
     db_session.expunge_all()
 
-    saved = db_session.get(BILeadAgentRun, run_id)
+    saved = db_session.get(BIAgentRun, run_id)
     assert saved is not None
     assert saved.phase == "handoff_run"
     assert saved.status == "running"
@@ -117,7 +117,7 @@ def test_mark_phase_persists_run_status_fields(db_session):
 
 
 def test_mark_phase_rejects_invalid_phase_or_status(db_session):
-    service = BILeadAgentRunService(db_session)
+    service = BIAgentRunService(db_session)
     run = service.create_run(question="统计 2026 年订单金额")
 
     with pytest.raises(ValueError, match="BI_LEAD_AGENT_PHASE_INVALID"):
@@ -128,7 +128,7 @@ def test_mark_phase_rejects_invalid_phase_or_status(db_session):
 
 
 def test_mark_failed_persists_failure_fields(db_session):
-    service = BILeadAgentRunService(db_session)
+    service = BIAgentRunService(db_session)
     run = service.create_run(question="统计 2026 年订单金额")
     run_id = run.id
 
@@ -140,7 +140,7 @@ def test_mark_failed_persists_failure_fields(db_session):
     )
     db_session.expunge_all()
 
-    saved = db_session.get(BILeadAgentRun, run_id)
+    saved = db_session.get(BIAgentRun, run_id)
     assert saved is not None
     assert saved.status == "failed"
     assert saved.phase == "summarize_run"
@@ -150,8 +150,8 @@ def test_mark_failed_persists_failure_fields(db_session):
 
 
 def test_confirm_approved_saves_snapshot_and_moves_run_to_running(db_session, sample_dataset):
-    run_service = BILeadAgentRunService(db_session)
-    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run_service = BIAgentRunService(db_session)
+    confirmation_service = BIAgentConfirmationService(db_session)
     run = run_service.create_run(
         question="统计 2026 年订单金额",
         trace_id="trace-bi-k1-approve",
@@ -180,8 +180,8 @@ def test_confirm_approved_saves_snapshot_and_moves_run_to_running(db_session, sa
 
 
 def test_confirm_rejects_dataset_snapshot_mismatch(db_session, sample_dataset):
-    run_service = BILeadAgentRunService(db_session)
-    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run_service = BIAgentRunService(db_session)
+    confirmation_service = BIAgentConfirmationService(db_session)
     run = run_service.create_run(question="统计 2026 年订单金额")
 
     with pytest.raises(ValueError, match="DATASET_CONFIRMATION_MISMATCH"):
@@ -196,8 +196,8 @@ def test_confirm_rejects_dataset_snapshot_mismatch(db_session, sample_dataset):
 
 
 def test_confirm_rejects_duplicate_decision_before_database_unique_error(db_session, sample_dataset):
-    run_service = BILeadAgentRunService(db_session)
-    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run_service = BIAgentRunService(db_session)
+    confirmation_service = BIAgentConfirmationService(db_session)
     run = run_service.create_run(question="统计 2026 年订单金额")
     confirmation_service.confirm(run.id, _confirmation_request(sample_dataset.id, "approved"))
 
@@ -206,8 +206,8 @@ def test_confirm_rejects_duplicate_decision_before_database_unique_error(db_sess
 
 
 def test_confirm_rejected_blocks_run_and_confirmation_gate_rejects(db_session, sample_dataset):
-    run_service = BILeadAgentRunService(db_session)
-    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run_service = BIAgentRunService(db_session)
+    confirmation_service = BIAgentConfirmationService(db_session)
     run = run_service.create_run(
         question="统计 2026 年订单金额",
         trace_id="trace-bi-k1-reject",
@@ -226,27 +226,27 @@ def test_confirm_rejected_blocks_run_and_confirmation_gate_rejects(db_session, s
 
 
 def test_confirm_rejects_missing_run(db_session, sample_dataset):
-    confirmation_service = BILeadAgentConfirmationService(db_session)
+    confirmation_service = BIAgentConfirmationService(db_session)
 
     with pytest.raises(ValueError, match="BI_LEAD_AGENT_RUN_NOT_FOUND"):
         confirmation_service.confirm(999999, _confirmation_request(sample_dataset.id, "approved"))
 
 
 def test_require_approved_confirmation_rejects_missing_confirmation(db_session):
-    run = BILeadAgentRunService(db_session).create_run(question="统计 2026 年订单金额")
+    run = BIAgentRunService(db_session).create_run(question="统计 2026 年订单金额")
 
     with pytest.raises(ValueError, match="USER_CONFIRMATION_REQUIRED"):
-        BILeadAgentConfirmationService(db_session).require_approved_confirmation(run.id)
+        BIAgentConfirmationService(db_session).require_approved_confirmation(run.id)
 
 
 def test_require_approved_confirmation_rejects_missing_run(db_session):
     with pytest.raises(ValueError, match="BI_LEAD_AGENT_RUN_NOT_FOUND"):
-        BILeadAgentConfirmationService(db_session).require_approved_confirmation(999999)
+        BIAgentConfirmationService(db_session).require_approved_confirmation(999999)
 
 
 def test_get_response_returns_safe_confirmation_and_handoff_dto(db_session, sample_dataset):
-    run_service = BILeadAgentRunService(db_session)
-    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run_service = BIAgentRunService(db_session)
+    confirmation_service = BIAgentConfirmationService(db_session)
     run = run_service.create_run(
         question="统计 2026 年订单金额",
         trace_id="trace-bi-k1-safe-response",
@@ -256,7 +256,7 @@ def test_get_response_returns_safe_confirmation_and_handoff_dto(db_session, samp
     handoff = BIAgentHandoff(
         run_id=run.id,
         handoff_id="handoff-bi-k1-safe",
-        parent_agent="bi_lead_agent",
+        parent_agent="bi_agent",
         child_agent="dataset_agent",
         child_run_id="dataset-run-bi-k1-safe",
         dataset_id=sample_dataset.id,
@@ -284,7 +284,7 @@ def test_get_response_returns_safe_confirmation_and_handoff_dto(db_session, samp
     assert payload["confirmation_id"] == confirmation.id
     assert payload["handoff"] == {
         "handoff_id": "handoff-bi-k1-safe",
-        "parent_agent": "bi_lead_agent",
+        "parent_agent": "bi_agent",
         "child_agent": "dataset_agent",
         "child_run_id": "dataset-run-bi-k1-safe",
         "dataset_id": sample_dataset.id,
@@ -309,13 +309,13 @@ def test_get_response_returns_safe_confirmation_and_handoff_dto(db_session, samp
 
 def test_get_response_rejects_missing_run(db_session):
     with pytest.raises(ValueError, match="BI_LEAD_AGENT_RUN_NOT_FOUND"):
-        BILeadAgentRunService(db_session).get_response(999999)
+        BIAgentRunService(db_session).get_response(999999)
 
 
 @pytest.mark.asyncio
 async def test_handoff_service_persists_safe_result_after_approved_confirmation(db_session, sample_dataset):
-    run_service = BILeadAgentRunService(db_session)
-    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run_service = BIAgentRunService(db_session)
+    confirmation_service = BIAgentConfirmationService(db_session)
     run = run_service.create_run(
         question="统计 2026 年订单金额",
         trace_id="trace-bi-k1-handoff-service",
@@ -329,12 +329,12 @@ async def test_handoff_service_persists_safe_result_after_approved_confirmation(
     confirmation_id = confirmation.id
     confirmed_question = confirmation.confirmed_question
     adapter = FakeHandoffAdapter()
-    service = BIHandoffService(db_session, adapter=adapter)
+    service = BIAgentHandoffService(db_session, adapter=adapter)
 
     result = await service.query_dataset(run_id=run.id)
     db_session.expunge_all()
 
-    saved_run = db_session.get(BILeadAgentRun, run_id)
+    saved_run = db_session.get(BIAgentRun, run_id)
     saved_handoff = db_session.query(BIAgentHandoff).filter_by(run_id=run_id).one()
     assert result.handoff_status == "completed"
     assert adapter.calls[0]["request"].dataset_id == dataset_id
@@ -346,7 +346,7 @@ async def test_handoff_service_persists_safe_result_after_approved_confirmation(
     assert saved_run.phase == "summarize_run"
     assert saved_run.status == "completed"
     assert saved_handoff.handoff_id == "handoff-bi-k1-service"
-    assert saved_handoff.parent_agent == "bi_lead_agent"
+    assert saved_handoff.parent_agent == "bi_agent"
     assert saved_handoff.child_agent == "dataset_agent"
     assert saved_handoff.child_run_id == "dataset-run-bi-k1-service"
     assert saved_handoff.dataset_id == dataset_id
@@ -360,14 +360,14 @@ async def test_handoff_service_persists_safe_result_after_approved_confirmation(
 
 @pytest.mark.asyncio
 async def test_handoff_service_rejected_confirmation_does_not_call_adapter(db_session, sample_dataset):
-    run_service = BILeadAgentRunService(db_session)
-    confirmation_service = BILeadAgentConfirmationService(db_session)
+    run_service = BIAgentRunService(db_session)
+    confirmation_service = BIAgentConfirmationService(db_session)
     run = run_service.create_run(question="统计 2026 年订单金额")
     confirmation_service.confirm(run.id, _confirmation_request(sample_dataset.id, "rejected"))
     adapter = FakeHandoffAdapter()
 
     with pytest.raises(ValueError, match="USER_CONFIRMATION_REQUIRED"):
-        await BIHandoffService(db_session, adapter=adapter).query_dataset(run_id=run.id)
+        await BIAgentHandoffService(db_session, adapter=adapter).query_dataset(run_id=run.id)
 
     assert adapter.calls == []
     assert db_session.query(BIAgentHandoff).filter_by(run_id=run.id).first() is None
@@ -375,11 +375,11 @@ async def test_handoff_service_rejected_confirmation_does_not_call_adapter(db_se
 
 @pytest.mark.asyncio
 async def test_handoff_service_missing_confirmation_does_not_call_adapter(db_session):
-    run = BILeadAgentRunService(db_session).create_run(question="统计 2026 年订单金额")
+    run = BIAgentRunService(db_session).create_run(question="统计 2026 年订单金额")
     adapter = FakeHandoffAdapter()
 
     with pytest.raises(ValueError, match="USER_CONFIRMATION_REQUIRED"):
-        await BIHandoffService(db_session, adapter=adapter).query_dataset(run_id=run.id)
+        await BIAgentHandoffService(db_session, adapter=adapter).query_dataset(run_id=run.id)
 
     assert adapter.calls == []
     assert db_session.query(BIAgentHandoff).filter_by(run_id=run.id).first() is None

@@ -14,7 +14,7 @@
 import pytest
 
 from app.schemas.agentscope_workbench import AgentScopeThreadKind
-from app.services.agentscope_thread_resolver import normalize_thread_id, resolve_thread_ref
+from app.runtime import normalize_thread_id, resolve_thread_ref
 
 
 def test_normalize_thread_id_keeps_none_for_new_session():

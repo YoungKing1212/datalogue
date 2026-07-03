@@ -274,6 +274,57 @@ def test_extract_blueprint_params_from_chinese_month_range():
     assert params["end_date"] == "2024-02-29"
 
 
+def test_extract_blueprint_params_from_work_log_question():
+    """蓝图执行参数：工作日志问法也应提取人员和年份。"""
+    from app.models.dataset import AnalysisBlueprint
+    from app.services.analysis_blueprint import extract_blueprint_params
+
+    bp = AnalysisBlueprint(
+        parameters=[
+            {"name": "person_name", "type": "string", "required": True},
+            {"name": "start_date", "type": "date", "required": True},
+            {"name": "end_date", "type": "date", "required": True},
+        ]
+    )
+
+    params, missing = extract_blueprint_params(bp, "查询杨凯2025年的工作日志")
+
+    assert missing == []
+    assert params["person_name"] == "杨凯"
+    assert params["start_date"] == "2025-01-01"
+    assert params["end_date"] == "2025-12-31"
+
+
+def test_extract_blueprint_params_from_last_year_work_log(monkeypatch):
+    """蓝图执行参数：去年应按当前日期解析为上一整年。"""
+    from datetime import date
+
+    from app.models.dataset import AnalysisBlueprint
+    from app.services import analysis_blueprint
+    from app.services.analysis_blueprint import extract_blueprint_params
+
+    class FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 2)
+
+    monkeypatch.setattr(analysis_blueprint, "date", FrozenDate)
+    bp = AnalysisBlueprint(
+        parameters=[
+            {"name": "person_name", "type": "string", "required": True},
+            {"name": "start_date", "type": "date", "required": True},
+            {"name": "end_date", "type": "date", "required": True},
+        ]
+    )
+
+    params, missing = extract_blueprint_params(bp, "查询李筱去年的工作日志")
+
+    assert missing == []
+    assert params["person_name"] == "李筱"
+    assert params["start_date"] == "2025-01-01"
+    assert params["end_date"] == "2025-12-31"
+
+
 def test_render_blueprint_sql_preview_replaces_bound_params():
     """蓝图 SQL 预览应展示参数值，执行层仍保留绑定参数。"""
     from app.services.analysis_blueprint import render_blueprint_sql_preview

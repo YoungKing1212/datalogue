@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : test_bi_lead_agent_capabilities.py
 # Description:
-#   BI LeadAgent K1 能力清单与数据集摘要清洗测试。
+#   BI Agent K1 能力清单与数据集摘要清洗测试。
 #
 # Responsibilities:
 #   - 验证 LeadAgent 只暴露路由、确认和单数据集查询三类外层能力。
@@ -14,15 +14,15 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.bi_lead_agent import BILeadAgentCapability
-from app.services.bi_lead_agent.capabilities import (
-    build_bi_lead_agent_capabilities,
+from app.schemas.bi_agent import BIAgentCapability
+from app.agents.bi_agent.capabilities import (
+    build_bi_agent_capabilities,
     sanitize_dataset_capability,
 )
 
 
 def test_bi_lead_agent_capability_manifest_exposes_three_enabled_one_disabled():
-    manifest = build_bi_lead_agent_capabilities()
+    manifest = build_bi_agent_capabilities()
     enabled = {item.name for item in manifest if item.status == "enabled"}
     disabled = {item.name for item in manifest if item.status == "disabled"}
 
@@ -100,12 +100,12 @@ def test_dataset_capability_summary_drops_complex_internal_items_and_keeps_safe_
 
 def test_bi_lead_agent_capability_requires_disabled_reason_and_replacement():
     with pytest.raises(ValidationError):
-        BILeadAgentCapability(name="query_multiple_datasets", status="disabled")
+        BIAgentCapability(name="query_multiple_datasets", status="disabled")
 
 
 def test_bi_lead_agent_capability_rejects_disabled_metadata_when_enabled():
     with pytest.raises(ValidationError):
-        BILeadAgentCapability(
+        BIAgentCapability(
             name="query_dataset",
             status="enabled",
             disabled_reason="不应出现在 enabled 能力上",

@@ -23,8 +23,8 @@ from app.models.agentscope_workbench import (
     AgentScopeRef,
     AgentScopeSession,
 )
+from app.runtime.thread_resolver import new_agentscope_thread_id, normalize_thread_id
 from app.schemas.agentscope_workbench import AgentScopeMessageStatus
-from app.services.agentscope_thread_resolver import new_agentscope_thread_id, normalize_thread_id
 
 _FORBIDDEN_KEY_FRAGMENTS = (
     "sql",

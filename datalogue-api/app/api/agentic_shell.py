@@ -22,7 +22,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.database import get_db
 from app.schemas.agentic_shell_task import AgenticShellTaskRequest, AgenticShellTaskStreamEvent
-from app.services.agentic_shell_task_runtime import AgenticShellTaskRuntime, BILeadAgentTaskRunner
+from app.middlewares.lifecycle import log_lifecycle
+from app.runtime import AgenticShellTaskRuntime, BIAgentTaskRunner
 
 router = APIRouter()
 
@@ -31,10 +32,10 @@ def _sse_data(payload: dict) -> dict:
     return {"data": json.dumps(payload, ensure_ascii=False)}
 
 
-def build_agentic_shell_task_runner(db: Session) -> BILeadAgentTaskRunner:
-    """生产默认 runner：Shell 直接走 BI LeadAgent handoff，不再回调旧 chat stream。"""
+def build_agentic_shell_task_runner(db: Session) -> BIAgentTaskRunner:
+    """生产默认 runner：Shell 直接走 BI Agent，不再回调旧 chat stream。"""
 
-    return BILeadAgentTaskRunner(db=db)
+    return BIAgentTaskRunner(db=db)
 
 
 @router.post("/tasks/stream")
@@ -42,13 +43,33 @@ def stream_agentic_shell_task(payload: AgenticShellTaskRequest, db: Session = De
     """唯一主执行入口；所有 Chat/Workbench 执行都从 AgenticShellTask 开始。"""
 
     async def event_generator():
+        log_lifecycle(
+            "agentic_shell.api.stream.accepted",
+            task_source=payload.task_source,
+            task_type=payload.task_type,
+            dataset_id=payload.dataset_id,
+            question_length=len(payload.question or ""),
+        )
         runtime = AgenticShellTaskRuntime(db=db, runner=build_agentic_shell_task_runner(db))
         async for envelope in runtime.stream(payload):
+            log_lifecycle(
+                "agentic_shell.api.stream.event",
+                task_id=envelope.task_id,
+                trace_id=envelope.trace_id,
+                event_type=envelope.event_type,
+                selected_agent=envelope.selected_agent,
+            )
             event = AgenticShellTaskStreamEvent(
                 task_id=envelope.task_id or "",
                 event_envelope=envelope,
                 legacy_payload=envelope.legacy_payload,
             )
             yield _sse_data(event.model_dump(mode="json"))
+        log_lifecycle(
+            "agentic_shell.api.stream.closed",
+            task_source=payload.task_source,
+            task_type=payload.task_type,
+            dataset_id=payload.dataset_id,
+        )
 
     return EventSourceResponse(event_generator())

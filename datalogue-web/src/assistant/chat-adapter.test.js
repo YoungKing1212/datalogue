@@ -6,8 +6,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeChatAdapter, buildBusinessSessionId } from './chat-adapter';
 import { buildHistoryMessageCustom } from './thread-list-adapter';
 
+vi.mock('./agentic-direct-query-api', () => ({
+  runAgenticDirectQuery: vi.fn(),
+  streamAgenticDirectQuery: vi.fn(),
+}));
+
 vi.mock('./agentic-shell-task-api', () => ({
   streamAgenticShellTask: vi.fn(),
+}));
+
+vi.mock('../api/client', () => ({
+  getArtifact: vi.fn(),
 }));
 
 vi.mock('./thread-list-adapter', async (importOriginal) => {
@@ -20,6 +29,8 @@ vi.mock('./thread-list-adapter', async (importOriginal) => {
 });
 
 const { streamAgenticShellTask } = await import('./agentic-shell-task-api');
+const { runAgenticDirectQuery, streamAgenticDirectQuery } = await import('./agentic-direct-query-api');
+const { getArtifact } = await import('../api/client');
 
 async function* events(items) {
   for (const item of items) {
@@ -51,8 +62,267 @@ async function collectRun(adapter, input = runInput()) {
 describe('chat-adapter C-ready metadata', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getArtifact.mockResolvedValue(null);
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = null;
     window.history.pushState({}, '', '/chat');
+  });
+
+  it('uses AgenticLeadAgent direct-query as the default chat send path', async () => {
+    streamAgenticDirectQuery.mockReturnValue(events([
+      {
+        type: 'agent_message',
+        agent: 'agentic_lead_agent',
+        role: 'user',
+        title: 'AgenticLeadAgent 输入',
+        content: '正在判断任务类型并选择业务 Agent。',
+      },
+      {
+        type: 'agent_message',
+        agent: 'agentic_lead_agent',
+        role: 'assistant',
+        title: 'AgenticLeadAgent 返回',
+        content: '已选择 BI Agent 执行问数。',
+      },
+      {
+        type: 'agent_event',
+        agent: 'bi_agent',
+        title: 'BI Agent 执行',
+        content: '正在通过 AgentScope 工具链查询数据集。',
+      },
+      {
+        type: 'final',
+        answer: '双周会议共有 100 条记录。',
+        status: 'completed',
+        selected_agent: 'bi_agent',
+        result_ref: 'artifact:direct-1',
+        artifact_ref: 'artifact:direct-1',
+        checkpoint_ref: 'checkpoint:direct-1',
+        row_count: 100,
+        column_count: 67,
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 } });
+    const chunks = await collectRun(adapter, runInput({
+      question: '统计双周会议数据记录数量',
+      threadId: 'local-thread',
+    }));
+    const finalChunk = chunks.at(-1);
+
+    expect(streamAgenticDirectQuery).toHaveBeenCalledWith(
+      {
+        question: '统计双周会议数据记录数量',
+        dataset_id: 12,
+        conversation_id: null,
+        trace_id: expect.stringMatching(/^chat-direct-/),
+      },
+      expect.any(Object),
+    );
+    expect(runAgenticDirectQuery).not.toHaveBeenCalled();
+    expect(streamAgenticShellTask).not.toHaveBeenCalled();
+    expect(chunks[0].content.some((part) => part.type === 'reasoning')).toBe(true);
+    expect(finalChunk).toMatchObject({
+      status: { type: 'complete', reason: 'stop' },
+      content: expect.arrayContaining([{ type: 'text', text: '双周会议共有 100 条记录。' }]),
+    });
+    expect(finalChunk.content.filter((part) => part.type === 'reasoning')).toHaveLength(3);
+    expect(finalChunk.metadata.custom).toMatchObject({
+      resultRef: 'artifact:direct-1',
+      artifactCard: null,
+    });
+    expect(JSON.stringify(finalChunk.metadata.custom)).not.toMatch(/checkpoint:direct-1|\bSELECT\b|raw_rows|schema_context/i);
+  });
+
+  it('passes the selected model config id to direct-query when the composer chooses a model', async () => {
+    streamAgenticDirectQuery.mockReturnValue(events([
+      {
+        type: 'final',
+        answer: '已完成模型指定查询。',
+        status: 'completed',
+        selected_agent: 'bi_agent',
+      },
+    ]));
+
+    const adapter = makeChatAdapter({
+      datasetIdRef: { current: 12 },
+      modelConfigIdRef: { current: 8 },
+    });
+    await collectRun(adapter, runInput({
+      question: '用指定模型查询销售趋势',
+      threadId: 'local-thread',
+    }));
+
+    expect(streamAgenticDirectQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: '用指定模型查询销售趋势',
+        dataset_id: 12,
+        model_config_id: 8,
+      }),
+      expect.any(Object),
+    );
+    expect(streamAgenticShellTask).not.toHaveBeenCalled();
+  });
+
+  it('routes missing dataset through Agentic Shell so BI Agent can choose it', async () => {
+    streamAgenticShellTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          payload: {
+            summary: '请选择数据集',
+            route_decision: {
+              decision: 'no_match',
+              candidates: [
+                {
+                  dataset_id: 1,
+                  dataset_name: '销售明细',
+                  reason: '匹配销售分析问题',
+                  confidence: 0.42,
+                  requires_confirmation: true,
+                },
+              ],
+            },
+            clarification: {
+              kind: 'dataset_missing',
+              candidates: [
+                {
+                  dataset_id: 1,
+                  dataset_name: '销售明细',
+                  reason: '匹配销售分析问题',
+                },
+              ],
+            },
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
+    const chunks = await collectRun(adapter, runInput({
+      question: '查询销售趋势',
+      threadId: 'local-thread',
+    }));
+
+    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task_source: 'chat',
+        task_type: 'bi_query',
+        question: '查询销售趋势',
+        dataset_id: null,
+      }),
+      expect.any(Object),
+    );
+    expect(streamAgenticDirectQuery).not.toHaveBeenCalled();
+    expect(chunks.at(-1).metadata.custom.candidateDatasets).toEqual({
+      candidates: [
+        {
+          dataset_id: 1,
+          dataset_name: '销售明细',
+          short_reason: '匹配销售分析问题',
+        },
+      ],
+    });
+  });
+
+  it('passes the selected model config id through Agentic Shell when dataset selection is needed', async () => {
+    streamAgenticShellTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          payload: { summary: '请选择数据集' },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({
+      datasetIdRef: { current: null },
+      modelConfigIdRef: { current: 8 },
+    });
+    await collectRun(adapter, runInput({
+      question: '查询销售趋势',
+      threadId: 'local-thread',
+    }));
+
+    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: '查询销售趋势',
+        dataset_id: null,
+        model_config_id: 8,
+      }),
+      expect.any(Object),
+    );
+    expect(streamAgenticDirectQuery).not.toHaveBeenCalled();
+  });
+
+  it('renders direct-query artifact rows as a markdown table in the assistant text part', async () => {
+    streamAgenticDirectQuery.mockReturnValue(events([
+      {
+        type: 'final',
+        answer: '您的查询“查询杨凯2024年日志”已完成。系统已返回 100 条 记录，每条记录包含 48 个 数据字段。',
+        status: 'completed',
+        selected_agent: 'bi_agent',
+        result_ref: 'artifact:direct-table',
+        artifact_ref: 'artifact:direct-table',
+        row_count: 2,
+        column_count: 3,
+      },
+    ]));
+    getArtifact.mockResolvedValueOnce({
+      kind: 'sql_result',
+      content_json: {
+        columns: ['姓名', '日期', '工作内容'],
+        rows: [
+          { 姓名: '杨凯', 日期: '2024-01-01', 工作内容: '完成问数链路联调' },
+          { 姓名: '杨凯', 日期: '2024-01-02', 工作内容: '修复 Markdown 表格展示' },
+        ],
+        row_count: 2,
+      },
+    });
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 } });
+    const chunks = await collectRun(adapter, runInput({
+      question: '查询杨凯2024年日志',
+      threadId: 'local-thread',
+    }));
+    const finalChunk = chunks.at(-1);
+    const text = finalChunk.content.find((part) => part.type === 'text')?.text || '';
+
+    expect(getArtifact).toHaveBeenCalledWith('artifact:direct-table');
+    expect(text).toContain('| 姓名 | 日期 | 工作内容 |');
+    expect(text).toContain('| 杨凯 | 2024-01-01 | 完成问数链路联调 |');
+    expect(text).toContain('| 杨凯 | 2024-01-02 | 修复 Markdown 表格展示 |');
+    expect(text).not.toContain('您的查询“查询杨凯2024年日志”已完成');
+    expect(text).not.toContain('📊');
+    expect(text).not.toContain('📂');
+  });
+
+  it('does not fall back to generic completed text when direct-query final answer is empty', async () => {
+    streamAgenticDirectQuery.mockReturnValue(events([
+      {
+        type: 'final',
+        answer: '',
+        status: 'completed',
+        selected_agent: 'bi_agent',
+        result_ref: 'artifact:direct-empty',
+        artifact_ref: 'artifact:direct-empty',
+        row_count: 1,
+        column_count: 2,
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 } });
+    const chunks = await collectRun(adapter, runInput({
+      question: '统计合同总金额',
+      threadId: 'local-thread',
+    }));
+    const finalChunk = chunks.at(-1);
+    const text = finalChunk.content.find((part) => part.type === 'text')?.text || '';
+
+    expect(text).toMatch(/^## 查询结果/);
+    expect(text).toContain('- **数据规模**：返回 1 行，2 列');
+    expect(text).not.toContain('结果入口');
+    expect(text).not.toContain('artifact:direct-empty');
+    expect(text).not.toBe('查询已完成。');
   });
 
   it('builds stable business session ids from conversation or thread context', () => {
@@ -105,7 +375,7 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: 7 } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
     const chunks = await collectRun(adapter, runInput({ threadId: 'local-thread' }));
     const finalChunk = chunks.at(-1);
 
@@ -181,7 +451,7 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: 3 } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 3 } });
     const chunks = await collectRun(adapter, runInput({
       question: '最近30日GMV趋势如何',
       threadId: 'local-thread',
@@ -197,6 +467,54 @@ describe('chat-adapter C-ready metadata', () => {
     expect(JSON.stringify(final.metadata.custom)).not.toMatch(
       /SELECT|secret_col|hidden_table|raw_row_value|query_plan|queryPlan|candidate_assets|candidateAssets|query_plan_debug|queryPlanDebug|dsl|sqlResult|sqlDiagnosis|sqlAuditResult/i,
     );
+  });
+
+  it('maps Agentic Shell artifact refs from message completed envelopes into result metadata', async () => {
+    streamAgenticShellTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'artifact.created',
+          task_id: 'task-agentic-1',
+          trace_id: 'trace-agentic-1',
+          thread_id: 'as_thread_1',
+          payload: {
+            summary: 'BI 查询产物已生成。',
+            artifact_ref: 'artifact:safe',
+            checkpoint_ref: 'checkpoint:safe',
+            row_count: 1,
+            column_count: 2,
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          task_id: 'task-agentic-1',
+          trace_id: 'trace-agentic-1',
+          thread_id: 'as_thread_1',
+          payload: {
+            summary: 'DatasetAgent 查询完成，已生成安全结果引用。',
+            artifact_ref: 'artifact:safe',
+            checkpoint_ref: 'checkpoint:safe',
+            row_count: 1,
+            column_count: 2,
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ threadId: 'local-thread' }));
+    const final = chunks.at(-1);
+
+    expect(final.metadata.custom.resultRef).toBe('artifact:safe');
+    expect(final.metadata.custom.artifactCard).toMatchObject({
+      title: '查询结果',
+      status: 'completed',
+      primary_ref: 'artifact:safe',
+    });
+    expect(final.metadata.custom.taskTimeline.map((item) => item.type)).toContain('artifact_created');
+    expect(JSON.stringify(final.content)).not.toMatch(/checkpoint:safe|artifact:safe/i);
   });
 
   it('exposes only business-level candidate dataset confirmation metadata', async () => {
@@ -219,7 +537,7 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: null } });
     const chunks = await collectRun(adapter);
     const candidateDatasets = chunks.at(-1).metadata.custom.candidateDatasets;
 
@@ -242,13 +560,14 @@ describe('chat-adapter C-ready metadata', () => {
       selected_text: '销售明细',
     };
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: null } });
     await collectRun(adapter);
 
     expect(streamAgenticShellTask).toHaveBeenCalledWith(
       expect.objectContaining({
         task_source: 'chat',
         task_type: 'bi_query',
+        dataset_id: 7,
         clarification_response: {
           selected_dataset_id: 7,
           selected_text: '销售明细',
@@ -270,7 +589,7 @@ describe('chat-adapter C-ready metadata', () => {
       display_text: '重试上一步',
     };
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: null } });
     await collectRun(adapter, runInput({ question: '重试上一步', threadId: 'local-thread' }));
 
     expect(streamAgenticShellTask).toHaveBeenCalledWith(
@@ -301,7 +620,7 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: null } });
     await collectRun(adapter, runInput({ threadId: 'local-thread' }));
 
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({
@@ -433,7 +752,7 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: 7 } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
     const chunks = await collectRun(adapter, runInput({ question: '查询杨凯 2024 年工作日志' }));
     const custom = chunks.at(-1).metadata.custom;
 
@@ -536,6 +855,9 @@ describe('chat-adapter C-ready metadata', () => {
           related_refs: [
             { ref_id: 'artifact:repair-plan-1', ref_type: 'repair_plan', label: 'RepairPlan' },
           ],
+          actions: [
+            { action_id: 'view', label: '查看详情', payload_ref: 'artifact:result-1', enabled: true },
+          ],
           preview_payload: {
             patch: { field: 'bad_col' },
             raw_sql: 'select bad_col from work_log',
@@ -544,7 +866,7 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: 7 } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
     const chunks = await collectRun(adapter, runInput({ question: '查询杨凯 2024 年工作日志' }));
     const custom = chunks.at(-1).metadata.custom;
 
@@ -565,6 +887,9 @@ describe('chat-adapter C-ready metadata', () => {
     expect(custom.taskTimeline.filter((item) => item.type === 'repair_patch')).toHaveLength(1);
     expect(custom.artifactCard.related_refs).toEqual([
       { ref_id: 'artifact:repair-plan-1', ref_type: 'repair_plan', label: 'RepairPlan' },
+    ]);
+    expect(custom.artifactCard.actions).toEqual([
+      { action_type: 'view', label: '查看详情', ref: 'artifact:result-1', disabled: false },
     ]);
     expect(custom.artifactCard.preview_payload).toBeNull();
     expect(JSON.stringify(custom)).not.toMatch(/bad_col|work_log|raw_sql|select/i);
@@ -597,7 +922,7 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: 7 } });
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
     const chunks = await collectRun(adapter, runInput({ question: '查询杨凯 2024 年工作日志' }));
     const final = chunks.at(-1);
 

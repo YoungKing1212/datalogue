@@ -21,7 +21,6 @@ from app.services.observability.tracer import (
     ObservabilityTraceContext,
     get_observability_tracer,
 )
-
 __all__ = [
     "DatalogueTracer",
     "ObservabilityRequestContext",

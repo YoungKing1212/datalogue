@@ -74,12 +74,12 @@ def test_datalogue_event_envelope_supports_agentic_shell_event_types():
             trace_id="trace_agentic_1",
             thread_id="as_1",
             message_id="msg_1",
-            selected_agent="bi_lead_agent",
+            selected_agent="bi_agent",
         )
         assert envelope.event_type == event_type
         assert envelope.task_id == "task_agentic_1"
         assert envelope.thread_id == "as_1"
-        assert envelope.selected_agent == "bi_lead_agent"
+        assert envelope.selected_agent == "bi_agent"
 
 
 def test_agentic_shell_task_model_persists_truth_source(db_session):
@@ -88,7 +88,7 @@ def test_agentic_shell_task_model_persists_truth_source(db_session):
         task_source="chat",
         task_type="bi_query",
         status="running",
-        selected_agent="bi_lead_agent",
+        selected_agent="bi_agent",
         agent_scope_session_id="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         thread_id="as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         message_id="msg-agentic-1",

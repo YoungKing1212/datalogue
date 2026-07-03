@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from app.models.agentscope_workbench import AgentScopeEvent
 from app.schemas.agentscope_workbench import WorkbenchRetryRequest
-from app.services.agentic_shell import DatalogueAgenticShell
+from app.agents.agentic_lead_agent import AgenticLeadAgent
 from app.services.agentscope_mirror import (
     create_agentscope_session,
     create_running_assistant_message,
@@ -29,14 +29,14 @@ def test_workbench_retry_request_is_written_through_shell_action(db_session, mon
     from app.services import workbench_actions
 
     calls: list[dict] = []
-    real_shell = DatalogueAgenticShell
+    real_shell = AgenticLeadAgent
 
     class SpyShell(real_shell):
         def record_action(self, **kwargs):
             calls.append(kwargs)
             return super().record_action(**kwargs)
 
-    monkeypatch.setattr(workbench_actions, "DatalogueAgenticShell", SpyShell)
+    monkeypatch.setattr(workbench_actions, "AgenticLeadAgent", SpyShell)
 
     session = create_agentscope_session(
         db_session,

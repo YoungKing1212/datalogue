@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : test_bi_lead_agent_handoff_adapter.py
 # Description:
-#   BI LeadAgent K1 Host Handoff Adapter 测试。
+#   BI Agent K1 Host Handoff Adapter 测试。
 #
 # Responsibilities:
 #   - 验证 handoff adapter 只走 AgentScope run_reply_stream 主路径。
@@ -18,8 +18,8 @@ from typing import Any
 import pytest
 from agentscope.message import Msg
 
-from app.schemas.bi_lead_agent import BILeadAgentHandoffRequest
-from app.services.bi_lead_agent.handoff_adapter import DatalogueBIHandoffAdapter
+from app.schemas.bi_agent import BIAgentHandoffRequest
+from app.agents.bi_agent.handoff_adapter import DatalogueBIHandoffAdapter
 
 
 def assert_forbidden_dataset_context_absent(payload: Any) -> None:
@@ -77,8 +77,8 @@ class FakeDatasetAgentFactory:
         return object()
 
 
-def _handoff_request(dataset_id: int = 101) -> BILeadAgentHandoffRequest:
-    return BILeadAgentHandoffRequest(
+def _handoff_request(dataset_id: int = 101) -> BIAgentHandoffRequest:
+    return BIAgentHandoffRequest(
         dataset_id=dataset_id,
         confirmed_question="统计 2026 年订单金额",
         task_goal="按确认的数据集执行单数据集问数",
@@ -119,7 +119,7 @@ async def test_query_dataset_uses_run_reply_stream_and_never_direct_query() -> N
     assert bridge.started_session == {
         "dataset_id": 101,
         "question": "统计 2026 年订单金额",
-        "agent_name": "bi_lead_agent",
+        "agent_name": "bi_agent",
         "trace_id": "trace-bi-k1-handoff",
     }
     assert isinstance(bridge.msg, Msg)

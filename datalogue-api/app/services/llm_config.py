@@ -86,17 +86,29 @@ def _active_config_by_role(db: Session, role: str) -> LLMModelConfig | None:
     return config
 
 
+def _active_config_by_id(db: Session, config_id: int) -> LLMModelConfig:
+    config = db.get(LLMModelConfig, config_id)
+    if not config or config.status != "active":
+        raise ValueError(f"LLM 模型配置不存在或未启用: {config_id}")
+    return config
+
+
 def resolve_llm_config(
     settings: Settings,
     *,
     role: str = DEFAULT_LLM_ROLE,
     db: Session | None = None,
+    model_config_id: int | None = None,
 ) -> ResolvedLLMConfig:
     """按角色解析 LLM 配置；数据库优先，环境变量兜底。"""
     normalized_role = ensure_llm_role(role)
     config = None
     if db is not None:
-        config = _active_config_by_role(db, normalized_role)
+        if model_config_id is not None:
+            # 用户在聊天框显式选择模型时，只覆盖本轮请求；角色名仍用于调用策略和审计归属。
+            config = _active_config_by_id(db, model_config_id)
+        else:
+            config = _active_config_by_role(db, normalized_role)
         if config is None and normalized_role != DEFAULT_LLM_ROLE:
             config = _active_config_by_role(db, DEFAULT_LLM_ROLE)
 

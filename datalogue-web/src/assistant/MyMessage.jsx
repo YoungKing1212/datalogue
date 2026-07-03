@@ -9,12 +9,17 @@ import {
   useAuiState,
   useAui,
   MessagePrimitive,
-  ChainOfThoughtPrimitive,
 } from '@assistant-ui/react';
+import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown';
+import { Collapse, Timeline, Tag, Typography } from 'antd';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import rehypeHighlight from 'rehype-highlight';
+import 'katex/dist/katex.min.css';
+import 'highlight.js/styles/github-dark.css';
 import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
-import MessageContent from '../components/message-content';
-import TaskTimeline from '../components/task-timeline';
 import ArtifactCard from '../components/artifact-card';
 import { getArtifact, submitMessageFeedback } from '../api/client';
 
@@ -53,6 +58,37 @@ const NODE_ICONS = {
   report_generator: 'chart_bar',
 };
 
+const THINK_OPEN_RE = /<think\b[^>]*>/i;
+const THINK_CLOSE_RE = /<\/think\s*>/i;
+
+function stripThink(raw = '') {
+  const openMatch = THINK_OPEN_RE.exec(raw);
+  if (!openMatch) return raw;
+  const before = raw.slice(0, openMatch.index);
+  const rest = raw.slice(openMatch.index + openMatch[0].length);
+  const closeMatch = THINK_CLOSE_RE.exec(rest);
+  if (!closeMatch) return before;
+  return (before + rest.slice(closeMatch.index + closeMatch[0].length)).trim();
+}
+
+function balanceFences(src = '') {
+  const fences = (src.match(/```/g) || []).length;
+  return fences % 2 === 1 ? `${src}\n\`\`\`` : src;
+}
+
+const markdownComponents = {
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+  ),
+  table: ({ children }) => (
+    <div className="md-table-wrap"><table>{children}</table></div>
+  ),
+};
+
+function preprocessAssistantMarkdown(text) {
+  return balanceFences(stripThink(text || ''));
+}
+
 /**
  * StepCard — 单个流式步骤的视觉卡片（供 AgentPanel 复用）
  */
@@ -76,56 +112,54 @@ export function StepCard({ node, display_name, status, elapsed_ms }) {
 }
 
 /**
- * 单条 reasoning 节点 — ChainOfThoughtPrimitive.Parts 内的 Reasoning 组件
- * 接收 ReasoningMessagePartComponent props（part + status）
- */
-function ReasoningPart({ text }) {
-  // part 形如 { type: 'reasoning', text: '意图识别：销售归因...', parentId: 'intent_recognition' }
-  // 把 parentId 当 step 节点名（chat-adapter.js 用 parentId 写 ev.node）
-  const node = useAuiState((s) => s.part?.parentId);
-  const label = NODE_STEP_NAMES[node] || '任务处理';
-  const icon = NODE_ICONS[node] || 'brain';
-  return (
-    <div className="cot-step">
-      <div className="cot-step-icon">
-        <Icon name={icon} style={{ width: 12, height: 12 }} />
-      </div>
-      <div className="cot-step-body">
-        <div className="cot-step-label">{label}</div>
-        <div className="cot-step-text">{text}</div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * ChainOfThought 包装组件 — 用 ChainOfThoughtPrimitive 渲染
- * MessagePrimitive.Parts components={{ ChainOfThought: ... }} 接收 ComponentType
- *
- * Root 的 data-state 反映 collapsed 状态（assistant-ui Root 本身是 plain div，
- * 需要我们手动接 collapsed scope 才能在 CSS 里控制箭头旋转）
+ * ChainOfThought 包装组件 — assistant-ui 提供 reasoning parts，Ant Design 负责可见 UI。
  */
 function ChainOfThought() {
-  const collapsed = useAuiState((s) => s.chainOfThought?.collapsed ?? true);
+  const message = useAuiState((s) => s.message);
+  const reasonings = (message?.content || []).filter((part) => part.type === 'reasoning');
+  const isStreaming = message?.status?.type === 'running';
+  if (!reasonings.length) return null;
+
+  const items = reasonings.map((part, index) => {
+    const node = part.parentId;
+    const label = NODE_STEP_NAMES[node] || '任务处理';
+    const icon = NODE_ICONS[node] || 'brain';
+    return {
+      key: `${node || 'reasoning'}-${index}`,
+      color: index === reasonings.length - 1 && isStreaming ? 'processing' : 'blue',
+      content: (
+        <div className="cot-ant-step">
+          <Tag variant="filled" className="cot-ant-tag">
+            <Icon name={icon} style={{ width: 12, height: 12 }} />
+            {label}
+          </Tag>
+          <Typography.Text className="cot-ant-text">{part.text}</Typography.Text>
+        </div>
+      ),
+    };
+  });
+
   return (
     <div className="cot">
-      <ChainOfThoughtPrimitive.Root
-        className="cot-root"
-        data-state={collapsed ? 'collapsed' : 'expanded'}
-      >
-        <ChainOfThoughtPrimitive.AccordionTrigger asChild>
-          <button type="button" className="cot-trigger">
-            <span className="cot-trigger-inner">
-              <Icon name="brain" style={{ width: 13, height: 13 }} />
-              <span>思考过程</span>
-              <span className="cot-trigger-arrow">⌃</span>
-            </span>
-          </button>
-        </ChainOfThoughtPrimitive.AccordionTrigger>
-        <ChainOfThoughtPrimitive.Parts
-          components={{ Reasoning: ReasoningPart }}
-        />
-      </ChainOfThoughtPrimitive.Root>
+      <Collapse
+        ghost
+        size="small"
+        className="cot-ant"
+        defaultActiveKey={isStreaming ? ['thinking'] : []}
+        items={[
+          {
+            key: 'thinking',
+            label: (
+              <span className="cot-ant-label">
+                <Icon name="brain" style={{ width: 13, height: 13 }} />
+                <span>思考过程</span>
+                <Tag variant="filled">{reasonings.length}</Tag>
+              </span>
+            ),
+            children: <Timeline className="cot-ant-timeline" items={items} />,
+          },
+        ]}
+      />
     </div>
   );
 }
@@ -135,11 +169,15 @@ function ChainOfThought() {
  * 把 part 的 text 转给 MessageContent 渲染（剥离 <think>，保留 markdown）
  */
 function MessageTextPart() {
-  const text = useAuiState((s) => s.part?.text);
-  const status = useAuiState((s) => s.part?.status);
-  const isStreaming = status?.type === 'running';
-  if (!text) return null;
-  return <MessageContent text={text} streaming={isStreaming} />;
+  return (
+    <MarkdownTextPrimitive
+      className="ai-message md-body"
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex, rehypeHighlight]}
+      components={markdownComponents}
+      preprocess={preprocessAssistantMarkdown}
+    />
+  );
 }
 
 function joinValues(values, fallback = '未识别') {
@@ -163,10 +201,6 @@ function candidateValue(candidate, keys) {
 
 function termCandidateId(candidate) {
   return candidateValue(candidate, ['term_id', 'termId', 'id', 'asset_id', 'assetId']);
-}
-
-function datasetCandidateId(candidate) {
-  return candidateValue(candidate, ['dataset_id', 'datasetId', 'id']);
 }
 
 function clarificationKind(clarification, routePayload) {
@@ -196,21 +230,6 @@ function termCandidateLabel(candidate, optionIndex) {
   );
 }
 
-function datasetCandidateLabel(candidate, optionIndex) {
-  return (
-    candidateValue(candidate, [
-      'dataset_name',
-      'datasetName',
-      'display_name',
-      'displayName',
-      'label',
-      'title',
-      'name',
-    ]) ||
-    (datasetCandidateId(candidate) ? `数据集 ${datasetCandidateId(candidate)}` : `选项 ${optionIndex}`)
-  );
-}
-
 function termCandidateSubLabel(candidate, label) {
   const nested = candidate?.term || candidate?.business_term || candidate?.businessTerm || {};
   const name = candidateValue(candidate, ['name', 'term_name', 'termName']) ||
@@ -221,33 +240,10 @@ function termCandidateSubLabel(candidate, label) {
     '业务术语';
 }
 
-function datasetCandidateSubLabel(candidate) {
-  const parts = [];
-  const domains = candidate?.business_domain || candidate?.businessDomain || [];
-  if (Array.isArray(domains) && domains.length) {
-    parts.push(domains.filter(Boolean).slice(0, 2).join('、'));
-  }
-  if (candidate?.score != null) {
-    parts.push(`得分 ${candidate.score}`);
-  }
-  if (candidate?.review_status || candidate?.reviewStatus) {
-    parts.push(candidate.review_status || candidate.reviewStatus);
-  }
-  return parts.length ? parts.join(' · ') : '数据集';
-}
-
 function termCandidateDefinition(candidate) {
   const nested = candidate?.term || candidate?.business_term || candidate?.businessTerm || {};
   return candidateValue(candidate, ['definition', 'description', 'desc']) ||
     candidateValue(nested, ['definition', 'description', 'desc']);
-}
-
-function datasetCandidateDefinition(candidate) {
-  const reasons = candidate?.reasons || [];
-  if (Array.isArray(reasons) && reasons.length) {
-    return reasons.filter(Boolean).slice(0, 2).join('；');
-  }
-  return candidateValue(candidate, ['reason', 'description', 'desc']);
 }
 
 function confidenceText(level) {
@@ -260,6 +256,166 @@ function confidenceText(level) {
 function toArray(value) {
   if (Array.isArray(value)) return value;
   return value == null || value === '' ? [] : [value];
+}
+
+const DETAIL_ROW_LIMIT = 100;
+const DETAIL_CELL_LIMIT = 240;
+const DETAIL_BLOCKED_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|query_plan|field_patch|repair_patch|control_plane)\b/i;
+
+function formatArtifactRef(ref) {
+  if (!ref) return '';
+  if (typeof ref === 'string') return ref;
+  if (typeof ref !== 'object') return '';
+  return ref.ref_id || ref.ref || ref.artifact_ref || ref.artifactRef || '';
+}
+
+function primaryArtifactRef(artifactCard) {
+  const refs = Array.isArray(artifactCard?.refs) ? artifactCard.refs : [];
+  return formatArtifactRef(
+    artifactCard?.primary_ref || artifactCard?.primaryRef || refs[0],
+  );
+}
+
+function actionArtifactRef(action, artifactCard) {
+  return formatArtifactRef(
+    action?.ref ||
+      action?.payload_ref ||
+      action?.payloadRef ||
+      action?.artifact_ref ||
+      action?.artifactRef ||
+      primaryArtifactRef(artifactCard),
+  );
+}
+
+function isReadableArtifactRef(ref) {
+  return /^artifact:/.test(String(ref || ''));
+}
+
+function safeDetailColumnText(value) {
+  const text = String(value || '').trim();
+  if (
+    !text ||
+    DETAIL_BLOCKED_TEXT_RE.test(text) ||
+    /sql|schema|raw|hidden|secret|queryplan|query_plan|patch|control|dsl/i.test(text)
+  ) {
+    return '';
+  }
+  return text;
+}
+
+function detailRowsFromArtifact(artifact) {
+  const rows = artifact?.content_json?.rows;
+  return Array.isArray(rows) ? rows : [];
+}
+
+function detailColumnsFromArtifact(artifact) {
+  const json = artifact?.content_json || {};
+  const rows = detailRowsFromArtifact(artifact);
+  const declared = Array.isArray(json.columns) ? json.columns : [];
+  const inferred = rows[0] && typeof rows[0] === 'object' && !Array.isArray(rows[0])
+    ? Object.keys(rows[0])
+    : [];
+  const labels = json.column_labels && typeof json.column_labels === 'object'
+    ? json.column_labels
+    : {};
+  const source = declared.length ? declared : inferred;
+  return source
+    .map((column, index) => {
+      const key = String(column || '').trim();
+      const label = safeDetailColumnText(labels[key] || labels[index] || key);
+      return { key, index, label };
+    })
+    .filter((column) => column.key && column.label && safeDetailColumnText(column.key));
+}
+
+function detailCellText(value) {
+  if (value === null || value === undefined) return '';
+  const raw = typeof value === 'string'
+    ? value
+    : typeof value === 'number' || typeof value === 'boolean'
+      ? String(value)
+      : JSON.stringify(value);
+  const text = String(raw || '').replace(/\r?\n/g, ' ').trim();
+  if (!text || DETAIL_BLOCKED_TEXT_RE.test(text)) return '';
+  return text.length > DETAIL_CELL_LIMIT ? `${text.slice(0, DETAIL_CELL_LIMIT)}...` : text;
+}
+
+function detailRowValue(row, column) {
+  if (Array.isArray(row)) return row[column.index];
+  if (row && typeof row === 'object') return row[column.key];
+  return null;
+}
+
+function ArtifactDetailPanel({ detail, onClose }) {
+  if (!detail || detail.status === 'idle') return null;
+  const artifact = detail.artifact || null;
+  const rows = detailRowsFromArtifact(artifact);
+  const columns = detailColumnsFromArtifact(artifact);
+  const visibleRows = rows.slice(0, DETAIL_ROW_LIMIT);
+  const declaredRowCount = Number(artifact?.content_json?.row_count);
+  const rowCount = Number.isFinite(declaredRowCount) ? declaredRowCount : rows.length;
+
+  return (
+    <div className="artifact-detail-panel">
+      <div className="artifact-detail-head">
+        <div>
+          <strong>查询结果详情</strong>
+          <span>{detail.ref || '结果产物'}</span>
+        </div>
+        <button type="button" className="artifact-detail-close" onClick={onClose}>
+          <Icon name="x" />
+        </button>
+      </div>
+
+      {detail.status === 'loading' && (
+        <div className="artifact-card-empty">正在加载结果数据...</div>
+      )}
+
+      {detail.status === 'error' && (
+        <div className="artifact-card-empty">{detail.error || '结果数据暂不可读取'}</div>
+      )}
+
+      {detail.status === 'ready' && (!rows.length || !columns.length) && (
+        <div className="artifact-card-empty">当前产物没有可展示的表格数据</div>
+      )}
+
+      {detail.status === 'ready' && rows.length > 0 && columns.length > 0 && (
+        <>
+          <div className="artifact-detail-meta">
+            <span>{rowCount} 行</span>
+            <span>{columns.length} 列</span>
+          </div>
+          <div className="artifact-card-table-wrap artifact-detail-table-wrap">
+            <table className="artifact-card-table">
+              <thead>
+                <tr>
+                  {columns.map((column) => (
+                    <th key={`${column.key}-${column.index}`}>{column.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {columns.map((column) => (
+                      <td key={`${rowIndex}-${column.key}-${column.index}`}>
+                        {detailCellText(detailRowValue(row, column))}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {rowCount > visibleRows.length && (
+            <div className="artifact-card-table-more">
+              当前展示前 {visibleRows.length} 行，共 {rowCount} 行
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 function dedupeValues(values, limit = 6) {
@@ -522,37 +678,32 @@ function TermClarificationCard({ clarification, routePayload, onSelect }) {
   const candidates = clarification?.candidates || routePayload?.candidates || [];
   if (!candidates.length) return null;
   const kind = clarificationKind(clarification, routePayload);
-  const isDataset = kind === 'dataset';
+  // 数据集选择统一交给 CandidateDatasetCard，避免同一轮弹出两套选择组件。
+  if (kind === 'dataset') return null;
   return (
     <div className="term-clarification-card">
       <div className="term-clarification-head">
         <span className="term-clarification-icon">
-          <Icon name={isDataset ? 'database' : 'book'} />
+          <Icon name="book" />
         </span>
         <div>
-          <strong>{isDataset ? '请选择数据集' : '请选择业务术语口径'}</strong>
-          <span>{isDataset ? '点击数据集后发送，或直接回复序号 / 数据集名称' : '点击候选后发送，或直接回复序号 / 术语名称'}</span>
+          <strong>请选择业务术语口径</strong>
+          <span>点击候选后发送，或直接回复序号 / 术语名称</span>
         </div>
       </div>
       <div className="term-clarification-options">
         {candidates.map((candidate, index) => {
           const optionIndex = candidate.index || index + 1;
-          const label = isDataset
-            ? datasetCandidateLabel(candidate, optionIndex)
-            : termCandidateLabel(candidate, optionIndex);
-          const subLabel = isDataset
-            ? datasetCandidateSubLabel(candidate)
-            : termCandidateSubLabel(candidate, label);
-          const definition = isDataset
-            ? datasetCandidateDefinition(candidate)
-            : termCandidateDefinition(candidate);
-          const candidateId = isDataset ? datasetCandidateId(candidate) : termCandidateId(candidate);
+          const label = termCandidateLabel(candidate, optionIndex);
+          const subLabel = termCandidateSubLabel(candidate, label);
+          const definition = termCandidateDefinition(candidate);
+          const candidateId = termCandidateId(candidate);
           return (
             <button
               key={`${candidateId || optionIndex}-${label}`}
               type="button"
               className="term-clarification-option"
-              onClick={() => onSelect(candidate, optionIndex, label, kind)}
+              onClick={() => onSelect(candidate, optionIndex, label)}
             >
               <span className="term-clarification-index">{optionIndex}</span>
               <span className="term-clarification-body">
@@ -686,113 +837,6 @@ function RepairPlanCard({ repairPlan }) {
   );
 }
 
-function artifactEntries({ resultRef, reportRef, subagentToolResults }) {
-  const entries = [];
-  const seen = new Set();
-  const push = (kind, ref, datasetId = null) => {
-    if (!ref || seen.has(ref)) return;
-    seen.add(ref);
-    entries.push({ kind, ref, datasetId });
-  };
-  push('result', resultRef);
-  push('report', reportRef);
-  for (const item of Array.isArray(subagentToolResults) ? subagentToolResults : []) {
-    push('result', item?.result_ref, item?.dataset_id);
-    push('report', item?.report_ref, item?.dataset_id);
-  }
-  return entries;
-}
-
-function artifactTitle(entry) {
-  const label = entry.kind === 'report' ? '报告' : '结果';
-  return entry.datasetId ? `数据集 ${entry.datasetId} ${label}` : `查看${label}`;
-}
-
-function ArtifactPreviewBody({ artifact }) {
-  const json = artifact?.content_json;
-  const text = artifact?.content_text;
-  const isSqlResult = artifact?.kind === 'sql_result' || Array.isArray(json?.rows);
-  if (isSqlResult) {
-    return <div className="artifact-empty">结果产物已生成，请通过受控详情页查看。</div>;
-  }
-
-  const reportText = text || json?.markdown || json?.report || json?.text || json?.content;
-  if (artifact?.kind === 'report' && reportText) {
-    return (
-      <div className="artifact-report">
-        <MessageContent text={String(reportText)} />
-      </div>
-    );
-  }
-
-  const fallback = text ?? (json ? JSON.stringify(json, null, 2) : '');
-  if (!fallback) return <div className="artifact-empty">暂无可展示内容</div>;
-  return <pre>{fallback}</pre>;
-}
-
-function ArtifactAccessCard({ resultRef, reportRef, subagentToolResults }) {
-  const entries = useMemo(
-    () => artifactEntries({ resultRef, reportRef, subagentToolResults }),
-    [resultRef, reportRef, subagentToolResults],
-  );
-  const [activeRef, setActiveRef] = useState(null);
-  const [artifact, setArtifact] = useState(null);
-  const [loadingRef, setLoadingRef] = useState(null);
-  const [error, setError] = useState('');
-
-  if (!entries.length) return null;
-
-  const loadArtifact = async (entry) => {
-    if (activeRef === entry.ref && artifact) {
-      setActiveRef(null);
-      setArtifact(null);
-      setError('');
-      return;
-    }
-    setActiveRef(entry.ref);
-    setLoadingRef(entry.ref);
-    setError('');
-    try {
-      setArtifact(await getArtifact(entry.ref));
-    } catch (_e) {
-      setArtifact(null);
-      setError('产物已过期或不可用');
-    } finally {
-      setLoadingRef(null);
-    }
-  };
-
-  return (
-    <div className="artifact-card">
-      <div className="artifact-actions">
-        {entries.map((entry) => (
-          <button
-            key={entry.ref}
-            type="button"
-            className={`artifact-btn ${activeRef === entry.ref ? 'active' : ''}`}
-            onClick={() => loadArtifact(entry)}
-            title={entry.ref}
-          >
-            <Icon name={entry.kind === 'report' ? 'book' : 'table'} style={{ width: 13, height: 13 }} />
-            <span>{artifactTitle(entry)}</span>
-            {loadingRef === entry.ref && <em>加载中</em>}
-          </button>
-        ))}
-      </div>
-      {error && <div className="artifact-error">{error}</div>}
-      {artifact && activeRef && (
-        <div className="artifact-preview">
-          <div className="artifact-preview-head">
-            <span>{artifact.kind}</span>
-            <span>{artifact.content_mime}</span>
-          </div>
-          <ArtifactPreviewBody artifact={artifact} />
-        </div>
-      )}
-    </div>
-  );
-}
-
 /**
  * AIMessage — 助理消息气泡
  * - 用 MessagePrimitive.Parts 把 reasoning / text 分开渲染
@@ -805,6 +849,7 @@ export function AIMessage() {
   const message = useAuiState((s) => s.message);
   const [showActions, setShowActions] = useState(false);
   const [feedbackState, setFeedbackState] = useState(null);
+  const [artifactDetail, setArtifactDetail] = useState({ status: 'idle' });
 
   const isStreaming = message?.status?.type === 'running';
   const custom = message?.metadata?.custom || {};
@@ -818,16 +863,12 @@ export function AIMessage() {
   const clarification = custom.clarification || null;
   const messageId = custom.messageId || null;
   const savedFeedback = custom.feedback || null;
-  const resultRef = custom.resultRef || null;
-  const reportRef = custom.reportRef || null;
-  const subagentToolResults = custom.subagentToolResults || null;
   // C-ready 数据结构
-  const taskTimeline = custom.taskTimeline || null;
   const artifactCard = custom.artifactCard || null;
   const candidateDatasets = custom.candidateDatasets || null;
   const repairPlan = custom.repairPlan || null;
 
-  const handleSelectClarification = (candidate, optionIndex, label, kind = 'term') => {
+  const handleSelectClarification = (candidate, optionIndex, label) => {
     const clarificationId =
       clarification?.clarificationId || routePayload?.clarification_id || null;
     const clarificationResponse = {
@@ -835,11 +876,7 @@ export function AIMessage() {
       selected_index: optionIndex,
       selected_text: label,
     };
-    if (kind === 'dataset') {
-      clarificationResponse.selected_dataset_id = datasetCandidateId(candidate);
-    } else {
-      clarificationResponse.selected_term_id = termCandidateId(candidate);
-    }
+    clarificationResponse.selected_term_id = termCandidateId(candidate);
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = clarificationResponse;
     window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
       detail: { text: `选择：${label}` },
@@ -874,6 +911,38 @@ export function AIMessage() {
     api.message().reload();
   };
 
+  const handleArtifactAction = async (action) => {
+    const actionType = action?.actionType || action?.action_type || action?.action_id || action?.actionId;
+    if (actionType === 'copy') {
+      const ref = actionArtifactRef(action, artifactCard);
+      if (ref) navigator.clipboard?.writeText(ref).catch(console.error);
+      return;
+    }
+    if (actionType !== 'view' && actionType !== 'open_ref') return;
+
+    const ref = actionArtifactRef(action, artifactCard);
+    if (!isReadableArtifactRef(ref)) {
+      setArtifactDetail({
+        status: 'error',
+        ref,
+        error: '当前结果引用不可直接读取',
+      });
+      return;
+    }
+
+    setArtifactDetail({ status: 'loading', ref });
+    try {
+      const artifact = await getArtifact(ref);
+      setArtifactDetail({ status: 'ready', ref, artifact });
+    } catch (_e) {
+      setArtifactDetail({
+        status: 'error',
+        ref,
+        error: '结果数据已过期或暂不可读取',
+      });
+    }
+  };
+
   return (
     <div
       className="msg-row msg-ai"
@@ -898,9 +967,6 @@ export function AIMessage() {
         </span>
       </div>
 
-      {/* 业务时间线 — 展示任务理解 / 数据集匹配 / BI 执行 / 结果产物 / 下一步 */}
-      <TaskTimeline events={taskTimeline} />
-
       {/* 内容区 — reasoning 由 ChainOfThought 接管，text 走 markdown */}
       <MessagePrimitive.Parts
         components={{
@@ -924,14 +990,12 @@ export function AIMessage() {
 
       <RepairPlanCard repairPlan={repairPlan} />
 
-      <ArtifactAccessCard
-        resultRef={resultRef}
-        reportRef={reportRef}
-        subagentToolResults={subagentToolResults}
-      />
-
       {/* C-ready ArtifactCard — 统一产物卡片 */}
-      <ArtifactCard artifact={artifactCard} />
+      <ArtifactCard artifact={artifactCard} onAction={handleArtifactAction} />
+      <ArtifactDetailPanel
+        detail={artifactDetail}
+        onClose={() => setArtifactDetail({ status: 'idle' })}
+      />
 
       {/* 图表 — 有 chartType 时渲染 */}
       {chartType && (

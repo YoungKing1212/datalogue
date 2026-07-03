@@ -164,6 +164,11 @@ export function listDatasets(datasourceId) {
   return get(`/api/dataset${qs}`);
 }
 
+/** 获取 LLM 模型配置列表；聊天模型选择器只消费 active 配置。 */
+export function listLLMModels() {
+  return get('/api/llm/models');
+}
+
 /** 创建数据集 */
 export function createDataset(data) {
   return post('/api/dataset', data);

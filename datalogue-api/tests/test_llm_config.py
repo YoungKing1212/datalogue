@@ -15,7 +15,7 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 from app.core.config import Settings
-from app.core.security import decrypt_password
+from app.core.security import decrypt_password, encrypt_password
 from app.models import LLMModelConfig, LLMRoleBinding
 from app.services.llm_config import resolve_llm_config
 
@@ -124,6 +124,49 @@ def test_resolve_llm_config_role_and_default_fallback(db_session):
     assert dsl_config.thinking_enabled is True
     assert report_config.model == "default-model"
     assert report_config.thinking_enabled is False
+
+
+def test_resolve_llm_config_explicit_model_config_id_overrides_role_binding(db_session):
+    """聊天框显式选择模型时，应只覆盖本轮模型配置，不改变角色归属。"""
+    settings = Settings(
+        OPENAI_API_KEY="env-key",
+        OPENAI_BASE_URL="https://env.example/v1",
+        LLM_MODEL="env-model",
+    )
+    default_model = LLMModelConfig(
+        name="Default DB",
+        provider="litellm",
+        base_url="http://localhost:4000/v1",
+        model="default-model",
+        api_key_enc=None,
+        status="active",
+    )
+    selected_model = LLMModelConfig(
+        name="Selected DB",
+        provider="qwen",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="qwen-plus",
+        api_key_enc=encrypt_password("sk-selected"),
+        status="active",
+        thinking_enabled=True,
+    )
+    db_session.add_all([default_model, selected_model])
+    db_session.flush()
+    db_session.add(LLMRoleBinding(role="lead_agent", model_config_id=default_model.id))
+    db_session.commit()
+
+    resolved = resolve_llm_config(
+        settings,
+        role="lead_agent",
+        db=db_session,
+        model_config_id=selected_model.id,
+    )
+
+    assert resolved.role == "lead_agent"
+    assert resolved.name == "Selected DB"
+    assert resolved.model == "qwen-plus"
+    assert resolved.api_key == "sk-selected"
+    assert resolved.thinking_enabled is True
 
 
 def test_get_llm_uses_database_role_config(db_session):

@@ -14,7 +14,7 @@
 import pytest
 
 from app.schemas.bi_workbench import build_datalogue_event_envelope
-from app.services.agentscope_event_projection import (
+from app.events.projection import (
     extract_refs_from_envelope,
     project_event_envelope_to_agentscope,
 )

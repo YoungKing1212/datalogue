@@ -1,17 +1,17 @@
 # BI_SOUL 内部契约
 
-`BI_SOUL.md` 是 Datalogue BI 能力不可越界协议的内部 source of truth。Agentic Shell、BI LeadAgent、Dataset SubAgent 和 Hermes Skill 都必须以本文件为边界说明来源；外部入口只同步本文件的公共边界，不重新定义 BI 真相源。
+`BI_SOUL.md` 是 Datalogue BI 能力不可越界协议的内部 source of truth。Agentic Shell、BI Agent、Dataset SubAgent 和 Hermes Skill 都必须以本文件为边界说明来源；外部入口只同步本文件的公共边界，不重新定义 BI 真相源。
 
 ## 内部职责
 
 - Datalogue BI 内核负责 Manifest 路由、schema 新鲜度检查、DatasetAgent 执行、SQL Guard、QueryArtifact、conversation_state 和 trace 写入。
-- BI LeadAgent 是确认与 handoff 控制面，只处理 run、确认门禁和 DatasetAgent 交接。
+- BI Agent 是确认与 handoff 控制面，只处理 run、确认门禁和 DatasetAgent 交接。
 - Dataset SubAgent 是数据集内执行面，负责语义资产召回、DSL/SQL 生成、SQL Guard、预览执行、结果摘要和 artifact 持久化。
 
 ## 外部入口同步块
 
 <!-- BEGIN BI_SOUL_SYNC -->
-- BI LeadAgent 不看字段级 schema 明细；字段、指标、维度、术语、蓝图和 SQL 生成都留在 DatasetAgent / BI 内核内。
+- BI Agent 不看字段级 schema 明细；字段、指标、维度、术语、蓝图和 SQL 生成都留在 DatasetAgent / BI 内核内。
 - 主 Runtime ownership 属于 Datalogue Agentic Shell；legacy `ask_bi` 和旧 Chat stream 已删除。
 - 外层 Agent 不得绕过 Datalogue BI 内核直连 schema、SQL preview、数据库或 Chat 主链内部节点。
 - LLM 不直接生成可执行 SQL；SQL 只能在 BI 内核受控链路中生成，并经过 SQL Guard、执行适配和 artifact 持久化。

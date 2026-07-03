@@ -2,7 +2,7 @@
 // 测试候选数据集确认和 ArtifactCard 在消息中的渲染
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 // Mock assistant-ui hooks — AIMessage 依赖这些
@@ -50,8 +50,24 @@ vi.mock('../components/task-timeline', () => ({
 }));
 
 vi.mock('../components/artifact-card', () => ({
-  default: ({ artifact }) =>
-    artifact ? <div data-testid="artifact-card">{artifact.title}</div> : null,
+  default: ({ artifact, onAction }) =>
+    artifact ? (
+      <div data-testid="artifact-card">
+        <span>{artifact.title}</span>
+        {(artifact.actions || []).map((action, index) => (
+          <button
+            key={`${action.action_type || action.action_id || index}`}
+            type="button"
+            onClick={() => onAction?.({
+              ...action,
+              actionType: action.action_type || action.action_id,
+            })}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
+    ) : null,
 }));
 
 vi.mock('../api/client', () => ({
@@ -88,6 +104,7 @@ describe('MyMessage — C-ready 渲染', () => {
     // 确保 window 对象可用
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = null;
     window.dispatchEvent = vi.fn();
+    getArtifact.mockReset();
   });
 
   it('renders artifact card when artifactCard is provided', () => {
@@ -105,7 +122,42 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.getByText('查询结果')).toBeInTheDocument();
   });
 
-  it('renders task timeline when taskTimeline is provided', () => {
+  it('loads query artifact rows when artifact view action is clicked', async () => {
+    getArtifact.mockResolvedValue({
+      artifact_ref: 'artifact:result-1',
+      kind: 'sql_result',
+      content_json: {
+        columns: ['channel', 'amount'],
+        row_count: 2,
+        rows: [
+          { channel: '线上', amount: 18000 },
+          { channel: '线下', amount: 9500 },
+        ],
+      },
+    });
+    setMockMessage({
+      artifactCard: {
+        title: '查询结果',
+        status: 'completed',
+        primary_ref: 'artifact:result-1',
+        actions: [
+          { action_type: 'view', label: '查看详情', ref: 'artifact:result-1' },
+        ],
+      },
+    });
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByRole('button', { name: /查看详情/ }));
+
+    expect(getArtifact).toHaveBeenCalledWith('artifact:result-1');
+    expect(await screen.findByText('查询结果详情')).toBeInTheDocument();
+    expect(screen.getByText('channel')).toBeInTheDocument();
+    expect(screen.getByText('amount')).toBeInTheDocument();
+    expect(screen.getByText('线上')).toBeInTheDocument();
+    expect(screen.getByText('18000')).toBeInTheDocument();
+  });
+
+  it('does not render task timeline inside chat message when taskTimeline is provided', () => {
     setMockMessage({
       taskTimeline: [
         { type: 'task_understood', label: '任务理解', text: '理解需求', status: 'done' },
@@ -113,7 +165,7 @@ describe('MyMessage — C-ready 渲染', () => {
     });
 
     render(<AIMessage />);
-    expect(screen.getByTestId('task-timeline')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-timeline')).not.toBeInTheDocument();
   });
 
   it('renders candidate dataset card when candidateDatasets is provided', () => {
@@ -134,6 +186,29 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.getByText('匹配销售查询')).toBeInTheDocument();
     expect(screen.getByText('用户日志')).toBeInTheDocument();
     expect(screen.getByText('匹配用户行为')).toBeInTheDocument();
+  });
+
+  it('does not render the legacy dataset clarification card when candidateDatasets is provided', () => {
+    setMockMessage({
+      clarification: {
+        kind: 'dataset_choice',
+        clarificationId: 'clarify-dataset',
+        candidates: [
+          { dataset_id: 7, dataset_name: '销售明细', reason: '匹配销售查询' },
+        ],
+      },
+      candidateDatasets: {
+        clarification_id: 'clarify-dataset',
+        candidates: [
+          { dataset_id: 7, dataset_name: '销售明细', short_reason: '匹配销售查询' },
+        ],
+      },
+    });
+
+    render(<AIMessage />);
+
+    expect(screen.getByText('候选数据集确认')).toBeInTheDocument();
+    expect(screen.queryByText('请选择数据集')).not.toBeInTheDocument();
   });
 
   it('does not render candidate dataset card when candidateDatasets is null', () => {
@@ -227,26 +302,29 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.queryByText(/hidden_table/i)).not.toBeInTheDocument();
   });
 
-  it('does not render raw artifact rows when opening result refs', async () => {
-    getArtifact.mockResolvedValueOnce({
-      kind: 'sql_result',
-      content_mime: 'application/json',
-      content_json: {
-        columns: ['secret_col'],
-        rows: [{ secret_col: 'raw_row_value', hidden_table: 'hidden_table' }],
-      },
-    });
+  it('does not render the result access button for result refs', () => {
     setMockMessage({
-      resultRef: 'artifact:result-raw',
+      resultRef: 'artifact:result-safe',
     });
 
     render(<AIMessage />);
-    fireEvent.click(screen.getByRole('button', { name: /查看结果/ }));
 
-    await waitFor(() => {
-      expect(getArtifact).toHaveBeenCalledWith('artifact:result-raw');
+    expect(screen.queryByRole('button', { name: /查看结果/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('查看结果')).not.toBeInTheDocument();
+  });
+
+  it('does not render artifact preview details from result refs inside the message', () => {
+    setMockMessage({
+      resultRef: 'artifact:result-raw',
+      subagentToolResults: [
+        { result_ref: 'artifact:result-raw', dataset_id: 12 },
+      ],
     });
-    expect(screen.getByText('结果产物已生成，请通过受控详情页查看。')).toBeInTheDocument();
+
+    render(<AIMessage />);
+
+    expect(screen.queryByText(/查看结果/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/结果产物已生成/)).not.toBeInTheDocument();
     expect(screen.queryByText(/secret_col/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/raw_row_value/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/hidden_table/i)).not.toBeInTheDocument();

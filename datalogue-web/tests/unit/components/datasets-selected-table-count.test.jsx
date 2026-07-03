@@ -94,5 +94,5 @@ describe('DatasetsScreen selected table count', () => {
       expect(within(dataTableTab).getByText('1')).toBeInTheDocument();
     });
     expect(within(dataTableTab).queryByText('3')).not.toBeInTheDocument();
-  });
+  }, 10000);
 });

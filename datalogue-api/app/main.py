@@ -20,6 +20,10 @@ from app.core.database import engine, Base
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api import router as api_router
+from app.middlewares.tracing import (
+    configure_agentscope_otel,
+    shutdown_agentscope_otel,
+)
 
 # 初始化带颜色的日志，可选持久化到文件
 settings = get_settings()
@@ -33,8 +37,12 @@ setup_logging(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_agentscope_otel()
     Base.metadata.create_all(bind=engine)
-    yield
+    try:
+        yield
+    finally:
+        shutdown_agentscope_otel()
 
 
 app = FastAPI(

@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.agentic_shell import DatalogueAgenticShell
-from app.services.agentscope_runtime_driver import DatalogueAgentScopeRuntimeDriver
+from app.runtime import DatalogueAgentScopeRuntimeDriver
+from app.agents.agentic_lead_agent import AgenticLeadAgent
 
 
 def test_agentscope_runtime_driver_accepts_only_agentic_shell_contract():
     driver = DatalogueAgentScopeRuntimeDriver()
-    shell = DatalogueAgenticShell()
+    shell = AgenticLeadAgent()
     shell_contract = shell.prepare_turn(
         question="查询 GMV",
         context={"dataset_id": 12, "sql": "select * from orders"},
@@ -63,7 +63,7 @@ def test_agentscope_runtime_driver_registers_bi_atomic_tools_without_ask_bi():
     ]
     assert runtime_contract.business_capabilities == ["query_dataset", "query_multiple_datasets"]
     assert runtime_contract.lead_agent_action.status == "ready"
-    assert runtime_contract.lead_agent_action.selected_agent == "bi_lead_agent"
+    assert runtime_contract.lead_agent_action.selected_agent == "bi_agent"
     assert runtime_contract.lead_agent_action.capability == "query_dataset"
     assert runtime_contract.lead_agent_action.allowed_capabilities == [
         "query_dataset",
@@ -145,7 +145,7 @@ def test_agentscope_runtime_driver_rejects_disabled_placeholder_without_tools():
 
 
 def test_agentscope_runtime_driver_registers_only_enabled_optional_agent_whitelist():
-    shell = DatalogueAgenticShell(enabled_optional_agents=["report_agent"])
+    shell = AgenticLeadAgent(enabled_optional_agents=["report_agent"])
     runtime_contract = DatalogueAgentScopeRuntimeDriver(shell=shell).prepare_runtime(
         question="根据 artifact 生成报告",
         context={"artifact_ref": "artifact:query-result"},

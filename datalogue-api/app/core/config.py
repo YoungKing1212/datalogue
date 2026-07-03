@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     LOG_MAX_BYTES: int = 10 * 1024 * 1024
     # 保留的轮转文件份数
     LOG_BACKUP_COUNT: int = 7
+    # 本地调试开关：打开后打印 Agent 原始 prompt 和返回值。
+    AGENT_DEBUG_RAW_LOGS: bool = False
 
     MULTITURN_ENABLED: bool = False
     MULTITURN_LOCK_TTL_SECONDS: int = 300
@@ -52,12 +54,19 @@ class Settings(BaseSettings):
     # LeadAgent Planner 输入投影灰度开关；默认关闭，生产按环境变量切流。
     LEAD_AGENT_PLANNER_USE_PROJECTION: bool = False
     LEAD_AGENT_ENABLE_DATASET_FANOUT: bool = False
-    # BI LeadAgent DatasetAgent fallback 默认关闭；dev_only 只允许本地开发显式打开，避免生产绕过 AgentScope handoff。
-    BI_LEAD_AGENT_DATASET_FALLBACK_MODE: str = "off"
-    # BI LeadAgent handoff 实现模式；K3 后默认直接启用 AgentScope native handoff。
-    BI_LEAD_AGENT_HANDOFF_MODE: str = "agentscope_native"
+    # BI Agent DatasetAgent fallback 默认关闭；dev_only 只允许本地开发显式打开，避免生产绕过 AgentScope handoff。
+    BI_LEAD_AGENT_DATASET_FALLBACK_MODE: str = "off"  # 兼容旧环境变量名；内部语义已迁为 BI Agent。
+    # BI Agent handoff 实现模式；K3 后默认直接启用 AgentScope native handoff。
+    BI_LEAD_AGENT_HANDOFF_MODE: str = "agentscope_native"  # 兼容旧环境变量名；内部语义已迁为 BI Agent。
     # AS-R0 历史影子开关：保留配置读取兼容，当前真实入口已切到 Agentic Shell task stream。
     AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED: bool = False
+
+    # AgentScope OpenTelemetry tracing；默认关闭，配置 OTLP endpoint 后自动启用。
+    OTEL_TRACES_ENABLED: bool = False
+    OTEL_SERVICE_NAME: str = "datalogue-api"
+    OTEL_TRACES_EXPORTER: str = "otlp"
+    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
+    OTEL_EXPORTER_OTLP_PROTOCOL: str = "http/protobuf"
 
     QUERY_ARTIFACT_TTL_SECONDS: int = 7 * 24 * 60 * 60
     QUERY_ARTIFACT_MAX_BYTES: int = 2 * 1024 * 1024
@@ -153,7 +162,7 @@ class Settings(BaseSettings):
 
     @field_validator("BI_LEAD_AGENT_DATASET_FALLBACK_MODE")
     @classmethod
-    def _validate_bi_lead_agent_dataset_fallback_mode(cls, value: str) -> str:
+    def _validate_bi_agent_dataset_fallback_mode(cls, value: str) -> str:
         normalized = (value or "off").strip().lower()
         if normalized not in {"off", "dev_only"}:
             raise ValueError("BI_LEAD_AGENT_DATASET_FALLBACK_MODE must be 'off' or 'dev_only'")
@@ -161,7 +170,7 @@ class Settings(BaseSettings):
 
     @field_validator("BI_LEAD_AGENT_HANDOFF_MODE")
     @classmethod
-    def _validate_bi_lead_agent_handoff_mode(cls, value: str) -> str:
+    def _validate_bi_agent_handoff_mode(cls, value: str) -> str:
         normalized = (value or "agentscope_native").strip().lower()
         if normalized not in {"host_adapter", "agentscope_native"}:
             raise ValueError("BI_LEAD_AGENT_HANDOFF_MODE must be 'host_adapter' or 'agentscope_native'")

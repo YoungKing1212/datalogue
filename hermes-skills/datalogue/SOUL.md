@@ -13,7 +13,7 @@ Hermes should treat this skill as a lightweight semantic catalog plus safe SQL p
 The following block is synchronized from `datalogue-api/app/contracts/BI_SOUL.md`; update the internal source of truth first, then sync this external entry.
 
 <!-- BEGIN BI_SOUL_SYNC -->
-- BI LeadAgent 不看字段级 schema 明细；字段、指标、维度、术语、蓝图和 SQL 生成都留在 DatasetAgent / BI 内核内。
+- BI Agent 不看字段级 schema 明细；字段、指标、维度、术语、蓝图和 SQL 生成都留在 DatasetAgent / BI 内核内。
 - 主 Runtime ownership 属于 Datalogue Agentic Shell；legacy `ask_bi` 和旧 Chat stream 已删除。
 - 外层 Agent 不得绕过 Datalogue BI 内核直连 schema、SQL preview、数据库或 Chat 主链内部节点。
 - LLM 不直接生成可执行 SQL；SQL 只能在 BI 内核受控链路中生成，并经过 SQL Guard、执行适配和 artifact 持久化。

@@ -575,9 +575,8 @@ async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
     }
     final_plan_payload = {
         "query_type": "detail_query",
-        "execution_strategy": "clarify",
+        "execution_strategy": "query_graph",
         "confidence": 0.86,
-        "clarification": {"message": "请确认查询范围。"},
         "selected_assets": [
             {
                 "asset_type": "table",
@@ -640,7 +639,19 @@ async def test_dataset_subagent_detail_loop_hydrates_table_schema_contract(
         lambda temperature=0.0, **kwargs: fake_llm,
     )
 
-    events = await _collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=None)
+    class FakeRunner:
+        def __init__(self, graph, db):
+            pass
+
+        async def run(self, request, trace_context, initial_state, **kwargs):
+            yield {"event": "on_chain_end", "data": {"output": {"answer": "完成"}}}
+
+    monkeypatch.setattr(
+        "app.services.dataset_subagent.InProcessDatasetSubAgentRunner",
+        FakeRunner,
+    )
+
+    events = await _collect(DatasetSubAgent(db=db_session, dataset_id=10), _request(), graph=object())
 
     asset_detail_event = next(event for event in events if event.event_type == "asset_detail")
     query_plan_event = next(event for event in events if event.event_type == "query_plan")

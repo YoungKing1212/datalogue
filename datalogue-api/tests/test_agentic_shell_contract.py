@@ -14,14 +14,15 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
 from app.models.dataset import AnalysisBlueprint
 from app.services.artifact_store import ArtifactStore
-from app.services.agentic_shell import DatalogueAgenticShell, InMemoryAgenticShellWriter
-from app.services.bi_tools import build_bi_atomic_toolkit
+from app.agents.agentic_lead_agent import AgenticLeadAgent, InMemoryAgenticShellWriter
+from app.bi.toolkit import build_bi_atomic_toolkit
 from app.services.subagent_planning import CandidateAsset, QueryPlan
 
 
@@ -39,7 +40,7 @@ def _field_asset(name: str, table_name: str, column_name: str) -> CandidateAsset
 
 
 def test_agentic_shell_as_r0_registry_enables_only_bi_main_chain():
-    shell = DatalogueAgenticShell()
+    shell = AgenticLeadAgent()
 
     contract = shell.prepare_turn(
         question="查询 GMV 和订单数",
@@ -48,8 +49,8 @@ def test_agentic_shell_as_r0_registry_enables_only_bi_main_chain():
 
     assert contract.status == "ready"
     assert contract.task_type == "bi_query"
-    assert contract.selected_agent == "bi_lead_agent"
-    assert contract.enabled_agents == ["bi_lead_agent"]
+    assert contract.selected_agent == "bi_agent"
+    assert contract.enabled_agents == ["bi_agent"]
     assert {"report_agent", "python_agent", "audit_agent"}.issubset(contract.disabled_agents)
 
     assert contract.tool_policy.allowed_tools == [
@@ -75,8 +76,37 @@ def test_agentic_shell_as_r0_registry_enables_only_bi_main_chain():
     }
 
 
+def test_agentic_lead_agent_keeps_raw_debug_payloads_without_lifecycle_logs(caplog, monkeypatch):
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+    shell = AgenticLeadAgent()
+
+    with caplog.at_level(logging.INFO, logger="app.middlewares.lifecycle"):
+        contract = shell.prepare_turn(
+            question="查询 GMV 和订单数",
+            context={
+                "dataset_id": 12,
+                "conversation_id": 7,
+                "sql": "select * from secret_orders",
+                "schema_context": {"tables": ["secret_orders"]},
+                "safe_note": "保留业务上下文",
+            },
+        )
+
+    assert contract.selected_agent == "bi_agent"
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"selected_agent": "bi_agent"' in logs
+    assert '"task_type": "bi_query"' in logs
+    assert '"business_capabilities": ["query_dataset", "query_multiple_datasets"]' in logs
+    assert "[datalogue.lifecycle]" not in logs
+    assert "[datalogue.raw]" in logs
+    assert '"stage": "agentic_lead_agent.raw.input"' in logs
+    assert '"stage": "agentic_lead_agent.raw.output"' in logs
+    assert "select * from secret_orders" in logs
+    assert "secret_orders" in logs
+
+
 def test_agentic_shell_context_projection_and_output_sanitizer_drop_execution_payloads():
-    shell = DatalogueAgenticShell()
+    shell = AgenticLeadAgent()
 
     contract = shell.prepare_turn(
         question="查询销售额",
@@ -129,20 +159,20 @@ def test_agentic_shell_context_projection_and_output_sanitizer_drop_execution_pa
 
 
 def test_agentic_shell_non_bi_task_routes_to_disabled_placeholder_without_tools():
-    shell = DatalogueAgenticShell()
+    shell = AgenticLeadAgent()
 
     contract = shell.prepare_turn(question="根据查询结果生成一份经营报告")
 
     assert contract.status == "disabled"
     assert contract.task_type == "report"
     assert contract.selected_agent == "report_agent"
-    assert contract.enabled_agents == ["bi_lead_agent"]
+    assert contract.enabled_agents == ["bi_agent"]
     assert "report_agent" in contract.disabled_agents
     assert contract.tool_policy.allowed_tools == []
 
 
-def test_agentic_shell_bi_lead_agent_routes_only_query_capabilities():
-    shell = DatalogueAgenticShell()
+def test_agentic_shell_bi_agent_routes_only_query_capabilities():
+    shell = AgenticLeadAgent()
 
     action = shell.route_agent_action(
         question="查询 GMV",
@@ -151,8 +181,8 @@ def test_agentic_shell_bi_lead_agent_routes_only_query_capabilities():
     )
 
     assert action.status == "ready"
-    assert action.selected_agent == "bi_lead_agent"
-    assert action.action_type == "bi_lead_agent.capability_route"
+    assert action.selected_agent == "bi_agent"
+    assert action.action_type == "bi_agent.capability_route"
     assert action.capability == "query_dataset"
     assert action.allowed_capabilities == ["query_dataset", "query_multiple_datasets"]
     assert action.payload == {"question": "查询 GMV", "dataset_id": 12}
@@ -164,15 +194,15 @@ def test_agentic_shell_bi_lead_agent_routes_only_query_capabilities():
     )
 
     assert blocked.status == "disabled"
-    assert blocked.selected_agent == "bi_lead_agent"
-    assert blocked.action_type == "bi_lead_agent.disabled"
+    assert blocked.selected_agent == "bi_agent"
+    assert blocked.action_type == "bi_agent.disabled"
     assert blocked.capability == "create_report_from_artifact"
     assert blocked.allowed_capabilities == ["query_dataset", "query_multiple_datasets"]
     assert blocked.disabled_reason == "capability_not_whitelisted"
 
 
 def test_agentic_shell_report_python_audit_return_disabled_actions():
-    shell = DatalogueAgenticShell()
+    shell = AgenticLeadAgent()
 
     report_action = shell.route_agent_action(question="根据查询结果生成一份经营报告")
     python_action = shell.route_agent_action(question="用 python 分析查询结果")
@@ -199,7 +229,7 @@ def test_agentic_shell_report_python_audit_return_disabled_actions():
 
 
 def test_agentic_shell_can_enable_report_agent_with_single_tool_whitelist():
-    shell = DatalogueAgenticShell(enabled_optional_agents=["report_agent"])
+    shell = AgenticLeadAgent(enabled_optional_agents=["report_agent"])
 
     contract = shell.prepare_turn(
         question="根据 artifact 生成报告",
@@ -228,7 +258,7 @@ def test_agentic_shell_can_enable_report_agent_with_single_tool_whitelist():
 
 
 def test_agentic_shell_can_enable_python_agent_with_single_tool_whitelist():
-    shell = DatalogueAgenticShell(enabled_optional_agents=["python_agent"])
+    shell = AgenticLeadAgent(enabled_optional_agents=["python_agent"])
 
     contract = shell.prepare_turn(
         question="用 python 分析 artifact",
@@ -249,7 +279,7 @@ def test_agentic_shell_can_enable_python_agent_with_single_tool_whitelist():
 
 
 def test_agentic_shell_can_enable_audit_agent_with_single_tool_whitelist():
-    shell = DatalogueAgenticShell(enabled_optional_agents=["audit_agent"])
+    shell = AgenticLeadAgent(enabled_optional_agents=["audit_agent"])
 
     contract = shell.prepare_turn(
         question="审计这次查询失败",
@@ -271,7 +301,7 @@ def test_agentic_shell_can_enable_audit_agent_with_single_tool_whitelist():
 
 def test_agentic_shell_writer_interface_sanitizes_event_action_and_checkpoint_payloads():
     writer = InMemoryAgenticShellWriter()
-    shell = DatalogueAgenticShell(writer=writer)
+    shell = AgenticLeadAgent(writer=writer)
 
     event_record = shell.record_event(
         event_type="dataset.query.completed",
@@ -322,7 +352,7 @@ def test_agentic_shell_writer_interface_sanitizes_event_action_and_checkpoint_pa
 
 
 def test_agentic_shell_default_writer_is_noop_interface_only():
-    shell = DatalogueAgenticShell()
+    shell = AgenticLeadAgent()
 
     record = shell.record_event(
         event_type="answer.completed",
@@ -343,8 +373,8 @@ def test_bi_atomic_toolkit_and_runtime_driver_import_in_clean_process():
             "-c",
             (
                 "import importlib;"
-                "importlib.import_module('app.services.bi_tools');"
-                "importlib.import_module('app.services.agentscope_runtime_driver')"
+                "importlib.import_module('app.bi.toolkit');"
+                "importlib.import_module('app.runtime')"
             ),
         ],
         check=False,

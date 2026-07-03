@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : test_bi_lead_agent_handoff_parity.py
 # Description:
-#   BI LeadAgent Host Adapter 与 AgentScope native handoff 同构测试。
+#   BI Agent Host Adapter 与 AgentScope native handoff 同构测试。
 #
 # Responsibilities:
 #   - 验证两种 handoff 实现对同一输入输出相同的 D2 安全字段形态。
@@ -17,13 +17,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.schemas.bi_lead_agent import BILeadAgentHandoffRequest
-from app.services.bi_lead_agent.handoff_adapter import DatalogueBIHandoffAdapter
-from app.services.bi_lead_agent.native_handoff import AgentScopeNativeBIHandoff
+from app.schemas.bi_agent import BIAgentHandoffRequest
+from app.agents.bi_agent.handoff_adapter import DatalogueBIHandoffAdapter
+from app.agents.bi_agent.native_handoff import AgentScopeNativeBIHandoff
 
 
-def _handoff_request() -> BILeadAgentHandoffRequest:
-    return BILeadAgentHandoffRequest(
+def _handoff_request() -> BIAgentHandoffRequest:
+    return BIAgentHandoffRequest(
         dataset_id=10,
         confirmed_question="统计 2026 年各渠道 GMV",
         task_goal="执行单数据集问数",
