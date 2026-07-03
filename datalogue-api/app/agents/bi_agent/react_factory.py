@@ -60,5 +60,5 @@ class BIAgentFactory:
                 stream=True,
                 model_config_id=model_config_id,
             ),
-            toolkit=Toolkit(tools=[build_datalogue_query_dataset_tool(db=self.db)]),
+            toolkit=Toolkit(tools=[build_datalogue_query_dataset_tool()]),
         )

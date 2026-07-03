@@ -82,15 +82,7 @@ async def test_bi_agent_factory_creates_agentscope_agent_with_dataset_tools(db_s
     assert agent.model.stream is True
     tool_schemas = await _resolve_tool_schemas(agent.toolkit)
     tool_names = [schema["function"]["name"] for schema in tool_schemas]
-    assert tool_names == [
-        "get_dataset_status",
-        "list_candidate_assets",
-        "compile_dsl_to_sql",
-        "execute_compiled_query",
-        "repair_dsl",
-        "create_query_artifact",
-        "get_artifact_summary",
-    ]
+    assert tool_names == ["datalogue_query_dataset"]
 
 
 class FakeLeadAgent:
@@ -520,7 +512,7 @@ async def test_direct_query_runner_logs_agent_prompts_and_outputs_without_lifecy
     assert '"agent": "agentic_lead_agent"' in log_text
     assert '"agent": "bi_agent"' in log_text
     assert "Datalogue AgenticLeadAgent" in log_text
-    assert "Datalogue BI Agent" in log_text
+    assert "Datalogue 固定注册 BI Agent" in log_text
     assert "统计合同总金额" in log_text
     assert '"selected_agent": "bi_agent"' in log_text
     assert '"artifact_ref": "artifact:direct"' in log_text
