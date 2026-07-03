@@ -867,4 +867,177 @@ describe('chat-adapter C-ready metadata', () => {
     expect(final.metadata.custom.taskTimeline.map((item) => item.type)).toContain('repair_patch');
     expect(JSON.stringify(final.metadata.custom)).not.toMatch(/bad_col|work_log|replacement_field_ref/i);
   });
+
+  it('projects handoff, tool groups and timing into assistant-ui parts with safe metadata', async () => {
+    streamAgenticShellTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'agent.handoff.started',
+          task_id: 'task-p3',
+          trace_id: 'trace-p3',
+          payload: {
+            from_agent: 'agentic_lead_agent',
+            to_agent: 'bi_agent',
+            summary: '已转交 BI Agent 处理问数任务',
+            reason: '需要查询数据集',
+            timing: { elapsed_ms: 120 },
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'tool_call.started',
+          task_id: 'task-p3',
+          trace_id: 'trace-p3',
+          payload: {
+            tool_name: 'dataset_query',
+            tool_call_id: 'tool-p3',
+            agent: 'bi_agent',
+            summary: '正在查询数据集',
+            timing: { started_at: '2026-07-03T10:00:00Z' },
+            query_plan: { sql: 'SELECT secret_col FROM hidden_table' },
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'tool_call.completed',
+          task_id: 'task-p3',
+          trace_id: 'trace-p3',
+          payload: {
+            tool_name: 'dataset_query',
+            tool_call_id: 'tool-p3',
+            agent: 'bi_agent',
+            summary: '已完成数据集查询',
+            artifact_ref: 'artifact:tool-safe',
+            checkpoint_ref: 'checkpoint:tool-safe',
+            row_count: 42,
+            timing: { started_at: '2026-07-03T10:00:00Z', ended_at: '2026-07-03T10:00:01Z', elapsed_ms: 1000 },
+            schema: { fields: ['secret_col'] },
+            rows: [{ secret_col: 'raw_row_value' }],
+            RepairPatch: { replacement_field_ref: 'hidden_table.secret_col' },
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          task_id: 'task-p3',
+          trace_id: 'trace-p3',
+          payload: {
+            summary: '查询完成',
+            artifact_ref: 'artifact:tool-safe',
+            row_count: 42,
+            timing: { elapsed_ms: 1400 },
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询销售趋势', threadId: 'local-thread' }));
+    const final = chunks.at(-1);
+    const reasoning = final.content.find((part) => part.type === 'reasoning' && part.kind === 'handoff');
+    const toolPart = final.content.find((part) => part.type === 'tool-call' && part.toolName === 'dataset_query');
+    const custom = final.metadata.custom;
+
+    expect(reasoning).toMatchObject({
+      kind: 'handoff',
+      status: 'running',
+      title: 'Agent handoff',
+      agent: 'bi_agent',
+      timing: { elapsed_ms: 120 },
+    });
+    expect(toolPart).toMatchObject({
+      type: 'tool-call',
+      toolCallId: 'tool-p3',
+      toolName: 'dataset_query',
+      args: {
+        kind: 'tool',
+        status: 'completed',
+        title: 'dataset_query',
+        summary: '已完成数据集查询',
+        agent: 'bi_agent',
+        rowCount: 42,
+      },
+      result: {
+        kind: 'tool',
+        status: 'completed',
+        refs: {
+          artifactRef: 'artifact:tool-safe',
+          checkpointRef: 'checkpoint:tool-safe',
+        },
+        rowCount: 42,
+      },
+      timing: { elapsed_ms: 1000 },
+    });
+    expect(custom.toolGroups).toEqual([
+      expect.objectContaining({
+        kind: 'tool_group',
+        status: 'completed',
+        agent: 'bi_agent',
+        toolName: 'dataset_query',
+        rowCount: 42,
+        refs: {
+          artifactRef: 'artifact:tool-safe',
+          checkpointRef: 'checkpoint:tool-safe',
+        },
+        timing: expect.objectContaining({ elapsed_ms: 1000 }),
+      }),
+    ]);
+    expect(custom.timing).toMatchObject({
+      message: { elapsed_ms: 1400 },
+      tools: [{ toolName: 'dataset_query', elapsed_ms: 1000 }],
+    });
+    expect(JSON.stringify(final)).not.toMatch(/SELECT|secret_col|hidden_table|raw_row_value|query_plan|schema|rows|RepairPatch|replacement_field_ref/i);
+  });
+
+  it('projects confirmation requests as reasoning parts and safe metadata only', async () => {
+    streamAgenticShellTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'confirmation.required',
+          task_id: 'task-p4',
+          payload: {
+            agent: 'bi_agent',
+            tool_name: 'dataset_query',
+            summary: '需要确认查询范围',
+            dataset_id: 7,
+            timing: { elapsed_ms: 320 },
+            schema: { fields: ['secret_col'] },
+            raw_rows: [{ secret_col: 'raw' }],
+          },
+        },
+      },
+      {
+        type: 'final',
+        answer: '请确认查询范围后继续。',
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询销售趋势', threadId: 'local-thread' }));
+    const final = chunks.at(-1);
+    const confirmation = final.content.find((part) => part.type === 'reasoning' && part.kind === 'confirmation');
+
+    expect(confirmation).toMatchObject({
+      kind: 'confirmation',
+      status: 'requires_action',
+      title: '需要确认',
+      summary: '需要确认查询范围',
+      agent: 'bi_agent',
+      toolName: 'dataset_query',
+      timing: { elapsed_ms: 320 },
+    });
+    expect(final.metadata.custom.confirmations).toEqual([
+      expect.objectContaining({
+        kind: 'confirmation',
+        status: 'requires_action',
+        summary: '需要确认查询范围',
+        agent: 'bi_agent',
+        toolName: 'dataset_query',
+      }),
+    ]);
+    expect(JSON.stringify(final)).not.toMatch(/secret_col|schema|raw_rows/i);
+  });
 });

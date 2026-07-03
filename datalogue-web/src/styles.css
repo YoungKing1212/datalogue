@@ -6536,12 +6536,12 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 
 /* ─── THREAD LIST (chat 左列) ─── */
 .thread-list-col {
-  width: 260px;
+  width: 264px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--hairline);
-  background: var(--sidebar-bg);
+  background: var(--surface);
   min-height: 0;
   overflow: hidden;
 }
@@ -6550,49 +6550,50 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  padding: 12px 10px;
-  gap: 12px;
+  padding: 14px;
+  gap: 8px;
   overflow-y: auto;
 }
 .thread-list-new {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  height: 32px;
-  border: 1px dashed var(--hairline-strong);
+  gap: 8px;
+  height: 36px;
+  border: 1px solid var(--hairline);
   border-radius: 8px;
-  background: transparent;
-  color: var(--text-2);
+  background: var(--surface);
+  color: var(--text);
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.12s;
   font-family: inherit;
+  box-shadow: none;
 }
 .thread-list-new:hover {
-  background: var(--surface);
-  border-color: var(--accent-line);
+  background: var(--surface-2);
+  border-color: var(--hairline-strong);
   color: var(--text);
-  border-style: solid;
 }
 .thread-list-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   min-height: 0;
 }
 .thread-list-section-head {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-3);
-  letter-spacing: 0.04em;
   padding: 4px 6px;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .thread-list-items {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 8px;
 }
 .thread-list-item {
   position: relative;
@@ -6601,15 +6602,19 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   gap: 6px;
   min-width: 0;
   padding: 0;
-  border-radius: 6px;
-  transition: background 0.1s;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  transition: background 0.12s, border-color 0.12s;
 }
 .thread-list-item:hover {
-  background: var(--surface);
+  background: var(--surface-2);
+  border-color: var(--hairline);
 }
-.thread-list-item.active {
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px var(--accent-line);
+.thread-list-item[data-active] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  box-shadow: none;
 }
 .thread-list-item-trigger {
   flex: 1;
@@ -6617,7 +6622,8 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 6px 8px;
+  min-height: 34px;
+  padding: 8px 10px;
   background: transparent;
   border: 0;
   color: var(--text-2);
@@ -6639,32 +6645,54 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   white-space: nowrap;
   display: block;
 }
-.thread-list-item.active .thread-list-item-trigger {
+.thread-list-item[data-active] .thread-list-item-trigger {
   color: var(--text);
   font-weight: 500;
 }
-.thread-list-item-del {
+.thread-list-item-action {
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-right: 4px;
+  margin-right: 6px;
   border: 0;
   background: transparent;
   color: var(--text-3);
-  border-radius: 4px;
+  border-radius: 7px;
   cursor: pointer;
   opacity: 0;
   transition: all 0.1s;
 }
-.thread-list-item:hover .thread-list-item-del {
+.thread-list-item:hover .thread-list-item-action,
+.thread-list-item[data-active] .thread-list-item-action {
   opacity: 1;
+}
+.thread-list-item-action:hover {
+  background: var(--surface-3);
+  color: var(--text-2);
 }
 .thread-list-item-del:hover {
   background: var(--neg-soft);
   color: var(--neg);
+}
+.thread-list-load-more {
+  display: none;
+  height: 30px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 12px;
+  font-family: inherit;
+}
+.thread-list-load-more:not(:disabled) {
+  display: block;
+}
+.thread-list-load-more:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text-2);
 }
 
 /* 取消按钮（运行时替代发送按钮） */
@@ -6901,6 +6929,29 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 }
 .msg-actions {
   margin-top: 8px;
+}
+.msg-actions .action-btn {
+  width: 26px;
+  height: 26px;
+  color: var(--text-3);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+.msg-actions .action-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.msg-actions .action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.msg-actions .action-btn .icon {
+  width: 13px;
+  height: 13px;
 }
 
 /* ============================================================
@@ -8440,5 +8491,439 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   .bi-agent-run-panel__shape {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+}
+
+/* assistant-ui 裸预览模式：用于确认组件迁移是否已接到页面主路径。
+   通过 /chat?bare=1 打开，只剥离 Chat 区域的 Datalogue 品牌样式，不改变 runtime。 */
+.chat-layout.aui-bare-preview {
+  --bare-border: #d0d7de;
+  --bare-bg: #fff;
+  --bare-muted: #57606a;
+  background: #f6f8fa;
+  color: #24292f;
+  gap: 0;
+  font-family: Arial, sans-serif;
+}
+
+.chat-layout.aui-bare-preview .thread-list-col,
+.chat-layout.aui-bare-preview .chat-main,
+.chat-layout.aui-bare-preview .bi-agent-side-panel,
+.chat-layout.aui-bare-preview .agent-panel {
+  background: var(--bare-bg);
+  border-color: var(--bare-border);
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.chat-layout.aui-bare-preview .thread-list-col {
+  width: 240px;
+  padding: 12px;
+}
+
+.chat-layout.aui-bare-preview .thread-list-root,
+.chat-layout.aui-bare-preview .thread-list-section,
+.chat-layout.aui-bare-preview .thread-list-items {
+  gap: 8px;
+}
+
+.chat-layout.aui-bare-preview .thread-list-new,
+.chat-layout.aui-bare-preview .thread-list-item,
+.chat-layout.aui-bare-preview .thread-list-item-trigger,
+.chat-layout.aui-bare-preview .tool-chip,
+.chat-layout.aui-bare-preview .ce-pill,
+.chat-layout.aui-bare-preview .composer-fab,
+.chat-layout.aui-bare-preview .ce-send,
+.chat-layout.aui-bare-preview .action-btn {
+  background: transparent;
+  border: 1px solid var(--bare-border);
+  border-radius: 3px;
+  color: #24292f;
+  box-shadow: none;
+}
+
+.chat-layout.aui-bare-preview .thread-list-item[data-active],
+.chat-layout.aui-bare-preview .thread-list-item-trigger:hover,
+.chat-layout.aui-bare-preview .thread-list-new:hover,
+.chat-layout.aui-bare-preview .tool-chip:hover,
+.chat-layout.aui-bare-preview .ce-pill:hover,
+.chat-layout.aui-bare-preview .action-btn:hover:not(:disabled) {
+  background: #f6f8fa;
+}
+
+.chat-layout.aui-bare-preview .chat-main {
+  padding: 16px;
+}
+
+.chat-layout.aui-bare-preview .chat-scroll,
+.chat-layout.aui-bare-preview .ce-stage {
+  background: transparent;
+  padding: 16px;
+}
+
+.chat-layout.aui-bare-preview .ce-stage::before,
+.chat-layout.aui-bare-preview .ce-stage::after,
+.chat-layout.aui-bare-preview .ce-mark,
+.chat-layout.aui-bare-preview .ai-mark,
+.chat-layout.aui-bare-preview .bars {
+  display: none;
+}
+
+.chat-layout.aui-bare-preview .ce-inner,
+.chat-layout.aui-bare-preview .chat-inner {
+  max-width: none;
+  width: 100%;
+}
+
+.chat-layout.aui-bare-preview .ce-head {
+  text-align: left;
+  margin: 0 0 16px;
+}
+
+.chat-layout.aui-bare-preview .ce-eyebrow,
+.chat-layout.aui-bare-preview .ce-sub,
+.chat-layout.aui-bare-preview .thread-list-section-head,
+.chat-layout.aui-bare-preview .stage,
+.chat-layout.aui-bare-preview .artifact-card-summary {
+  color: var(--bare-muted);
+}
+
+.chat-layout.aui-bare-preview .ce-title {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  letter-spacing: 0;
+}
+
+.chat-layout.aui-bare-preview .ce-composer,
+.chat-layout.aui-bare-preview .composer,
+.chat-layout.aui-bare-preview .composer-inner,
+.chat-layout.aui-bare-preview .msg-ai,
+.chat-layout.aui-bare-preview .user-bubble,
+.chat-layout.aui-bare-preview .artifact-card,
+.chat-layout.aui-bare-preview .cot-root,
+.chat-layout.aui-bare-preview .ds-dropdown {
+  background: #fff;
+  border: 1px solid var(--bare-border);
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+.chat-layout.aui-bare-preview .ce-input,
+.chat-layout.aui-bare-preview .composer-input,
+.chat-layout.aui-bare-preview textarea {
+  background: #fff;
+  color: #24292f;
+  border: 1px solid var(--bare-border);
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+.chat-layout.aui-bare-preview .ce-suggrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.chat-layout.aui-bare-preview .ce-sug {
+  background: #fff;
+  border: 1px solid var(--bare-border);
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+.chat-layout.aui-bare-preview .ce-sug .tile,
+.chat-layout.aui-bare-preview .ce-sug .go {
+  display: none;
+}
+
+.chat-layout.aui-bare-preview .msg-row {
+  padding: 12px 0;
+}
+
+.chat-layout.aui-bare-preview .msg-actions {
+  opacity: 1;
+}
+
+/* assistant-ui AgentScope 参照预览模式：借鉴 examples/web_ui 的 shadcn/Radix/Tailwind 视觉语言。
+   通过 /chat?skin=agentscope 打开；只覆盖外观，不引入 AgentScope message 协议或运行时。 */
+.chat-layout.aui-agentscope-preview {
+  --as-bg: var(--bg-2);
+  --as-surface: var(--surface);
+  --as-surface-soft: var(--surface-2);
+  --as-surface-strong: var(--surface-3);
+  --as-border: var(--hairline);
+  --as-border-strong: var(--hairline-strong);
+  --as-text: var(--text);
+  --as-muted: var(--text-3);
+  --as-muted-strong: var(--text-2);
+  --as-accent: var(--accent);
+  --as-accent-soft: var(--accent-soft);
+  --as-accent-line: var(--accent-line);
+  --as-radius: 10px;
+  --as-shadow: var(--shadow-md);
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 72%), rgb(244 248 252 / 96%)),
+    var(--as-bg);
+  color: var(--as-text);
+  gap: 0;
+  font-family: var(--font-sans);
+}
+
+.chat-layout.aui-agentscope-preview .chat-main,
+.chat-layout.aui-agentscope-preview .bi-agent-side-panel,
+.chat-layout.aui-agentscope-preview .agent-panel {
+  background: var(--as-surface);
+  border-color: var(--as-border);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.chat-layout.aui-agentscope-preview .thread-list-new,
+.chat-layout.aui-agentscope-preview .thread-list-item,
+.chat-layout.aui-agentscope-preview .thread-list-item-trigger,
+.chat-layout.aui-agentscope-preview .thread-list-item-del,
+.chat-layout.aui-agentscope-preview .tool-chip,
+.chat-layout.aui-agentscope-preview .ce-pill,
+.chat-layout.aui-agentscope-preview .composer-fab,
+.chat-layout.aui-agentscope-preview .ce-send,
+.chat-layout.aui-agentscope-preview .action-btn,
+.chat-layout.aui-agentscope-preview .artifact-card-action {
+  border: 1px solid var(--as-border);
+  border-radius: 8px;
+  background: var(--as-surface);
+  color: var(--as-text);
+  box-shadow: none;
+  font-weight: 500;
+}
+
+.chat-layout.aui-agentscope-preview .thread-list-item[data-active] .thread-list-item-trigger,
+.chat-layout.aui-agentscope-preview .thread-list-item-trigger:hover,
+.chat-layout.aui-agentscope-preview .thread-list-new:hover,
+.chat-layout.aui-agentscope-preview .tool-chip:hover,
+.chat-layout.aui-agentscope-preview .ce-pill:hover,
+.chat-layout.aui-agentscope-preview .action-btn:hover:not(:disabled),
+.chat-layout.aui-agentscope-preview .artifact-card-action:hover:not(:disabled) {
+  background: var(--as-surface-soft);
+  border-color: var(--as-border-strong);
+}
+
+.chat-layout.aui-agentscope-preview .thread-list-item[data-active] .thread-list-item-trigger,
+.chat-layout.aui-agentscope-preview .tool-chip.on,
+.chat-layout.aui-agentscope-preview .ce-pill.on {
+  background: var(--as-accent-soft);
+  border-color: var(--as-accent-line);
+  color: var(--as-text);
+}
+
+.chat-layout.aui-agentscope-preview .chat-main {
+  padding: 0;
+}
+
+.chat-layout.aui-agentscope-preview .chat-scroll {
+  background: var(--as-bg);
+  padding: 24px 28px 16px;
+}
+
+.chat-layout.aui-agentscope-preview .chat-inner,
+.chat-layout.aui-agentscope-preview .ce-inner {
+  max-width: 880px;
+}
+
+.chat-layout.aui-agentscope-preview .ce-stage {
+  background: var(--as-bg);
+  padding: 44px 28px 28px;
+}
+
+.chat-layout.aui-agentscope-preview .ce-stage::before,
+.chat-layout.aui-agentscope-preview .ce-stage::after,
+.chat-layout.aui-agentscope-preview .ce-mark,
+.chat-layout.aui-agentscope-preview .bars {
+  display: none;
+}
+
+.chat-layout.aui-agentscope-preview .ce-head {
+  margin: 0 auto 24px;
+}
+
+.chat-layout.aui-agentscope-preview .ce-eyebrow {
+  color: var(--as-muted);
+  letter-spacing: 0;
+}
+
+.chat-layout.aui-agentscope-preview .ce-title {
+  color: var(--as-text);
+  font-size: 30px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.chat-layout.aui-agentscope-preview .ce-sub,
+.chat-layout.aui-agentscope-preview .stage,
+.chat-layout.aui-agentscope-preview .artifact-card-summary,
+.chat-layout.aui-agentscope-preview .cot-meta,
+.chat-layout.aui-agentscope-preview .tool-card-meta,
+.chat-layout.aui-agentscope-preview .message-timing {
+  color: var(--as-muted);
+}
+
+.chat-layout.aui-agentscope-preview .ce-composer,
+.chat-layout.aui-agentscope-preview .composer-inner,
+.chat-layout.aui-agentscope-preview .msg-ai,
+.chat-layout.aui-agentscope-preview .user-bubble,
+.chat-layout.aui-agentscope-preview .artifact-card,
+.chat-layout.aui-agentscope-preview .cot-root,
+.chat-layout.aui-agentscope-preview .tool-group,
+.chat-layout.aui-agentscope-preview .tool-card,
+.chat-layout.aui-agentscope-preview .ds-dropdown {
+  background: var(--as-surface);
+  border: 1px solid var(--as-border);
+  border-radius: var(--as-radius);
+  box-shadow: var(--as-shadow);
+}
+
+.chat-layout.aui-agentscope-preview .ce-composer {
+  padding: 12px;
+}
+
+.chat-layout.aui-agentscope-preview .ce-input,
+.chat-layout.aui-agentscope-preview .composer-input,
+.chat-layout.aui-agentscope-preview textarea {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--as-text);
+  box-shadow: none;
+}
+
+.chat-layout.aui-agentscope-preview .ce-input::placeholder,
+.chat-layout.aui-agentscope-preview .composer-input::placeholder {
+  color: var(--as-muted);
+}
+
+.chat-layout.aui-agentscope-preview .ce-bar,
+.chat-layout.aui-agentscope-preview .composer-toolbar {
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--as-border);
+}
+
+.chat-layout.aui-agentscope-preview .composer-wrap {
+  border-top: 1px solid var(--as-border);
+  background: color-mix(in srgb, var(--as-bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.chat-layout.aui-agentscope-preview .composer {
+  max-width: 880px;
+  padding: 12px 28px 18px;
+}
+
+.chat-layout.aui-agentscope-preview .composer-inner:focus-within,
+.chat-layout.aui-agentscope-preview .ce-composer:focus-within {
+  border-color: var(--as-accent-line);
+  box-shadow: 0 0 0 3px var(--as-accent-soft);
+}
+
+.chat-layout.aui-agentscope-preview .composer-fab-send,
+.chat-layout.aui-agentscope-preview .ce-send {
+  background: var(--as-accent);
+  border-color: var(--as-accent);
+  color: #ffffff;
+}
+
+.chat-layout.aui-agentscope-preview .composer-fab-send:hover:not(:disabled),
+.chat-layout.aui-agentscope-preview .ce-send:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--as-accent) 86%, var(--text));
+}
+
+.chat-layout.aui-agentscope-preview .ce-suggrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.chat-layout.aui-agentscope-preview .ce-sug {
+  background: var(--as-surface);
+  border: 1px solid var(--as-border);
+  border-radius: var(--as-radius);
+  box-shadow: var(--as-shadow);
+}
+
+.chat-layout.aui-agentscope-preview .ce-sug:hover {
+  border-color: var(--as-border-strong);
+  transform: translateY(-1px);
+}
+
+.chat-layout.aui-agentscope-preview .ce-sug .tile {
+  background: var(--as-accent-soft);
+  color: var(--as-accent);
+}
+
+.chat-layout.aui-agentscope-preview .ce-sug .go {
+  color: var(--as-muted);
+}
+
+.chat-layout.aui-agentscope-preview .msg-row {
+  padding: 14px 0;
+}
+
+.chat-layout.aui-agentscope-preview .msg-ai,
+.chat-layout.aui-agentscope-preview .user-bubble {
+  padding: 14px 16px;
+}
+
+.chat-layout.aui-agentscope-preview .msg-ai .ai-head {
+  color: var(--as-muted-strong);
+}
+
+.chat-layout.aui-agentscope-preview .msg-actions {
+  opacity: 1;
+}
+
+.chat-layout.aui-agentscope-preview .artifact-card,
+.chat-layout.aui-agentscope-preview .cot-root,
+.chat-layout.aui-agentscope-preview .tool-group,
+.chat-layout.aui-agentscope-preview .tool-card {
+  margin-top: 10px;
+}
+
+.chat-layout.aui-agentscope-preview .artifact-card-head,
+.chat-layout.aui-agentscope-preview .cot-trigger,
+.chat-layout.aui-agentscope-preview .tool-group-trigger,
+.chat-layout.aui-agentscope-preview .tool-card-head {
+  border-radius: calc(var(--as-radius) - 2px);
+}
+
+.chat-layout.aui-agentscope-preview .artifact-card-head:hover,
+.chat-layout.aui-agentscope-preview .cot-trigger:hover,
+.chat-layout.aui-agentscope-preview .tool-group-trigger:hover,
+.chat-layout.aui-agentscope-preview .tool-card-head:hover {
+  background: var(--as-surface-soft);
+}
+
+.chat-layout.aui-agentscope-preview .artifact-card-table th {
+  background: var(--as-surface-strong);
+  color: var(--as-muted-strong);
+}
+
+.chat-layout.aui-agentscope-preview .artifact-card-table th,
+.chat-layout.aui-agentscope-preview .artifact-card-table td {
+  border-color: var(--as-border);
+}
+
+.chat-layout.aui-agentscope-preview .bi-agent-side-panel {
+  border-left: 1px solid var(--as-border);
+}
+
+@media (max-width: 900px) {
+  .chat-layout.aui-agentscope-preview .thread-list-col {
+    width: 220px;
+  }
+
+  .chat-layout.aui-agentscope-preview .chat-scroll,
+  .chat-layout.aui-agentscope-preview .ce-stage,
+  .chat-layout.aui-agentscope-preview .composer {
+    padding-left: 16px;
+    padding-right: 16px;
   }
 }

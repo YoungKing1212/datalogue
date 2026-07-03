@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ChatPage,
   conversationRouteIdForDatasetRestore,
+  resolveAssistantUiPreviewSkin,
   resolveUrlSyncTarget,
   resolveWorkbenchThreadId,
   runWorkbenchRetryStream,
@@ -22,15 +23,8 @@ vi.mock('react-router-dom', () => ({
 }));
 
 vi.mock('@assistant-ui/react', () => {
-  const ComposerPrimitive = {
-    Root: ({ children, className }) => <div className={className}>{children}</div>,
-    Input: (props) => <textarea {...props} />,
-    Send: ({ children, ...props }) => <button type="button" {...props}>{children}</button>,
-    Cancel: ({ children, ...props }) => <button type="button" {...props}>{children}</button>,
-  };
   return {
     AssistantRuntimeProvider: ({ children }) => <>{children}</>,
-    ComposerPrimitive,
     useLocalRuntime: () => ({ kind: 'local-runtime' }),
     useRemoteThreadListRuntime: () => ({ kind: 'thread-list-runtime' }),
     useAui: () => ({
@@ -54,18 +48,23 @@ vi.mock('@assistant-ui/react', () => {
   };
 });
 
-vi.mock('../assistant/Thread', () => ({
-  Thread: ({ empty, composer }) => (
+vi.mock('../assistant-ui', () => ({
+  DatalogueThread: ({ empty, composer }) => (
     <main>
       {empty}
       {composer}
     </main>
   ),
-  TraceProvider: ({ children }) => <>{children}</>,
-}));
-
-vi.mock('../assistant/ThreadList', () => ({
-  ThreadList: () => <nav aria-label="会话列表" />,
+  DatalogueThreadList: () => <nav aria-label="会话列表" />,
+  DatalogueComposer: ({ variant }) => (
+    <textarea
+      data-testid={variant === 'welcome' ? 'welcome-composer' : 'bottom-composer'}
+      placeholder={variant === 'welcome'
+        ? '例如：上周华东区销售为什么下降？哪个品类拖累最大？'
+        : '问个数，或者点击上面的快捷词'}
+      onKeyDown={composerHistoryKeyDownSpy}
+    />
+  ),
 }));
 
 vi.mock('../api/client', () => ({
@@ -236,6 +235,18 @@ describe('conversationRouteIdForDatasetRestore', () => {
 
   it('does not call legacy conversation APIs for AgentScope routes', () => {
     expect(conversationRouteIdForDatasetRestore('as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')).toBeNull();
+  });
+});
+
+describe('resolveAssistantUiPreviewSkin', () => {
+  it('keeps bare preview compatible with the previous query flag', () => {
+    expect(resolveAssistantUiPreviewSkin('?bare=1')).toBe('bare');
+    expect(resolveAssistantUiPreviewSkin('?skin=bare')).toBe('bare');
+  });
+
+  it('enables the AgentScope-inspired preview without affecting the default chat route', () => {
+    expect(resolveAssistantUiPreviewSkin('?skin=agentscope')).toBe('agentscope');
+    expect(resolveAssistantUiPreviewSkin('')).toBeNull();
   });
 });
 

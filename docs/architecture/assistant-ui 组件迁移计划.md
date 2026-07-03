@@ -1,6 +1,6 @@
 # assistant-ui 组件迁移计划
 
-> 生成时间：2026-07-03 23:16
+> 生成时间：2026-07-03 23:16  
 > 当前结论：可以改造，但第一阶段只做可见组件层迁移，暂不改底层 runtime，也暂不做 headless primitives 级大重构。
 
 ## 一、背景与目标
@@ -215,19 +215,19 @@ datalogue-web/src/assistant-ui/
 
 ## 七、关键风险
 
-1. **“直接用组件”不等于不写适配层**
+1. **“直接用组件”不等于不写适配层**  
    assistant-ui 的能力需要和 Datalogue 的 SSE、history、artifact、安全裁剪规则对齐，因此必须保留一层很薄的 Datalogue 业务壳。
 
-2. **Action Bar 的反馈能力需要业务接线**
+2. **Action Bar 的反馈能力需要业务接线**  
    当前 Copy/Reload/Speak/Edit 可以先稳定，Feedback 是否写回后端需要单独定义契约。
 
-3. **ToolUI 最容易误泄露控制面信息**
+3. **ToolUI 最容易误泄露控制面信息**  
    工具卡只能展示安全摘要和 refs，不能因为 UI 结构化就展示 SQL、schema、raw rows 或 query_plan。
 
-4. **Multi-Agent 展示不能越过当前真实能力**
+4. **Multi-Agent 展示不能越过当前真实能力**  
    当前规划是 AgenticLeadAgent 和 BI Agent 为 AgentScope 2.0 ReAct Agent；Report/Python/Audit 仍是后续可选 Agent，不应在 UI 上表现为已启用。
 
-5. **视觉基线必须先验收**
+5. **视觉基线必须先验收**  
    如果一边迁移组件一边改颜色，会很难判断问题来自组件行为、样式覆盖还是视觉重设计。
 
 ## 八、完成定义

@@ -663,3 +663,41 @@
 - 关键改动：修复左侧 Thread List 中会话标题过长时换行撑高列表项的问题。远端会话标题不再依赖 `ThreadListItemPrimitive.Title` 的内部 DOM，而是用已有 `threadListItem.title` 显式渲染为 `span.thread-list-item-title`；草稿标题也使用同一 class。样式层补齐 `min-width: 0`、`overflow: hidden`、`white-space: nowrap`、`text-overflow: ellipsis`，并固定图标和删除按钮的 flex 尺寸，确保标题只单行缩略。
 - 验证方式：执行 `cd datalogue-web && npm test -- --run tests/unit/assistant/thread-list-new-conversation.test.jsx` 为 `1 passed, 7 passed`；执行 `cd datalogue-web && npm run lint` 为 0 errors、14 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留 Vite chunk size warning；执行相关 `git diff --check` 通过。真实浏览器访问 `http://localhost:5173/chat` 并刷新后，38 个远端标题和 1 个草稿标题均有 `.thread-list-item-title`，CSS 均为 `nowrap/hidden/ellipsis`，超长标题被裁剪但高度仍为单行，控制台无 error/warn，无 Vite 错误层。
 - 残留风险：本次只处理左侧 Thread List 标题展示；其它页面中如果也有长会话名展示，需要按对应容器单独加单行省略策略。
+### 2026-07-04 00:02 · assistant-ui 组件迁移工作树开发
+
+- 涉及文件：`docs/architecture/assistant-ui 组件迁移计划.md`、`docs/architecture/assistant-ui 组件迁移验收清单.md`、`datalogue-web/package.json`、`datalogue-web/package-lock.json`、`datalogue-web/src/assistant-ui/*`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/agentic-shell-event-adapter.js`、相关前端测试、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：在隔离 worktree `codex/assistant-ui-component-migration` 中按完整迁移计划完成多智能体并行开发：新增 `src/assistant-ui/` 组件层，承接 `DatalogueComposer`、`DatalogueThread`、`DatalogueThreadList`、`DatalogueActionBar`、`DatalogueMarkdown`、`DatalogueReasoning`、`DatalogueToolUI`、`DatalogueToolGroup` 和 `DatalogueMessage`；`chat-page` 主入口切到新组件壳，WelcomeHero 和底部 Composer 保持当前样式并接入 Input History；`MyMessage` 的动作区改用 assistant-ui ActionBar 壳，同时保留现有反馈回调。
+- Adapter 投影：`agentic-shell-event-adapter` 和 `chat-adapter` 增强 handoff、tool started/completed/failed、confirmation、artifact refs、timing 的安全投影；工具事件进入 assistant-ui `tool-call` parts，并写入 `toolGroups`、`confirmations`、`timing` metadata，供 Reasoning、ToolUI、ToolGroup 和 Message Timing 展示消费。
+- 安全边界：组件层和 adapter 只展示业务摘要、状态、耗时、artifact/checkpoint/run refs 和 row count；负向测试覆盖 SQL、schema、raw rows、query_plan、RepairPatch、blueprint 等控制面内容不进入最终用户可见 payload。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/assistant-ui/DatalogueMessage.test.jsx src/assistant/agentic-shell-event-adapter.test.js src/assistant/chat-adapter.test.js src/components/chat-page.test.jsx src/assistant/MyMessage.test.jsx` 为 `5 passed, 68 passed`；执行 `cd datalogue-web && npm run test` 为 `20 passed, 159 passed`；执行 `cd datalogue-web && npm run lint` 为 0 errors、14 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留 Vite chunk size warning；执行 `git diff --check` 通过。
+- 残留风险：本次完成组件层和 adapter 层迁移及自动化验证，尚未做真实浏览器截图/像素级验收；P6 旧 `MyComposer`、`MyMessage`、`Thread`、`ThreadList` 清理仍需等新组件主路径稳定后单独执行。
+
+### 2026-07-04 00:17 · AgentScope web_ui 参照预览皮肤
+
+- 涉及文件：`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：参照 AgentScope `examples/web_ui` 的 React 自研聊天界面和 shadcn/Radix/Tailwind 视觉语言，在 assistant-ui 迁移工作树中新增 `?skin=agentscope` 预览模式；默认 `/chat` 保持当前 Datalogue 样式，`?bare=1` 继续作为裸组件预览，`?skin=agentscope` 只覆盖聊天区外观，不引入 AgentScope message 协议、Tailwind 依赖或运行时。
+- 样式范围：新增 `.chat-layout.aui-agentscope-preview` 作用域覆盖左侧会话列表、主聊天区、欢迎态 Composer、底部 Composer、消息卡片、Artifact、Reasoning、Tool Group、Workbench 侧栏边界；视觉收口为浅色 shadcn 风格的中性背景、细边框、8-10px 圆角、紧凑按钮和 icon-first 操作。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/assistant-ui/DatalogueMessage.test.jsx` 为 `2 passed, 28 passed`；执行 `cd datalogue-web && npm run lint` 为 0 errors、14 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留 Vite chunk size warning；执行 `git diff --check` 通过；Playwright 打开 `http://127.0.0.1:5174/chat?skin=agentscope` 成功加载页面并生成截图。
+- 残留风险：本次是参照皮肤，不是完整迁移 AgentScope web_ui 的文件输入、团队侧栏、MCP/Skill/Permission 面板或 HITL 卡片协议；这些能力需要结合 Datalogue 的 AgenticLeadAgent/BI Agent 安全边界逐项评估后再落地。
+
+### 2026-07-04 00:22 · AgentScope 参照皮肤换回 Datalogue 配色
+
+- 涉及文件：`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：将 `?skin=agentscope` 预览皮肤里的黑白中性 shadcn 配色替换为 Datalogue 当前 token：`--bg-2`、`--surface-*`、`--hairline`、`--text-*`、`--accent`、`--accent-soft`、`--accent-line` 和 `--shadow-md`；保留 AgentScope 参照的紧凑边栏、卡片圆角、细边框和输入区结构。
+- 验证方式：执行 `cd datalogue-web && npm run build` 通过，仅保留 Vite chunk size warning；Playwright 打开 `http://127.0.0.1:5174/chat?skin=agentscope` 成功加载页面并生成 Datalogue 配色预览截图；执行 `git diff --check` 通过。
+- 残留风险：本次只调整参照皮肤的颜色 token，没有重新设计信息架构；如果后续确认采用该方向，还需要做消息态、工具态、Workbench 侧栏和移动端截图逐项验收。
+
+### 2026-07-04 00:28 · 默认 Thread List 切换为 AgentScope 参照样式
+
+- 涉及文件：`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：把左侧 Thread List 的默认样式替换为 AgentScope 参照版的紧凑侧栏：宽度调整为 264px，列表背景改为白色 surface，新对话按钮改为实线按钮，分区标题取消大写字距，线程项改为 8px 圆角卡片式 hover/active 状态，当前会话使用 `accent-soft/accent-line` 表达选中态。
+- 验证方式：执行 `cd datalogue-web && npm run build` 通过，仅保留 Vite chunk size warning；Playwright 打开默认 `http://127.0.0.1:5174/chat` 成功加载页面并生成默认 Thread List 新样式截图；执行 `git diff --check` 通过。
+- 残留风险：本次只替换 Thread List 外观，不改变 assistant-ui ThreadListPrimitive 的切换、删除、本地草稿和归档逻辑；移动端窄宽度下仍沿用现有整体布局规则，后续需要单独做响应式验收。
+
+### 2026-07-04 00:39 · Thread List 切换为官网组件结构
+
+- 涉及文件：`datalogue-web/src/assistant-ui/DatalogueThreadList.jsx`、`datalogue-web/src/assistant-ui/index.js`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：按 assistant-ui 官网 Thread List Component anatomy 重构左侧列表，使用 `ThreadListPrimitive.New` 承接新对话，使用 `ThreadListItemPrimitive.Root/Trigger/Title/Archive/Unarchive/Delete` 承接线程项、归档、恢复和删除；移除组件层手写的 `useAui().threads().switchToNewThread()` 新建逻辑，active 状态改用 primitive 自动写入的 `[data-active]`。
+- 路由边界：列表项切换交给官网 `ThreadListItemPrimitive.Trigger`；URL 仍由 `ChatPage` 内的 `UrlSync/RouteThreadSync` 统一同步，避免在 Thread List 组件内重复维护 remoteId 路由逻辑。
+- 验证方式：执行 `cd datalogue-web && npm run test -- src/components/chat-page.test.jsx src/assistant-ui/DatalogueMessage.test.jsx` 为 `2 passed, 28 passed`；执行 `cd datalogue-web && npm run lint` 为 0 errors、14 个既有 warning；执行 `cd datalogue-web && npm run build` 通过，仅保留 Vite chunk size warning；Playwright 打开 `http://127.0.0.1:5174/chat` 成功加载并生成官网 Thread List Component 结构截图；执行 `git diff --check` 通过。
+- 残留风险：本次采用官网 `thread-list` 组件结构，不引入完整 `threadlist-sidebar` 和 shadcn SidebarProvider；如果后续要做可折叠侧栏，需要单独迁移 Sidebar 布局层。

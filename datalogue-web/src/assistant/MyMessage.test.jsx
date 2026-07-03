@@ -39,6 +39,36 @@ vi.mock('@assistant-ui/react', () => ({
   useMessageTiming: () => null,
 }));
 
+vi.mock('../assistant-ui', () => ({
+  DatalogueActionBar: ({
+    visible,
+    feedbackTitle,
+    feedbackDisabled,
+    onApprove,
+    onReject,
+  }) => (
+    <div className={`msg-actions ${visible ? 'visible' : ''}`} data-testid="datalogue-action-bar">
+      <button type="button" title="复制回答">复制</button>
+      <button
+        type="button"
+        title={feedbackTitle || '点赞'}
+        disabled={feedbackDisabled}
+        onClick={onApprove}
+      >
+        点赞
+      </button>
+      <button
+        type="button"
+        title={feedbackTitle || '点踩'}
+        disabled={feedbackDisabled}
+        onClick={onReject}
+      >
+        点踩
+      </button>
+    </div>
+  ),
+}));
+
 // Mock 子组件
 vi.mock('../components/icons', () => ({
   Icon: ({ name, style }) => <span data-testid={`icon-${name}`} style={style} />,
