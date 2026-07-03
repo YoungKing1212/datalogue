@@ -24,7 +24,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
-from sse_starlette.sse import EventSourceResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -247,7 +246,7 @@ def _sse_data(payload: dict) -> dict:
 
 
 def _chat_stream_log_summary(payload: dict | None) -> dict[str, Any]:
-    """提取 /chat/stream 排障日志中的稳定关键字段，避免日志被完整 payload 淹没。"""
+    """提取聊天流排障日志中的稳定关键字段，避免日志被完整 payload 淹没。"""
 
     payload = payload or {}
     # final / subagent result payload 很大，只保留能对齐 Network、Langfuse 和后端状态的字段。
@@ -273,7 +272,7 @@ def _chat_stream_log_summary(payload: dict | None) -> dict[str, Any]:
 
 
 def _log_chat_stream_checkpoint(checkpoint: str, **fields: Any) -> None:
-    """统一 /chat/stream 行级日志格式，便于按 checkpoint 串起一次请求。"""
+    """统一聊天流行级日志格式，便于按 checkpoint 串起一次请求。"""
 
     # checkpoint 用作 grep 入口，fields 保持 JSON，方便后续脚本化比对同一轮问数。
     logger.info(
@@ -3343,20 +3342,6 @@ async def _stream_chat(payload: schemas.ChatRequest, db: Session):
             completed=completed,
         )
         store.release_turn_lock(session_id=business_session_id, lock_owner=lock_owner)  # 客户端断开也必须释放锁。
-
-
-@router.post("/stream")
-def chat_stream(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
-    """流式问数接口，返回 SSE 事件流。"""
-    _log_chat_stream_checkpoint(  # HTTP 入口只记录轻量请求面，细节由下游 checkpoint 补齐。
-        "request_received",
-        question_preview=payload.question[:80],
-        payload_dataset_id=payload.dataset_id,
-        conversation_id=payload.conversation_id,
-        session_id=payload.session_id,
-        has_clarification_response=payload.clarification_response is not None,
-    )
-    return EventSourceResponse(_stream_chat(payload, db))
 
 
 @router.post("/feedback")

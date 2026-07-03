@@ -103,5 +103,5 @@ datalogue-api/
 | POST | `/api/dataset/{id}/dimension` | 添加维度 |
 | GET | `/api/conversation` | 对话列表 |
 | GET | `/api/conversation/{id}` | 对话详情 |
-| POST | `/api/chat/stream` | 流式问数 (SSE) |
+| POST | `/api/agentic-shell/tasks/stream` | 流式问数 (SSE) |
 | POST | `/api/chat/feedback` | 人工反馈 |

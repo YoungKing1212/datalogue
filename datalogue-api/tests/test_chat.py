@@ -111,6 +111,14 @@ def _graph_backed_fake_subagent_class():
 class TestChatAPI:
     """测试 /api/chat 路由"""
 
+    def test_legacy_chat_stream_route_is_not_registered(self):
+        """旧 /api/chat/stream 外部入口已下线，不应继续挂载到 FastAPI。"""
+        from app.main import app
+
+        registered_paths = {route.path for route in app.routes}
+
+        assert "/api/chat/stream" not in registered_paths
+
     def test_sql_audit_node_is_exposed_to_stream_payloads(self):
         """SQL 诊断节点应按原始节点名展示，并纳入状态输出提取。"""
         from app.api.chat import _NODE_DISPLAY_NAMES, _STATE_OUTPUT_KEYS
@@ -304,32 +312,24 @@ class TestChatAPI:
         assert result["should_retry"] is False
         assert result["sql_guard"] == state["sql_guard"]
 
-    def test_chat_stream_basic(self, client, sample_dataset):
-        """基础流式问数接口应返回 200"""
+    def test_legacy_chat_stream_post_returns_404(self, client, sample_dataset):
+        """旧流式问数 HTTP 入口已下线，直接访问应返回 404。"""
         payload = {
             "question": "最近30天的GMV是多少",
             "dataset_id": sample_dataset.id,
         }
-        try:
-            resp = client.post("/api/chat/stream", json=payload)
-            assert resp.status_code == 200
-            # SSE 响应
-            assert "text/event-stream" in resp.headers.get("content-type", "")
-        except Exception:
-            # SSE 流式在同步 TestClient 中可能抛 ExceptionGroup，集成环境再验证
-            pytest.skip("SSE stream not fully supported in sync TestClient")
 
-    def test_chat_stream_no_dataset(self, client):
-        """无 dataset_id 时也应能请求（走真实 schema 或无 schema 路径）"""
+        resp = client.post("/api/chat/stream", json=payload)
+
+        assert resp.status_code == 404
+
+    def test_legacy_chat_stream_post_without_dataset_returns_404(self, client):
+        """旧入口下线后，无 dataset_id 的请求也不应再进入聊天链路。"""
         payload = {"question": "Hello"}
-        # SSE 在 TestClient 中可能因事件循环问题报错，这里只验证接口可访问
-        # 实际流式内容在集成环境中测试
-        try:
-            resp = client.post("/api/chat/stream", json=payload)
-            assert resp.status_code == 200
-        except Exception:
-            # SSE 流式在同步 TestClient 中可能有问题，跳过
-            pytest.skip("SSE stream not fully supported in sync TestClient")
+
+        resp = client.post("/api/chat/stream", json=payload)
+
+        assert resp.status_code == 404
 
     def test_chat_feedback(self, client, db_session):
         """人工反馈接口"""
@@ -2475,7 +2475,7 @@ class TestWorkflowRouting:
 
 
 class TestChatStreamEvents:
-    """测试 /api/chat/stream SSE 事件格式（astream_events）"""
+    """测试内部聊天流 SSE 事件格式（astream_events）"""
 
     @pytest.mark.asyncio
     async def test_stream_message_gateway_step_and_final_include_turn_event_and_task_capsule(
@@ -3284,8 +3284,8 @@ class TestChatStreamEvents:
         assert output["intent"] == "query"
         assert output["entities"]["metrics"] == ["gmv"]
 
-    def test_chat_stream_event_types(self, client, sample_dataset, db_session):
-        """SSE 流式接口每个事件必须含 type 字段，值为 step / token / final 之一"""
+    def test_chat_stream_event_types(self, sample_dataset, db_session):
+        """内部流式链路每个事件必须含 type 字段，值为 step / token / final 之一。"""
         # 发布 manifest 以通过 manifest guard，否则路由会被 locked 阻断
         publish_manifest(db_session, sample_dataset.id, _manifest_manual_fields())
         payload = {"question": "查询所有订单", "dataset_id": sample_dataset.id}
@@ -3339,16 +3339,7 @@ class TestChatStreamEvents:
             mock_graph.astream_events = fake_astream_events
             mock_wf.return_value = mock_graph
 
-            try:
-                resp = client.post("/api/chat/stream", json=payload)
-            except Exception:
-                # sse_starlette 在测试中复用事件循环时可能抛出 ExceptionGroup，跳过
-                pytest.skip("SSE AppStatus event loop issue in repeated TestClient usage")
-
-            assert resp.status_code == 200
-
-            lines = [line for line in resp.text.split("\n") if line.startswith("data:")]
-            events = [json.loads(line[5:].strip()) for line in lines]
+            events = _collect_stream_events(payload, db_session)
             types = {e["type"] for e in events}
             assert "step" in types
             assert "token" in types
@@ -3984,8 +3975,8 @@ class TestChatStreamEvents:
         assert len(artifacts) == 2
         assert {item.message_id for item in artifacts} == {assistant_message.id}
 
-    def test_chat_stream_step_event_structure(self, client, sample_dataset):
-        """step 事件必须含 node 和 status 字段"""
+    def test_chat_stream_step_event_structure(self, sample_dataset, db_session):
+        """内部流式链路的 step 事件必须含 node 和 status 字段。"""
         payload = {"question": "测试", "dataset_id": sample_dataset.id}
         with patch("app.api.chat.build_workflow") as mock_wf:
 
@@ -4007,14 +3998,8 @@ class TestChatStreamEvents:
             mock_graph.astream_events = fake_astream_events
             mock_wf.return_value = mock_graph
 
-            try:
-                resp = client.post("/api/chat/stream", json=payload)
-            except Exception:
-                # sse_starlette 在测试中复用事件循环时可能抛出 ExceptionGroup，跳过
-                pytest.skip("SSE AppStatus event loop issue in repeated TestClient usage")
-
-            lines = [line for line in resp.text.split("\n") if line.startswith("data:")]
-            step_events = [json.loads(line[5:].strip()) for line in lines if '"step"' in line]
+            events = _collect_stream_events(payload, db_session)
+            step_events = [event for event in events if event.get("type") == "step"]
             for e in step_events:
                 assert "node" in e
                 assert "status" in e

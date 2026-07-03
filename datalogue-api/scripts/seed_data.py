@@ -333,7 +333,7 @@ def seed_metadata(db: SessionLocal, demo_db_path: str):
     logger.info("  GET  /api/datasource")
     logger.info("  GET  /api/dataset")
     logger.info(
-        f'  POST /api/chat/stream  {{"question": "最近30天各品类GMV", "dataset_id": {dataset.id}}}'
+        f'  POST /api/agentic-shell/tasks/stream  {{"question": "最近30天各品类GMV", "dataset_id": {dataset.id}}}'
     )
 
 

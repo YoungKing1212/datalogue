@@ -1,6 +1,7 @@
 // 前端 API 客户端 — 统一封装 fetch，对接后端 FastAPI 服务
 
 const BASE_URL = ''; // Vite proxy 已配置 /api 转发，无需写死域名
+const CHAT_STREAM_ENDPOINT = '/api/agentic-shell/tasks/stream';
 
 /**
  * 通用 GET 请求
@@ -80,7 +81,7 @@ export async function del(path) {
 export function streamChat(payload, { onToken, onEvent, onError, onDone }) {
   const controller = new AbortController();
 
-  fetch('/api/chat/stream', {
+  fetch(CHAT_STREAM_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -138,7 +139,7 @@ export function streamChat(payload, { onToken, onEvent, onError, onDone }) {
  * @param {AbortSignal} opts.signal - 用于中断
  */
 export async function* streamChatEvents(payload, { signal } = {}) {
-  const res = await fetch('/api/chat/stream', {
+  const res = await fetch(CHAT_STREAM_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
