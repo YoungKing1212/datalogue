@@ -75,7 +75,7 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../assistant/chat-adapter', () => ({
   makeChatAdapter: () => ({
-    runAgenticShellTask: vi.fn(),
+    runAgentTeamTask: vi.fn(),
   }),
 }));
 

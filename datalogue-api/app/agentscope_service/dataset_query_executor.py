@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : dataset_query_executor.py
 # Description:
-#   AgentScope Service 固定 BI Agent 的 Dataset 查询适配器。
+#   AgentScope Service 中 BI worker 的 Dataset 查询适配器。
 #
 # Responsibilities:
 #   - 复用 Datalogue BI 原子 Toolkit、AgentScope Dataset bridge 和 BI runtime context。
-#   - 为固定 datalogue_query_dataset 工具返回安全摘要，不暴露查询语句、表结构或明细行。
+#   - 为 datalogue_query_dataset 工具返回安全摘要，不暴露查询语句、表结构或明细行。
 #   - 保持本文件只做适配，不实例化旧直连 runner 或 handoff adapter。
 #
 # Author      : yangkai
@@ -27,7 +27,7 @@ from app.core.database import SessionLocal
 
 @dataclass(frozen=True)
 class AgentTeamDatasetQueryResult:
-    """固定 BI Agent 工具可返回给 AgentScope 的安全结果形状。"""
+    """BI worker 工具可返回给 AgentScope 的安全结果形状。"""
 
     answer_summary: str
     artifact_ref: str | None
@@ -50,7 +50,7 @@ async def execute_dataset_query_for_agent_team(
     trace_id: str | None = None,
     parent_run_id: str | None = None,
 ) -> AgentTeamDatasetQueryResult:
-    """执行固定 BI Agent 的 Dataset 查询；对外只暴露安全结果摘要。"""
+    """执行 BI worker 的 Dataset 查询；对外只暴露安全结果摘要。"""
 
     del task_goal, user_confirmation_id, routing_rationale, parent_run_id
     if db is None:

@@ -79,10 +79,10 @@ export function conversationRouteIdForDatasetRestore(routeId) {
 }
 
 export function submitWorkbenchRetryRun(taskRequest, { chatModelAdapter } = {}) {
-  if (!taskRequest || typeof chatModelAdapter?.runAgenticShellTask !== 'function') {
+  if (!taskRequest || typeof chatModelAdapter?.runAgentTeamTask !== 'function') {
     return Promise.resolve(null);
   }
-  return chatModelAdapter.runAgenticShellTask(taskRequest).catch((e) => {
+  return chatModelAdapter.runAgentTeamTask(taskRequest).catch((e) => {
     console.error('[workbench] retry stream failed', e);
     return null;
   });
@@ -610,7 +610,7 @@ function ChatPageInner({
       aui.threads().reload()
         .then(() => {
           if (!remoteId) return null;
-          // 首轮 direct-query 会先在本地草稿中渲染，final 后必须切到真实会话，删除和深链才有后端 ID。
+          // 首轮 Agent Team 任务会先在本地草稿中渲染，final 后必须切到真实会话，删除和深链才有后端 ID。
           return aui.threads().switchToThread(remoteId);
         })
         .catch((e) => {
@@ -663,7 +663,7 @@ function ChatPageInner({
         />
 
         {workbenchThreadId && (
-          <aside className="bi-agent-side-panel" aria-label="Workbench">
+          <aside className="workbench-side-panel" aria-label="Workbench">
             <WorkbenchPanel threadId={workbenchThreadId} onRetryRun={handleWorkbenchRetryRun} />
           </aside>
         )}

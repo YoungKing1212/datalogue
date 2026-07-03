@@ -36,7 +36,8 @@ services:
       dockerfile: Dockerfile
     container_name: datalogue-api
     env_file:
-      - ./datalogue-api/.env
+      - path: ./datalogue-api/.env
+        required: false
     environment:
       DATABASE_URL: postgresql://datalogue:datalogue@db:5432/datalogue
       AGENTSCOPE_SERVICE_ENABLED: "true"

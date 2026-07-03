@@ -44,12 +44,12 @@ def test_p4_bi_agent_application_services_owned_by_agents_package():
     assert build_bi_agent_capabilities.__module__ == "app.agents.bi_agent.capabilities"
 
 
-def test_p4_bi_agent_api_owned_by_bi_agent_module():
-    from app.api import bi_agent
-    from app.api.bi_agent import create_bi_agent_run
+def test_p4_bi_agent_api_is_not_public_main_chain_entrypoint():
+    from app.api import router
 
-    assert bi_agent.router is not None
-    assert create_bi_agent_run.__module__ == "app.api.bi_agent"
+    public_paths = {route.path for route in router.routes}
+    assert "/agent-team/tasks/stream" in public_paths
+    assert not any(path.startswith("/bi-agent") for path in public_paths)
 
 
 @pytest.mark.parametrize(

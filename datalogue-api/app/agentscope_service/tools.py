@@ -5,7 +5,7 @@
 #
 # Responsibilities:
 #   - 暴露 create_app extra_agent_tools 可消费的异步工具 factory。
-#   - 用 AgentScope FunctionTool 注册固定 BI Agent 的 datalogue_query_dataset。
+#   - 用 AgentScope FunctionTool 注册 Agent Team worker 可调用的 datalogue_query_dataset。
 #   - 将工具返回值收口为安全 JSON 文本块，避免泄露查询语句、表结构或明细行。
 #
 # Author      : yangkai
@@ -35,17 +35,17 @@ def build_datalogue_extra_agent_tools() -> AgentToolFactory:
         agent_id: str | None,
         session_id: str | None,
     ) -> list[ToolBase]:
-        del user_id, session_id
-        # Dataset 查询只挂给固定 BI Agent；Lead/Report/Python/Audit Agent 均不具备数据执行能力。
-        if agent_id not in {None, "bi_agent"}:
-            return []
+        del user_id, agent_id, session_id
+        # AgentScope 的 AgentCreate 会为 worker 生成真实 agent_id，extra_agent_tools 当前拿不到
+        # subagent_type；因此不能再用旧固定 "bi_agent" id 过滤。工具本身只接受必要的
+        # dataset_id/confirmed_question，并通过 Datalogue 业务执行器 fail-closed。
         return [build_datalogue_query_dataset_tool()]
 
     return _extra_agent_tools
 
 
 def build_datalogue_query_dataset_tool() -> FunctionTool:
-    """创建固定 BI Agent 唯一可见的 Dataset 查询工具。"""
+    """创建 Agent Team worker 可见的 Dataset 查询工具。"""
 
     async def datalogue_query_dataset(
         dataset_id: int,
@@ -76,7 +76,7 @@ def build_datalogue_query_dataset_tool() -> FunctionTool:
     return FunctionTool(
         datalogue_query_dataset,
         description=(
-            "固定 BI Agent 的 Datalogue Dataset 查询工具；只返回 answer_summary、"
+            "Agent Team BI Worker 的 Datalogue Dataset 查询工具；只返回 answer_summary、"
             "artifact_ref、checkpoint_ref、row_count、column_count。"
         ),
         is_concurrency_safe=False,

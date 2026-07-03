@@ -4,13 +4,11 @@
 #   Datalogue Agent 统一出口。
 #
 # Responsibilities:
-#   - 暴露当前 AgenticLeadAgent 入口。
-#   - 为后续 BI Agent、ReportAgent、PythonAgent 和 AuditAgent 预留清晰包边界。
+#   - 保留 Agent 包边界。
+#   - 具体 worker 类型由 AgentScope Agent Team 模板注册，不在这里导出旧主链 Agent。
 #
 # Author      : yangkai
 # Created On  : 2026-07-02
 # ============================================================
 
-from app.agents.agentic_lead_agent import AgenticLeadAgent
-
-__all__ = ["AgenticLeadAgent"]
+__all__: list[str] = []

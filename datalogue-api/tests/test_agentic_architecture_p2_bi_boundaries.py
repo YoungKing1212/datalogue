@@ -95,16 +95,13 @@ def test_p2_native_handoff_factory_builds_dataset_bridge_through_skill(monkeypat
     assert FakeDatasetQuerySkill.calls.count("build_runtime_bridge") == 1
 
 
-def test_p2_task_runner_defaults_use_bi_agent_services():
-    from app.agents.agentic_lead_agent.direct_query_runner import AgenticDirectQueryRunner
-    from app.agents.bi_agent import BIAgentConfirmationService, BIAgentRunService
-    from app.runtime import BIAgentTaskRunner
-    from app.runtime.task_runtime import BIAgentTaskRunner as DirectBIAgentTaskRunner
+def test_p2_agent_team_runtime_does_not_use_legacy_direct_runner():
+    from pathlib import Path
 
-    defaults = BIAgentTaskRunner.__init__.__kwdefaults__
+    runtime_source = Path(__file__).resolve().parents[1].joinpath("app", "runtime", "agent_team_runtime.py").read_text(
+        encoding="utf-8"
+    )
 
-    assert BIAgentTaskRunner is DirectBIAgentTaskRunner
-    assert DirectBIAgentTaskRunner.__module__ == "app.runtime.task_runtime"
-    assert defaults["run_service_factory"] is BIAgentRunService
-    assert defaults["confirmation_service_factory"] is BIAgentConfirmationService
-    assert defaults["direct_query_runner_factory"] is AgenticDirectQueryRunner
+    assert "BIAgentTaskRunner" not in runtime_source
+    assert "direct_query_runner_factory" not in runtime_source
+    assert "AgenticDirectQueryRunner" not in runtime_source

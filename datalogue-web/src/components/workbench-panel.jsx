@@ -217,7 +217,7 @@ export function WorkbenchActions({ threadId, actions = [], onRetried, onRetryRun
               });
               onRetried?.(response);
               if (response?.accepted && response?.task_request) {
-                // Workbench retry 创建新的 AgenticShellTask，不再绕回旧 chat stream。
+                // Workbench retry 创建新的 Agent Team task，不再绕回旧 chat stream。
                 onRetryRun?.(response.task_request);
               }
             }}

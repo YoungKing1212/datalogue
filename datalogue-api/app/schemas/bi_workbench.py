@@ -4,7 +4,7 @@
 #   BI 工作台外层工具契约与统一事件 envelope Schema。
 #
 # Responsibilities:
-#   - 定义 Agentic Shell / Workbench 共用事件信封和产物引用结构。
+#   - 定义 Agent Team / Workbench 共用事件信封和产物引用结构。
 #   - 为 SSE 与未来 AgentScope event stream 复用同一业务事件协议。
 #   - 约束用户可见协议，避免 SQL、schema、capsule 和 control_plane 泄露。
 #
@@ -79,9 +79,12 @@ FORBIDDEN_VISIBLE_KEYS = {
     "dsl",
     "out_capsule",
     "patch",
+    "patch_body",
+    "query_plan",
     "query_task_capsule",
     "raw",
     "raw_result",
+    "raw_rows",
     "raw_sql",
     "records",
     "result",
@@ -96,6 +99,14 @@ FORBIDDEN_VISIBLE_KEYS = {
     "subagent_control_plane",
 }
 
+FORBIDDEN_VISIBLE_KEY_FRAGMENTS = (
+    "queryplan",
+    "rawrows",
+    "repairpatch",
+    "patchbody",
+    "schemacontext",
+)
+
 _SQL_TEXT_RE = re.compile(
     r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
     r".{0,200}\b(from|into|set|table|join|where|values)\b"
@@ -104,7 +115,12 @@ _SQL_TEXT_RE = re.compile(
 
 def _is_blocked_user_visible_key(key: str) -> bool:
     key_lower = key.lower()
-    return key_lower in FORBIDDEN_VISIBLE_KEYS or "sql" in key_lower
+    normalized = "".join(char for char in key_lower if char.isalnum())
+    return (
+        key_lower in FORBIDDEN_VISIBLE_KEYS
+        or "sql" in key_lower
+        or any(fragment in normalized for fragment in FORBIDDEN_VISIBLE_KEY_FRAGMENTS)
+    )
 
 
 def sanitize_event_payload(value: Any, *, key_name: str = "") -> Any:

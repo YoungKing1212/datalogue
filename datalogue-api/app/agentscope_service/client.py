@@ -21,12 +21,22 @@ from typing import Any
 import httpx
 
 
+DEFAULT_AGENTSCOPE_USER_ID = "datalogue-agent-team"
+
+
 class AgentScopeServiceClient:
     """AgentScope Agent Service 的 REST/SSE adapter。"""
 
-    def __init__(self, *, base_url: str, http: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        http: httpx.AsyncClient | None = None,
+        user_id: str = DEFAULT_AGENTSCOPE_USER_ID,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.http = http or httpx.AsyncClient(base_url=self.base_url)
+        self.user_id = user_id
         self._owns_http = http is None
 
     async def aclose(self) -> None:
@@ -38,6 +48,50 @@ class AgentScopeServiceClient:
 
     async def __aexit__(self, *_exc: object) -> None:
         await self.aclose()
+
+    async def ensure_agent(self, *, name: str, system_prompt: str) -> str:
+        """用 AgentScope 官方 /agent 接口幂等准备 leader Agent，并返回真实 agent_id。"""
+
+        existing = await self.list_agents()
+        for item in existing:
+            data = item.get("data") if isinstance(item, dict) else None
+            if not isinstance(data, dict):
+                continue
+            agent_name = data.get("name")
+            agent_id = item.get("id") or item.get("agent_id") or data.get("id")
+            if agent_name == name and isinstance(agent_id, str) and agent_id:
+                return agent_id
+        return await self.create_agent(name=name, system_prompt=system_prompt)
+
+    async def list_agents(self) -> list[dict[str, Any]]:
+        """读取当前用户下 AgentScope Agent 列表。"""
+
+        response = await self.http.get(self._url("/agent/"), headers=self._headers())
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("agents", "items", "data", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
+
+    async def create_agent(self, *, name: str, system_prompt: str) -> str:
+        """创建 AgentScope Agent；worker 不在这里创建，仍交给官方 AgentCreate。"""
+
+        response = await self.http.post(
+            self._url("/agent/"),
+            json={"name": name, "system_prompt": system_prompt},
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        agent_id = payload.get("agent_id") or payload.get("id")
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ValueError("AGENTSCOPE_SERVICE_AGENT_ID_MISSING")
+        return agent_id
 
     async def create_session(
         self,
@@ -52,7 +106,8 @@ class AgentScopeServiceClient:
             "name": name,
             "chat_model_config": chat_model_config,
         }
-        response = await self.http.post(self._url("/session"), json=payload)
+        # AgentScope 2.0.3 官方 Service 创建会话端点是复数 /sessions。
+        response = await self.http.post(self._url("/sessions"), json=payload, headers=self._headers())
         response.raise_for_status()
         session_id = response.json().get("session_id")
         if not session_id:
@@ -74,6 +129,7 @@ class AgentScopeServiceClient:
                     "content": [{"type": "text", "text": text}],
                 },
             },
+            headers=self._headers(),
         )
         response.raise_for_status()
         payload = response.json()
@@ -90,9 +146,10 @@ class AgentScopeServiceClient:
         params = {"agent_id": agent_id} if agent_id else None
         async with self.http.stream(
             "GET",
-            self._url(f"/session/{session_id}/stream"),
+            # SSE 订阅同样走官方复数 /sessions/{session_id}/stream。
+            self._url(f"/sessions/{session_id}/stream"),
             params=params,
-            headers={"Accept": "text/event-stream"},
+            headers={**self._headers(), "Accept": "text/event-stream"},
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -106,6 +163,10 @@ class AgentScopeServiceClient:
     def _url(self, path: str) -> str:
         normalized_path = "/" + path.lstrip("/")
         return f"{self.base_url}{normalized_path}"
+
+    def _headers(self) -> dict[str, str]:
+        # AgentScope Service 当前用 X-User-ID 做用户边界；Datalogue 内部调用固定使用主链租户。
+        return {"X-User-ID": self.user_id}
 
     @staticmethod
     def _parse_sse_data(data: str) -> dict[str, Any]:

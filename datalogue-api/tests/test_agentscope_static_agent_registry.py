@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : test_agentscope_static_agent_registry.py
 # Description:
-#   AgentScope Service 固定 Agent 注册表测试。
+#   AgentScope Agent Team 固定 worker 模板注册表测试。
 #
 # Responsibilities:
-#   - 确认 Datalogue 固定注册 Lead/BI/Report/Python/Audit Agent。
-#   - 防止主链 prompt 回退到动态 Agent 创建或自研 handoff/runner。
+#   - 确认 Datalogue 暴露固定 BI/Report/Python/Audit worker 类型。
+#   - 防止 worker prompt 回退到 Datalogue 自研 handoff/runner。
 #
 # Author      : yangkai
 # Created On  : 2026-07-04
@@ -16,60 +16,58 @@ from __future__ import annotations
 import pytest
 
 
-EXPECTED_STATIC_AGENT_KEYS = (
-    "agentic_lead_agent",
-    "bi_agent",
-    "report_agent",
-    "python_agent",
-    "audit_agent",
+EXPECTED_WORKER_TEMPLATE_TYPES = (
+    "bi",
+    "report",
+    "python",
+    "audit",
 )
 
-FORBIDDEN_PROMPT_TOKENS = (
-    "AgentCreate",
-    "TeamCreate",
-    "TeamSay",
+FORBIDDEN_DATALOGUE_ORCHESTRATION_TOKENS = (
     "native_handoff",
     "AgenticDirectQueryRunner",
+    "Datalogue 自研 runner",
+    "Datalogue 自写 handoff",
 )
 
 
-def test_static_agent_registry_contains_fixed_agents():
-    from app.agentscope_service.registry import build_datalogue_static_agent_specs
+def test_agent_team_registry_contains_fixed_worker_templates():
+    from app.agentscope_service.registry import build_datalogue_worker_template_specs
 
-    specs = build_datalogue_static_agent_specs()
-    by_key = {item.key: item for item in specs}
+    specs = build_datalogue_worker_template_specs()
+    by_type = {item.worker_type: item for item in specs}
 
-    assert tuple(by_key) == EXPECTED_STATIC_AGENT_KEYS
-    assert by_key["agentic_lead_agent"].service_name == "Datalogue Agentic Lead Agent"
-    assert by_key["bi_agent"].service_name == "Datalogue BI Agent"
-    assert "Dataset Query" in by_key["bi_agent"].description
+    assert tuple(by_type) == EXPECTED_WORKER_TEMPLATE_TYPES
+    assert by_type["bi"].display_name == "Datalogue BI Worker"
+    assert "Dataset Query" in by_type["bi"].description
+    assert "artifact_ref" in by_type["report"].system_prompt_template
 
 
-def test_static_agent_prompts_lock_fixed_agent_boundaries():
-    from app.agentscope_service.registry import build_datalogue_static_agent_specs
+def test_agent_team_prompts_allow_official_team_tools_only():
+    from app.agentscope_service.registry import build_datalogue_worker_template_specs
 
-    specs = build_datalogue_static_agent_specs()
-    combined = "\n".join(item.system_prompt for item in specs)
+    specs = build_datalogue_worker_template_specs()
+    combined = "\n".join(item.system_prompt_template for item in specs)
 
-    assert "固定 Agent" in combined
-    assert "运行时动态创建" in combined
+    assert "AgentScope 官方 Agent Team" in combined
+    assert "TeamCreate" in combined
+    assert "AgentCreate" in combined
+    assert "TeamSay" in combined
     assert "自研直接查询执行器" in combined
-    for forbidden in FORBIDDEN_PROMPT_TOKENS:
+    for forbidden in FORBIDDEN_DATALOGUE_ORCHESTRATION_TOKENS:
         assert forbidden not in combined
 
 
-def test_static_agent_spec_payload_is_agent_service_ready():
-    from app.agentscope_service.registry import build_datalogue_static_agent_specs
+def test_worker_template_specs_convert_to_agentscope_subagent_templates():
+    from agentscope.app import SubAgentTemplate
+    from app.agentscope_service.registry import build_datalogue_worker_template_specs
 
-    spec = build_datalogue_static_agent_specs()[0]
-    payload = spec.to_agent_payload()
+    template = build_datalogue_worker_template_specs()[0].to_subagent_template()
 
-    assert payload["name"] == spec.service_name
-    assert payload["display_name"] == spec.service_name
-    assert payload["description"] == spec.description
-    assert payload["system_prompt"] == spec.system_prompt
-    assert payload["metadata"]["datalogue_static_agent_key"] == spec.key
-    assert payload["metadata"]["datalogue_role"] == spec.role
+    assert isinstance(template, SubAgentTemplate)
+    assert template.type == "bi"
+    assert "TeamSay" in template.system_prompt_template
+    assert "Datalogue BI Worker" in template.description
 
 
 @pytest.mark.asyncio
@@ -102,7 +100,7 @@ async def test_extra_agent_tools_registers_non_read_only_dataset_function_tool(m
     )
 
     factory = datalogue_tools.build_datalogue_extra_agent_tools()
-    registered_tools = await factory(user_id="user-1", agent_id="bi_agent", session_id="session-1")
+    registered_tools = await factory(user_id="user-1", agent_id="agent-created-by-agentcreate", session_id="session-1")
 
     assert len(registered_tools) == 1
     tool = registered_tools[0]
@@ -115,7 +113,7 @@ async def test_extra_agent_tools_registers_non_read_only_dataset_function_tool(m
         confirmed_question="统计合同总金额",
         task_goal="回答用户确认后的问数问题",
         user_confirmation_id="confirm-1",
-        routing_rationale="已确认进入固定 BI Agent",
+        routing_rationale="已确认进入 BI worker",
         trace_id="trace-1",
         parent_run_id="run-1",
     )
@@ -134,28 +132,25 @@ async def test_extra_agent_tools_registers_non_read_only_dataset_function_tool(m
 def test_prompt_and_tool_boundary_forbid_private_tokens():
     from pathlib import Path
 
-    from app.agents.agentic_lead_agent.react_factory import AGENTIC_LEAD_AGENT_DIRECT_PROMPT
-    from app.agents.bi_agent.react_factory import BI_AGENT_DIRECT_QUERY_PROMPT
+    from app.agentscope_service.registry import BI_WORKER_PROMPT, LEADER_AGENT_SYSTEM_PROMPT
     from app.agentscope_service import dataset_query_executor
 
-    prompt_text = "\n".join([AGENTIC_LEAD_AGENT_DIRECT_PROMPT, BI_AGENT_DIRECT_QUERY_PROMPT])
+    prompt_text = f"{LEADER_AGENT_SYSTEM_PROMPT}\n{BI_WORKER_PROMPT}"
     for forbidden in (
-        "TeamCreate",
-        "AgentCreate",
-        "TeamSay",
         "native_handoff",
         "compile_dsl_to_sql",
         "execute_compiled_query",
         "repair_dsl",
         "get_dataset_status",
         "list_candidate_assets",
-        "SQL",
-        "schema",
-        "raw rows",
     ):
         assert forbidden not in prompt_text
-    assert "bi_agent" in AGENTIC_LEAD_AGENT_DIRECT_PROMPT
-    assert "datalogue_query_dataset" in BI_AGENT_DIRECT_QUERY_PROMPT
+    for safety_boundary in ("SQL", "schema", "raw rows"):
+        assert safety_boundary in prompt_text
+    assert "TeamCreate" in LEADER_AGENT_SYSTEM_PROMPT
+    assert "AgentCreate" in LEADER_AGENT_SYSTEM_PROMPT
+    assert "TeamSay" in LEADER_AGENT_SYSTEM_PROMPT
+    assert "安全 Dataset Query 工具" in BI_WORKER_PROMPT
 
     source = Path(dataset_query_executor.__file__).read_text(encoding="utf-8")
     for forbidden in (

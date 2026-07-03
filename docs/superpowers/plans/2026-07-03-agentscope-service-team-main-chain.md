@@ -1,5 +1,7 @@
 # AgentScope Service Static Agents Main Chain Implementation Plan
 
+> **状态：已废弃。** 本计划保留 `/api/agentic-shell/tasks/stream`，并把 AgentScope Team 内置工具作为未来扩展能力，不再符合 2026-07-04 的最新架构定夺。后续执行必须改用 `docs/superpowers/plans/2026-07-04-agentscope-agent-team-main-chain.md`，以 AgentScope Agent Team 为主链设计理念。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 用 AgentScope 2.0.3 官方 Agent Service 和固定 Agent 注册表接管 Datalogue 主智能体运行时，并清理自研 runner / handoff / direct runtime 兼容层。

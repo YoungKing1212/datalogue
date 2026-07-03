@@ -16,9 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.agentic_lead_agent import AgenticLeadAgent
 from app.events.projection import build_task_envelope
-from app.schemas.bi_workbench import DatalogueEventEnvelope, DatalogueEventType
+from app.schemas.bi_workbench import DatalogueEventEnvelope, DatalogueEventType, sanitize_event_payload
 
 
 def project_agentscope_service_event(
@@ -33,7 +32,7 @@ def project_agentscope_service_event(
     """将 AgentScope Service 原始事件投影为 Datalogue envelope。"""
 
     payload = _payload_from_event(event)
-    safe_payload = AgenticLeadAgent().sanitize_output(payload)
+    safe_payload = sanitize_event_payload(payload)
     if not isinstance(safe_payload, dict):
         safe_payload = {"summary": str(safe_payload or "")}
     return build_task_envelope(

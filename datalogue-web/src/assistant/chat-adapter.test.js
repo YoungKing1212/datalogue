@@ -6,12 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeChatAdapter, buildBusinessSessionId } from './chat-adapter';
 import { buildHistoryMessageCustom } from './thread-list-adapter';
 
-vi.mock('./agentic-shell-task-api', () => ({
-  streamAgenticShellTask: vi.fn(),
-}));
-
-vi.mock('./agentic-direct-query-api', () => ({
-  streamAgenticDirectQuery: vi.fn(),
+vi.mock('./agent-team-task-api', () => ({
+  streamAgentTeamTask: vi.fn(),
 }));
 
 vi.mock('./thread-list-adapter', async (importOriginal) => {
@@ -23,13 +19,71 @@ vi.mock('./thread-list-adapter', async (importOriginal) => {
   };
 });
 
-const { streamAgenticShellTask } = await import('./agentic-shell-task-api');
-const { streamAgenticDirectQuery } = await import('./agentic-direct-query-api');
+const { streamAgentTeamTask } = await import('./agent-team-task-api');
 
 async function* events(items) {
   for (const item of items) {
-    yield item;
+    yield asAgentTeamEnvelope(item);
   }
+}
+
+function asAgentTeamEnvelope(item) {
+  if (item?.event_envelope) return item;
+  if (item?.type === 'final') {
+    return {
+      task_id: item.task_id,
+      legacy_payload: item,
+      event_envelope: {
+        event_type: 'message.completed',
+        task_id: item.task_id,
+        trace_id: item.trace_id,
+        payload: { ...item, summary: item.answer || item.summary },
+        legacy_payload: item,
+      },
+    };
+  }
+  if (item?.type === 'route_decision') {
+    return {
+      task_id: item.task_id,
+      event_envelope: {
+        event_type: item.decision === 'ambiguous' ? 'clarification.required' : 'dataset.selected',
+        task_id: item.task_id,
+        trace_id: item.trace_id,
+        payload: {
+          ...item,
+          route_decision: item,
+          clarification: item.clarification || null,
+        },
+      },
+    };
+  }
+  if (item?.type === 'step') {
+    return {
+      task_id: item.task_id,
+      event_envelope: {
+        event_type: item.node || 'task.step',
+        task_id: item.task_id,
+        trace_id: item.trace_id,
+        payload: {
+          ...item,
+          summary: item.display_name || item.summary || item.node,
+          status: item.status || 'done',
+        },
+      },
+    };
+  }
+  if (item?.type === 'repair') {
+    return {
+      task_id: item.task_id,
+      event_envelope: {
+        event_type: item.event_type || 'repair.plan_created',
+        task_id: item.task_id,
+        trace_id: item.trace_id,
+        payload: item,
+      },
+    };
+  }
+  return item;
 }
 
 function runInput(options = {}) {
@@ -60,8 +114,8 @@ describe('chat-adapter C-ready metadata', () => {
     window.history.pushState({}, '', '/chat');
   });
 
-  it('uses Agentic Shell task stream as the default chat send path', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+  it('uses Agent Team task stream as the default chat send path', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
           event_type: 'trace.updated',
@@ -82,20 +136,21 @@ describe('chat-adapter C-ready metadata', () => {
       },
     ]));
 
-    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 }, transport: 'stream' });
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 } });
     const chunks = await collectRun(adapter, runInput({
       question: '统计双周会议数据记录数量',
       threadId: 'local-thread',
     }));
     const finalChunk = chunks.at(-1);
 
-    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+    expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
         task_source: 'chat',
         task_type: 'bi_query',
         question: '统计双周会议数据记录数量',
         dataset_id: 12,
         conversation_id: null,
+        model_config_id: null,
       }),
       expect.any(Object),
     );
@@ -111,8 +166,8 @@ describe('chat-adapter C-ready metadata', () => {
     expect(JSON.stringify(finalChunk.metadata.custom)).not.toMatch(/\bSELECT\b|raw_rows|schema_context/i);
   });
 
-  it('passes the selected model config id to Agentic Shell when the composer chooses a model', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+  it('passes the selected model config id to Agent Team when the composer chooses a model', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
           event_type: 'message.completed',
@@ -131,7 +186,7 @@ describe('chat-adapter C-ready metadata', () => {
       threadId: 'local-thread',
     }));
 
-    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+    expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
         question: '用指定模型查询销售趋势',
         dataset_id: 12,
@@ -141,18 +196,17 @@ describe('chat-adapter C-ready metadata', () => {
     );
   });
 
-  it('maps direct-query final conversation id back to the current local thread', async () => {
+  it('maps Agent Team final conversation id back to the current local thread', async () => {
     const resolvedListener = vi.fn();
     const renameListener = vi.fn();
     window.addEventListener('datalogue:conv-resolved', resolvedListener);
     window.addEventListener('datalogue:thread-rename', renameListener);
-    streamAgenticDirectQuery.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         type: 'final',
         answer: '合同总金额为 100 万元。',
-        status: 'completed',
-        selected_agent: 'bi_agent',
         conversation_id: 88,
+        result_ref: 'artifact:result-88',
         title: '统计合同总金额',
       },
     ]));
@@ -173,8 +227,8 @@ describe('chat-adapter C-ready metadata', () => {
     window.removeEventListener('datalogue:thread-rename', renameListener);
   });
 
-  it('routes missing dataset through Agentic Shell so BI Agent can choose it', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+  it('routes missing dataset through Agent Team so BI Agent can choose it', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
           event_type: 'message.completed',
@@ -213,7 +267,7 @@ describe('chat-adapter C-ready metadata', () => {
       threadId: 'local-thread',
     }));
 
-    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+    expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
         task_source: 'chat',
         task_type: 'bi_query',
@@ -233,8 +287,8 @@ describe('chat-adapter C-ready metadata', () => {
     });
   });
 
-  it('passes the selected model config id through Agentic Shell when dataset selection is needed', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+  it('passes the selected model config id through Agent Team when dataset selection is needed', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
           event_type: 'message.completed',
@@ -252,7 +306,7 @@ describe('chat-adapter C-ready metadata', () => {
       threadId: 'local-thread',
     }));
 
-    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+    expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
         question: '查询销售趋势',
         dataset_id: null,
@@ -272,7 +326,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('converts route, step and final events into timeline and artifact metadata', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         type: 'route_decision',
         decision: 'selected',
@@ -316,7 +370,7 @@ describe('chat-adapter C-ready metadata', () => {
     const chunks = await collectRun(adapter, runInput({ threadId: 'local-thread' }));
     const finalChunk = chunks.at(-1);
 
-    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+    expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
         task_source: 'chat',
         task_type: 'bi_query',
@@ -346,7 +400,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('maps final SSE artifact refs without internal planning, observability or raw result metadata', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         type: 'step',
         node: 'query_plan',
@@ -406,8 +460,8 @@ describe('chat-adapter C-ready metadata', () => {
     );
   });
 
-  it('maps Agentic Shell artifact refs from message completed envelopes into result metadata', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+  it('maps Agent Team artifact refs from message completed envelopes into result metadata', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
           event_type: 'artifact.created',
@@ -455,7 +509,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('exposes only business-level candidate dataset confirmation metadata', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         type: 'final',
         answer: '请选择数据集',
@@ -491,7 +545,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('passes pending clarification response once and then clears it', async () => {
-    streamAgenticShellTask.mockReturnValue(events([{ type: 'final', answer: '已确认' }]));
+    streamAgentTeamTask.mockReturnValue(events([{ type: 'final', answer: '已确认' }]));
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
       selected_dataset_id: 7,
       selected_text: '销售明细',
@@ -500,7 +554,7 @@ describe('chat-adapter C-ready metadata', () => {
     const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: null } });
     await collectRun(adapter);
 
-    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+    expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
         task_source: 'chat',
         task_type: 'bi_query',
@@ -516,7 +570,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('passes pending workbench retry request to chat stream once and clears it', async () => {
-    streamAgenticShellTask.mockReturnValue(events([{ type: 'final', answer: '已从检查点恢复' }]));
+    streamAgentTeamTask.mockReturnValue(events([{ type: 'final', answer: '已从检查点恢复' }]));
     window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = {
       question: '查询杨凯 2024 年工作日志',
       conversation_id: 31,
@@ -529,7 +583,7 @@ describe('chat-adapter C-ready metadata', () => {
     const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: null } });
     await collectRun(adapter, runInput({ question: '重试上一步', threadId: 'local-thread' }));
 
-    expect(streamAgenticShellTask).toHaveBeenCalledWith(
+    expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
         task_source: 'chat',
         task_type: 'bi_query',
@@ -539,6 +593,7 @@ describe('chat-adapter C-ready metadata', () => {
         thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         retry_checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
         dataset_id: 7,
+        model_config_id: null,
         clarification_response: null,
       }),
       expect.any(Object),
@@ -549,7 +604,7 @@ describe('chat-adapter C-ready metadata', () => {
   it('emits resolved AgentScope thread id from final payload', async () => {
     const listener = vi.fn();
     window.addEventListener('datalogue:thread-resolved', listener);
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         type: 'final',
         answer: '已完成',
@@ -632,7 +687,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('maps repair event envelopes into business-level metadata without leaking patch details', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         type: 'repair',
         event_envelope: {
@@ -708,7 +763,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('maps C2 repair patch summary into timeline, artifact refs, and safe metadata', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         type: 'repair',
         event_envelope: {
@@ -833,7 +888,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('maps repair_patch graph step into business timeline without internal patch body', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         type: 'step',
         node: 'repair_patch',
@@ -869,14 +924,14 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('projects handoff, tool groups and timing into assistant-ui parts with safe metadata', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
           event_type: 'agent.handoff.started',
           task_id: 'task-p3',
           trace_id: 'trace-p3',
           payload: {
-            from_agent: 'agentic_lead_agent',
+            from_agent: 'agent_team_leader',
             to_agent: 'bi_agent',
             summary: '已转交 BI Agent 处理问数任务',
             reason: '需要查询数据集',
@@ -993,7 +1048,7 @@ describe('chat-adapter C-ready metadata', () => {
   });
 
   it('projects confirmation requests as reasoning parts and safe metadata only', async () => {
-    streamAgenticShellTask.mockReturnValue(events([
+    streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
           event_type: 'confirmation.required',

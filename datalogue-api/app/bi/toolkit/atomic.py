@@ -26,7 +26,7 @@ from agentscope.tool import ToolBase, Toolkit
 from sqlalchemy.orm import Session
 
 from app.models.dataset import AnalysisBlueprint, SemanticDataset
-from app.agents.agentic_lead_agent import AgenticLeadAgent
+from app.safety import DataloguePayloadSanitizer
 from app.services.artifact_store import ArtifactStore
 from app.services.query_plan_compiler import compile_query_plan_to_sql
 from app.services.subagent_planning.contracts import QueryPlan, QueryPlanValidationError, normalize_query_plan
@@ -59,7 +59,7 @@ class BIAtomicToolContext:
 
     db: Session
     query_executor: Callable[[str], Any] | None = None
-    sanitizer: AgenticLeadAgent = field(default_factory=AgenticLeadAgent)
+    sanitizer: DataloguePayloadSanitizer = field(default_factory=DataloguePayloadSanitizer)
     compiled_queries: dict[str, dict[str, Any]] = field(default_factory=dict)
     toolkit: Any | None = None
 

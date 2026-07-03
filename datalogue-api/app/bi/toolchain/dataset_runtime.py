@@ -18,8 +18,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.agents.agentic_lead_agent import AgenticLeadAgent
 from app.bi.toolkit import DatalogueBIAtomicToolkit
+from app.safety import DataloguePayloadSanitizer
 from app.services.subagent_planning.contracts import QueryPlan
 
 
@@ -92,7 +92,7 @@ class DatasetAgentToolCallRuntime:
             raise ValueError("DatasetAgentToolCallRuntime requires a DatalogueBIAtomicToolkit")
         self.toolkit = toolkit
         self.dsl_generator = dsl_generator
-        self._sanitizer = AgenticLeadAgent()
+        self._sanitizer = DataloguePayloadSanitizer()
 
     def run_query(
         self,

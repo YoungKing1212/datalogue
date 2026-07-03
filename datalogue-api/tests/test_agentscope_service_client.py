@@ -21,21 +21,21 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_agentscope_service_client_uses_prefixed_rest_paths_and_payloads():
-    requests: list[tuple[str, str, dict]] = []
+    requests: list[tuple[str, str, dict, str | None]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content.decode("utf-8"))
-        requests.append((request.method, request.url.path, payload))
-        if request.method == "POST" and request.url.path == "/agentscope/session":
+        requests.append((request.method, request.url.path, payload, request.headers.get("X-User-ID")))
+        if request.method == "POST" and request.url.path == "/agentscope/sessions":
             assert payload == {
-                "agent_id": "agentic_lead_agent",
+                "agent_id": "agent-leader-1",
                 "name": "统计合同总金额",
                 "chat_model_config": {"model": "gpt-test"},
             }
             return httpx.Response(200, json={"session_id": "session-1"})
         if request.method == "POST" and request.url.path == "/agentscope/chat":
             assert payload == {
-                "agent_id": "agentic_lead_agent",
+                "agent_id": "agent-leader-1",
                 "session_id": "session-1",
                 "input": {
                     "name": "user",
@@ -52,20 +52,21 @@ async def test_agentscope_service_client_uses_prefixed_rest_paths_and_payloads()
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         session_id = await client.create_session(
-            agent_id="agentic_lead_agent",
+            agent_id="agent-leader-1",
             name="统计合同总金额",
             chat_model_config={"model": "gpt-test"},
         )
         await client.trigger_chat(
-            agent_id="agentic_lead_agent",
+            agent_id="agent-leader-1",
             session_id=session_id,
             text="统计合同总金额",
         )
 
-    assert [(method, path) for method, path, _payload in requests] == [
-        ("POST", "/agentscope/session"),
+    assert [(method, path) for method, path, _payload, _user_id in requests] == [
+        ("POST", "/agentscope/sessions"),
         ("POST", "/agentscope/chat"),
     ]
+    assert {user_id for *_rest, user_id in requests} == {"datalogue-agent-team"}
 
 
 @pytest.mark.asyncio
@@ -74,7 +75,8 @@ async def test_agentscope_service_client_streams_session_sse_data_frames():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append((request.method, request.url.path))
-        assert request.url.query == b"agent_id=agentic_lead_agent"
+        assert request.url.query == b"agent_id=agent-leader-1"
+        assert request.headers["X-User-ID"] == "datalogue-agent-team"
         content = "\n".join(
             [
                 "event: message",
@@ -97,12 +99,75 @@ async def test_agentscope_service_client_streams_session_sse_data_frames():
             event
             async for event in client.stream_session(
                 session_id="session-1",
-                agent_id="agentic_lead_agent",
+                agent_id="agent-leader-1",
             )
         ]
 
-    assert requests == [("GET", "/agentscope/session/session-1/stream")]
+    assert requests == [("GET", "/agentscope/sessions/session-1/stream")]
     assert events == [
         {"type": "message", "payload": {"content": "hello"}},
         {"type": "final", "payload": {"summary": "done"}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_client_ensures_leader_agent_via_official_agent_api():
+    requests: list[tuple[str, str, dict | None]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8")) if request.content else None
+        requests.append((request.method, request.url.path, payload))
+        assert request.headers["X-User-ID"] == "datalogue-agent-team"
+        if request.method == "GET" and request.url.path == "/agentscope/agent/":
+            return httpx.Response(200, json={"agents": [], "total": 0})
+        if request.method == "POST" and request.url.path == "/agentscope/agent/":
+            assert payload["name"] == "Datalogue Agent Team Leader"
+            assert "TeamCreate" in payload["system_prompt"]
+            return httpx.Response(201, json={"agent_id": "agent-created-1"})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        from app.agentscope_service.client import AgentScopeServiceClient
+
+        client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
+        agent_id = await client.ensure_agent(
+            name="Datalogue Agent Team Leader",
+            system_prompt="use TeamCreate",
+        )
+
+    assert agent_id == "agent-created-1"
+    assert [(method, path) for method, path, _payload in requests] == [
+        ("GET", "/agentscope/agent/"),
+        ("POST", "/agentscope/agent/"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_client_reuses_existing_leader_agent():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        return httpx.Response(
+            200,
+            json={
+                "agents": [
+                    {
+                        "id": "agent-existing-1",
+                        "data": {"name": "Datalogue Agent Team Leader"},
+                    }
+                ],
+                "total": 1,
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        from app.agentscope_service.client import AgentScopeServiceClient
+
+        client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
+        agent_id = await client.ensure_agent(
+            name="Datalogue Agent Team Leader",
+            system_prompt="unused",
+        )
+
+    assert agent_id == "agent-existing-1"

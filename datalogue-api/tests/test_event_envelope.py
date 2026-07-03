@@ -5,8 +5,8 @@
 #
 # Responsibilities:
 #   - 验证统一事件 envelope 的类型、可见性和脱敏边界。
-#   - 验证 Agentic Shell task stream 使用统一事件 envelope。
-#   - 固化 AgentScope Shell 需要的 ArtifactCard / outer payload 安全约束。
+#   - 验证 Agent Team task stream 使用统一事件 envelope。
+#   - 固化 AgentScope Agent Team 需要的 ArtifactCard / outer payload 安全约束。
 #
 # Author      : yangkai
 # Created On  : 2026-06-26

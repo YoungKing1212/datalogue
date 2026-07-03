@@ -84,7 +84,7 @@ def build_task_envelope(
     legacy_payload: dict[str, Any] | None = None,
     visibility: str = "user_visible",
 ) -> DatalogueEventEnvelope:
-    """构造 Agentic Shell task envelope；所有用户可见载荷继续走 bi_workbench 脱敏。"""
+    """构造 Agent Team task envelope；所有用户可见载荷继续走 bi_workbench 脱敏。"""
 
     return build_datalogue_event_envelope(
         event_type=event_type,

@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     # 本地调试开关：打开后打印 Agent 原始 prompt 和返回值。
     AGENT_DEBUG_RAW_LOGS: bool = False
 
+    # AgentScope 官方 Agent Service 子应用挂载配置；默认开启，让主链从 /api 旁路进入官方 service。
+    AGENTSCOPE_SERVICE_ENABLED: bool = True
+    AGENTSCOPE_MOUNT_PATH: str = "/agentscope"
+    AGENTSCOPE_SERVICE_BASE_URL: Optional[str] = "http://127.0.0.1:8000/agentscope"
+    # AgentScope Service 的 Redis/Workspace 参数只在子应用启动生命周期中真正连接外部资源。
+    AGENTSCOPE_REDIS_HOST: str = "localhost"
+    AGENTSCOPE_REDIS_PORT: int = 6379
+    AGENTSCOPE_REDIS_DB: int = 0
+    AGENTSCOPE_REDIS_PASSWORD: Optional[str] = None
+    AGENTSCOPE_REDIS_URL: Optional[str] = "redis://localhost:6379/0"
+    AGENTSCOPE_WORKSPACE_BASEDIR: str = "data/agentscope/workspaces"
+    AGENTSCOPE_WORKSPACE_TTL_SECONDS: float = 3600.0
+
     MULTITURN_ENABLED: bool = False
     MULTITURN_LOCK_TTL_SECONDS: int = 300
     MULTITURN_COMPACTION_ENABLED: bool = False
@@ -56,7 +69,7 @@ class Settings(BaseSettings):
     LEAD_AGENT_ENABLE_DATASET_FANOUT: bool = False
     # BI Agent DatasetAgent fallback 默认关闭；dev_only 只允许本地开发显式打开，避免生产绕过 AgentScope handoff。
     BI_LEAD_AGENT_DATASET_FALLBACK_MODE: str = "off"  # 兼容旧环境变量名；内部语义已迁为 BI Agent。
-    # AS-R0 历史影子开关：保留配置读取兼容，当前真实入口已切到 Agentic Shell task stream。
+    # AS-R0 历史影子开关：保留配置读取兼容，当前真实入口已切到 AgentScope Agent Team。
     AS_R0_AGENTIC_RUNTIME_SHADOW_ENABLED: bool = False
 
     QUERY_ARTIFACT_TTL_SECONDS: int = 7 * 24 * 60 * 60

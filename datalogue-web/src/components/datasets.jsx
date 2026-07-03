@@ -46,8 +46,8 @@ import {
   rollbackDatasetSubAgentManifest,
   routeCheckDatasetSubAgentManifest,
 } from '../api/client';
-import { streamAgenticShellTask } from '../assistant/agentic-shell-task-api';
-import { agenticEnvelopeToChatEvent } from '../assistant/agentic-shell-event-adapter';
+import { streamAgentTeamTask } from '../assistant/agent-team-task-api';
+import { agentTeamEnvelopeToChatEvent } from '../assistant/agent-team-event-adapter';
 
 // ── DatasetsScreen — 语义层配置（三栏式）────────────────────
 
@@ -1158,7 +1158,7 @@ function DatasetsScreen() {
     testAbortRef.current = { abort: () => ctrl.abort() };
     (async () => {
       try {
-        for await (const rawEvent of streamAgenticShellTask(
+        for await (const rawEvent of streamAgentTeamTask(
           {
             task_source: 'chat',
             task_type: 'bi_query',
@@ -1167,7 +1167,7 @@ function DatasetsScreen() {
           },
           { signal: ctrl.signal },
         )) {
-          const ev = agenticEnvelopeToChatEvent(rawEvent);
+          const ev = agentTeamEnvelopeToChatEvent(rawEvent);
           if (ev.type === 'token') {
             setTestResult(prev => (prev || '') + (ev.content || ''));
             continue;

@@ -181,7 +181,7 @@ describe('WorkbenchPanel', () => {
     expect(screen.queryByText('诊断详情')).not.toBeInTheDocument();
   });
 
-  it('passes accepted retry task request to chat shell without execution details', async () => {
+  it('passes accepted retry task request to Agent Team without execution details', async () => {
     const onRetryRun = vi.fn();
     fetchWorkbenchThread.mockResolvedValueOnce({
       ...threadView,

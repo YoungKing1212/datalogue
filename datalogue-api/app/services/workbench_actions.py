@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models.agentscope_workbench import AgentScopeMessage, AgentScopeRef, AgentScopeSession
-from app.schemas.agentic_shell_task import AgenticShellTaskRequest
+from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 from app.schemas.agentscope_workbench import (
     WorkbenchRetryRequest,
     WorkbenchRetryResponse,
@@ -29,11 +29,10 @@ from app.schemas.agentscope_workbench import (
 from app.services.agentscope_mirror import (
     create_running_assistant_message,
     find_expired_running_messages,
+    record_agentscope_event,
     record_agentscope_ref,
 )
 from app.runtime.thread_resolver import normalize_thread_id
-from app.agents.agentic_lead_agent import AgenticLeadAgent
-from app.persistence import AgentScopeMirrorShellWriter
 
 
 _INTERNAL_RETRY_TEXT_RE = re.compile(
@@ -140,21 +139,20 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
         ref_value=request.checkpoint_ref,
         relation="checkpoint",
     )
-    AgenticLeadAgent(
-        writer=AgentScopeMirrorShellWriter(
-            db,
-            thread_id=normalized_thread_id,
-            message_id=retry_message.message_id,
-        )
-    ).record_action(
-        action_id=request.selected_action,
+    # Workbench retry 只写产品级事件；真实重跑交给 Agent Team task 主链。
+    record_agentscope_event(
+        db,
         thread_id=normalized_thread_id,
         message_id=retry_message.message_id,
+        event_type="workbench.retry_requested",
         payload={
             "summary": "已接收重试请求，准备从检查点恢复。",
             "checkpoint_ref": request.checkpoint_ref,
             "selected_action": request.selected_action,
         },
+        visibility="user",
+        task_id=None,
+        trace_id=None,
     )
     return WorkbenchRetryResponse(
         thread_id=normalized_thread_id,
@@ -237,8 +235,8 @@ def _build_retry_task_request(
     session: AgentScopeSession,
     source_message: AgentScopeMessage,
     checkpoint_ref: str,
-) -> AgenticShellTaskRequest:
-    return AgenticShellTaskRequest(
+) -> AgentTeamTaskRequest:
+    return AgentTeamTaskRequest(
         task_source="workbench",
         task_type="bi_query",
         question=_retry_run_question(session=session, source_message=source_message),

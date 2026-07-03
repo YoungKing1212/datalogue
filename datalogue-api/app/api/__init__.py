@@ -14,10 +14,8 @@
 from fastapi import APIRouter
 
 from app.api import (
-    agentic_lead_agent,
-    agentic_shell,
+    agent_team,
     artifacts,
-    bi_agent,
     conversation,
     datasource,
     dataset,
@@ -31,10 +29,8 @@ router = APIRouter()
 router.include_router(datasource.router, prefix="/datasource", tags=["数据源"])
 router.include_router(dataset.router, prefix="/dataset", tags=["数据集"])
 router.include_router(conversation.router, prefix="/conversation", tags=["对话"])
-router.include_router(agentic_lead_agent.router, prefix="/agentic-lead-agent", tags=["AgenticLeadAgent"])
-router.include_router(agentic_shell.router, prefix="/agentic-shell", tags=["Agentic Shell"])
+router.include_router(agent_team.router, prefix="/agent-team", tags=["Agent Team"])
 router.include_router(llm.router, prefix="/llm", tags=["LLM 配置"])
 router.include_router(messages.router, prefix="/messages", tags=["消息反馈"])
 router.include_router(artifacts.router, prefix="/artifacts", tags=["查询产物"])
 router.include_router(workbench.router, prefix="/workbench", tags=["工作台"])
-router.include_router(bi_agent.router, prefix="/bi-agent", tags=["BI Agent"])

@@ -98,50 +98,6 @@ def test_p1_workbench_projection_new_path_preserves_legacy_sanitizer():
     assert safe_payload == {"summary": "完成", "artifact_ref": "artifact:1"}
 
 
-def test_p1_runtime_boundary_new_path_owns_agentscope_runtime_driver():
-    from app.runtime import DatalogueAgentScopeRuntimeDriver
-    from app.runtime.boundary import DatalogueAgentScopeRuntimeDriver as DirectDriver
-
-    assert DatalogueAgentScopeRuntimeDriver is DirectDriver
-    assert DirectDriver.__module__ == "app.runtime.boundary"
-
-    runtime_contract = DirectDriver().prepare_runtime(
-        question="查询 GMV",
-        context={"dataset_id": 12, "sql": "select * from orders"},
-    )
-
-    assert runtime_contract.driver_name == "agentscope_runtime_boundary"
-    assert runtime_contract.projected_context == {"question": "查询 GMV", "dataset_id": 12}
-    assert all(tool.provider == "DatalogueBIAtomicToolkit" for tool in runtime_contract.tool_registry)
-    assert "select * from orders" not in runtime_contract.model_dump_json()
-
-
-def test_p1_agentic_lead_agent_new_path_owns_shell_contracts():
-    from app.agents.agentic_lead_agent import AgenticLeadAgent, DatalogueAgenticShell
-    from app.agents.agentic_lead_agent.shell import AgenticLeadAgent as DirectAgenticLeadAgent
-
-    assert AgenticLeadAgent is DirectAgenticLeadAgent
-    assert DatalogueAgenticShell is AgenticLeadAgent
-    assert AgenticLeadAgent.__module__ == "app.agents.agentic_lead_agent.shell"
-
-    contract = AgenticLeadAgent().prepare_turn(
-        question="查询 GMV",
-        context={"dataset_id": 12, "sql": "select * from orders"},
-    )
-
-    assert contract.selected_agent == "bi_agent"
-    assert contract.projected_context.model_dump() == {"question": "查询 GMV", "dataset_id": 12}
-    assert "select * from orders" not in contract.model_dump_json()
-
-
-def test_p1_persistence_new_path_owns_agentic_shell_writer():
-    from app.persistence import AgentScopeMirrorShellWriter
-    from app.persistence.shell_writer import AgentScopeMirrorShellWriter as DirectWriter
-
-    assert AgentScopeMirrorShellWriter is DirectWriter
-    assert DirectWriter.__module__ == "app.persistence.shell_writer"
-
-
 def test_p1_runtime_new_path_owns_thread_resolver():
     from app.runtime import new_agentscope_thread_id, normalize_thread_id, resolve_thread_ref
     from app.runtime.thread_resolver import normalize_thread_id as direct_normalize_thread_id
@@ -151,11 +107,3 @@ def test_p1_runtime_new_path_owns_thread_resolver():
     assert normalize_thread_id(123) == "conv_123"
     assert resolve_thread_ref("conv_123").read_only is True
     assert new_agentscope_thread_id().startswith("as_")
-
-
-def test_p1_runtime_new_path_owns_agentic_shell_task_runtime():
-    from app.runtime import AgenticShellTaskRuntime
-    from app.runtime.task_runtime import AgenticShellTaskRuntime as DirectRuntime
-
-    assert AgenticShellTaskRuntime is DirectRuntime
-    assert DirectRuntime.__module__ == "app.runtime.task_runtime"

@@ -26,10 +26,10 @@ from agentscope.permission import PermissionBehavior, PermissionContext, Permiss
 from agentscope.tool import ToolBase
 
 from app.bi.toolchain import DatasetAgentToolCallRuntime
-from app.agents.agentic_lead_agent import AgenticLeadAgent
 from app.middlewares import DatasetRuntimeToolLoggingMiddleware
 from app.middlewares.lifecycle import log_lifecycle
 from app.bi.toolkit import DatalogueBIAtomicToolkit
+from app.safety import DataloguePayloadSanitizer
 
 
 logger = logging.getLogger(__name__)
@@ -195,7 +195,7 @@ class AgentScopeDatasetRuntimeBridge:
 
     def __init__(self, *, toolkit: DatalogueBIAtomicToolkit) -> None:
         self.toolkit = toolkit
-        self._sanitizer = AgenticLeadAgent()
+        self._sanitizer = DataloguePayloadSanitizer()
 
     def start_session(
         self,

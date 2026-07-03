@@ -77,11 +77,18 @@ def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, t
         "message_bus",
         "workspace_manager",
         "extra_agent_tools",
+        "custom_subagent_templates",
     }
     assert isinstance(create_app_kwargs["storage"], FakeRedisStorage)
     assert isinstance(create_app_kwargs["message_bus"], FakeRedisMessageBus)
     assert isinstance(create_app_kwargs["workspace_manager"], FakeLocalWorkspaceManager)
     assert callable(create_app_kwargs["extra_agent_tools"])
+    assert [template.type for template in create_app_kwargs["custom_subagent_templates"]] == [
+        "bi",
+        "report",
+        "python",
+        "audit",
+    ]
 
 
 def test_main_mounts_agentscope_service_only_when_enabled(monkeypatch):

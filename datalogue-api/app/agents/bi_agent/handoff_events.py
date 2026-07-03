@@ -20,7 +20,7 @@ from typing import Any
 from agentscope.message import TextBlock, ToolResultBlock
 
 from app.schemas.bi_agent import BIHandoffStatus
-from app.agents.agentic_lead_agent import AgenticLeadAgent
+from app.safety import DataloguePayloadSanitizer
 
 
 _ALLOWED_NATIVE_EVENT_FIELDS = {
@@ -54,7 +54,7 @@ def map_native_handoff_event(event: Mapping[str, Any]) -> dict[str, Any]:
     # event_type 是内部控制字段，通用输出 sanitizer 会裁掉；状态映射必须先从原始 envelope 读取。
     event_type = _safe_str(event.get("event_type") or event.get("type"))
     raw_status = event.get("handoff_status") or event.get("status")
-    sanitized = AgenticLeadAgent().sanitize_output(dict(event))
+    sanitized = DataloguePayloadSanitizer().sanitize_output(dict(event))
     if not isinstance(sanitized, dict):
         return {}
 

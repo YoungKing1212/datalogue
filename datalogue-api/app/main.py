@@ -20,6 +20,7 @@ from app.core.database import engine, Base
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api import router as api_router
+from app.agentscope_service import create_embedded_agentscope_app
 
 # 初始化带颜色的日志，可选持久化到文件
 settings = get_settings()
@@ -53,6 +54,24 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+
+
+def mount_agentscope_service(root_app: FastAPI, app_settings) -> None:
+    """按配置把官方 AgentScope Service 挂载为 Datalogue 子应用。"""
+
+    if not app_settings.AGENTSCOPE_SERVICE_ENABLED:
+        return
+
+    mount_path = app_settings.AGENTSCOPE_MOUNT_PATH.rstrip("/") or "/agentscope"
+    # 子应用只在配置开启时创建；避免测试或禁用环境提前初始化 AgentScope 外部依赖。
+    root_app.mount(
+        mount_path,
+        create_embedded_agentscope_app(app_settings),
+        name="agentscope_service",
+    )
+
+
+mount_agentscope_service(app, settings)
 
 
 @app.get("/health")

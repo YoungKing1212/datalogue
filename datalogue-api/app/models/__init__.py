@@ -45,7 +45,7 @@ from .agentscope_workbench import (
     AgentScopeRef,
     AgentScopeSession,
 )
-from .agentic_shell_task import AgenticShellTask
+from .agent_team_task import AgentTeamTask
 from .bi_agent import BIAgentHandoff, BIAgentConfirmation, BIAgentRun
 from .llm import LLMModelConfig, LLMRoleBinding
 
@@ -78,7 +78,7 @@ __all__ = [
     "AgentScopeMessage",
     "AgentScopeEvent",
     "AgentScopeRef",
-    "AgenticShellTask",
+    "AgentTeamTask",
     "BIAgentRun",
     "BIAgentConfirmation",
     "BIAgentHandoff",
