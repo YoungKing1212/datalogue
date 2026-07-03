@@ -11,6 +11,7 @@
 .worktrees/
 skills-lock.json
 feishu-cli-auth-qrcode.png
+outputs
 
 # Python
 __pycache__/
