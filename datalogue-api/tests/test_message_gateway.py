@@ -1,5 +1,4 @@
 from app.services.message_gateway import classify_turn_event
-from app.api.chat import _has_last_success_task
 from app.services.multiturn.last_success_task import evaluate_last_success_task
 from app.services.task_capsule import build_success_task_state
 
@@ -51,13 +50,14 @@ def test_schema_stale_last_success_task_does_not_enable_followup_refine():
         current_schema_version="schema-v2",
         current_manifest_version="manifest-v1",
     )
+    has_last_success_task = status.get("status") == "loaded"
 
-    assert _has_last_success_task({"last_success_task": task}, status) is False
+    assert has_last_success_task is False
     event = classify_turn_event(
         "只看汤杰",
         active_dataset_id=10,
         has_pending_clarification=False,
-        has_last_success_task=_has_last_success_task({"last_success_task": task}, status),
+        has_last_success_task=has_last_success_task,
     )
 
     assert event["event_type"] == "clarify"

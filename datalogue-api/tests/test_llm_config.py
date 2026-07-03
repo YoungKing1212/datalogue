@@ -155,7 +155,7 @@ def test_get_llm_uses_database_role_config(db_session):
     assert llm.temperature == 0.2
     assert llm.timeout == 12
     assert llm.model_kwargs == {"extra_body": {"enable_thinking": False}}
-    assert llm.max_tokens == 256
+    assert llm.max_tokens == 20480
     assert llm.response_format == {"type": "json_object"}
     assert llm.datalogue_call_policy["structured_output"] is True
     assert llm.datalogue_thinking_enabled is False

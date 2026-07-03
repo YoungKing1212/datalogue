@@ -287,8 +287,8 @@ def test_blueprint_shortcut_decision_attaches_settings_enabled(monkeypatch):
 
 
 def test_existing_regression_tests_remain_green():
-    """pytest collection 必须能发现并收集既有 multiturn/chat/regression 测试，验证
-    builder 抽取没破坏导入图。test bodies 跑不跑（绿不绿）由 T6 单独验证。
+    """pytest collection 必须能发现并收集既有 multiturn 测试，验证
+    builder 抽取没破坏仍保留的多轮服务层导入图。test bodies 跑不跑（绿不绿）由 T6 单独验证。
     """
     import subprocess
     import sys
@@ -301,7 +301,6 @@ def test_existing_regression_tests_remain_green():
             "--collect-only",
             "-q",
             "tests/test_multiturn.py",
-            "tests/test_multiturn_regression.py",
         ],
         capture_output=True,
         text=True,

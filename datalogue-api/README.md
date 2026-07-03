@@ -104,4 +104,4 @@ datalogue-api/
 | GET | `/api/conversation` | 对话列表 |
 | GET | `/api/conversation/{id}` | 对话详情 |
 | POST | `/api/agentic-shell/tasks/stream` | 流式问数 (SSE) |
-| POST | `/api/chat/feedback` | 人工反馈 |
+| POST | `/api/messages/{id}/feedback` | 人工反馈 |

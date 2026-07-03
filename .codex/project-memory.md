@@ -161,3 +161,10 @@
 - 关键改动：删除 FastAPI 旧 `POST /api/chat/stream` 路由和 `EventSourceResponse` 依赖；保留内部 `_stream_chat` 生成器供现有链路与测试复用；前端 `streamChat`、`streamChatEvents` 统一通过 `CHAT_STREAM_ENDPOINT` 调用 `/api/agentic-shell/tasks/stream`；README 和 seed 脚本提示同步到新入口；测试改为验证旧路由未注册、旧路径 POST 返回 404 且不再创建会话。
 - 验证方式：先执行 `pytest tests/test_chat.py::TestChatAPI::test_legacy_chat_stream_route_is_not_registered` 确认红灯，失败原因为 `/api/chat/stream` 仍在 FastAPI route 表；修复后执行相关 6 条测试通过；执行 `pytest tests/test_chat.py tests/test_conversation.py`，124 条用例通过；执行 `cd datalogue-web && npm ci && npm run lint && npm run build`，lint 0 error、15 个既有 warning，build 通过。
 - 残留风险：仓库历史设计文档和 Hermes skill 说明中仍保留旧路径作为历史上下文或禁用说明；本次只清理当前后端路由、前端调用、README/seed 用户提示和可执行测试面。
+
+### 2026-07-03 23:30 · 删除旧聊天流实现层
+
+- 涉及文件：`datalogue-api/app/api/chat.py`、`datalogue-api/app/api/__init__.py`、`datalogue-api/app/schemas/chat.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/services/observability/context.py`、`datalogue-api/tests/test_legacy_chat_removed.py`、`datalogue-api/tests/test_chat.py`、`datalogue-api/tests/test_multiturn.py`、`datalogue-api/tests/test_multiturn_regression.py`、`datalogue-api/tests/test_message_gateway.py`、`datalogue-api/tests/test_multiturn_context_builder.py`、`datalogue-api/tests/test_llm_config.py`、`datalogue-api/README.md`、`.codex/project-memory.md`
+- 关键改动：彻底删除旧 `app/api/chat.py` 模块和 `/api/chat` router 注册；删除旧聊天流 `_stream_chat*`、SSE 转换、路由决策包装、多轮 wrapper 和早退处理等实现层代码；删除 `ChatRequest`、`ClarificationResponse` 旧 schema，仅保留 `ChatFeedback` 供 `/api/messages/{id}/feedback` 使用；删除旧 chat 流式大测试和旧 multiturn regression 文件，清理仍引用旧私有函数的用例；新增结构守护测试，防止重新引入 `app.api.chat` 和 `/api/chat/*` 路由。
+- 验证方式：先执行 `pytest tests/test_legacy_chat_removed.py` 确认红灯，失败原因为 `app/api/chat.py` 仍存在且 `/api/chat/feedback` 仍注册；删除实现层后该测试通过；执行相关测试集合 `pytest tests/test_legacy_chat_removed.py tests/test_conversation.py tests/test_message_gateway.py tests/test_multiturn.py tests/test_multiturn_context_builder.py tests/test_observability.py`，62 条用例通过；执行完整 `pytest`，584 条用例通过；执行 `npm run lint`，0 error、15 个既有 warning；执行 `npm run build` 通过；执行 `git diff --check` 通过。
+- 残留风险：旧路径只保留在负向测试断言中；历史文档和 Hermes skill 的旧路径引用未做大范围扫改，仍作为历史上下文或禁用说明保留。

@@ -54,7 +54,7 @@ def set_observability_context(
 ) -> Iterator[ObservabilityRequestContext | None]:
     """临时设置当前请求观测上下文。
 
-    备注：SSE 流式接口里 `_stream_chat_singleturn` 是 async generator，
+    备注：流式任务入口里通常会通过 async generator 持续产出事件，
     当客户端断开连接时 FastAPI 会调用 `aclose()` 强制关闭它。`aclose` 触发
     的 `GeneratorExit` 清理路径可能落在与 `__enter__` 不同的 asyncio
     task / Context 副本中，此时 `ContextVar.reset(token)` 会抛出
