@@ -52,3 +52,30 @@
 - Agent 启动时先读本文件；需要项目任务路由时再读 [docs/上下文入口.md](docs/上下文入口.md)。
 - [.codex/project-memory.md](.codex/project-memory.md) 是完成记录，不是启动上下文；只按关键词检索相关段落，禁止默认全文读取。
 - `docs/superpowers/` 下的长计划和规格文档只在对应任务继续实施时读取，不作为默认上下文。
+
+## AgentScope 2.0.3 官方文档参考
+
+本项目部分功能基于 AgentScope 框架开发。在新增 Agent/RAG/工具/工作流等能力时，**必须优先查阅官方文档**，确认框架已有原生支持，避免重复造轮子。
+
+📚 文档路径：`~/code_place/study/agentscope-docs/`
+
+| 模块 | 文档文件 |
+|------|----------|
+| AgentScope 概述 | `pages/index.md` |
+| 快速开始 | `pages/quickstart.md` |
+| 消息与事件 | `pages/message-and-event.md` |
+| 智能体 | `pages/agent.md` |
+| 模型配置 | `pages/model.md` |
+| 上下文管理 | `pages/context.md` |
+| 工具 | `pages/tool.md` |
+| 计划模式 | `pages/plan.md` |
+| 权限系统 | `pages/permission-system.md` |
+| 中间件 | `pages/middleware.md` |
+| RAG | `pages/rag.md` |
+| 长期记忆 | `pages/long-term-memory.md` |
+| 工作区 | `pages/workspace.md` |
+| 架构-智能体即服务 | `pages/agent-service.md` |
+| 智能体团队 | `pages/agent-team.md` |
+| RAG 服务 | `pages/rag-deploy.md` |
+
+**开发原则**：遇到 Agent/RAG/工具/工作流等需求时，优先查阅上述文档对应章节，使用 `agentscope` 框架的原生 API，而非自行实现。
