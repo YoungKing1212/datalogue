@@ -22,6 +22,7 @@ import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
 import ArtifactCard from '../components/artifact-card';
 import { getArtifact, submitMessageFeedback } from '../api/client';
+import { DatalogueActionBar } from '../assistant-ui';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
@@ -883,14 +884,6 @@ export function AIMessage() {
     }));
   };
 
-  const handleCopy = () => {
-    const text = (message?.content || [])
-      .filter((p) => p.type === 'text')
-      .map((p) => p.text)
-      .join('');
-    navigator.clipboard.writeText(text).catch(console.error);
-  };
-
   const handleFeedback = async (action) => {
     if (!messageId) {
       setFeedbackState('当前消息暂不支持反馈');
@@ -1053,20 +1046,13 @@ export function AIMessage() {
 
       {/* 操作栏 — hover 显示 */}
       {!isStreaming && (
-        <div className={`msg-actions ${showActions ? 'visible' : ''}`}>
-          <button className="action-btn" title="复制回答" onClick={handleCopy}>
-            <Icon name="copy" />
-          </button>
-          <button className="action-btn" title={feedbackState || savedFeedback?.action || '点赞'} onClick={() => handleFeedback('approve')}>
-            <Icon name="thumbs_up" />
-          </button>
-          <button className="action-btn" title={feedbackState || savedFeedback?.action || '点踩'} onClick={() => handleFeedback('reject')}>
-            <Icon name="thumbs_down" />
-          </button>
-          <button className="action-btn" title="重新生成" onClick={handleRegenerate}>
-            <Icon name="refresh" />
-          </button>
-        </div>
+        <DatalogueActionBar
+          visible={showActions}
+          feedbackTitle={feedbackState || savedFeedback?.action || null}
+          feedbackDisabled={!messageId}
+          onApprove={() => handleFeedback('approve')}
+          onReject={() => handleFeedback('reject')}
+        />
       )}
     </div>
   );

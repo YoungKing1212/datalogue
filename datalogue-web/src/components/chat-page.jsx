@@ -9,7 +9,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   AssistantRuntimeProvider,
-  ComposerPrimitive,
   useLocalRuntime,
   useRemoteThreadListRuntime,
   useAui,
@@ -17,9 +16,11 @@ import {
 } from '@assistant-ui/react';
 import { DatalogueThreadListAdapter } from '../assistant/thread-list-adapter';
 import { makeChatAdapter } from '../assistant/chat-adapter';
-import { Thread, TraceProvider } from '../assistant/Thread';
-import { ThreadList } from '../assistant/ThreadList';
-import { MyComposer, DatasetChip, ModelChip } from '../assistant/MyComposer';
+import {
+  DatalogueComposer,
+  DatalogueThread as Thread,
+  DatalogueThreadList as ThreadList,
+} from '../assistant-ui';
 import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
 import { getConversation, listDatasets, listLLMModels } from '../api/client';
@@ -55,6 +56,18 @@ export function resolveUrlSyncTarget({ routeId, remoteId, mainThreadChanged, has
 export function resolveWorkbenchThreadId(routeId, remoteId, resolvedThreadId = null) {
   if (routeId) return normalizeWorkbenchThreadId(routeId);
   return normalizeWorkbenchThreadId(resolvedThreadId || remoteId);
+}
+
+export function isAssistantUiBarePreview(search = '') {
+  const params = new URLSearchParams(search);
+  return params.has('bare') || params.get('skin') === 'bare';
+}
+
+export function resolveAssistantUiPreviewSkin(search = '') {
+  const params = new URLSearchParams(search);
+  if (isAssistantUiBarePreview(search)) return 'bare';
+  if (params.get('skin') === 'agentscope') return 'agentscope';
+  return null;
 }
 
 export function conversationRouteIdForDatasetRestore(routeId) {
@@ -247,39 +260,15 @@ function WelcomeHero({
           </div>
 
           {/* —— Hero composer —— */}
-          <ComposerPrimitive.Root className="ce-composer">
-            <ComposerPrimitive.Input
-              className="ce-input"
-              rows={2}
-              placeholder="例如：上周华东区销售为什么下降？哪个品类拖累最大？"
-            />
-            <div className="ce-bar">
-              <DatasetChip
-                variant="ce"
-                selectedDs={selectedDs}
-                setSelectedDs={setSelectedDs}
-                datasetList={datasetList}
-              />
-              <ModelChip
-                variant="ce"
-                selectedModel={selectedModel}
-                setSelectedModel={setSelectedModel}
-                modelList={modelList}
-              />
-              <button type="button" className="ce-pill">
-                <Icon name="calendar" />
-                <span>近 7 天</span>
-                <Icon name="chev_down" className="chev" />
-              </button>
-              <button type="button" className="ce-pill">
-                <Icon name="brain" />
-                <span>深度归因</span>
-              </button>
-              <ComposerPrimitive.Send className="ce-send" aria-label="发送">
-                <Icon name="send" />
-              </ComposerPrimitive.Send>
-            </div>
-          </ComposerPrimitive.Root>
+          <DatalogueComposer
+            variant="welcome"
+            selectedDs={selectedDs}
+            setSelectedDs={setSelectedDs}
+            datasetList={datasetList}
+            selectedModel={selectedModel}
+            setSelectedModel={setSelectedModel}
+            modelList={modelList}
+          />
 
           {/* —— 预设问题 —— */}
           <div className="ce-sughead">
@@ -354,6 +343,9 @@ function ChatPageInner({
   chatModelAdapter,
   modelConfigIdRef,
 }) {
+  const previewSkin = useMemo(() => (
+    typeof window !== 'undefined' ? resolveAssistantUiPreviewSkin(window.location.search) : null
+  ), []);
   const [selectedDs, setSelectedDs] = useState(null);
   const [datasetList, setDatasetList] = useState([]);
   const [selectedModel, setSelectedModel] = useState(null);
@@ -634,34 +626,34 @@ function ChatPageInner({
       <UrlSync routeId={routeId} />
       <ComposerTextSetter register={handleRegisterSetter} />
 
-      <div className={`chat-layout${traceOpen ? ' with-panel' : ''}`}>
+      <div className={`chat-layout${traceOpen ? ' with-panel' : ''}${previewSkin ? ` aui-${previewSkin}-preview` : ''}`}>
         <ThreadList />
 
-        <TraceProvider value={traceContextValue}>
-          <Thread
-            empty={
-              <WelcomeHero
-                selectedDs={selectedDs}
-                setSelectedDs={setSelectedDs}
-                datasetList={datasetList}
-                selectedModel={selectedModel}
-                setSelectedModel={setSelectedModel}
-                modelList={modelList}
-                setComposerText={(t) => setComposerTextRef.current(t)}
-              />
-            }
-            composer={
-              <MyComposer
-                selectedDs={selectedDs}
-                setSelectedDs={setSelectedDs}
-                datasetList={datasetList}
-                selectedModel={selectedModel}
-                setSelectedModel={setSelectedModel}
-                modelList={modelList}
-              />
-            }
-          />
-        </TraceProvider>
+        <Thread
+          traceSteps={traceContextValue.traceSteps}
+          agentVerbosity={traceContextValue.agentVerbosity}
+          empty={
+            <WelcomeHero
+              selectedDs={selectedDs}
+              setSelectedDs={setSelectedDs}
+              datasetList={datasetList}
+              selectedModel={selectedModel}
+              setSelectedModel={setSelectedModel}
+              modelList={modelList}
+              setComposerText={(t) => setComposerTextRef.current(t)}
+            />
+          }
+          composer={
+            <DatalogueComposer
+              selectedDs={selectedDs}
+              setSelectedDs={setSelectedDs}
+              datasetList={datasetList}
+              selectedModel={selectedModel}
+              setSelectedModel={setSelectedModel}
+              modelList={modelList}
+            />
+          }
+        />
 
         {workbenchThreadId && (
           <aside className="bi-agent-side-panel" aria-label="Workbench">

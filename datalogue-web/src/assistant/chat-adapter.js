@@ -374,6 +374,7 @@ const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
   'rawResult',
   'repair_patch',
   'repairPatch',
+  'RepairPatch',
   'node',
   'display_name',
   'displayName',
@@ -381,6 +382,10 @@ const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
   'traceOnlyMetadata',
   'replacement_field_ref',
   'replacementFieldRef',
+  'raw_rows',
+  'rawRows',
+  'blueprint',
+  'blueprints',
 ]);
 
 function sanitizeUserVisibleTrace(value) {
@@ -877,6 +882,176 @@ function formatDirectQueryEventAsReasoning(event = {}) {
   return `${title}：${content}`;
 }
 
+function safeTiming(timing) {
+  if (!timing || typeof timing !== 'object') return null;
+  const allowed = [
+    'started_at',
+    'ended_at',
+    'elapsed_ms',
+    'duration_ms',
+    'total_ms',
+    'queued_ms',
+    'startedAt',
+    'endedAt',
+    'elapsedMs',
+    'durationMs',
+  ];
+  const out = {};
+  for (const key of allowed) {
+    const value = timing[key];
+    if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
+    if (typeof value === 'string' && safeDisplayText(value)) out[key] = value.slice(0, 80);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function safeRefs(refs = {}) {
+  if (!refs || typeof refs !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries({
+      artifactRef: refs.artifactRef || refs.artifact_ref || null,
+      reportRef: refs.reportRef || refs.report_ref || null,
+      checkpointRef: refs.checkpointRef || refs.checkpoint_ref || null,
+    }).filter(([, value]) => typeof value === 'string' && value.trim()),
+  );
+}
+
+function compactObject(value = {}) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => (
+      item !== null
+      && item !== undefined
+      && item !== ''
+      && !(Array.isArray(item) && item.length === 0)
+      && !(typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 0)
+    )),
+  );
+}
+
+function structuredEventSummary(event = {}) {
+  return compactObject({
+    kind: event.kind,
+    status: event.status,
+    title: safeDisplayText(event.title) || null,
+    summary: safeDisplayText(event.summary) || null,
+    agent: safeDisplayText(event.agent || event.to_agent || event.from_agent) || null,
+    toolName: safeDisplayText(event.toolName || event.tool_name) || null,
+    timing: safeTiming(event.timing),
+    refs: safeRefs(event.refs),
+    rowCount: event.rowCount ?? event.row_count ?? null,
+  });
+}
+
+function buildStructuredReasoningPart(event = {}) {
+  const summary = structuredEventSummary(event);
+  const text = summary.summary
+    ? `${summary.title || '执行进展'}：${summary.summary}`
+    : (summary.title || '执行进展');
+  return compactObject({
+    type: 'reasoning',
+    text,
+    parentId: event.kind === 'handoff' ? 'multi_agent_handoff' : event.kind,
+    ...summary,
+  });
+}
+
+function upsertToolCallPart(toolParts, event = {}) {
+  const summary = structuredEventSummary(event);
+  const toolName = summary.toolName || 'dataset_tool';
+  const toolCallId = event.toolCallId || event.tool_call_id || `${toolName}-${toolParts.length + 1}`;
+  const args = compactObject({
+    kind: 'tool',
+    status: summary.status,
+    title: summary.title || toolName,
+    summary: summary.summary,
+    agent: summary.agent,
+    toolName,
+    timing: summary.timing,
+    refs: summary.refs,
+    rowCount: summary.rowCount,
+  });
+  const result = summary.status === 'completed' || summary.status === 'failed'
+    ? compactObject({
+        kind: 'tool',
+        status: summary.status,
+        summary: summary.summary,
+        refs: summary.refs,
+        rowCount: summary.rowCount,
+      })
+    : undefined;
+  const nextPart = compactObject({
+    type: 'tool-call',
+    toolCallId,
+    toolName,
+    args,
+    argsText: JSON.stringify(args),
+    result,
+    isError: summary.status === 'failed',
+    timing: summary.timing,
+    parentId: 'dataset_tool_group',
+  });
+  const existingIndex = toolParts.findIndex((part) => part.toolCallId === toolCallId);
+  if (existingIndex >= 0) {
+    toolParts[existingIndex] = {
+      ...toolParts[existingIndex],
+      ...nextPart,
+      args: {
+        ...toolParts[existingIndex].args,
+        ...nextPart.args,
+      },
+    };
+  } else {
+    toolParts.push(nextPart);
+  }
+  return existingIndex >= 0 ? toolParts[existingIndex] : nextPart;
+}
+
+function upsertToolGroup(toolGroups, event = {}) {
+  const summary = structuredEventSummary(event);
+  const toolName = summary.toolName || 'dataset_tool';
+  const key = `${summary.agent || 'agent'}:${toolName}`;
+  const existing = toolGroups.find((group) => group.groupId === key);
+  const next = compactObject({
+    groupId: key,
+    kind: 'tool_group',
+    status: summary.status,
+    title: summary.title || toolName,
+    summary: summary.summary,
+    agent: summary.agent,
+    toolName,
+    timing: summary.timing,
+    refs: summary.refs,
+    rowCount: summary.rowCount,
+  });
+  if (existing) {
+    Object.assign(existing, compactObject({
+      ...next,
+      timing: next.timing || existing.timing,
+      refs: Object.keys(next.refs || {}).length ? next.refs : existing.refs,
+      rowCount: next.rowCount ?? existing.rowCount,
+    }));
+    return existing;
+  }
+  toolGroups.push(next);
+  return next;
+}
+
+function buildTimingMetadata(messageTiming, toolGroups = []) {
+  const message = safeTiming(messageTiming);
+  const tools = toolGroups
+    .map((group) => {
+      const timing = safeTiming(group.timing);
+      if (!timing) return null;
+      return compactObject({
+        toolName: group.toolName,
+        agent: group.agent,
+        ...timing,
+      });
+    })
+    .filter(Boolean);
+  return compactObject({ message, tools });
+}
+
 /**
  * 构造 ChatModelAdapter
  * @param {object} opts
@@ -1063,6 +1238,9 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef, transport = 'd
 
       // 流式累加器
       const reasonings = []; // ReasoningMessagePart[]
+      const toolParts = []; // ToolCallMessagePart[]，供 assistant-ui ToolUI/ToolGroup 直接消费。
+      const toolGroups = [];
+      const confirmations = [];
       const stepTrace = [];
       let accText = '';      // 已累积的 text
       let finalPayload = null;
@@ -1075,6 +1253,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef, transport = 'd
       // 工具：构造当前 message content
       const buildContent = () => [
         ...reasonings,
+        ...toolParts,
         { type: 'text', text: accText },
       ];
 
@@ -1099,6 +1278,51 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef, transport = 'd
             label: '数据集匹配',
             text: datasetName ? `已匹配数据集「${datasetName}」` : '正在匹配数据集',
             status: ev.decision === 'selected' || ev.decision === 'locked' ? 'done' : 'running',
+          });
+          yield { content: buildContent() };
+        } else if (ev.type === 'agent_handoff') {
+          emitTrace(ev);
+          reasonings.push(buildStructuredReasoningPart(ev));
+          upsertTaskTimelineEvent(taskTimeline, {
+            type: 'task_understood',
+            label: '任务理解',
+            text: ev.summary || '已完成 Agent 路由',
+            status: ev.status === 'failed' ? 'error' : 'done',
+          });
+          yield { content: buildContent() };
+        } else if (ev.type === 'tool_call') {
+          emitTrace(ev);
+          upsertToolCallPart(toolParts, ev);
+          upsertToolGroup(toolGroups, ev);
+          upsertTaskTimelineEvent(taskTimeline, {
+            type: 'bi_execution',
+            label: 'BI 执行',
+            text: ev.summary || '正在完成查询处理',
+            status: ev.status === 'completed' ? 'done' : ev.status === 'failed' ? 'error' : 'running',
+          });
+          yield { content: buildContent() };
+        } else if (ev.type === 'confirmation') {
+          emitTrace(ev);
+          const confirmation = structuredEventSummary(ev);
+          confirmations.push(confirmation);
+          reasonings.push(buildStructuredReasoningPart(ev));
+          upsertTaskTimelineEvent(taskTimeline, {
+            type: 'next_action',
+            label: '下一步',
+            text: ev.summary || '需要确认后继续执行',
+            status: 'running',
+          });
+          yield { content: buildContent() };
+        } else if (ev.type === 'artifact_ref') {
+          emitTrace(ev);
+          const refs = safeRefs(ev.refs);
+          upsertTaskTimelineEvent(taskTimeline, {
+            type: 'artifact_created',
+            label: '结果产物',
+            text: ev.summary || '已生成查询结果',
+            status: 'done',
+            primaryRef: refs.artifactRef || refs.reportRef || null,
+            rowCount: ev.rowCount ?? null,
           });
           yield { content: buildContent() };
         } else if (ev.type === 'lead_agent_tools') {
@@ -1269,7 +1493,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef, transport = 'd
         }
 
         yield {
-          content: [...reasonings, { type: 'text', text: finalText }],
+          content: [...reasonings, ...toolParts, { type: 'text', text: finalText }],
           status: { type: 'complete', reason: 'stop' },
           metadata: {
             custom: {
@@ -1296,6 +1520,9 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef, transport = 'd
               candidateDatasets,
               repairPlan,
               repairTimeline,
+              toolGroups,
+              confirmations,
+              timing: buildTimingMetadata(finalPayload.timing, toolGroups),
             },
           },
         };
