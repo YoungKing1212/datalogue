@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Icon } from './icons';
-import { del as apiDelete, get, post, put } from '../api/client';
+import { del as apiDelete, get, patch, post } from '../api/client';
 
 // Settings — account, workspace, model, integrations, API keys.
 
@@ -402,6 +402,22 @@ const LLM_PROVIDER_OPTIONS = [
   { value: 'custom', label: '自定义' },
 ];
 
+const PROVIDER_TO_CREDENTIAL_TYPE = {
+  'openai-compatible': 'openai_credential',
+  openai: 'openai_credential',
+  deepseek: 'deepseek_credential',
+  qwen: 'dashscope_credential',
+  minimax: 'openai_credential',
+  anthropic: 'anthropic_credential',
+};
+
+const CREDENTIAL_TYPE_TO_PROVIDER = {
+  openai_credential: 'openai-compatible',
+  deepseek_credential: 'deepseek',
+  dashscope_credential: 'qwen',
+  anthropic_credential: 'anthropic',
+};
+
 const emptyModelForm = {
   id: null,
   name: '',
@@ -430,6 +446,52 @@ function autoModelName(preset, model) {
 function getModelChoice(preset, model) {
   if (!model) return preset.models[0] || 'custom';
   return preset.models.includes(model) ? model : 'custom';
+}
+
+function credentialTypeForProvider(provider) {
+  return PROVIDER_TO_CREDENTIAL_TYPE[provider] || 'openai_credential';
+}
+
+function providerForCredentialType(type) {
+  return CREDENTIAL_TYPE_TO_PROVIDER[type] || 'openai-compatible';
+}
+
+function normalizeCredentialRow(item = {}) {
+  const data = item.data && typeof item.data === 'object' ? item.data : item;
+  const id = data.id || item.id || data.credential_id || item.credential_id;
+  const credentialType = data.type || item.type || 'openai_credential';
+  const apiKeySet = Boolean(data.api_key_set ?? item.api_key_set);
+  if (!id) return null;
+  return {
+    id: String(id),
+    credential_id: String(id),
+    name: data.name || item.name || String(id),
+    provider: providerForCredentialType(credentialType),
+    credential_type: credentialType,
+    base_url: data.base_url || data.api_host || data.host || '',
+    model: '',
+    status: apiKeySet ? 'active' : 'disabled',
+    description: data.description || '',
+    request_timeout_seconds: 60,
+    api_key_set: apiKeySet,
+    last_test_result: null,
+    last_error_message: null,
+  };
+}
+
+function buildCredentialPayload(form, { includeId = false } = {}) {
+  const provider = form.provider === 'custom'
+    ? form.custom_provider.trim()
+    : form.provider.trim();
+  const credentialType = credentialTypeForProvider(provider);
+  const data = {
+    name: form.name.trim(),
+    type: credentialType,
+  };
+  if (includeId && form.id) data.id = form.id;
+  if (form.base_url.trim()) data.base_url = form.base_url.trim();
+  if (form.api_key.trim()) data.api_key = form.api_key.trim();
+  return { data };
 }
 
 function inferPreset(model) {
@@ -480,8 +542,8 @@ function ModelsSection() {
     : [...LLM_PROVIDER_OPTIONS, { value: form.provider, label: form.provider }];
 
   const loadConfig = async () => {
-    const modelRows = await get('/api/llm/models');
-    setModels(modelRows);
+    const credentials = await get('/api/agentscope-control/credentials');
+    setModels((Array.isArray(credentials) ? credentials : []).map(normalizeCredentialRow).filter(Boolean));
   };
 
   useEffect(() => {
@@ -565,17 +627,18 @@ function ModelsSection() {
     };
     if (form.api_key.trim()) payload.api_key = form.api_key.trim();
     try {
-      if (!payload.name || !payload.base_url || !payload.model) {
-        throw new Error('请填写名称、Base URL 和模型名');
+      if (!payload.name || !payload.base_url) {
+        throw new Error('请填写名称和 Base URL');
       }
       if (form.id) {
-        await put(`/api/llm/models/${form.id}`, payload);
+        await patch(`/api/agentscope-control/credentials/${encodeURIComponent(form.id)}`, buildCredentialPayload(form));
       } else {
-        await post('/api/llm/models', payload);
+        if (!form.api_key.trim()) throw new Error('新增 AgentScope credential 时必须填写 API Key');
+        await post('/api/agentscope-control/credentials', buildCredentialPayload(form, { includeId: true }));
       }
       resetForm();
       await loadConfig();
-      setMessage('模型配置已保存');
+      setMessage('AgentScope credential 已保存');
     } catch (err) {
       setMessage(`保存失败：${err.message}`);
     } finally {
@@ -584,19 +647,16 @@ function ModelsSection() {
   };
 
   const toggleStatus = async (model) => {
-    await put(`/api/llm/models/${model.id}`, {
-      status: model.status === 'active' ? 'disabled' : 'active',
-    });
-    await loadConfig();
+    setMessage(`AgentScope credential 不支持本地停用开关；如需停用请删除 ${model.name}`);
   };
 
   const testModel = async (model) => {
     setTestingId(model.id);
     setMessage('');
     try {
-      const result = await post(`/api/llm/models/${model.id}/test`, {});
+      const cards = await get(`/api/agentscope-control/model?provider=${encodeURIComponent(model.credential_type || credentialTypeForProvider(model.provider))}`);
       await loadConfig();
-      setMessage(result.message);
+      setMessage(`AgentScope ModelCard 发现成功：${Array.isArray(cards) ? cards.length : 0} 个可用模型`);
     } catch (err) {
       setMessage(`测试失败：${err.message}`);
     } finally {
@@ -606,7 +666,7 @@ function ModelsSection() {
 
   const testCurrentModel = () => {
     if (!form.id) {
-      setMessage('请先保存模型配置，再测试 LLM 连通性');
+      setMessage('请先保存 AgentScope credential，再发现可用模型');
       return;
     }
     const model = models.find(item => item.id === form.id) || { id: form.id };
@@ -614,19 +674,19 @@ function ModelsSection() {
   };
 
   const removeModel = async (model) => {
-    await apiDelete(`/api/llm/models/${model.id}`);
+    await apiDelete(`/api/agentscope-control/credentials/${encodeURIComponent(model.id)}`);
     if (form.id === model.id) resetForm();
     await loadConfig();
   };
 
   return (
     <>
-      <SetSection title="LLM 模型" desc="保留模型配置管理，由 AgentScope 负责模型执行和连接测试。">
+      <SetSection title="LLM 模型" desc="保留模型配置入口，但持久化对象改为 AgentScope credential；可用模型由 ModelCard 发现。">
         {message && <div className="st-inline-alert">{message}</div>}
 
         <div className="st-llm-layout">
           <div className="st-form llm-editor">
-            <SetRow label={form.id ? '编辑模型' : '新增模型'} hint={form.id ? `ID ${form.id}` : '每条配置独立保存 Base URL、模型名和 Key'} control={
+            <SetRow label={form.id ? '编辑 credential' : '新增 credential'} hint={form.id ? `ID ${form.id}` : '每条 credential 独立保存 Base URL 和 Key'} control={
               <button className="btn ghost" onClick={resetForm}><Icon name="plus" />新建</button>} />
             <SetRow label="接入模板" hint="选择后自动填充供应商、Base URL 和默认模型" control={
               <select className="st-input" aria-label="接入模板" value={form.preset_id} onChange={e => changePreset(e.target.value)}>
@@ -654,7 +714,7 @@ function ModelsSection() {
               </div>} />
             <SetRow label="Base URL" control={
               <input className="st-input" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="http://localhost:4000/v1" />} />
-            <SetRow label="模型名" hint="常用模型可直接选择，自定义网关可手动填写" control={
+            <SetRow label="模型名" hint="用于名称生成；真实可选模型由 AgentScope ModelCard 返回" control={
               <div className="llm-field-stack">
                 <select className="st-input" aria-label="模型名" value={form.model_choice} onChange={e => changeModelChoice(e.target.value)}>
                   {selectedPreset.models.map(model => (
@@ -685,7 +745,7 @@ function ModelsSection() {
             <div className="st-row">
               <div className="st-row-l">
                 <div className="st-row-label">保存配置</div>
-                <div className="st-row-hint">密钥写入 AgentScope credential，数据库仅保留模型配置</div>
+        <div className="st-row-hint">密钥写入 AgentScope credential，模型由 ModelCard 自动发现</div>
               </div>
               <div className="st-row-r">
                 <div className="llm-form-actions">
@@ -694,7 +754,7 @@ function ModelsSection() {
                     disabled={isTestingCurrentModel}
                     onClick={testCurrentModel}
                   >
-                    <Icon name="beaker" />{isTestingCurrentModel ? '测试中' : '测试连接'}
+                    <Icon name="beaker" />{isTestingCurrentModel ? '发现中' : '发现模型'}
                   </button>
                   <button className="btn primary" disabled={saving} onClick={saveModel}><Icon name="check" />{saving ? '保存中' : '保存'}</button>
                 </div>
@@ -716,7 +776,7 @@ function ModelsSection() {
             <div className="st-tr llm-models" key={model.id}>
               <span>
                 <div className="st-row-label">{model.name}</div>
-                <div className="st-row-hint mono">{model.provider} · {model.model} · {model.api_key_set ? 'Key 已保存' : '无 Key'}</div>
+                <div className="st-row-hint mono">{model.provider} · {model.model || 'ModelCard 自动发现'} · {model.api_key_set ? 'Key 已保存' : '无 Key'}</div>
               </span>
               <span className="mono text-3">{model.base_url}</span>
               <span>
@@ -728,9 +788,9 @@ function ModelsSection() {
                 {model.last_test_result?.ok ? `通过 · ${model.last_test_result.latency_ms}ms` : model.last_error_message || '未测试'}
               </span>
               <span className="st-llm-actions">
-                <button className="icon-btn" title="测试连接" disabled={testingId === model.id} onClick={() => testModel(model)}><Icon name="beaker" /></button>
+                <button className="icon-btn" title="发现可用模型" disabled={testingId === model.id} onClick={() => testModel(model)}><Icon name="beaker" /></button>
                 <button className="icon-btn" title="编辑" onClick={() => startEdit(model)}><Icon name="edit" /></button>
-                <button className="icon-btn" title={model.status === 'active' ? '停用' : '启用'} onClick={() => toggleStatus(model)}><Icon name={model.status === 'active' ? 'pause' : 'play'} /></button>
+                <button className="icon-btn" title="AgentScope credential 不支持本地停用" onClick={() => toggleStatus(model)}><Icon name="pause" /></button>
                 <button className="icon-btn danger" title="删除" onClick={() => removeModel(model)}><Icon name="trash" /></button>
               </span>
             </div>
