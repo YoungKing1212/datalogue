@@ -22,6 +22,7 @@ from typing import Any
 from agentscope.app.storage import StorageBase
 from agentscope.middleware import MiddlewareBase
 
+from app.agentscope_service.progress_bridge import publish_agent_progress
 from app.middlewares.lifecycle import raw_agent_logs_enabled
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,13 @@ class BIWorkerStreamingLogMiddleware(MiddlewareBase):
     ) -> AsyncGenerator:
         """记录 worker 一次 reply 的开始、每个事件和结束。"""
 
+        _publish_worker_progress(
+            worker_context=self.worker_context,
+            phase="reply",
+            status="running",
+            title="BI Worker 开始处理",
+            summary="BI Worker 已开始处理任务。",
+        )
         _log_worker(
             "reply.started",
             worker_context=self.worker_context,
@@ -81,8 +89,16 @@ class BIWorkerStreamingLogMiddleware(MiddlewareBase):
                     worker_context=self.worker_context,
                     **_event_summary(event),
                 )
+                _publish_tool_progress(worker_context=self.worker_context, event=event)
                 yield event
         except Exception as exc:
+            _publish_worker_progress(
+                worker_context=self.worker_context,
+                phase="reply",
+                status="failed",
+                title="BI Worker 处理失败",
+                summary="BI Worker 处理过程中发生错误，内部细节已隐藏。",
+            )
             _log_worker(
                 "reply.failed",
                 worker_context=self.worker_context,
@@ -90,6 +106,13 @@ class BIWorkerStreamingLogMiddleware(MiddlewareBase):
                 error_type=type(exc).__name__,
             )
             raise
+        _publish_worker_progress(
+            worker_context=self.worker_context,
+            phase="reply",
+            status="completed",
+            title="BI Worker 完成处理",
+            summary="BI Worker 已完成本轮处理。",
+        )
         _log_worker(
             "reply.completed",
             worker_context=self.worker_context,
@@ -208,6 +231,60 @@ def _event_summary(event: Any) -> dict[str, Any]:
         summary["pending_tool_calls"] = pending_tool_calls
         summary["pending_tool_names"] = [item["name"] for item in pending_tool_calls if item.get("name")]
     return {key: value for key, value in summary.items() if value is not None}
+
+
+def _publish_tool_progress(*, worker_context: dict[str, str | None], event: Any) -> None:
+    summary = _event_summary(event)
+    event_type = str(summary.get("event_type") or "").lower()
+    tool_name = summary.get("tool_call_name")
+    if event_type != "tool_call_start" or not tool_name:
+        return
+    _publish_worker_progress(
+        worker_context=worker_context,
+        phase="tool",
+        status="running",
+        title="工具调用",
+        summary=f"BI Worker 正在调用 {tool_name}。",
+        tool_name=str(tool_name),
+        tool_call_id=_safe_context_text(summary.get("tool_call_id")),
+    )
+
+
+def _publish_worker_progress(
+    *,
+    worker_context: dict[str, str | None],
+    phase: str,
+    status: str,
+    title: str,
+    summary: str,
+    tool_name: str | None = None,
+    tool_call_id: str | None = None,
+) -> None:
+    """发布用户可见实时摘要；禁止把 inputs、tool input、raw LLM I/O 写入 payload。"""
+
+    payload = {
+        "agent_role": "worker",
+        "agent_name": _safe_context_text(worker_context.get("agent_name")) or "BI Worker",
+        "phase": phase,
+        "status": status,
+        "title": title,
+        "summary": summary,
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "worker_agent_id": _safe_context_text(worker_context.get("agent_id")),
+        "worker_session_id": _safe_context_text(worker_context.get("session_id")),
+    }
+    publish_agent_progress(
+        user_id=worker_context.get("user_id"),
+        payload={key: value for key, value in payload.items() if value},
+    )
+
+
+def _safe_context_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:160] if text else None
 
 
 def _pending_tool_calls(event: Any) -> list[dict[str, Any]]:

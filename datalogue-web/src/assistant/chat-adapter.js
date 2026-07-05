@@ -398,12 +398,48 @@ function sanitizeUserVisibleTrace(value) {
 }
 
 const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|delete\s+from|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_row|schema/i;
+const INTERNAL_PLANNING_PATTERN = /\b(the\s+user\s+wants?\s+to|let\s+me\s+break|i\s+need\s+to\s+create|worker\s+type\s+should\s+be|i\s+should\s+present|teamsay)\b/i;
+const INTERNAL_PLANNING_COMPACT_MARKERS = [
+  'theuserwantstoquery',
+  'letmebreakthisdown',
+  'ineedtocreate',
+  'theworkertypeshouldbe',
+  'bothhaveascore',
+  'ishouldpresent',
+  'taskcompletedteamdissolved',
+];
+
+function looksLikeInternalPlanningText(value) {
+  if (value == null) return false;
+  const text = String(value).trim();
+  if (!text) return false;
+  const compact = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return INTERNAL_PLANNING_PATTERN.test(text)
+    || INTERNAL_PLANNING_COMPACT_MARKERS.some((marker) => compact.includes(marker));
+}
 
 function safeDisplayText(value) {
   if (value == null) return null;
   const text = String(value).trim();
-  if (!text || INTERNAL_TEXT_PATTERN.test(text)) return null;
+  if (!text || INTERNAL_TEXT_PATTERN.test(text) || looksLikeInternalPlanningText(text)) return null;
   return text.slice(0, 160);
+}
+
+function datasetConfirmationAnswer(routeDecision) {
+  const candidates = Array.isArray(routeDecision?.candidates)
+    ? routeDecision.candidates.slice(0, 5)
+    : [];
+  if (!candidates.length) return '候选数据集不唯一，需要你确认后继续。';
+  const lines = candidates
+    .map((candidate, index) => {
+      const datasetName = candidate.dataset_name || `数据集 ${candidate.dataset_id || ''}`.trim();
+      const prefix = candidate.dataset_id
+        ? `${index + 1}. 数据集 ${candidate.dataset_id}：${datasetName}`
+        : `${index + 1}. ${datasetName}`;
+      return candidate.reason ? `${prefix}（${candidate.reason}）` : prefix;
+    })
+    .join('\n');
+  return `已筛选出可能匹配的候选数据集，需要你确认后继续。\n\n${lines}\n\n请回复要查询的数据集编号，或说明两个都需要查询。`;
 }
 
 function safeDisplayList(values, limit = 6) {
@@ -418,6 +454,34 @@ function safeDisplayList(values, limit = 6) {
     if (result.length >= limit) break;
   }
   return result;
+}
+
+function safeReasoningSummary(reasoningSummary) {
+  if (!Array.isArray(reasoningSummary)) return [];
+  return reasoningSummary
+    .slice(0, 6)
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      const title = safeDisplayText(item.title) || `推理摘要 ${index + 1}`;
+      const summary = safeDisplayText(item.summary || item.text || item.reason);
+      if (!summary) return null;
+      const ref = safeDisplayText(item.ref || item.artifact_ref || item.artifactRef) || null;
+      const status = safeDisplayText(item.status) || 'completed';
+      const countParts = [];
+      if (Number.isInteger(item.row_count) && item.row_count >= 0) countParts.push(`${item.row_count} 行`);
+      if (Number.isInteger(item.column_count) && item.column_count >= 0) countParts.push(`${item.column_count} 列`);
+      return compactObject({
+        type: 'reasoning',
+        text: `${title}：${summary}${countParts.length ? `（${countParts.join('、')}）` : ''}`,
+        parentId: 'reasoning_summary',
+        title,
+        summary,
+        status,
+        refs: ref ? { artifactRef: ref } : null,
+        rowCount: Number.isInteger(item.row_count) && item.row_count >= 0 ? item.row_count : null,
+      });
+    })
+    .filter(Boolean);
 }
 
 function safeAnswerExplanation(payload = {}) {
@@ -724,6 +788,9 @@ function structuredEventSummary(event = {}) {
     title: safeDisplayText(event.title) || null,
     summary: safeDisplayText(event.summary) || null,
     agent: safeDisplayText(event.agent || event.to_agent || event.from_agent) || null,
+    agentRole: safeDisplayText(event.agentRole || event.agent_role) || null,
+    agentName: safeDisplayText(event.agentName || event.agent_name) || null,
+    phase: safeDisplayText(event.phase) || null,
     toolName: safeDisplayText(event.toolName || event.tool_name) || null,
     toolCallId: safeDisplayText(event.toolCallId || event.tool_call_id) || null,
     replyId: safeDisplayText(event.replyId || event.reply_id) || null,
@@ -741,12 +808,19 @@ function buildStructuredReasoningPart(event = {}) {
   const text = summary.summary
     ? `${summary.title || '执行进展'}：${summary.summary}`
     : (summary.title || '执行进展');
+  const parentId = event.kind === 'agent_progress' && summary.agentRole
+    ? `agent-${summary.agentRole}`
+    : event.kind === 'handoff' ? 'multi_agent_handoff' : event.kind;
   return compactObject({
     type: 'reasoning',
     text,
-    parentId: event.kind === 'handoff' ? 'multi_agent_handoff' : event.kind,
+    parentId,
     ...summary,
   });
+}
+
+function isRealtimeAgentReasoning(part = {}) {
+  return part.type === 'reasoning' && typeof part.parentId === 'string' && part.parentId.startsWith('agent-');
 }
 
 function upsertToolCallPart(toolParts, event = {}) {
@@ -995,6 +1069,16 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             status: ev.status === 'failed' ? 'error' : 'done',
           });
           yield { content: buildContent() };
+        } else if (ev.type === 'agent_progress') {
+          emitTrace(ev);
+          reasonings.push(buildStructuredReasoningPart(ev));
+          upsertTaskTimelineEvent(taskTimeline, {
+            type: ev.agentRole === 'worker' ? 'bi_execution' : 'task_understood',
+            label: ev.agentRole === 'worker' ? 'BI 执行' : '任务理解',
+            text: ev.summary || ev.title || '正在处理任务',
+            status: ev.status === 'completed' ? 'done' : ev.status === 'failed' ? 'error' : 'running',
+          });
+          yield { content: buildContent() };
         } else if (ev.type === 'tool_call') {
           emitTrace(ev);
           upsertToolCallPart(toolParts, ev);
@@ -1111,7 +1195,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
 	        emitResolvedThread(unstable_threadId, finalPayload.thread_id);
 
         // 收敛：text 用 final.answer 兜底（report_generator token 可能没全到）
-        const finalText = finalPayload.answer || accText;
+        let finalText = finalPayload.answer || accText;
 
         // 首条消息后端会自动用首句作为对话标题
         // 派发窗口事件让 ThreadList 刷新 + 局部更新缓存
@@ -1146,8 +1230,8 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             artifactCard = {
               title: hasReport ? '分析报告' : '查询结果',
               status: 'completed',
-              summary_for_chat: finalPayload.answer
-                ? finalPayload.answer.slice(0, 120)
+              summary_for_chat: safeDisplayText(finalPayload.answer)
+                ? safeDisplayText(finalPayload.answer).slice(0, 120)
                 : '查询已执行完成',
               preview_payload: null,
               primary_ref: finalPayload.result_ref || finalPayload.report_ref || null,
@@ -1176,6 +1260,11 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             };
           }
         }
+        if (looksLikeInternalPlanningText(finalText)) {
+          finalText = candidateDatasets
+            ? datasetConfirmationAnswer(routeDecision)
+            : '任务已完成。';
+        }
 
         const finalRepairPlan = safeRepairPlanFromPayload({}, finalPayload);
         if (finalRepairPlan) {
@@ -1197,8 +1286,17 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           }
         }
 
+        const finalReasonings = safeReasoningSummary(finalPayload.reasoning_summary);
+        const mergedReasonings = finalReasonings.length
+          ? [...reasonings.filter(isRealtimeAgentReasoning), ...finalReasonings]
+          : reasonings;
+
         yield {
-          content: [...reasonings, ...toolParts, { type: 'text', text: finalText }],
+          content: [
+            ...mergedReasonings,
+            ...toolParts,
+            { type: 'text', text: finalText },
+          ],
           status: { type: 'complete', reason: 'stop' },
           metadata: {
             timing: finalPayload.timing || null,

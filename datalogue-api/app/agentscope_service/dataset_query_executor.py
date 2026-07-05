@@ -71,12 +71,19 @@ async def execute_dataset_query_for_agent_team(
     del task_goal, user_confirmation_id, routing_rationale, parent_run_id
     if db is None:
         with SessionLocal() as scoped_db:
-            return await _execute_dataset_query_with_db(
-                db=scoped_db,
-                dataset_id=dataset_id,
-                confirmed_question=confirmed_question,
-                trace_id=trace_id,
-            )
+            try:
+                result = await _execute_dataset_query_with_db(
+                    db=scoped_db,
+                    dataset_id=dataset_id,
+                    confirmed_question=confirmed_question,
+                    trace_id=trace_id,
+                )
+                # AgentScope worker 自己创建 DB session 时，返回给 SSE 的 artifact_ref 必须先提交，否则详情接口会读不到产物。
+                scoped_db.commit()
+                return result
+            except Exception:
+                scoped_db.rollback()
+                raise
     return await _execute_dataset_query_with_db(
         db=db,
         dataset_id=dataset_id,

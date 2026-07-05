@@ -216,6 +216,7 @@ def test_prompt_and_tool_boundary_forbid_private_tokens():
     assert "TeamSay" in LEADER_AGENT_SYSTEM_PROMPT
     assert "安全 Dataset Query 工具" in BI_WORKER_PROMPT
     assert "datalogue_select_candidate_datasets" in BI_WORKER_PROMPT
+    assert "不得仅用自然语言声称已汇报" in BI_WORKER_PROMPT
     assert "dataset_query_result" in BI_WORKER_PROMPT
     assert "dataset_id" in BI_WORKER_PROMPT
     assert "Glob" in BI_WORKER_PROMPT

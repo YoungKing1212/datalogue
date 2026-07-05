@@ -122,6 +122,74 @@ async def test_bi_worker_reply_logs_streaming_work_events(caplog):
 
 
 @pytest.mark.asyncio
+async def test_bi_worker_reply_publishes_safe_realtime_progress_events():
+    from app.agentscope_service.progress_bridge import agent_progress_subscription
+    from app.agentscope_service.worker_logging import BIWorkerStreamingLogMiddleware
+
+    middleware = BIWorkerStreamingLogMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+
+    async def next_handler(**_kwargs):
+        yield SimpleNamespace(type="reply_start", reply_id="reply-1")
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            reply_id="reply-1",
+            tool_call_name="datalogue_select_candidate_datasets",
+            tool_call_id="call-1",
+        )
+        yield SimpleNamespace(type="reply_end", reply_id="reply-1")
+
+    async with agent_progress_subscription(user_id="user-1") as queue:
+        events = [
+            event
+            async for event in middleware.on_reply(
+                agent=agent,
+                input_kwargs={"inputs": "查询杨凯2025年日志"},
+                next_handler=next_handler,
+            )
+        ]
+        progress_events = [queue.get_nowait() for _ in range(queue.qsize())]
+
+    assert [event.type for event in events] == ["reply_start", "TOOL_CALL_START", "reply_end"]
+    assert [event["event_type"] for event in progress_events] == [
+        "agent.progress",
+        "agent.progress",
+        "agent.progress",
+    ]
+    assert progress_events[0]["payload"] == {
+        "agent_role": "worker",
+        "agent_name": "bi-worker",
+        "phase": "reply",
+        "status": "running",
+        "title": "BI Worker 开始处理",
+        "summary": "BI Worker 已开始处理任务。",
+        "worker_agent_id": "worker-bi-1",
+        "worker_session_id": "session-bi-1",
+    }
+    assert progress_events[1]["payload"] == {
+        "agent_role": "worker",
+        "agent_name": "bi-worker",
+        "phase": "tool",
+        "status": "running",
+        "title": "工具调用",
+        "summary": "BI Worker 正在调用 datalogue_select_candidate_datasets。",
+        "tool_name": "datalogue_select_candidate_datasets",
+        "tool_call_id": "call-1",
+        "worker_agent_id": "worker-bi-1",
+        "worker_session_id": "session-bi-1",
+    }
+    assert progress_events[-1]["payload"]["status"] == "completed"
+    assert "查询杨凯2025年日志" not in str(progress_events)
+
+
+@pytest.mark.asyncio
 async def test_bi_worker_model_call_logs_raw_llm_io_when_debug_enabled(monkeypatch, caplog):
     from app.agentscope_service.worker_logging import BIWorkerStreamingLogMiddleware
 

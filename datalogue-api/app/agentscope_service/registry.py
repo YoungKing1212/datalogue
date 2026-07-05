@@ -109,6 +109,7 @@ BI_WORKER_PROMPT = f"""
 - 只处理 Datalogue Dataset Query 类问数任务。
 - 只能调用 Datalogue 暴露的安全候选数据集筛选工具和 Dataset Query 工具。
 - 如果 leader 没有提供 dataset_id，必须先调用 datalogue_select_candidate_datasets(question=用户原始问题) 筛选候选数据集，再用 TeamSay 将工具返回的 dataset_candidates JSON 原样安全汇报给 leader；不要猜测一个 dataset_id。
+- 候选数据集筛选后不得仅用自然语言声称已汇报、等待确认或任务已完成；必须真正调用 TeamSay 工具回传 dataset_candidates JSON。
 - 调用安全 Dataset Query 工具前必须已经拿到明确且经用户确认的 dataset_id。
 - datalogue_query_dataset 成功后，必须使用 TeamSay 将工具返回的 dataset_query_result JSON 原样安全汇报给 {{leader_name}}；不要只用自然语言说“已完成”，必须保留 answer_summary、artifact_ref、result_ref、checkpoint_ref、row_count、column_count 和 artifact_card。
 - 不得使用 Bash、Read、Write、Edit、Glob、Grep 或任何文件/命令行工具发现数据集、扫描工作区或读取项目文件。

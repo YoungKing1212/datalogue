@@ -74,6 +74,12 @@ def _event_type(event: dict[str, Any]) -> DatalogueEventType:
     if _is_subagent_hitl_require_event(event):
         return "confirmation.required"
     raw_type = str(event.get("event_type") or event.get("type") or "").lower()
+    if raw_type == "agent.progress":
+        # AgentScope middleware 发出的实时进度事件只承载用户可见摘要；
+        # payload 仍由 sanitize_event_payload 清洗，避免把 SQL/schema/raw rows 带到聊天区。
+        return "agent.progress"
+    if raw_type == "message.completed":
+        return "message.completed"
     # AgentScope 原生事件里 TextBlockEnd/ThinkingBlockEnd/ModelCallEnd 只是分段结束；
     # 只有 ReplyEnd/final/finish 才代表本轮助手回复完成，避免重复投成 message.completed。
     if any(marker in raw_type for marker in ("replyendevent", "reply.end", "reply_end", "final", "finish")):

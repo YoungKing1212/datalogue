@@ -131,6 +131,26 @@ describe('chat-adapter C-ready metadata', () => {
             checkpoint_ref: 'checkpoint:shell-1',
             row_count: 100,
             column_count: 67,
+            reasoning_summary: [
+              {
+                title: '识别任务',
+                summary: '已识别为 BI 查询，问题为统计双周会议数据记录数量。',
+                status: 'completed',
+              },
+              {
+                title: '生成结果',
+                summary: '已生成可查看的查询结果。',
+                status: 'completed',
+                ref: 'artifact:shell-1',
+                row_count: 100,
+                column_count: 67,
+              },
+              {
+                title: '内部明细',
+                summary: 'select * from hidden_table',
+                status: 'completed',
+              },
+            ],
           },
         },
       },
@@ -159,11 +179,77 @@ describe('chat-adapter C-ready metadata', () => {
       status: { type: 'complete', reason: 'stop' },
       content: expect.arrayContaining([{ type: 'text', text: '双周会议共有 100 条记录。' }]),
     });
-    expect(finalChunk.content.filter((part) => part.type === 'reasoning')).toHaveLength(1);
+    const finalReasonings = finalChunk.content.filter((part) => part.type === 'reasoning');
+    expect(finalReasonings).toHaveLength(2);
+    expect(finalReasonings.map((part) => part.text)).toEqual([
+      '识别任务：已识别为 BI 查询，问题为统计双周会议数据记录数量。',
+      '生成结果：已生成可查看的查询结果。（100 行、67 列）',
+    ]);
     expect(finalChunk.metadata.custom).toMatchObject({
       resultRef: 'artifact:shell-1',
     });
     expect(JSON.stringify(finalChunk.metadata.custom)).not.toMatch(/\bSELECT\b|raw_rows|schema_context/i);
+  });
+
+  it('keeps realtime Agent progress reasoning after the final summary arrives', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-progress',
+          trace_id: 'trace-progress',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'dataset_match',
+            status: 'running',
+            title: '候选数据集筛选',
+            summary: '已识别日志查询，正在筛选候选数据集。',
+            sql: 'select * from hidden_table',
+            schema: { tables: ['hidden_table'] },
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          task_id: 'task-progress',
+          trace_id: 'trace-progress',
+          payload: {
+            summary: '查询已完成，共 100 行。',
+            artifact_ref: 'artifact:progress-1',
+            reasoning_summary: [
+              {
+                title: '查询完成',
+                summary: '已生成可查看的查询结果。',
+                status: 'completed',
+              },
+            ],
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 10 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯2025年日志' }));
+    const finalChunk = chunks.at(-1);
+    const reasonings = finalChunk.content.filter((part) => part.type === 'reasoning');
+
+    expect(reasonings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        parentId: 'agent-worker',
+        agentRole: 'worker',
+        agentName: 'BI Worker',
+        phase: 'dataset_match',
+        status: 'running',
+        text: '候选数据集筛选：已识别日志查询，正在筛选候选数据集。',
+      }),
+      expect.objectContaining({
+        parentId: 'reasoning_summary',
+        text: '查询完成：已生成可查看的查询结果。',
+      }),
+    ]));
+    expect(JSON.stringify(finalChunk)).not.toMatch(/\bselect \* from\b|hidden_table|schema/i);
   });
 
   it('renders an artifact card when Agent Team final returns only artifact_card', async () => {
@@ -339,6 +425,74 @@ describe('chat-adapter C-ready metadata', () => {
         },
       ],
     });
+  });
+
+  it('hides internal planning text when final answer asks for dataset confirmation', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          payload: {
+            summary: (
+              "TheuserwantstoqueryYangKai's2025worklogs(工作日志)."
+              + 'ThisisaBI(BusinessIntelligence)querytask.'
+              + 'Letmebreakthisdown:1.ThetaskisaBIquery-查询杨凯2025年的工作日志'
+              + '2.IneedtocreateateamwithaBIworkertohandlethisquery.'
+            ),
+            route_decision: {
+              decision: 'ambiguous',
+              candidates: [
+                {
+                  dataset_id: 12,
+                  dataset_name: '运营双周会议数据集',
+                  reason: '名称或描述与「工作日志」匹配',
+                },
+                {
+                  dataset_id: 10,
+                  dataset_name: '生产经营管理系统日志数据集',
+                  reason: '名称或描述与「工作日志」匹配',
+                },
+              ],
+            },
+            clarification: {
+              kind: 'dataset_choice',
+              candidates: [
+                {
+                  dataset_id: 12,
+                  dataset_name: '运营双周会议数据集',
+                  reason: '名称或描述与「工作日志」匹配',
+                },
+                {
+                  dataset_id: 10,
+                  dataset_name: '生产经营管理系统日志数据集',
+                  reason: '名称或描述与「工作日志」匹配',
+                },
+              ],
+            },
+            reasoning_summary: [
+              {
+                title: '整理回答',
+                summary: 'TheuserwantstoqueryYangKai and Ineedtocreateateam',
+                status: 'completed',
+              },
+            ],
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: null } });
+    const chunks = await collectRun(adapter, runInput({
+      question: '查询杨凯2025年日志',
+      threadId: 'local-thread',
+    }));
+    const finalChunk = chunks.at(-1);
+    const finalText = finalChunk.content.find((part) => part.type === 'text').text;
+
+    expect(finalText).toContain('已筛选出可能匹配的候选数据集');
+    expect(finalText).toContain('数据集 10：生产经营管理系统日志数据集');
+    expect(finalText).not.toMatch(/Theuserwantstoquery|Ineedtocreate/);
+    expect(finalChunk.content.filter((part) => part.type === 'reasoning')).toHaveLength(0);
   });
 
   it('passes the selected model config id through Agent Team when dataset selection is needed', async () => {

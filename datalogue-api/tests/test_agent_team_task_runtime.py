@@ -69,6 +69,77 @@ class MissingDatasetAgentScopeRunner:
         }
 
 
+class InternalPlanningDatasetAgentScopeRunner:
+    async def stream(self, *, request, task, user_msg):
+        yield {
+            "event_type": "ReplyEndEvent",
+            "payload": {
+                "summary": (
+                    "TheuserwantstoqueryYangKai's2025worklogs(工作日志)."
+                    "ThisisaBI(BusinessIntelligence)querytask."
+                    "Letmebreakthisdown:1.ThetaskisaBIquery-查询杨凯2025年的工作日志"
+                    "2.IneedtocreateateamwithaBIworkertohandlethisquery."
+                ),
+                "datalogue_event_type": "dataset_candidates",
+                "route_decision": {
+                    "decision": "ambiguous",
+                    "dataset_id": None,
+                    "candidates": [
+                        {
+                            "dataset_id": 12,
+                            "dataset_name": "运营双周会议数据集",
+                            "reason": "名称或描述与「工作日志」匹配",
+                            "requires_confirmation": True,
+                        },
+                        {
+                            "dataset_id": 10,
+                            "dataset_name": "生产经营管理系统日志数据集",
+                            "reason": "名称或描述与「工作日志」匹配",
+                            "requires_confirmation": True,
+                        },
+                    ],
+                },
+                "clarification": {
+                    "kind": "dataset_choice",
+                    "candidates": [
+                        {
+                            "dataset_id": 12,
+                            "dataset_name": "运营双周会议数据集",
+                            "reason": "名称或描述与「工作日志」匹配",
+                        },
+                        {
+                            "dataset_id": 10,
+                            "dataset_name": "生产经营管理系统日志数据集",
+                            "reason": "名称或描述与「工作日志」匹配",
+                        },
+                    ],
+                },
+            },
+        }
+
+
+class ArtifactFinalAgentScopeRunner:
+    async def stream(self, *, request, task, user_msg):
+        yield {
+            "event_type": "ReplyEndEvent",
+            "payload": {
+                "summary": "查询已完成，共 100 行、48 列。",
+                "row_count": 100,
+                "column_count": 48,
+                "artifact_card": {
+                    "title": "查询结果",
+                    "status": "completed",
+                    "summary_for_chat": "查询已完成，共 100 行、48 列。",
+                    "primary_ref": {
+                        "ref_id": "artifact:worker-1",
+                        "ref_type": "result",
+                        "label": "查询结果",
+                    },
+                },
+            },
+        }
+
+
 @pytest.mark.asyncio
 async def test_agent_team_task_runtime_completes_task(db_session):
     runtime = AgentTeamTaskRuntime(db=db_session, runner=FakeAgentScopeRunner())
@@ -89,9 +160,23 @@ async def test_agent_team_task_runtime_completes_task(db_session):
         "message.completed",
         "task.completed",
     ]
+    final_payload = events[3].payload
+    assert final_payload["reasoning_summary"] == [
+        {
+            "title": "识别任务",
+            "summary": "已识别为「BI 查询」任务，问题为「统计合同总金额」。",
+            "status": "completed",
+        },
+        {
+            "title": "整理回答",
+            "summary": "合同总金额为 100 万元",
+            "status": "completed",
+        },
+    ]
     stored = db_session.query(AgentTeamTask).filter_by(task_id=events[0].task_id).one()
     assert stored.status == "completed"
     assert stored.selected_agent == "agent_team_leader"
+    assert stored.final_payload_json["reasoning_summary"][0]["title"] == "识别任务"
 
 
 @pytest.mark.asyncio
@@ -134,7 +219,8 @@ async def test_agent_team_task_runtime_lets_bi_worker_report_dataset_candidates(
         "task.completed",
     ]
     final_payload = events[2].payload
-    assert final_payload["summary"] == "BI worker 已筛选候选数据集，请用户确认。"
+    assert final_payload["summary"].startswith("已筛选出可能匹配的候选数据集")
+    assert "数据集 1：生产经营管理系统日志数据集" in final_payload["summary"]
     assert final_payload["route_decision"]["decision"] == "ambiguous"
     assert final_payload["clarification"]["kind"] == "dataset_choice"
     assert final_payload["route_decision"]["candidates"] == [
@@ -147,7 +233,71 @@ async def test_agent_team_task_runtime_lets_bi_worker_report_dataset_candidates(
     ]
     stored = db_session.query(AgentTeamTask).filter_by(task_id=events[0].task_id).one()
     assert stored.status == "completed"
-    assert stored.final_payload_json["answer_summary"] == "BI worker 已筛选候选数据集，请用户确认。"
+    assert stored.final_payload_json["answer_summary"] == final_payload["summary"]
+
+
+@pytest.mark.asyncio
+async def test_agent_team_task_runtime_sanitizes_internal_planning_final_answer(db_session):
+    runtime = AgentTeamTaskRuntime(db=db_session, runner=InternalPlanningDatasetAgentScopeRunner())
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询杨凯2025年日志",
+        dataset_id=None,
+    )
+
+    events = [event async for event in runtime.stream(request)]
+
+    final_event = next(event for event in events if event.event_type == "message.completed")
+    final_payload = final_event.payload
+    final_text = final_payload["summary"]
+    reasoning_text = str(final_payload["reasoning_summary"])
+    assert "Theuserwantstoquery" not in final_text
+    assert "Ineedtocreate" not in final_text
+    assert "Theuserwantstoquery" not in reasoning_text
+    assert "Ineedtocreate" not in reasoning_text
+    assert "已筛选出可能匹配的候选数据集" in final_text
+    assert "数据集 10：生产经营管理系统日志数据集" in final_text
+    assert final_payload["route_decision"]["decision"] == "ambiguous"
+    assert final_payload["clarification"]["kind"] == "dataset_choice"
+    assert final_event.legacy_payload == {"type": "final", "answer": final_text}
+    stored = db_session.query(AgentTeamTask).filter_by(task_id=events[0].task_id).one()
+    assert stored.final_payload_json["answer_summary"] == final_text
+
+
+@pytest.mark.asyncio
+async def test_agent_team_task_runtime_adds_reasoning_summary_for_final_artifact(db_session):
+    runtime = AgentTeamTaskRuntime(db=db_session, runner=ArtifactFinalAgentScopeRunner())
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询杨凯2025年日志",
+        dataset_id=10,
+    )
+
+    events = [event async for event in runtime.stream(request)]
+
+    final_payload = next(event.payload for event in events if event.event_type == "message.completed")
+    assert final_payload["reasoning_summary"] == [
+        {
+            "title": "识别任务",
+            "summary": "已识别为「BI 查询」任务，问题为「查询杨凯2025年日志」。",
+            "status": "completed",
+        },
+        {
+            "title": "生成结果",
+            "summary": "已生成可查看的查询结果。",
+            "status": "completed",
+            "ref": "artifact:worker-1",
+            "row_count": 100,
+            "column_count": 48,
+        },
+        {
+            "title": "整理回答",
+            "summary": "查询已完成，共 100 行、48 列。",
+            "status": "completed",
+        },
+    ]
 
 
 @pytest.mark.asyncio

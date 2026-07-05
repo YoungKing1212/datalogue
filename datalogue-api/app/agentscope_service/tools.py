@@ -25,6 +25,7 @@ from agentscope.app.storage import StorageBase
 from agentscope.tool import FunctionTool, ToolBase, ToolChunk
 
 from app.agentscope_service.dataset_query_executor import execute_dataset_query_for_agent_team
+from app.agentscope_service.progress_bridge import publish_agent_event
 from app.core.database import SessionLocal
 from app.models.dataset import SemanticDataset
 from app.schemas.bi_workbench import sanitize_event_payload
@@ -146,6 +147,7 @@ def build_datalogue_query_dataset_tool(*, worker_context: dict[str, str | None] 
             row_count=payload.get("row_count"),
             column_count=payload.get("column_count"),
         )
+        _publish_worker_business_final(worker_context=worker_context, payload=payload)
         return ToolChunk(
             content=[TextBlock(text=json.dumps(payload, ensure_ascii=False, default=str))],
             state=ToolResultState.SUCCESS,
@@ -188,6 +190,9 @@ def build_datalogue_select_candidate_datasets_tool(
             candidate_count=len(((safe_payload.get("route_decision") or {}).get("candidates") or [])),
             decision=(safe_payload.get("route_decision") or {}).get("decision"),
         )
+        if safe_payload.get("requires_user_confirmation"):
+            # 候选数据集确认是本轮用户可见终点；即使 LLM 忘记调用 TeamSay，也不能让主链落到空 final。
+            _publish_worker_business_final(worker_context=worker_context, payload=safe_payload)
         return ToolChunk(
             content=[TextBlock(text=json.dumps(safe_payload, ensure_ascii=False, default=str))],
             state=ToolResultState.SUCCESS,
@@ -201,6 +206,22 @@ def build_datalogue_select_candidate_datasets_tool(
         ),
         is_concurrency_safe=True,
         is_read_only=True,
+    )
+
+
+def _publish_worker_business_final(
+    *,
+    worker_context: dict[str, str | None] | None,
+    payload: dict[str, Any],
+) -> None:
+    """把 BI worker 已脱敏业务结果直投到当前 Datalogue SSE，作为 TeamSay 缺失时的兜底终态。"""
+
+    if not worker_context:
+        return
+    publish_agent_event(
+        user_id=worker_context.get("user_id"),
+        event_type="message.completed",
+        payload=payload,
     )
 
 

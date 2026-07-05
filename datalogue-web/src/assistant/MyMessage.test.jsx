@@ -19,7 +19,15 @@ vi.mock('@assistant-ui/react', () => ({
     message: () => ({ reload: vi.fn() }),
   }),
   MessagePrimitive: {
-    GroupedParts: ({ children: _children }) => <div data-testid="message-parts" />,
+    GroupedParts: ({ children }) => {
+      const parts = mockMessageState.message?.content || [];
+      const hasReasoning = parts.some((part) => part.type === 'reasoning');
+      return (
+        <div data-testid="message-parts">
+          {hasReasoning ? children({ part: { type: 'group-reasoning' }, children: null }) : null}
+        </div>
+      );
+    },
     Parts: ({ components: _components }) => <div data-testid="message-parts" />,
     Root: ({ children }) => <div>{children}</div>,
   },
@@ -144,6 +152,16 @@ describe('MyMessage — C-ready 渲染', () => {
     // 确保 window 对象可用
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = null;
     window.dispatchEvent = vi.fn();
+    window.matchMedia = vi.fn().mockImplementation((query) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
     getArtifact.mockReset();
   });
 
@@ -171,6 +189,28 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.getByRole('button', { name: '重新生成' })).toContainElement(screen.getByTestId('icon-refresh'));
     expect(screen.getByRole('button', { name: '朗读回答' })).toContainElement(screen.getByTestId('icon-play'));
     expect(screen.getByRole('button', { name: '编辑消息' })).toContainElement(screen.getByTestId('icon-edit'));
+  });
+
+  it('uses agent name as the reasoning timeline label for realtime Agent progress', () => {
+    setMockMessage();
+    mockMessageState.message.content = [
+      {
+        type: 'reasoning',
+        text: '候选数据集筛选：BI Worker 正在筛选候选数据集。',
+        parentId: 'agent-worker',
+        agentRole: 'worker',
+        agentName: 'BI Worker',
+        phase: 'tool',
+        status: 'running',
+      },
+      { type: 'text', text: '正在处理…' },
+    ];
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByText('推理摘要'));
+
+    expect(screen.getByText('BI Worker')).toBeInTheDocument();
+    expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
   });
 
   it('loads query artifact rows when artifact view action is clicked', async () => {

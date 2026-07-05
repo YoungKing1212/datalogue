@@ -92,6 +92,10 @@ function isHandoffEvent(eventType = '') {
   return eventType.startsWith('agent.handoff.') || eventType.startsWith('handoff.');
 }
 
+function isAgentProgressEvent(eventType = '') {
+  return eventType === 'agent.progress' || eventType === 'reasoning.delta' || eventType === 'reasoning.completed';
+}
+
 function baseEvent(streamEvent, envelope) {
   return {
     task_id: streamEvent.task_id || envelope.task_id,
@@ -140,7 +144,29 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
       clarification: legacy.clarification || payload.clarification || null,
       route_payload: legacy.route_payload || payload.route_payload || null,
       artifact_card: artifactCard,
+      reasoning_summary: legacy.reasoning_summary || payload.reasoning_summary || null,
       event_envelope: envelope,
+    };
+  }
+  if (isAgentProgressEvent(envelope.event_type)) {
+    const agentRole = safeText(payload.agent_role || payload.agentRole) || 'agent';
+    const agentName = safeText(payload.agent_name || payload.agentName || payload.agent || payload.worker_agent_name)
+      || (agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
+    return {
+      type: 'agent_progress',
+      kind: 'agent_progress',
+      status: lifecycleStatus(envelope.event_type, payload),
+      title: safeText(payload.title || payload.phase) || '执行进展',
+      summary: safeText(payload.summary || payload.message || payload.text) || '',
+      agent: safeAgentName(agentName),
+      agentRole,
+      agentName,
+      phase: safeText(payload.phase) || null,
+      replyId: safeText(payload.reply_id || payload.replyId) || null,
+      workerSessionId: safeText(payload.worker_session_id || payload.workerSessionId) || null,
+      workerAgentId: safeText(payload.worker_agent_id || payload.workerAgentId) || null,
+      timing: safeTiming(payload),
+      ...baseEvent(streamEvent, envelope),
     };
   }
   if (isHandoffEvent(envelope.event_type)) {

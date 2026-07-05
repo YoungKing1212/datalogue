@@ -209,6 +209,7 @@ async def test_bi_worker_candidate_dataset_tool_returns_safe_candidates(monkeypa
                     }
                 ],
             },
+            "requires_user_confirmation": True,
         }
 
     monkeypatch.setattr(
@@ -228,3 +229,58 @@ async def test_bi_worker_candidate_dataset_tool_returns_safe_candidates(monkeypa
     assert "secret_col" not in payload
     assert "hidden_table" not in payload
     assert "SELECT" not in payload
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_candidate_dataset_tool_publishes_safe_final_event(monkeypatch):
+    from app.agentscope_service import tools as tools_module
+    from app.agentscope_service.progress_bridge import agent_progress_subscription
+    from app.agentscope_service.tools import build_datalogue_extra_agent_tools
+
+    class FakeAgentData:
+        name = "bi-worker"
+
+    class FakeAgentRecord:
+        source = "team"
+        data = FakeAgentData()
+
+    class FakeStorage:
+        async def get_agent(self, user_id, agent_id):
+            return FakeAgentRecord()
+
+    def fake_select_candidate_datasets_for_agent_team(*, question: str, limit: int = 5):
+        return {
+            "datalogue_event_type": "dataset_candidates",
+            "summary": "BI worker 已筛选候选数据集，请用户确认。",
+            "route_decision": {
+                "decision": "ambiguous",
+                "candidates": [
+                    {
+                        "dataset_id": 10,
+                        "dataset_name": "生产经营管理系统日志数据集",
+                        "reason": "匹配日志查询",
+                    }
+                ],
+            },
+            "clarification": {"kind": "dataset_choice"},
+            "requires_user_confirmation": True,
+        }
+
+    monkeypatch.setattr(
+        tools_module,
+        "select_candidate_datasets_for_agent_team",
+        fake_select_candidate_datasets_for_agent_team,
+    )
+
+    async with agent_progress_subscription(user_id="user-1") as queue:
+        factory = build_datalogue_extra_agent_tools(storage=FakeStorage())
+        tools = await factory("user-1", "worker-bi-1", "worker-session-1")
+        tool = next(item for item in tools if item.name == "datalogue_select_candidate_datasets")
+        await tool(question="查询杨凯2025年日志")
+
+        event = queue.get_nowait()
+
+    assert event["event_type"] == "message.completed"
+    assert event["payload"]["datalogue_event_type"] == "dataset_candidates"
+    assert event["payload"]["requires_user_confirmation"] is True
+    assert event["payload"]["route_decision"]["candidates"][0]["dataset_id"] == 10

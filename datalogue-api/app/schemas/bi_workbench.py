@@ -29,6 +29,7 @@ DatalogueEventType = Literal[
     "task.cancelled",
     "route.started",
     "agent.selected",
+    "agent.progress",
     "agent.handoff.started",
     "agent.handoff.completed",
     "agent.handoff.failed",

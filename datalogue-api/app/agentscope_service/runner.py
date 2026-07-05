@@ -14,14 +14,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from typing import Any
 
 from agentscope.message import UserMsg
 from sqlalchemy.orm import Session
 
 from app.agentscope_service.client import AgentScopeServiceClient
+from app.agentscope_service.progress_bridge import agent_progress_subscription
 from app.agentscope_service.projection import project_agentscope_service_event
 from app.agentscope_service.registry import build_datalogue_leader_agent_spec
 from app.core.config import Settings, get_settings
@@ -94,36 +97,46 @@ class AgentScopeServiceTaskRunner:
 
         current_reply_spawned_worker = False
         current_reply_text = ""
+        progress_user_id = str(getattr(self.client, "user_id", "") or "")
         try:
-            async for event in self.client.stream_session(
-                service_session_id,
-                agent_id=leader_agent_id,
-            ):
-                if _is_agent_create_event(event):
-                    current_reply_spawned_worker = True
-                current_reply_text += _event_text(event)
-                envelope = project_agentscope_service_event(
-                    event,
-                    task_id=task.task_id,
-                    trace_id=task.trace_id,
-                    thread_id=task.thread_id,
-                    message_id=task.message_id,
-                    selected_agent=task.selected_agent,
+            async with agent_progress_subscription(user_id=progress_user_id) as progress_queue:
+                leader_events = self.client.stream_session(
+                    service_session_id,
+                    agent_id=leader_agent_id,
                 )
-                if envelope.event_type == "message.completed" and _is_intermediate_team_reply(
-                    spawned_worker=current_reply_spawned_worker,
-                    reply_text=current_reply_text,
-                    payload=envelope.payload,
-                ):
-                    # AgentCreate 只把 worker 的首次任务入队；worker 会在独立 session 中执行，
-                    # 完成后通过 TeamSay 唤醒 leader。本次 ReplyEnd 只是“分派完成”，不能关闭 Datalogue SSE。
-                    current_reply_spawned_worker = False
-                    current_reply_text = ""
-                    continue
-                yield envelope
-                if envelope.event_type == "message.completed":
-                    # AgentScope session stream 是可跨多轮复用的长连接；Datalogue API 一次任务完成后要主动退出。
-                    break
+                merged_events = _merge_leader_and_progress_events(
+                    leader_events=leader_events,
+                    progress_queue=progress_queue,
+                )
+                try:
+                    async for event in merged_events:
+                        if _is_agent_create_event(event):
+                            current_reply_spawned_worker = True
+                        current_reply_text += _event_text(event)
+                        envelope = project_agentscope_service_event(
+                            event,
+                            task_id=task.task_id,
+                            trace_id=task.trace_id,
+                            thread_id=task.thread_id,
+                            message_id=task.message_id,
+                            selected_agent=task.selected_agent,
+                        )
+                        if envelope.event_type == "message.completed" and _is_intermediate_team_reply(
+                            spawned_worker=current_reply_spawned_worker,
+                            reply_text=current_reply_text,
+                            payload=envelope.payload,
+                        ):
+                            # AgentCreate 只把 worker 的首次任务入队；worker 会在独立 session 中执行，
+                            # 完成后通过 TeamSay 唤醒 leader。本次 ReplyEnd 只是“分派完成”，不能关闭 Datalogue SSE。
+                            current_reply_spawned_worker = False
+                            current_reply_text = ""
+                            continue
+                        yield envelope
+                        if envelope.event_type == "message.completed":
+                            # AgentScope session stream 是可跨多轮复用的长连接；Datalogue API 一次任务完成后要主动退出。
+                            break
+                finally:
+                    await merged_events.aclose()
         finally:
             if self._owns_client:
                 await self.client.aclose()
@@ -227,10 +240,75 @@ def _is_intermediate_team_reply(
     reply_text: str,
     payload: dict[str, Any],
 ) -> bool:
+    if _is_business_terminal_payload(payload):
+        return False
     if spawned_worker:
         return True
     summary = str(payload.get("summary") or payload.get("content") or "")
     text = f"{reply_text}\n{summary}".lower()
     has_worker = any(marker in text for marker in ("worker", "成员", "子agent", "bi-worker", "bi worker"))
     is_waiting = any(marker in text for marker in ("等待", "wait", "report back", "返回结果", "汇报"))
-    return has_worker and is_waiting
+    is_planning = any(
+        marker in text
+        for marker in (
+            "用户想要",
+            "让我开始",
+            "需要创建",
+            "i need to create",
+            "let me break",
+            "the user wants",
+            "workertype",
+            "worker type",
+        )
+    )
+    return has_worker and (is_waiting or is_planning)
+
+
+def _is_business_terminal_payload(payload: dict[str, Any]) -> bool:
+    """识别已脱敏的业务终态；这类 payload 不能被 Team 中间回合过滤掉。"""
+
+    if payload.get("artifact_ref") or payload.get("result_ref") or payload.get("artifact_card"):
+        return True
+    datalogue_event_type = str(payload.get("datalogue_event_type") or "")
+    if datalogue_event_type in {"dataset_candidates", "dataset_query_result"}:
+        return True
+    route_decision = payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
+    clarification = payload.get("clarification") if isinstance(payload.get("clarification"), dict) else {}
+    return bool(
+        payload.get("requires_user_confirmation")
+        or route_decision.get("decision") in {"ambiguous", "no_match"}
+        or clarification.get("kind") in {"dataset_choice", "dataset_confirmation"}
+    )
+
+
+async def _merge_leader_and_progress_events(
+    *,
+    leader_events: AsyncIterator[dict[str, Any]],
+    progress_queue: asyncio.Queue[dict[str, Any]],
+) -> AsyncIterator[dict[str, Any]]:
+    """合流 AgentScope leader stream 与 middleware 实时进度，先到先投影给前端。"""
+
+    leader_iter = leader_events.__aiter__()
+    leader_task: asyncio.Task[dict[str, Any]] | None = asyncio.create_task(anext(leader_iter))
+    progress_task: asyncio.Task[dict[str, Any]] | None = asyncio.create_task(progress_queue.get())
+    try:
+        while leader_task is not None:
+            pending = {task for task in (leader_task, progress_task) if task is not None}
+            done, _pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            if progress_task in done:
+                yield progress_task.result()
+                # Worker 进度只影响用户可见实时过程，不驱动主链完成；持续等待下一条。
+                progress_task = asyncio.create_task(progress_queue.get())
+            if leader_task in done:
+                try:
+                    yield leader_task.result()
+                except StopAsyncIteration:
+                    leader_task = None
+                else:
+                    leader_task = asyncio.create_task(anext(leader_iter))
+    finally:
+        for task in (leader_task, progress_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task

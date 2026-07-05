@@ -61,6 +61,13 @@ const NODE_ICONS = {
 const THINK_OPEN_RE = /<think\b[^>]*>/i;
 const THINK_CLOSE_RE = /<\/think\s*>/i;
 
+function reasoningStepLabel(part, node) {
+  if (node && String(node).startsWith('agent-')) {
+    return part.agentName || (part.agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
+  }
+  return NODE_STEP_NAMES[node] || '任务处理';
+}
+
 function stripThink(raw = '') {
   const openMatch = THINK_OPEN_RE.exec(raw);
   if (!openMatch) return raw;
@@ -112,7 +119,7 @@ export function StepCard({ node, display_name, status, elapsed_ms }) {
 }
 
 /**
- * ChainOfThought 包装组件 — assistant-ui 提供 reasoning parts，Ant Design 负责可见 UI。
+ * ChainOfThought 包装组件 — assistant-ui 提供 reasoning parts，Ant Design 负责可见的推理摘要 UI。
  */
 function ChainOfThought({ children: _children }) {
   const message = useAuiState((s) => s.message);
@@ -122,7 +129,7 @@ function ChainOfThought({ children: _children }) {
 
   const items = reasonings.map((part, index) => {
     const node = part.parentId;
-    const label = NODE_STEP_NAMES[node] || '任务处理';
+    const label = reasoningStepLabel(part, node);
     const icon = NODE_ICONS[node] || 'brain';
     return {
       key: `${node || 'reasoning'}-${index}`,
@@ -152,7 +159,7 @@ function ChainOfThought({ children: _children }) {
             label: (
               <span className="cot-ant-label">
                 <Icon name="brain" style={{ width: 13, height: 13 }} />
-                <span>思考过程</span>
+                <span>推理摘要</span>
                 <Tag variant="filled">{reasonings.length}</Tag>
               </span>
             ),

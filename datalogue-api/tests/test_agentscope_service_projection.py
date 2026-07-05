@@ -77,6 +77,46 @@ def test_projection_maps_terminal_and_tool_events_to_stable_event_types():
     assert tool.payload == {"summary": "工具执行完成", "row_count": 3}
 
 
+def test_projection_preserves_agent_progress_as_realtime_safe_event():
+    from app.agentscope_service.projection import project_agentscope_service_event
+
+    envelope = project_agentscope_service_event(
+        {
+            "event_type": "agent.progress",
+            "payload": {
+                "agent_role": "worker",
+                "agent_name": "BI Worker",
+                "phase": "dataset_match",
+                "status": "running",
+                "title": "候选数据集筛选",
+                "summary": "已识别日志查询，正在筛选候选数据集。",
+                "schema": {"tables": ["hidden_table"]},
+                "raw_rows": [{"name": "secret"}],
+                "query_plan": {"steps": ["scan"]},
+                "sql": "select * from hidden_table",
+            },
+        },
+        task_id="task-progress",
+        trace_id="trace-progress",
+        selected_agent="agent_team_leader",
+    )
+
+    encoded = json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).lower()
+    assert envelope.event_type == "agent.progress"
+    assert envelope.payload == {
+        "agent_role": "worker",
+        "agent_name": "BI Worker",
+        "phase": "dataset_match",
+        "status": "running",
+        "title": "候选数据集筛选",
+        "summary": "已识别日志查询，正在筛选候选数据集。",
+    }
+    assert "hidden_table" not in encoded
+    assert "raw_rows" not in encoded
+    assert "query_plan" not in encoded
+    assert "select *" not in encoded
+
+
 def test_projection_preserves_worker_dataset_candidates_safely():
     from app.agentscope_service.projection import project_agentscope_service_event
 
