@@ -922,3 +922,10 @@
 - 日志与数据库核验：后端日志包含 `[agentscope.bi_worker.dataset_query.completed]`，同一 artifact ref、`dataset_id=10`、`row_count=100`、`column_count=48`；`[datalogue.output]` 的 `message.completed` 也带同一 artifact ref。数据库 `query_artifact` 表中 `artifact_id=artifact:10ade05804c44191a36607ef04d2aae5` 存在，`kind=sql_result`、`dataset_id=10`、`content_mime=application/json`、`rows=100`、`columns=48`；真实 `GET /api/artifacts/artifact%3A10ade05804c44191a36607ef04d2aae5` 返回 200 并可读取结果内容。
 - 验证方式：执行 Agent Team/AgentScope 相关后端 pytest、前端 adapter/UI 测试、ruff、compileall、lint 和 build；真实页面 smoke 覆盖候选数据集卡、BI Worker 查询、结果卡、artifact 详情、后端日志和数据库 artifact 记录对齐。
 - 残留风险：本轮只按桌面真实页面验证，未做移动视口；`.codex/project-memory.md` 最新详细记录仍超过 10 条，后续应单独做项目记忆压缩，避免和功能提交混在一起扩大改动面。
+
+### 2026-07-05 12:08 · AgentScope 模型控制面代理与迁移目标修订
+
+- 涉及文件：`docs/superpowers/plans/2026-07-05-agentscope-service-model-control-plane.md`、`datalogue-api/app/agentscope_service/client.py`、`datalogue-api/app/api/agentscope_control_plane.py`、`datalogue-api/app/api/__init__.py`、`datalogue-api/tests/test_agentscope_service_client.py`、`datalogue-api/tests/test_agentscope_control_plane_api.py`、`.codex/project-memory.md`
+- 关键改动：按最新决策修订阶段方案，明确保留现有 LLM 模型配置功能，但删除 role binding，并且模型配置的执行、连接测试和生产 LLM 调用最终都必须由 AgentScope 实现，不能继续依赖 LiteLLM。后端新增 AgentScope 控制面代理，支持 credential schema、credential CRUD 和 ModelCard 查询，为模型配置保存时同步 AgentScope credential、运行时生成 `chat_model_config` 打基础。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentscope_service_client.py tests/test_agentscope_control_plane_api.py -q` 为 `11 passed, 2 warnings`；执行 `cd datalogue-api && .venv/bin/ruff check app/agentscope_service/client.py app/api/agentscope_control_plane.py app/api/__init__.py tests/test_agentscope_service_client.py tests/test_agentscope_control_plane_api.py` 通过；执行 `cd datalogue-api && .venv/bin/python -m compileall app -q`、`git diff --check` 通过。
+- 残留风险：本阶段只完成 AgentScope 控制面代理和总计划修订；模型配置 API 仍需后续移除 role binding、保存时同步 credential，并把 LiteLLM 连接测试和生产调用迁到 AgentScope。

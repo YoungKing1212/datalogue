@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -93,6 +94,85 @@ class AgentScopeServiceClient:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("AGENTSCOPE_SERVICE_AGENT_ID_MISSING")
         return agent_id
+
+    async def list_credential_schemas(self) -> dict[str, Any]:
+        """读取 AgentScope 官方 credential schema；前端据此动态渲染凭证表单。"""
+
+        response = await self.http.get(self._url("/credential/schemas"), headers=self._headers())
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"schemas": payload}
+
+    async def list_credentials(self) -> list[dict[str, Any]]:
+        """读取当前 AgentScope 用户下的 credential 列表，不映射成 Datalogue 旧 DTO。"""
+
+        response = await self.http.get(self._url("/credential/"), headers=self._headers())
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("credentials", "items", "data", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
+
+    async def create_credential(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """创建 AgentScope credential；payload 原样透传给官方 Service。"""
+
+        response = await self.http.post(
+            self._url("/credential/"),
+            json=payload,
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        parsed = response.json()
+        return parsed if isinstance(parsed, dict) else {"data": parsed}
+
+    async def update_credential(self, credential_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """更新 AgentScope credential；credential_id 只做路径编码，不进入 Datalogue DB。"""
+
+        response = await self.http.patch(
+            self._url(f"/credential/{quote(credential_id, safe='')}"),
+            json=payload,
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        parsed = response.json()
+        return parsed if isinstance(parsed, dict) else {"data": parsed}
+
+    async def delete_credential(self, credential_id: str) -> dict[str, Any]:
+        """删除 AgentScope credential；Datalogue 不维护对应 role binding 清理逻辑。"""
+
+        response = await self.http.delete(
+            self._url(f"/credential/{quote(credential_id, safe='')}"),
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        if not response.content:
+            return {"deleted": True}
+        parsed = response.json()
+        return parsed if isinstance(parsed, dict) else {"data": parsed}
+
+    async def list_models(self, *, provider: str) -> list[dict[str, Any]]:
+        """按 AgentScope provider 读取 ModelCard 列表。"""
+
+        response = await self.http.get(
+            self._url("/model"),
+            params={"provider": provider},
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("models", "items", "data", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
 
     async def upsert_openai_credential(
         self,

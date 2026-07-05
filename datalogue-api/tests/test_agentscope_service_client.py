@@ -70,6 +70,106 @@ async def test_agentscope_service_client_uses_prefixed_rest_paths_and_payloads()
 
 
 @pytest.mark.asyncio
+async def test_agentscope_service_client_lists_credential_schemas():
+    requests: list[tuple[str, str, str | None]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path, request.headers.get("X-User-ID")))
+        if request.method == "GET" and request.url.path == "/agentscope/credential/schemas":
+            return httpx.Response(
+                200,
+                json={
+                    "openai_credential": {
+                        "title": "OpenAI API",
+                        "properties": {"api_key": {"type": "string"}},
+                    }
+                },
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        from app.agentscope_service.client import AgentScopeServiceClient
+
+        client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
+        schemas = await client.list_credential_schemas()
+
+    assert schemas["openai_credential"]["title"] == "OpenAI API"
+    assert requests == [("GET", "/agentscope/credential/schemas", "datalogue-agent-team")]
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_client_cruds_credentials_with_official_paths():
+    requests: list[tuple[str, str, dict | None, str | None]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8")) if request.content else None
+        requests.append((request.method, request.url.path, payload, request.headers.get("X-User-ID")))
+        if request.method == "GET" and request.url.path == "/agentscope/credential/":
+            return httpx.Response(200, json={"credentials": [{"id": "cred-1"}]})
+        if request.method == "POST" and request.url.path == "/agentscope/credential/":
+            assert payload == {"data": {"type": "openai_credential", "api_key": "sk-test"}}
+            return httpx.Response(201, json={"credential_id": "cred-1"})
+        if request.method == "PATCH" and request.url.path == "/agentscope/credential/cred-1":
+            assert payload == {"data": {"name": "更新后的凭证"}}
+            return httpx.Response(200, json={"credential_id": "cred-1", "updated": True})
+        if request.method == "DELETE" and request.url.path == "/agentscope/credential/cred-1":
+            return httpx.Response(200, json={"deleted": True})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        from app.agentscope_service.client import AgentScopeServiceClient
+
+        client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
+        credentials = await client.list_credentials()
+        created = await client.create_credential({"data": {"type": "openai_credential", "api_key": "sk-test"}})
+        updated = await client.update_credential("cred-1", {"data": {"name": "更新后的凭证"}})
+        deleted = await client.delete_credential("cred-1")
+
+    assert credentials == [{"id": "cred-1"}]
+    assert created == {"credential_id": "cred-1"}
+    assert updated == {"credential_id": "cred-1", "updated": True}
+    assert deleted == {"deleted": True}
+    assert [(method, path) for method, path, _payload, _user_id in requests] == [
+        ("GET", "/agentscope/credential/"),
+        ("POST", "/agentscope/credential/"),
+        ("PATCH", "/agentscope/credential/cred-1"),
+        ("DELETE", "/agentscope/credential/cred-1"),
+    ]
+    assert {user_id for *_rest, user_id in requests} == {"datalogue-agent-team"}
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_client_lists_models_by_provider():
+    requests: list[tuple[str, str, bytes, str | None]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            (request.method, request.url.path, request.url.query, request.headers.get("X-User-ID"))
+        )
+        if request.method == "GET" and request.url.path == "/agentscope/model":
+            assert request.url.query == b"provider=openai_credential"
+            return httpx.Response(
+                200,
+                json={"models": [{"name": "gpt-4.1", "model_type": "chat"}]},
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        from app.agentscope_service.client import AgentScopeServiceClient
+
+        client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
+        models = await client.list_models(provider="openai_credential")
+
+    assert models == [{"name": "gpt-4.1", "model_type": "chat"}]
+    assert requests == [
+        ("GET", "/agentscope/model", b"provider=openai_credential", "datalogue-agent-team")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_agentscope_service_client_upserts_openai_credential_with_fixed_id():
     requests: list[tuple[str, str, dict, str | None]] = []
 
