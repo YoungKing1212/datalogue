@@ -4,8 +4,8 @@
 #   LLM 模型配置管理 API 端点。
 #
 # Responsibilities:
-#   - 提供前端维护模型配置和任务角色绑定的接口。
-#   - 测试 OpenAI-compatible 模型连接并记录诊断结果。
+#   - 提供前端维护模型配置的接口。
+#   - 通过 AgentScope 测试模型连接并记录诊断结果。
 #
 # Author      : yangkai
 # Created On  : 2026-06-10
@@ -22,8 +22,8 @@ from sqlalchemy.orm import Session
 from app import models, schemas
 from app.core.database import get_db
 from app.core.security import decrypt_password, encrypt_password
-from app.graph.llm import LiteLLMChatClient, _litellm_model_name, _llm_call_policy, build_llm_model_kwargs
-from app.services.llm_config import LLM_ROLES, ResolvedLLMConfig, ensure_llm_role, model_config_to_dict
+from app.graph.llm import AgentScopeChatClient, _llm_call_policy, build_llm_model_kwargs
+from app.services.llm_config import DEFAULT_LLM_ROLE, ResolvedLLMConfig, model_config_to_dict
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -42,12 +42,6 @@ def _validate_status(status: str | None) -> str | None:
     if status not in {"active", "disabled"}:
         raise HTTPException(status_code=400, detail="status 仅支持 active / disabled")
     return status
-
-
-@router.get("/roles")
-def list_llm_roles():
-    """返回系统支持的 LLM 任务角色。"""
-    return {"roles": list(LLM_ROLES)}
 
 
 @router.get("/models", response_model=List[schemas.LLMModelConfigOut])
@@ -108,10 +102,8 @@ def update_llm_model(
 
 @router.delete("/models/{config_id}")
 def delete_llm_model(config_id: int, db: Session = Depends(get_db)):
-    """删除 LLM 模型配置，并清空关联角色绑定。"""
+    """删除 LLM 模型配置；role binding 已废弃，不再做跨表清理。"""
     config = _get_model_config(db, config_id)
-    for binding in db.query(models.LLMRoleBinding).filter_by(model_config_id=config_id).all():
-        binding.model_config_id = None
     db.delete(config)
     db.commit()
     logger.info("LLM 模型配置删除成功: id=%s", config_id)
@@ -126,7 +118,7 @@ def test_llm_model(config_id: int, db: Session = Depends(get_db)):
     try:
         api_key = decrypt_password(config.api_key_enc) if config.api_key_enc else ""
         resolved = ResolvedLLMConfig(
-            role="default",
+            role=DEFAULT_LLM_ROLE,
             source="database",
             name=config.name,
             provider=config.provider,
@@ -137,8 +129,9 @@ def test_llm_model(config_id: int, db: Session = Depends(get_db)):
             thinking_enabled=bool(config.thinking_enabled),
         )
         call_policy = _llm_call_policy(resolved.role)
-        llm = LiteLLMChatClient(
-            model=_litellm_model_name(resolved),
+        llm = AgentScopeChatClient(
+            provider=resolved.provider,
+            model=resolved.model,
             api_key=api_key,
             api_base=config.base_url,
             temperature=0,
@@ -166,35 +159,3 @@ def test_llm_model(config_id: int, db: Session = Depends(get_db)):
         db.commit()
         logger.warning("LLM 模型连接测试失败: id=%s, error=%s", config_id, err)
         return {"ok": False, "message": "模型连接测试失败", "detail": result}
-
-
-@router.get("/role-bindings", response_model=List[schemas.LLMRoleBindingOut])
-def list_role_bindings(db: Session = Depends(get_db)):
-    """读取所有 LLM 角色绑定，未配置的角色返回空绑定。"""
-    bindings = {
-        item.role: item.model_config_id
-        for item in db.query(models.LLMRoleBinding).all()
-        if item.role in LLM_ROLES
-    }
-    return [{"role": role, "model_config_id": bindings.get(role)} for role in LLM_ROLES]
-
-
-@router.put("/role-bindings", response_model=List[schemas.LLMRoleBindingOut])
-def update_role_bindings(
-    payload: schemas.LLMRoleBindingsUpdate,
-    db: Session = Depends(get_db),
-):
-    """保存 LLM 任务角色绑定。"""
-    for role, config_id in payload.bindings.items():
-        normalized_role = ensure_llm_role(role)
-        if config_id is not None:
-            config = _get_model_config(db, config_id)
-            if config.status != "active":
-                raise HTTPException(status_code=400, detail=f"角色 {normalized_role} 不能绑定停用模型")
-        binding = db.query(models.LLMRoleBinding).filter_by(role=normalized_role).first()
-        if not binding:
-            binding = models.LLMRoleBinding(role=normalized_role)
-            db.add(binding)
-        binding.model_config_id = config_id
-    db.commit()
-    return list_role_bindings(db)

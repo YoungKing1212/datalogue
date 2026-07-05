@@ -1,18 +1,17 @@
 # ============================================================
 # File Name   : llm.py
 # Description:
-#   LLM 模型配置和任务角色绑定持久化模型。
+#   LLM 模型配置持久化模型。
 #
 # Responsibilities:
-#   - 存储 OpenAI-compatible / LiteLLM 模型连接配置。
-#   - 维护问数链路中不同任务角色到模型配置的绑定关系。
+#   - 存储可由前端维护的 AgentScope/OpenAI-compatible 模型连接配置。
+#   - 保存连接测试结果和运行时所需的模型参数。
 #
 # Author      : yangkai
 # Created On  : 2026-06-10
 # ============================================================
 
-from sqlalchemy import Boolean, Column, Float, ForeignKey, Integer, JSON, String, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy import Boolean, Column, Float, Integer, JSON, String, Text
 
 from app.core.database import Base
 from app.models.base import TimestampMixin
@@ -25,7 +24,7 @@ class LLMModelConfig(Base, TimestampMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
-    provider = Column(String(50), nullable=False, default="litellm", server_default="litellm")
+    provider = Column(String(50), nullable=False, default="openai-compatible", server_default="openai-compatible")
     base_url = Column(String(500), nullable=False)
     model = Column(String(200), nullable=False)
     api_key_enc = Column(Text, nullable=True)
@@ -35,17 +34,3 @@ class LLMModelConfig(Base, TimestampMixin):
     thinking_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
     last_test_result = Column(JSON, nullable=True)
     last_error_message = Column(Text, nullable=True)
-
-    role_bindings = relationship("LLMRoleBinding", back_populates="model_config")
-
-
-class LLMRoleBinding(Base, TimestampMixin):
-    """任务角色到 LLM 模型配置的绑定。"""
-
-    __tablename__ = "llm_role_binding"
-
-    id = Column(Integer, primary_key=True, index=True)
-    role = Column(String(50), nullable=False, unique=True, index=True)
-    model_config_id = Column(Integer, ForeignKey("llm_model_config.id"), nullable=True)
-
-    model_config = relationship("LLMModelConfig", back_populates="role_bindings")

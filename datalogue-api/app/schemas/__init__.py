@@ -98,8 +98,6 @@ from .llm import (
     LLMModelConfigCreate,
     LLMModelConfigUpdate,
     LLMModelConfigOut,
-    LLMRoleBindingOut,
-    LLMRoleBindingsUpdate,
     LLMTestResultOut,
 )
 
@@ -184,7 +182,5 @@ __all__ = [
     "LLMModelConfigCreate",
     "LLMModelConfigUpdate",
     "LLMModelConfigOut",
-    "LLMRoleBindingOut",
-    "LLMRoleBindingsUpdate",
     "LLMTestResultOut",
 ]

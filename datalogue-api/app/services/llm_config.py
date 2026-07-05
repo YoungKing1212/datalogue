@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : llm_config.py
 # Description:
-#   LLM 模型配置读取和角色解析服务。
+#   LLM 模型配置读取服务。
 #
 # Responsibilities:
-#   - 统一校验可绑定的 LLM 任务角色。
-#   - 按角色解析数据库中的启用模型配置，并提供环境变量兜底。
+#   - 按显式模型配置解析启用的 LLM 连接配置。
+#   - 在未选择模型时提供默认启用配置或环境变量兜底。
 #
 # Author      : yangkai
 # Created On  : 2026-06-10
@@ -18,19 +18,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import decrypt_password
-from app.models.llm import LLMModelConfig, LLMRoleBinding
+from app.models.llm import LLMModelConfig
 
 DEFAULT_LLM_ROLE = "default"
-LLM_ROLES = (
-    DEFAULT_LLM_ROLE,
-    "intent",
-    "dsl",
-    "sql_audit",
-    "report",
-    "annotation",
-    "blueprint",
-    "lead_agent",
-)
 
 
 @dataclass(frozen=True)
@@ -46,14 +36,6 @@ class ResolvedLLMConfig:
     api_key: str
     request_timeout_seconds: float
     thinking_enabled: bool
-
-
-def ensure_llm_role(role: str | None) -> str:
-    """校验并归一化 LLM 任务角色。"""
-    normalized = (role or DEFAULT_LLM_ROLE).strip() or DEFAULT_LLM_ROLE
-    if normalized not in LLM_ROLES:
-        raise ValueError(f"不支持的 LLM 角色: {normalized}")
-    return normalized
 
 
 def model_config_to_dict(config: LLMModelConfig) -> dict:
@@ -76,21 +58,22 @@ def model_config_to_dict(config: LLMModelConfig) -> dict:
     }
 
 
-def _active_config_by_role(db: Session, role: str) -> LLMModelConfig | None:
-    binding = db.query(LLMRoleBinding).filter(LLMRoleBinding.role == role).first()
-    if not binding or not binding.model_config_id:
-        return None
-    config = db.get(LLMModelConfig, binding.model_config_id)
-    if not config or config.status != "active":
-        return None
-    return config
-
-
 def _active_config_by_id(db: Session, config_id: int) -> LLMModelConfig:
     config = db.get(LLMModelConfig, config_id)
     if not config or config.status != "active":
         raise ValueError(f"LLM 模型配置不存在或未启用: {config_id}")
     return config
+
+
+def _default_active_config(db: Session) -> LLMModelConfig | None:
+    """未显式选择模型时，使用最新启用配置作为 Datalogue 默认模型。"""
+
+    return (
+        db.query(LLMModelConfig)
+        .filter(LLMModelConfig.status == "active")
+        .order_by(LLMModelConfig.id.desc())
+        .first()
+    )
 
 
 def resolve_llm_config(
@@ -100,17 +83,16 @@ def resolve_llm_config(
     db: Session | None = None,
     model_config_id: int | None = None,
 ) -> ResolvedLLMConfig:
-    """按角色解析 LLM 配置；数据库优先，环境变量兜底。"""
-    normalized_role = ensure_llm_role(role)
+    """解析 LLM 配置；不再读取 role binding，数据库模型配置优先。"""
+    normalized_role = (role or DEFAULT_LLM_ROLE).strip() or DEFAULT_LLM_ROLE
     config = None
     if db is not None:
         if model_config_id is not None:
-            # 用户在聊天框显式选择模型时，只覆盖本轮请求；角色名仍用于调用策略和审计归属。
+            # 用户在聊天框显式选择模型时，只覆盖本轮模型配置；角色名只作为审计标签保留。
             config = _active_config_by_id(db, model_config_id)
         else:
-            config = _active_config_by_role(db, normalized_role)
-        if config is None and normalized_role != DEFAULT_LLM_ROLE:
-            config = _active_config_by_role(db, DEFAULT_LLM_ROLE)
+            # role binding 已删除；未显式选择时只能走默认启用模型或环境变量兜底。
+            config = _default_active_config(db)
 
     if config is not None:
         api_key = decrypt_password(config.api_key_enc) if config.api_key_enc else ""

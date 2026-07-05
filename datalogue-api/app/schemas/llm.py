@@ -4,7 +4,7 @@
 #   LLM 配置管理 API 的 Pydantic Schema。
 #
 # Responsibilities:
-#   - 校验模型连接配置和角色绑定请求。
+#   - 校验模型连接配置请求。
 #   - 序列化前端设置页需要的模型配置响应。
 #
 # Author      : yangkai
@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class LLMModelConfigCreate(BaseModel):
     name: str
-    provider: str = "litellm"
+    provider: str = "openai-compatible"
     base_url: str
     model: str
     api_key: Optional[str] = None
@@ -58,17 +58,6 @@ class LLMModelConfigOut(BaseModel):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class LLMRoleBindingOut(BaseModel):
-    role: str
-    model_config_id: Optional[int] = None
-
-    model_config = ConfigDict(protected_namespaces=())
-
-
-class LLMRoleBindingsUpdate(BaseModel):
-    bindings: dict[str, Optional[int]]
 
 
 class LLMTestResultOut(BaseModel):

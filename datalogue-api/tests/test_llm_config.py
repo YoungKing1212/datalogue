@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : test_llm_config.py
 # Description:
-#   LLM 模型配置管理和角色解析测试。
+#   LLM 模型配置管理和 AgentScope 执行适配测试。
 #
 # Responsibilities:
-#   - 验证模型配置 API 不泄露密钥且能保存角色绑定。
-#   - 验证 get_llm 按数据库配置优先、环境变量兜底创建客户端。
+#   - 验证模型配置 API 不泄露密钥且不再暴露角色绑定。
+#   - 验证 get_llm 通过 AgentScope 适配器创建客户端。
 #
 # Author      : yangkai
 # Created On  : 2026-06-10
@@ -14,17 +14,19 @@
 import asyncio
 from unittest.mock import MagicMock, patch
 
+from agentscope.message._block import TextBlock
+from agentscope.model._model_response import ChatResponse
 from app.core.config import Settings
 from app.core.security import decrypt_password, encrypt_password
-from app.models import LLMModelConfig, LLMRoleBinding
+from app.models import LLMModelConfig
 from app.services.llm_config import resolve_llm_config
 
 
 def test_llm_model_crud_masks_api_key(client, db_session):
     """模型配置 API 不应返回明文 API Key，空 Key 更新不覆盖旧密钥。"""
     payload = {
-        "name": "LiteLLM SQL",
-        "provider": "litellm",
+        "name": "AgentScope SQL",
+        "provider": "openai-compatible",
         "base_url": "http://localhost:4000/v1",
         "model": "datalogue-sql",
         "api_key": "sk-secret",
@@ -47,87 +49,74 @@ def test_llm_model_crud_masks_api_key(client, db_session):
 
     resp = client.put(
         f"/api/llm/models/{data['id']}",
-        json={"name": "LiteLLM SQL v2", "api_key": "", "thinking_enabled": False},
+        json={"name": "AgentScope SQL v2", "api_key": "", "thinking_enabled": False},
     )
     assert resp.status_code == 200
     db_session.refresh(config)
-    assert config.name == "LiteLLM SQL v2"
+    assert config.name == "AgentScope SQL v2"
     assert decrypt_password(config.api_key_enc) == "sk-secret"
     assert config.thinking_enabled is False
 
 
-def test_role_bindings_round_trip(client):
-    """角色绑定保存后可按固定角色集合读回。"""
+def test_role_binding_api_removed(client):
+    """模型配置功能保留，但 role binding API 不再存在。"""
     model_resp = client.post(
         "/api/llm/models",
         json={
             "name": "Report Model",
-            "provider": "litellm",
+            "provider": "openai-compatible",
             "base_url": "http://localhost:4000/v1",
             "model": "report-model",
             "api_key": "sk-report",
         },
     )
-    model_id = model_resp.json()["id"]
+    assert model_resp.status_code == 200
 
-    resp = client.put("/api/llm/role-bindings", json={"bindings": {"report": model_id}})
-    assert resp.status_code == 200
-    rows = {item["role"]: item["model_config_id"] for item in resp.json()}
-    assert rows["report"] == model_id
-    assert "default" in rows
-    assert "lead_agent" in rows
+    assert client.get("/api/llm/roles").status_code == 404
+    assert client.get("/api/llm/role-bindings").status_code == 404
+    assert client.put("/api/llm/role-bindings", json={"bindings": {"report": 1}}).status_code == 404
 
 
-def test_resolve_llm_config_role_and_default_fallback(db_session):
-    """角色未绑定时先回退 default，再回退环境变量。"""
+def test_resolve_llm_config_uses_default_active_config_without_role_binding(db_session):
+    """未显式选择模型时，不读 role binding，只使用默认启用配置或环境变量。"""
     settings = Settings(
         OPENAI_API_KEY="env-key",
         OPENAI_BASE_URL="https://env.example/v1",
         LLM_MODEL="env-model",
     )
-    report_config = resolve_llm_config(settings, role="report", db=db_session)
-    assert report_config.source == "env"
-    assert report_config.model == "env-model"
-    assert report_config.thinking_enabled is False
+    env_config = resolve_llm_config(settings, role="report", db=db_session)
+    assert env_config.source == "env"
+    assert env_config.model == "env-model"
+    assert env_config.thinking_enabled is False
 
-    default_model = LLMModelConfig(
-        name="Default DB",
-        provider="litellm",
+    first_model = LLMModelConfig(
+        name="First DB",
+        provider="openai-compatible",
         base_url="http://localhost:4000/v1",
-        model="default-model",
+        model="first-model",
         api_key_enc=None,
         status="active",
         thinking_enabled=False,
     )
-    dsl_model = LLMModelConfig(
-        name="DSL DB",
-        provider="litellm",
+    latest_model = LLMModelConfig(
+        name="Latest DB",
+        provider="openai-compatible",
         base_url="http://localhost:4000/v1",
-        model="dsl-model",
+        model="latest-model",
         api_key_enc=None,
         status="active",
         thinking_enabled=True,
     )
-    db_session.add_all([default_model, dsl_model])
-    db_session.flush()
-    db_session.add_all(
-        [
-            LLMRoleBinding(role="default", model_config_id=default_model.id),
-            LLMRoleBinding(role="dsl", model_config_id=dsl_model.id),
-        ]
-    )
+    db_session.add_all([first_model, latest_model])
     db_session.commit()
 
-    dsl_config = resolve_llm_config(settings, role="dsl", db=db_session)
     report_config = resolve_llm_config(settings, role="report", db=db_session)
-    assert dsl_config.model == "dsl-model"
-    assert dsl_config.thinking_enabled is True
-    assert report_config.model == "default-model"
-    assert report_config.thinking_enabled is False
+    assert report_config.model == "latest-model"
+    assert report_config.thinking_enabled is True
 
 
-def test_resolve_llm_config_explicit_model_config_id_overrides_role_binding(db_session):
-    """聊天框显式选择模型时，应只覆盖本轮模型配置，不改变角色归属。"""
+def test_resolve_llm_config_explicit_model_config_id_overrides_default(db_session):
+    """聊天框显式选择模型时，应只覆盖本轮模型配置，不依赖角色绑定。"""
     settings = Settings(
         OPENAI_API_KEY="env-key",
         OPENAI_BASE_URL="https://env.example/v1",
@@ -135,7 +124,7 @@ def test_resolve_llm_config_explicit_model_config_id_overrides_role_binding(db_s
     )
     default_model = LLMModelConfig(
         name="Default DB",
-        provider="litellm",
+        provider="openai-compatible",
         base_url="http://localhost:4000/v1",
         model="default-model",
         api_key_enc=None,
@@ -150,9 +139,7 @@ def test_resolve_llm_config_explicit_model_config_id_overrides_role_binding(db_s
         status="active",
         thinking_enabled=True,
     )
-    db_session.add_all([default_model, selected_model])
-    db_session.flush()
-    db_session.add(LLMRoleBinding(role="lead_agent", model_config_id=default_model.id))
+    db_session.add_all([selected_model, default_model])
     db_session.commit()
 
     resolved = resolve_llm_config(
@@ -170,9 +157,9 @@ def test_resolve_llm_config_explicit_model_config_id_overrides_role_binding(db_s
 
 
 def test_get_llm_uses_database_role_config(db_session):
-    """get_llm 应使用角色绑定的数据库配置创建 LiteLLM SDK 客户端。"""
+    """get_llm 应使用默认启用数据库配置创建 AgentScope 客户端。"""
     from app.core.security import encrypt_password
-    from app.graph.llm import LiteLLMChatClient, ROLE_CALL_POLICIES, get_llm
+    from app.graph.llm import AgentScopeChatClient, ROLE_CALL_POLICIES, get_llm
 
     model = LLMModelConfig(
         name="Intent DB",
@@ -185,14 +172,13 @@ def test_get_llm_uses_database_role_config(db_session):
         thinking_enabled=False,
     )
     db_session.add(model)
-    db_session.flush()
-    db_session.add(LLMRoleBinding(role="intent", model_config_id=model.id))
     db_session.commit()
 
     llm = get_llm(temperature=0.2, role="intent", db=db_session)
 
-    assert isinstance(llm, LiteLLMChatClient)
-    assert llm.model == "qwen/qwen-plus"
+    assert isinstance(llm, AgentScopeChatClient)
+    assert llm.provider == "qwen"
+    assert llm.model == "qwen-plus"
     assert llm.api_key == "sk-intent"
     assert llm.api_base == "http://localhost:4000/v1"
     assert llm.temperature == 0.2
@@ -207,7 +193,7 @@ def test_get_llm_uses_database_role_config(db_session):
 def test_get_llm_keeps_thinking_when_enabled(db_session):
     """模型配置开启 Think 后，不应再下发禁用思考参数。"""
     from app.core.security import encrypt_password
-    from app.graph.llm import LiteLLMChatClient, get_llm
+    from app.graph.llm import AgentScopeChatClient, get_llm
 
     model = LLMModelConfig(
         name="Thinking DB",
@@ -219,43 +205,39 @@ def test_get_llm_keeps_thinking_when_enabled(db_session):
         thinking_enabled=True,
     )
     db_session.add(model)
-    db_session.flush()
-    db_session.add(LLMRoleBinding(role="report", model_config_id=model.id))
     db_session.commit()
 
     llm = get_llm(role="report", db=db_session)
 
-    assert isinstance(llm, LiteLLMChatClient)
-    assert llm.model == "qwen/qwen-plus"
+    assert isinstance(llm, AgentScopeChatClient)
+    assert llm.model == "qwen-plus"
     assert llm.model_kwargs == {}
     assert llm.response_format is None
     assert llm.datalogue_thinking_enabled is True
 
 
-def test_get_llm_uses_litellm_sdk_adapter(db_session):
-    """显式 LiteLLM 模型名前缀应原样透传给 SDK 适配器。"""
+def test_get_llm_uses_agentscope_openai_compatible_adapter(db_session):
+    """历史 openai-compatible 配置应映射到 AgentScope 适配器。"""
     from app.core.security import encrypt_password
-    from app.graph.llm import LiteLLMChatClient, get_llm
+    from app.graph.llm import AgentScopeChatClient, get_llm
 
     model = LLMModelConfig(
-        name="LiteLLM SDK MiniMax",
-        provider="litellm_sdk",
+        name="AgentScope MiniMax",
+        provider="openai-compatible",
         base_url="https://api.minimaxi.com/v1",
-        model="minimax/MiniMax-M3",
+        model="MiniMax-M3",
         api_key_enc=encrypt_password("sk-minimax"),
         status="active",
         request_timeout_seconds=30,
         thinking_enabled=False,
     )
     db_session.add(model)
-    db_session.flush()
-    db_session.add(LLMRoleBinding(role="lead_agent", model_config_id=model.id))
     db_session.commit()
 
     llm = get_llm(temperature=0.1, role="lead_agent", db=db_session)
 
-    assert isinstance(llm, LiteLLMChatClient)
-    assert llm.model == "minimax/MiniMax-M3"
+    assert isinstance(llm, AgentScopeChatClient)
+    assert llm.model == "MiniMax-M3"
     assert llm.api_base == "https://api.minimaxi.com/v1"
     assert llm.api_key == "sk-minimax"
     assert llm.temperature == 0.1
@@ -263,24 +245,23 @@ def test_get_llm_uses_litellm_sdk_adapter(db_session):
     assert llm.datalogue_thinking_enabled is False
 
 
-def test_litellm_chat_client_astream_yields_chunks():
-    """LiteLLM SDK 适配器应兼容报告节点使用的 astream 接口。"""
-    from app.graph.llm import LiteLLMChatClient
+def test_agentscope_chat_client_astream_yields_chunks(monkeypatch):
+    """AgentScope 适配器应兼容报告节点使用的 astream 接口。"""
+    from app.graph.llm import AgentScopeChatClient
     from langchain_core.messages import HumanMessage
 
-    captured = {}
+    async def chunks():
+        yield ChatResponse(content=[TextBlock(text="查询")], is_last=False)
+        yield ChatResponse(content=[TextBlock(text="完成")], is_last=True)
 
-    async def fake_acompletion(**kwargs):
-        captured.update(kwargs)
+    class FakeAgentScopeModel:
+        def __call__(self, messages):
+            assert messages[0].role == "user"
+            return chunks()
 
-        async def chunks():
-            yield {"choices": [{"delta": {"content": "查询"}}]}
-            yield {"choices": [{"delta": {"content": "完成"}}]}
-
-        return chunks()
-
-    client = LiteLLMChatClient(
-        model="openai/test-model",
+    client = AgentScopeChatClient(
+        provider="openai-compatible",
+        model="test-model",
         api_key="sk-test",
         api_base="http://localhost:4000/v1",
         temperature=0.1,
@@ -288,26 +269,23 @@ def test_litellm_chat_client_astream_yields_chunks():
         model_kwargs={},
         thinking_enabled=False,
     )
+    monkeypatch.setattr(client, "_build_model", lambda stream: FakeAgentScopeModel())
 
     async def collect():
         return [chunk async for chunk in client.astream([HumanMessage(content="生成报告")])]
 
-    with patch("litellm.acompletion", fake_acompletion):
-        chunks = asyncio.run(collect())
+    streamed_chunks = asyncio.run(collect())
 
-    assert [chunk.content for chunk in chunks] == ["查询", "完成"]
-    assert captured["model"] == "openai/test-model"
-    assert captured["api_base"] == "http://localhost:4000/v1"
-    assert captured["stream"] is True
+    assert [chunk.content for chunk in streamed_chunks] == ["查询", "完成"]
 
 
 def test_llm_model_test_endpoint_persists_result(client, db_session):
-    """测试连接接口应保存最近一次测试结果。"""
+    """测试连接接口应通过 AgentScope 适配器保存最近一次测试结果。"""
     model_resp = client.post(
         "/api/llm/models",
         json={
             "name": "Test Model",
-            "provider": "litellm",
+            "provider": "openai-compatible",
             "base_url": "http://localhost:4000/v1",
             "model": "test-model",
             "api_key": "sk-test",
@@ -318,12 +296,13 @@ def test_llm_model_test_endpoint_persists_result(client, db_session):
     fake_response = MagicMock()
     fake_response.content = "OK"
 
-    with patch("app.api.llm.LiteLLMChatClient") as litellm_client:
-        litellm_client.return_value.invoke.return_value = fake_response
+    with patch("app.api.llm.AgentScopeChatClient") as agentscope_client:
+        agentscope_client.return_value.invoke.return_value = fake_response
         resp = client.post(f"/api/llm/models/{model_id}/test", json={})
 
-    kwargs = litellm_client.call_args.kwargs
-    assert kwargs["model"] == "openai/test-model"
+    kwargs = agentscope_client.call_args.kwargs
+    assert kwargs["provider"] == "openai-compatible"
+    assert kwargs["model"] == "test-model"
     assert kwargs["api_key"] == "sk-test"
     assert kwargs["api_base"] == "http://localhost:4000/v1"
     assert kwargs["model_kwargs"] == {}

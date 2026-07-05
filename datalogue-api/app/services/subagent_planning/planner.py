@@ -110,7 +110,7 @@ DETAIL_LOOP_DANGEROUS_TEXT_MARKERS = (
     "字段列表",
     "字段明细",
 )
-LLM_ERROR_MODULE_PREFIXES = ("openai", "httpx", "langchain_openai", "litellm")
+LLM_ERROR_MODULE_PREFIXES = ("openai", "httpx", "langchain_openai")
 LLM_ERROR_TYPE_KEYWORDS = (
     "APIConnectionError",
     "APIError",
