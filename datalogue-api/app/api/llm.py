@@ -102,7 +102,7 @@ def update_llm_model(
 
 @router.delete("/models/{config_id}")
 def delete_llm_model(config_id: int, db: Session = Depends(get_db)):
-    """删除 LLM 模型配置；role binding 已废弃，不再做跨表清理。"""
+    """删除 LLM 模型配置；旧模型角色映射已废弃，不再做跨表清理。"""
     config = _get_model_config(db, config_id)
     db.delete(config)
     db.commit()

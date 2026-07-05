@@ -143,7 +143,7 @@ class AgentScopeServiceClient:
         return parsed if isinstance(parsed, dict) else {"data": parsed}
 
     async def delete_credential(self, credential_id: str) -> dict[str, Any]:
-        """删除 AgentScope credential；Datalogue 不维护对应 role binding 清理逻辑。"""
+        """删除 AgentScope credential；Datalogue 不额外维护旧模型角色映射。"""
 
         response = await self.http.delete(
             self._url(f"/credential/{quote(credential_id, safe='')}"),

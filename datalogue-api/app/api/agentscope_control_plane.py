@@ -80,7 +80,7 @@ async def create_credential(payload: dict[str, Any] = Body(...)):
 
 @router.patch("/credentials/{credential_id}")
 async def update_credential(credential_id: str, payload: dict[str, Any] = Body(...)):
-    """更新 AgentScope credential；不维护 Datalogue role binding。"""
+    """更新 AgentScope credential；不维护 Datalogue 旧模型角色映射。"""
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:

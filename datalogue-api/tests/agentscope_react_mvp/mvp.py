@@ -22,25 +22,20 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Type
+from typing import Any
 
 import httpx
-import litellm
 
 from agentscope.agent import Agent
 from agentscope.agent._config import ModelConfig
 from agentscope.credential import OpenAICredential
-from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg, TextBlock, ToolCallBlock, UserMsg
 from agentscope.model import ChatResponse, OpenAIChatModel
-from agentscope.model._base import ChatModelBase
-from agentscope.model._model_usage import ChatUsage
 from agentscope.permission import PermissionBehavior, PermissionContext, PermissionDecision
 from agentscope.tool import ToolBase, ToolChunk, Toolkit
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.graph.llm import _litellm_model_name
 from app.services.llm_config import resolve_llm_config
 
 
@@ -700,8 +695,8 @@ def build_dataset_agent_tools(
     return tools
 
 
-class LiteLLMAgentScopeChatModel(ChatModelBase):
-    """AgentScope ChatModel 适配器：ReAct 由 AgentScope 驱动，底层复用数语 LiteLLM。"""
+class TracedAgentScopeOpenAIChatModel(OpenAIChatModel):
+    """AgentScope 原生 OpenAI-compatible ChatModel，额外记录 MVP ReAct 调用轨迹。"""
 
     def __init__(
         self,
@@ -711,7 +706,6 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
         context_size: int = 32768,
     ) -> None:
         self.resolved_config = resolved_config
-        self.formatter = OpenAIChatFormatter()
         self.trace = trace
         self.react_turn = 0
         super().__init__(
@@ -719,7 +713,7 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
                 api_key=resolved_config.api_key,
                 base_url=resolved_config.base_url,
             ),
-            model=_litellm_model_name(resolved_config),
+            model=resolved_config.model,
             parameters=OpenAIChatModel.Parameters(
                 temperature=0,
                 parallel_tool_calls=False,
@@ -731,14 +725,11 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
         )
 
     @classmethod
-    def _get_retryable_exceptions(cls) -> tuple[Type[Exception], ...]:
+    def _get_retryable_exceptions(cls) -> tuple[type[Exception], ...]:
         return (
             TimeoutError,
             httpx.TimeoutException,
             httpx.TransportError,
-            litellm.exceptions.APIConnectionError,
-            litellm.exceptions.Timeout,
-            litellm.exceptions.InternalServerError,
         )
 
     async def _call_api(
@@ -773,34 +764,24 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
             [tool.get("function", {}).get("name") for tool in fmt_tools or []],
             fmt_tool_choice,
         )
-        kwargs: dict[str, Any] = {
-            "model": model_name,
-            "messages": formatted_messages,
-            "temperature": 0,
-            "stream": False,
-            "timeout": self.resolved_config.request_timeout_seconds,
-            "api_key": self.resolved_config.api_key,
-            "api_base": self.resolved_config.base_url,
-        }
-        if fmt_tools:
-            kwargs["tools"] = fmt_tools
-            kwargs["parallel_tool_calls"] = False
-        if fmt_tool_choice is not None:
-            kwargs["tool_choice"] = fmt_tool_choice
-        kwargs.update(generate_kwargs)
-
         start = datetime.now()
-        response = await litellm.acompletion(**kwargs)
-        parsed = self._parse_litellm_response(start, response)
-        response_blocks = _trace_content_blocks(parsed.content)
+        response = await super()._call_api(
+            model_name,
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            **generate_kwargs,
+        )
+        response_blocks = _trace_content_blocks(response.content)
         _log_react_event(
             self.trace,
             {
                 "event": "llm_response",
                 "turn": turn,
-                "response_id": parsed.id,
+                "response_id": response.id,
                 "blocks": response_blocks,
-                "usage": parsed.usage,
+                "usage": response.usage,
+                "latency_seconds": (datetime.now() - start).total_seconds(),
             },
         )
         for block in response_blocks:
@@ -819,46 +800,14 @@ class LiteLLMAgentScopeChatModel(ChatModelBase):
                 )
         logger.info(
             "[AgentScope Hermes MVP][LLM response] id=%s block_types=%s usage=%s",
-            parsed.id,
-            [type(block).__name__ for block in parsed.content],
-            parsed.usage,
+            response.id,
+            [type(block).__name__ for block in response.content],
+            response.usage,
         )
-        return parsed
-
-    def _parse_litellm_response(self, start: datetime, response: Any) -> ChatResponse:
-        content_blocks: list[Any] = []
-        choices = getattr(response, "choices", None) or []
-        if choices:
-            message = choices[0].message
-            text = getattr(message, "content", None)
-            if text:
-                content_blocks.append(TextBlock(text=text))
-            for tool_call in getattr(message, "tool_calls", None) or []:
-                content_blocks.append(
-                    ToolCallBlock(
-                        id=tool_call.id,
-                        name=tool_call.function.name,
-                        input=tool_call.function.arguments,
-                    )
-                )
-
-        usage = None
-        raw_usage = getattr(response, "usage", None)
-        if raw_usage:
-            usage = ChatUsage(
-                input_tokens=getattr(raw_usage, "prompt_tokens", 0) or 0,
-                output_tokens=getattr(raw_usage, "completion_tokens", 0) or 0,
-                time=(datetime.now() - start).total_seconds(),
-            )
-        return ChatResponse(
-            content=content_blocks,
-            is_last=True,
-            usage=usage,
-            id=getattr(response, "id", None) or "litellm-agentscope-response",
-        )
+        return response
 
 
-def _build_agentscope_model(trace: DatalogueToolTrace | None = None) -> LiteLLMAgentScopeChatModel:
+def _build_agentscope_model(trace: DatalogueToolTrace | None = None) -> TracedAgentScopeOpenAIChatModel:
     settings = get_settings()
     with SessionLocal() as db:
         resolved = resolve_llm_config(settings, role="lead_agent", db=db)
@@ -872,7 +821,7 @@ def _build_agentscope_model(trace: DatalogueToolTrace | None = None) -> LiteLLMA
         getattr(resolved, "base_url", None),
         getattr(resolved, "request_timeout_seconds", None),
     )
-    return LiteLLMAgentScopeChatModel(resolved_config=resolved, trace=trace)
+    return TracedAgentScopeOpenAIChatModel(resolved_config=resolved, trace=trace)
 
 
 async def run_datalogue_react_mvp(
@@ -914,31 +863,27 @@ async def run_datalogue_react_mvp(
             "请按 Hermes-style DatasetAgent 流程自主调用工具：先获取/规划资产，再通过 preview_sql 或 execute_query 返回 result_ref 和最终回答。"
         ),
     )
-    try:
-        reply = await agent.reply(user_msg)  # 由 AgentScope ReAct 循环自主选择受控工具。
-        result = DatalogueReactMvpResult(
-            final_text=_text_from_reply(reply),
-            tool_names=trace.tool_names,
-            called_paths=trace.called_paths,
-            preview_result=trace.preview_result,
-            result_ref=trace.result_ref,
-            artifact=trace.artifact,
-            tool_trace=trace.tool_events,
-            react_trace=trace.react_events,
-            registered_tools=registered_tools,
-            capability_manifest=asdict(manifest),
-            system_prompt=system_prompt,
-            prompt_sources=hermes_prompt.source_paths,
-        )
-        logger.info(
-            "[AgentScope Hermes MVP][Run result] tools=%s called_paths=%s result_ref=%s artifact=%s final_text=%s",
-            result.tool_names,
-            result.called_paths,
-            result.result_ref,
-            _json_preview(result.artifact),
-            result.final_text,
-        )
-        return result
-    finally:
-        logger.info("[AgentScope Hermes MVP][Run cleanup] closing litellm async clients")
-        await litellm.close_litellm_async_clients()  # 真实 LLM 请求结束后关闭异步连接，避免 pytest teardown 留 pending task。
+    reply = await agent.reply(user_msg)  # 由 AgentScope ReAct 循环自主选择受控工具。
+    result = DatalogueReactMvpResult(
+        final_text=_text_from_reply(reply),
+        tool_names=trace.tool_names,
+        called_paths=trace.called_paths,
+        preview_result=trace.preview_result,
+        result_ref=trace.result_ref,
+        artifact=trace.artifact,
+        tool_trace=trace.tool_events,
+        react_trace=trace.react_events,
+        registered_tools=registered_tools,
+        capability_manifest=asdict(manifest),
+        system_prompt=system_prompt,
+        prompt_sources=hermes_prompt.source_paths,
+    )
+    logger.info(
+        "[AgentScope Hermes MVP][Run result] tools=%s called_paths=%s result_ref=%s artifact=%s final_text=%s",
+        result.tool_names,
+        result.called_paths,
+        result.result_ref,
+        _json_preview(result.artifact),
+        result.final_text,
+    )
+    return result

@@ -83,7 +83,7 @@ def resolve_llm_config(
     db: Session | None = None,
     model_config_id: int | None = None,
 ) -> ResolvedLLMConfig:
-    """解析 LLM 配置；不再读取 role binding，数据库模型配置优先。"""
+    """解析 LLM 配置；数据库模型配置优先。"""
     normalized_role = (role or DEFAULT_LLM_ROLE).strip() or DEFAULT_LLM_ROLE
     config = None
     if db is not None:
@@ -91,7 +91,7 @@ def resolve_llm_config(
             # 用户在聊天框显式选择模型时，只覆盖本轮模型配置；角色名只作为审计标签保留。
             config = _active_config_by_id(db, model_config_id)
         else:
-            # role binding 已删除；未显式选择时只能走默认启用模型或环境变量兜底。
+            # 未显式选择时只能走默认启用模型或环境变量兜底，不能再按任务角色隐式切模型。
             config = _default_active_config(db)
 
     if config is not None:
