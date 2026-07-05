@@ -36,7 +36,23 @@ class AgentTeamDatasetQueryResult:
     column_count: int | None
 
     def to_tool_payload(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        # Worker 需要把这个结构化 payload 原样 TeamSay 给 Leader；前端依赖 result_ref/artifact_card 弹出结果详情卡。
+        payload.update(
+            {
+                "datalogue_event_type": "dataset_query_result",
+                "summary": self.answer_summary,
+                "result_ref": self.artifact_ref,
+                "artifact_card": _artifact_card_payload(
+                    answer_summary=self.answer_summary,
+                    artifact_ref=self.artifact_ref,
+                    checkpoint_ref=self.checkpoint_ref,
+                    row_count=self.row_count,
+                    column_count=self.column_count,
+                ),
+            }
+        )
+        return payload
 
 
 async def execute_dataset_query_for_agent_team(
@@ -128,6 +144,58 @@ def _answer_summary(
     if status != "completed" or not artifact_ref:
         return "查询未完成，未生成可展示结果。"
     return f"查询已完成，结果已生成 artifact_ref={artifact_ref}，共 {row_count or 0} 行、{column_count or 0} 列。"
+
+
+def _artifact_card_payload(
+    *,
+    answer_summary: str,
+    artifact_ref: str | None,
+    checkpoint_ref: str | None,
+    row_count: int | None,
+    column_count: int | None,
+) -> dict[str, Any] | None:
+    """构造用户可见结果卡，只携带引用和行列数，不携带 SQL、schema 或 raw rows。"""
+
+    if not artifact_ref:
+        return None
+    return {
+        "artifact_type": "bi_answer",
+        "title": "查询结果",
+        "status": "completed",
+        "summary_for_chat": answer_summary,
+        "preview_payload": {
+            "row_count": row_count or 0,
+            "column_count": column_count or 0,
+        },
+        "primary_ref": {
+            "ref_id": artifact_ref,
+            "ref_type": "result",
+            "label": "查询结果",
+        },
+        "related_refs": [
+            {
+                "ref_id": checkpoint_ref,
+                "ref_type": "checkpoint",
+                "label": "查询检查点",
+            }
+        ]
+        if checkpoint_ref
+        else [],
+        "actions": [
+            {
+                "action_type": "view",
+                "label": "查看详情",
+                "ref": artifact_ref,
+                "disabled": False,
+            },
+            {
+                "action_type": "export",
+                "label": "导出",
+                "ref": artifact_ref,
+                "disabled": True,
+            },
+        ],
+    }
 
 
 def _optional_str(value: Any) -> str | None:

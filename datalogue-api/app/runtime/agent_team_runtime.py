@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -36,6 +37,8 @@ from app.services.agentscope_mirror import (
     mark_message_failed,
     record_agentscope_ref,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AgentTeamTaskRunner(Protocol):
@@ -131,7 +134,6 @@ class AgentTeamTaskRuntime:
                 "available_worker_types": ["bi", "report", "python", "audit"],
             },
         )
-
         accumulated_text = ""
         message_completed_emitted = False
         primary_artifact_ref: str | None = None
@@ -257,7 +259,18 @@ class AgentTeamTaskRuntime:
                 selected_agent=selected_agent,
                 payload={"summary": "Agent Team 任务已完成。"},
             )
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "Agent Team 任务执行失败: task_id=%s trace_id=%s thread_id=%s message_id=%s "
+                "selected_agent=%s error_type=%s error=%s",
+                task.task_id,
+                trace_id,
+                session.thread_id,
+                assistant_message.message_id,
+                selected_agent,
+                type(exc).__name__,
+                exc,
+            )
             log_output(
                 event_type="task.failed",
                 task_id=task.task_id,

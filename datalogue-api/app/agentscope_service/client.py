@@ -22,6 +22,7 @@ import httpx
 
 
 DEFAULT_AGENTSCOPE_USER_ID = "datalogue-agent-team"
+AGENTSCOPE_SSE_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
 
 
 class AgentScopeServiceClient:
@@ -93,6 +94,36 @@ class AgentScopeServiceClient:
             raise ValueError("AGENTSCOPE_SERVICE_AGENT_ID_MISSING")
         return agent_id
 
+    async def upsert_openai_credential(
+        self,
+        *,
+        credential_id: str,
+        name: str,
+        api_key: str,
+        base_url: str | None,
+    ) -> str:
+        """把 Datalogue 当前 OpenAI-compatible 配置同步到 AgentScope credential 存储。"""
+
+        response = await self.http.post(
+            self._url("/credential/"),
+            json={
+                "data": {
+                    "id": credential_id,
+                    "name": name,
+                    "type": "openai_credential",
+                    "api_key": api_key,
+                    "base_url": base_url,
+                },
+            },
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        result = payload.get("credential_id") or credential_id
+        if not isinstance(result, str) or not result:
+            raise ValueError("AGENTSCOPE_SERVICE_CREDENTIAL_ID_MISSING")
+        return result
+
     async def create_session(
         self,
         agent_id: str,
@@ -106,8 +137,8 @@ class AgentScopeServiceClient:
             "name": name,
             "chat_model_config": chat_model_config,
         }
-        # AgentScope 2.0.3 官方 Service 创建会话端点是复数 /sessions。
-        response = await self.http.post(self._url("/sessions"), json=payload, headers=self._headers())
+        # AgentScope 2.0.3 官方 Service 创建会话端点注册为 /sessions/；缺少尾斜杠会触发 307。
+        response = await self.http.post(self._url("/sessions/"), json=payload, headers=self._headers())
         response.raise_for_status()
         session_id = response.json().get("session_id")
         if not session_id:
@@ -118,7 +149,8 @@ class AgentScopeServiceClient:
         """触发一次 AgentScope Service chat；事件由 session stream 异步返回。"""
 
         response = await self.http.post(
-            self._url("/chat"),
+            # AgentScope chat router 同样注册为 /chat/；显式使用规范路径，避免 httpx raise 307。
+            self._url("/chat/"),
             json={
                 "agent_id": agent_id,
                 "session_id": session_id,
@@ -150,6 +182,8 @@ class AgentScopeServiceClient:
             self._url(f"/sessions/{session_id}/stream"),
             params=params,
             headers={**self._headers(), "Accept": "text/event-stream"},
+            # SSE 是长连接，模型推理期间可能数十秒没有新行；禁用 read timeout，保留连接/写入/连接池超时。
+            timeout=AGENTSCOPE_SSE_TIMEOUT,
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

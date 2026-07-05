@@ -13,7 +13,10 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 
@@ -76,12 +79,14 @@ def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, t
         "storage",
         "message_bus",
         "workspace_manager",
+        "extra_agent_middlewares",
         "extra_agent_tools",
         "custom_subagent_templates",
     }
     assert isinstance(create_app_kwargs["storage"], FakeRedisStorage)
     assert isinstance(create_app_kwargs["message_bus"], FakeRedisMessageBus)
     assert isinstance(create_app_kwargs["workspace_manager"], FakeLocalWorkspaceManager)
+    assert callable(create_app_kwargs["extra_agent_middlewares"])
     assert callable(create_app_kwargs["extra_agent_tools"])
     assert [template.type for template in create_app_kwargs["custom_subagent_templates"]] == [
         "bi",
@@ -122,3 +127,42 @@ def test_main_mounts_agentscope_service_only_when_enabled(monkeypatch):
 
     assert any(route.path == "/agentscope" for route in root_app.routes)
     assert mounted["settings"] is enabled
+
+
+def test_main_lifespan_enters_mounted_agentscope_service_lifespan(monkeypatch):
+    """父应用启动时必须显式进入 AgentScope 子应用 lifespan，确保 Redis 组件完成初始化。"""
+
+    from app import main as main_module
+
+    events: list[str] = []
+
+    @asynccontextmanager
+    async def fake_child_lifespan(_app):
+        events.append("child-enter")
+        yield
+        events.append("child-exit")
+
+    def fake_create_embedded_agentscope_app(_settings):
+        return FastAPI(title="fake-agentscope", lifespan=fake_child_lifespan)
+
+    monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        main_module,
+        "create_embedded_agentscope_app",
+        fake_create_embedded_agentscope_app,
+        raising=False,
+    )
+
+    root_app = FastAPI(lifespan=main_module.lifespan)
+    main_module.mount_agentscope_service(
+        root_app,
+        Settings(
+            AGENTSCOPE_SERVICE_ENABLED=True,
+            AGENTSCOPE_MOUNT_PATH="/agentscope",
+        ),
+    )
+
+    with TestClient(root_app):
+        assert events == ["child-enter"]
+
+    assert events == ["child-enter", "child-exit"]

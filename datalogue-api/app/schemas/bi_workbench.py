@@ -34,6 +34,7 @@ DatalogueEventType = Literal[
     "agent.handoff.failed",
     "message.delta",
     "message.completed",
+    "confirmation.required",
     "reasoning.delta",
     "reasoning.completed",
     "tool_call.started",

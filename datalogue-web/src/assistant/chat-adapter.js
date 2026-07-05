@@ -696,6 +696,15 @@ function safeRefs(refs = {}) {
   );
 }
 
+function safeToolCalls(calls = []) {
+  if (!Array.isArray(calls)) return [];
+  return calls.slice(0, 8).map((call = {}) => compactObject({
+    id: safeDisplayText(call.id || call.tool_call_id || call.toolCallId) || null,
+    name: safeDisplayText(call.name || call.tool_name || call.toolName) || null,
+    state: safeDisplayText(call.state || call.status) || null,
+  })).filter((call) => Object.keys(call).length > 0);
+}
+
 function compactObject(value = {}) {
   return Object.fromEntries(
     Object.entries(value).filter(([, item]) => (
@@ -716,6 +725,11 @@ function structuredEventSummary(event = {}) {
     summary: safeDisplayText(event.summary) || null,
     agent: safeDisplayText(event.agent || event.to_agent || event.from_agent) || null,
     toolName: safeDisplayText(event.toolName || event.tool_name) || null,
+    toolCallId: safeDisplayText(event.toolCallId || event.tool_call_id) || null,
+    replyId: safeDisplayText(event.replyId || event.reply_id) || null,
+    workerSessionId: safeDisplayText(event.workerSessionId || event.worker_session_id) || null,
+    workerAgentId: safeDisplayText(event.workerAgentId || event.worker_agent_id) || null,
+    toolCalls: safeToolCalls(event.toolCalls || event.tool_calls),
     timing: safeTiming(event.timing),
     refs: safeRefs(event.refs),
     rowCount: event.rowCount ?? event.row_count ?? null,

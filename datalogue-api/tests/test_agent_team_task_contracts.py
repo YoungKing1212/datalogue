@@ -59,6 +59,7 @@ def test_datalogue_event_envelope_supports_agent_team_event_types():
         "agent.handoff.failed",
         "message.delta",
         "message.completed",
+        "confirmation.required",
         "tool.external_required",
         "tool.result",
         "tool.blocked",

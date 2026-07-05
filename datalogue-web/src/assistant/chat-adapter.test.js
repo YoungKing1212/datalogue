@@ -166,6 +166,60 @@ describe('chat-adapter C-ready metadata', () => {
     expect(JSON.stringify(finalChunk.metadata.custom)).not.toMatch(/\bSELECT\b|raw_rows|schema_context/i);
   });
 
+  it('renders an artifact card when Agent Team final returns only artifact_card', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          payload: {
+            summary: '查询已完成，共 100 行、48 列。',
+            artifact_card: {
+              title: '查询结果',
+              status: 'completed',
+              summary_for_chat: '查询已完成，共 100 行、48 列。',
+              primary_ref: {
+                ref_id: 'artifact:worker-1',
+                ref_type: 'result',
+                label: '查询结果',
+              },
+              actions: [
+                {
+                  action_type: 'view',
+                  label: '查看详情',
+                  ref: 'artifact:worker-1',
+                  disabled: false,
+                },
+              ],
+            },
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 10 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯2025年日志' }));
+    const finalChunk = chunks.at(-1);
+
+    expect(finalChunk.metadata.custom.resultRef).toBe('artifact:worker-1');
+    expect(finalChunk.metadata.custom.artifactCard).toMatchObject({
+      title: '查询结果',
+      status: 'completed',
+      primary_ref: {
+        ref_id: 'artifact:worker-1',
+        ref_type: 'result',
+        label: '查询结果',
+      },
+      actions: [
+        {
+          action_type: 'view',
+          label: '查看详情',
+          ref: 'artifact:worker-1',
+          disabled: false,
+        },
+      ],
+    });
+  });
+
   it('passes the selected model config id to Agent Team when the composer chooses a model', async () => {
     streamAgentTeamTask.mockReturnValue(events([
       {
@@ -1094,5 +1148,57 @@ describe('chat-adapter C-ready metadata', () => {
       }),
     ]);
     expect(JSON.stringify(final)).not.toMatch(/secret_col|schema|raw_rows/i);
+  });
+
+  it('projects worker HITL confirmation route ids for UI actions', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'confirmation.required',
+          task_id: 'task-hitl',
+          payload: {
+            agent: 'bi-worker',
+            worker_session_id: 'worker-session-1',
+            worker_agent_id: 'worker-agent-1',
+            reply_id: 'reply-1',
+            tool_name: 'Glob',
+            tool_call_id: 'call-1',
+            summary: 'bi-worker 正在等待确认工具调用 Glob。',
+            tool_calls: [
+              {
+                id: 'call-1',
+                name: 'Glob',
+                input: '{"pattern":"**/*","path":"/tmp/private"}',
+                state: 'asking',
+              },
+            ],
+          },
+        },
+      },
+      {
+        type: 'final',
+        answer: '需要确认后继续。',
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询销售趋势', threadId: 'local-thread' }));
+    const final = chunks.at(-1);
+    const confirmation = final.metadata.custom.confirmations[0];
+
+    expect(confirmation).toMatchObject({
+      kind: 'confirmation',
+      status: 'requires_action',
+      agent: 'bi-worker',
+      workerSessionId: 'worker-session-1',
+      workerAgentId: 'worker-agent-1',
+      replyId: 'reply-1',
+      toolName: 'Glob',
+      toolCallId: 'call-1',
+    });
+    expect(confirmation.toolCalls).toEqual([{ id: 'call-1', name: 'Glob', state: 'asking' }]);
+    const encoded = JSON.stringify(final);
+    expect(encoded).not.toMatch(/pattern|input/i);
+    expect(encoded).not.toContain('/tmp/private');
   });
 });

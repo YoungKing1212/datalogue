@@ -59,7 +59,7 @@ def test_projection_maps_terminal_and_tool_events_to_stable_event_types():
     from app.agentscope_service.projection import project_agentscope_service_event
 
     completed = project_agentscope_service_event(
-        {"type": "final", "payload": {"summary": "任务已完成", "artifact_ref": "artifact:2"}},
+        {"event_type": "ReplyEndEvent", "payload": {"summary": "任务已完成", "artifact_ref": "artifact:2"}},
         task_id="task-2",
         trace_id="trace-2",
         selected_agent="bi_agent",
@@ -75,3 +75,129 @@ def test_projection_maps_terminal_and_tool_events_to_stable_event_types():
     assert completed.payload == {"summary": "任务已完成", "artifact_ref": "artifact:2"}
     assert tool.event_type == "tool.result"
     assert tool.payload == {"summary": "工具执行完成", "row_count": 3}
+
+
+def test_projection_preserves_worker_dataset_candidates_safely():
+    from app.agentscope_service.projection import project_agentscope_service_event
+
+    envelope = project_agentscope_service_event(
+        {
+            "event_type": "ReplyEndEvent",
+            "payload": {
+                "summary": "BI worker 已筛选候选数据集，请用户确认。",
+                "datalogue_event_type": "dataset_candidates",
+                "route_decision": {
+                    "decision": "ambiguous",
+                    "dataset_id": None,
+                    "candidates": [
+                        {
+                            "dataset_id": 10,
+                            "dataset_name": "生产经营管理系统日志数据集",
+                            "reason": "匹配日志查询",
+                            "requires_confirmation": True,
+                            "schema": {"fields": ["secret_col"]},
+                            "raw_sql": "SELECT secret_col FROM hidden_table",
+                        }
+                    ],
+                },
+                "clarification": {
+                    "kind": "dataset_choice",
+                    "candidates": [
+                        {
+                            "dataset_id": 10,
+                            "dataset_name": "生产经营管理系统日志数据集",
+                            "reason": "匹配日志查询",
+                        }
+                    ],
+                },
+            },
+        },
+        task_id="task-dataset-choice",
+        trace_id="trace-dataset-choice",
+        selected_agent="agent_team_leader",
+    )
+
+    encoded = json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False)
+    assert envelope.event_type == "message.completed"
+    assert envelope.payload["summary"] == "BI worker 已筛选候选数据集，请用户确认。"
+    assert envelope.payload["route_decision"]["decision"] == "ambiguous"
+    assert envelope.payload["route_decision"]["candidates"] == [
+        {
+            "dataset_id": 10,
+            "dataset_name": "生产经营管理系统日志数据集",
+            "reason": "匹配日志查询",
+            "requires_confirmation": True,
+        }
+    ]
+    assert envelope.payload["clarification"]["kind"] == "dataset_choice"
+    assert "secret_col" not in encoded
+    assert "hidden_table" not in encoded
+    assert "SELECT" not in encoded
+
+
+def test_projection_does_not_treat_block_end_events_as_message_completed():
+    from app.agentscope_service.projection import project_agentscope_service_event
+
+    for raw_type in ("TextBlockEndEvent", "ThinkingBlockEndEvent", "ModelCallEndEvent"):
+        envelope = project_agentscope_service_event(
+            {"event_type": raw_type, "payload": {"summary": "分段结束"}},
+            task_id="task-block-end",
+            trace_id="trace-block-end",
+            selected_agent="bi_agent",
+        )
+
+        assert envelope.event_type == "trace.updated"
+
+
+def test_projection_maps_subagent_hitl_custom_event_to_confirmation_required():
+    from app.agentscope_service.projection import project_agentscope_service_event
+
+    envelope = project_agentscope_service_event(
+        {
+            "type": "CUSTOM",
+            "name": "subagent_require_user_confirm",
+            "value": {
+                "worker_session_id": "worker-session-1",
+                "worker_agent_id": "worker-agent-1",
+                "worker_agent_name": "bi-worker",
+                "reply_id": "reply-1",
+                "event_type": "require_user_confirm",
+                "event": {
+                    "type": "REQUIRE_USER_CONFIRM",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "name": "Glob",
+                            "input": '{"pattern":"**/*","path":"/tmp/private"}',
+                            "state": "asking",
+                        }
+                    ],
+                },
+                "created_at": "2026-07-04T13:41:10",
+            },
+        },
+        task_id="task-hitl",
+        trace_id="trace-hitl",
+        selected_agent="agent_team_leader",
+        thread_id="as_1",
+        message_id="msg_1",
+    )
+
+    assert envelope.event_type == "confirmation.required"
+    assert envelope.payload == {
+        "summary": "bi-worker 正在等待确认工具调用 Glob。",
+        "title": "Worker 需要确认",
+        "agent": "bi-worker",
+        "agent_name": "bi-worker",
+        "worker_session_id": "worker-session-1",
+        "worker_agent_id": "worker-agent-1",
+        "reply_id": "reply-1",
+        "tool_name": "Glob",
+        "tool_call_id": "call-1",
+        "tool_calls": [{"id": "call-1", "name": "Glob", "state": "asking"}],
+        "requires_user_confirmation": True,
+        "confirmation_kind": "require_user_confirm",
+    }
+    encoded = json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False)
+    assert "pattern" not in encoded
+    assert "/tmp/private" not in encoded

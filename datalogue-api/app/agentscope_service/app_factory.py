@@ -25,6 +25,7 @@ from agentscope.app.workspace_manager import LocalWorkspaceManager
 
 from app.agentscope_service.tools import build_datalogue_extra_agent_tools
 from app.agentscope_service.team_templates import build_datalogue_subagent_templates
+from app.agentscope_service.worker_logging import build_datalogue_extra_agent_middlewares
 from app.core.config import Settings
 
 
@@ -76,7 +77,8 @@ def create_embedded_agentscope_app(settings: Settings) -> FastAPI:
         storage=storage,
         message_bus=message_bus,
         workspace_manager=workspace_manager,
-        extra_agent_tools=build_datalogue_extra_agent_tools(),
+        extra_agent_middlewares=build_datalogue_extra_agent_middlewares(storage=storage),
+        extra_agent_tools=build_datalogue_extra_agent_tools(storage=storage),
         # 固定 worker 类型通过 AgentScope 官方 Agent Team 模板暴露；worker 创建由 AgentCreate 接管。
         custom_subagent_templates=build_datalogue_subagent_templates(),
     )

@@ -11,7 +11,7 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,7 +35,11 @@ setup_logging(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    yield
+    async with AsyncExitStack() as stack:
+        for child_app in getattr(app.state, "managed_lifespan_apps", []):
+            # Starlette 挂载子应用不会自动进入子应用 lifespan；AgentScope 的 Redis 连接池依赖这里显式进入。
+            await stack.enter_async_context(child_app.router.lifespan_context(child_app))
+        yield
 
 
 app = FastAPI(
@@ -63,10 +67,14 @@ def mount_agentscope_service(root_app: FastAPI, app_settings) -> None:
         return
 
     mount_path = app_settings.AGENTSCOPE_MOUNT_PATH.rstrip("/") or "/agentscope"
+    agentscope_app = create_embedded_agentscope_app(app_settings)
+    managed_lifespan_apps = list(getattr(root_app.state, "managed_lifespan_apps", []))
+    managed_lifespan_apps.append(agentscope_app)
+    root_app.state.managed_lifespan_apps = managed_lifespan_apps
     # 子应用只在配置开启时创建；避免测试或禁用环境提前初始化 AgentScope 外部依赖。
     root_app.mount(
         mount_path,
-        create_embedded_agentscope_app(app_settings),
+        agentscope_app,
         name="agentscope_service",
     )
 

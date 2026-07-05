@@ -165,4 +165,49 @@ describe('agentTeamEnvelopeToChatEvent', () => {
     });
     expect(JSON.stringify(event)).not.toMatch(/secret_col|schema|raw_rows/i);
   });
+
+  it('normalizes subagent HITL confirmation route fields without leaking tool input', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-hitl',
+      event_envelope: {
+        event_type: 'confirmation.required',
+        task_id: 'task-hitl',
+        trace_id: 'trace-hitl',
+        payload: {
+          agent: 'bi-worker',
+          worker_session_id: 'worker-session-1',
+          worker_agent_id: 'worker-agent-1',
+          reply_id: 'reply-1',
+          tool_name: 'Glob',
+          tool_call_id: 'call-1',
+          summary: 'bi-worker 正在等待确认工具调用 Glob。',
+          tool_calls: [
+            {
+              id: 'call-1',
+              name: 'Glob',
+              input: '{"pattern":"**/*","path":"/tmp/private"}',
+              state: 'asking',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(event).toMatchObject({
+      type: 'confirmation',
+      kind: 'confirmation',
+      status: 'requires_action',
+      agent: 'bi-worker',
+      workerSessionId: 'worker-session-1',
+      workerAgentId: 'worker-agent-1',
+      replyId: 'reply-1',
+      toolName: 'Glob',
+      toolCallId: 'call-1',
+      summary: 'bi-worker 正在等待确认工具调用 Glob。',
+    });
+    expect(event.toolCalls).toEqual([{ id: 'call-1', name: 'Glob', state: 'asking' }]);
+    const encoded = JSON.stringify(event);
+    expect(encoded).not.toMatch(/pattern|input/i);
+    expect(encoded).not.toContain('/tmp/private');
+  });
 });

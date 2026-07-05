@@ -33,12 +33,12 @@ def _sse_data(payload: dict) -> dict:
     return {"data": json.dumps(payload, ensure_ascii=False)}
 
 
-def build_agent_team_task_runner(*, base_url: str):
+def build_agent_team_task_runner(*, base_url: str, db: Session):
     """生产默认 runner：Agent Team 主链交给 AgentScope Service leader session。"""
 
     from app.agentscope_service.runner import AgentScopeServiceTaskRunner
 
-    return AgentScopeServiceTaskRunner(base_url=base_url)
+    return AgentScopeServiceTaskRunner(base_url=base_url, db=db, settings=get_settings())
 
 
 def _agentscope_service_base_url(request: Request) -> str:
@@ -68,6 +68,7 @@ def stream_agent_team_task(
             db=db,
             runner=build_agent_team_task_runner(
                 base_url=_agentscope_service_base_url(request),
+                db=db,
             ),
         )
         async for envelope in runtime.stream(payload):

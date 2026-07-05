@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -60,6 +62,7 @@ def test_agent_team_prompts_allow_official_team_tools_only():
 
 def test_worker_template_specs_convert_to_agentscope_subagent_templates():
     from agentscope.app import SubAgentTemplate
+    from agentscope.permission import PermissionMode
     from app.agentscope_service.registry import build_datalogue_worker_template_specs
 
     template = build_datalogue_worker_template_specs()[0].to_subagent_template()
@@ -68,6 +71,15 @@ def test_worker_template_specs_convert_to_agentscope_subagent_templates():
     assert template.type == "bi"
     assert "TeamSay" in template.system_prompt_template
     assert "Datalogue BI Worker" in template.description
+    assert template.permission_context.mode == PermissionMode.DONT_ASK
+    assert template.override_leader_mode is True
+    assert template.extend_leader_permission_rules is False
+    assert template.extend_leader_working_directories is False
+    assert set(template.permission_context.allow_rules) == {
+        "TeamSay",
+        "datalogue_query_dataset",
+        "datalogue_select_candidate_datasets",
+    }
 
 
 @pytest.mark.asyncio
@@ -99,11 +111,20 @@ async def test_extra_agent_tools_registers_non_read_only_dataset_function_tool(m
         fake_execute_dataset_query_for_agent_team,
     )
 
-    factory = datalogue_tools.build_datalogue_extra_agent_tools()
+    class FakeStorage:
+        async def get_agent(self, user_id, agent_id):
+            assert user_id == "user-1"
+            assert agent_id == "agent-created-by-agentcreate"
+            return SimpleNamespace(source="team", data=SimpleNamespace(name="bi-worker"))
+
+    factory = datalogue_tools.build_datalogue_extra_agent_tools(storage=FakeStorage())
     registered_tools = await factory(user_id="user-1", agent_id="agent-created-by-agentcreate", session_id="session-1")
 
-    assert len(registered_tools) == 1
-    tool = registered_tools[0]
+    assert [tool.name for tool in registered_tools] == [
+        "datalogue_select_candidate_datasets",
+        "datalogue_query_dataset",
+    ]
+    tool = next(item for item in registered_tools if item.name == "datalogue_query_dataset")
     assert isinstance(tool, FunctionTool)
     assert tool.name == "datalogue_query_dataset"
     assert tool.is_read_only is False
@@ -120,13 +141,56 @@ async def test_extra_agent_tools_registers_non_read_only_dataset_function_tool(m
     assert isinstance(chunk, ToolChunk)
     assert chunk.state == ToolResultState.SUCCESS
     assert isinstance(chunk.content[0], TextBlock)
-    assert json.loads(chunk.content[0].text) == {
+    payload = json.loads(chunk.content[0].text)
+    assert payload == {
+        "datalogue_event_type": "dataset_query_result",
+        "summary": "合同总金额为 100。",
         "answer_summary": "合同总金额为 100。",
         "artifact_ref": "artifact:query:1",
+        "result_ref": "artifact:query:1",
         "checkpoint_ref": "checkpoint:query:1",
         "row_count": 1,
         "column_count": 2,
+        "artifact_card": {
+            "artifact_type": "bi_answer",
+            "title": "查询结果",
+            "status": "completed",
+            "summary_for_chat": "合同总金额为 100。",
+            "preview_payload": {
+                "row_count": 1,
+                "column_count": 2,
+            },
+            "primary_ref": {
+                "ref_id": "artifact:query:1",
+                "ref_type": "result",
+                "label": "查询结果",
+            },
+            "related_refs": [
+                {
+                    "ref_id": "checkpoint:query:1",
+                    "ref_type": "checkpoint",
+                    "label": "查询检查点",
+                }
+            ],
+            "actions": [
+                {
+                    "action_type": "view",
+                    "label": "查看详情",
+                    "ref": "artifact:query:1",
+                    "disabled": False,
+                },
+                {
+                    "action_type": "export",
+                    "label": "导出",
+                    "ref": "artifact:query:1",
+                    "disabled": True,
+                },
+            ],
+        },
     }
+    assert "SELECT" not in chunk.content[0].text
+    assert "schema" not in chunk.content[0].text
+    assert "raw_rows" not in chunk.content[0].text
 
 
 def test_prompt_and_tool_boundary_forbid_private_tokens():
@@ -151,6 +215,10 @@ def test_prompt_and_tool_boundary_forbid_private_tokens():
     assert "AgentCreate" in LEADER_AGENT_SYSTEM_PROMPT
     assert "TeamSay" in LEADER_AGENT_SYSTEM_PROMPT
     assert "安全 Dataset Query 工具" in BI_WORKER_PROMPT
+    assert "datalogue_select_candidate_datasets" in BI_WORKER_PROMPT
+    assert "dataset_query_result" in BI_WORKER_PROMPT
+    assert "dataset_id" in BI_WORKER_PROMPT
+    assert "Glob" in BI_WORKER_PROMPT
 
     source = Path(dataset_query_executor.__file__).read_text(encoding="utf-8")
     for forbidden in (

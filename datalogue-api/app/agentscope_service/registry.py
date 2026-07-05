@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agentscope.app import SubAgentTemplate
+from agentscope.permission import PermissionBehavior, PermissionContext, PermissionMode, PermissionRule
 
 
 OFFICIAL_TEAM_TOOL_NOTICE = (
@@ -33,6 +34,9 @@ LEADER_AGENT_SYSTEM_PROMPT = f"""
 - 你只负责理解用户任务、创建团队、选择 worker、汇总安全结果。
 - 需要 worker 时必须使用 AgentScope 官方 TeamCreate、AgentCreate、TeamSay、TeamDelete 工具。
 - 固定 worker 类型只有 bi、report、python、audit；这是业务模板类型，不是固定 Agent 实例。
+- 你可以使用 AgentScope 内置 Bash、Read、Write、Edit 和 TaskCreate/TaskGet/TaskList/TaskUpdate 工具做任务规划、读取项目文件、写入受控工作区文件和必要的命令行检查。
+- 创建 bi worker 时，必须把用户原始问题和安全输出字段要求写进 AgentCreate 的 prompt；如果你知道 dataset_id，一并提供；如果你不知道 dataset_id，必须要求 bi worker 先调用 datalogue_select_candidate_datasets 筛选候选数据集，再用 TeamSay 回传 dataset_candidates 安全 payload 给你。
+- 收到 bi worker 回传的 dataset_candidates 后，你要把候选数据集作为用户可见确认结果返回，不要在用户确认前执行 datalogue_query_dataset。
 - 你不能调用 Datalogue 旧自研执行入口、旧 BI Agent 公开 API、自研 runner 或自研 handoff。
 - 用户可见回答只包含安全摘要和 refs，不输出 SQL、schema、raw rows、DSL、query_plan 或内部修复载荷。
 
@@ -78,10 +82,20 @@ class AgentTeamWorkerTemplateSpec:
     def to_subagent_template(self) -> SubAgentTemplate:
         """转换为 AgentScope 官方 AgentCreate 可消费的 SubAgentTemplate。"""
 
+        kwargs = {}
+        if self.worker_type == "bi":
+            kwargs = {
+                # BI worker 是业务查询 worker，不应该继承 leader 的文件工作区权限，否则缺 dataset_id 时会走 Glob/Read 探测并卡在确认。
+                "permission_context": _bi_worker_permission_context(),
+                "override_leader_mode": True,
+                "extend_leader_permission_rules": False,
+                "extend_leader_working_directories": False,
+            }
         return SubAgentTemplate(
             type=self.worker_type,
             description=f"{self.display_name}：{self.description}",
             system_prompt_template=self.system_prompt_template,
+            **kwargs,
         )
 
 
@@ -93,8 +107,12 @@ BI_WORKER_PROMPT = f"""
 
 固定能力边界：
 - 只处理 Datalogue Dataset Query 类问数任务。
-- 只能调用 Datalogue 暴露的安全 Dataset Query 工具。
-- 只能回传 answer_summary、artifact_ref、checkpoint_ref、row_count、column_count 和必要失败原因。
+- 只能调用 Datalogue 暴露的安全候选数据集筛选工具和 Dataset Query 工具。
+- 如果 leader 没有提供 dataset_id，必须先调用 datalogue_select_candidate_datasets(question=用户原始问题) 筛选候选数据集，再用 TeamSay 将工具返回的 dataset_candidates JSON 原样安全汇报给 leader；不要猜测一个 dataset_id。
+- 调用安全 Dataset Query 工具前必须已经拿到明确且经用户确认的 dataset_id。
+- datalogue_query_dataset 成功后，必须使用 TeamSay 将工具返回的 dataset_query_result JSON 原样安全汇报给 {{leader_name}}；不要只用自然语言说“已完成”，必须保留 answer_summary、artifact_ref、result_ref、checkpoint_ref、row_count、column_count 和 artifact_card。
+- 不得使用 Bash、Read、Write、Edit、Glob、Grep 或任何文件/命令行工具发现数据集、扫描工作区或读取项目文件。
+- 只能回传 answer_summary、artifact_ref、result_ref、checkpoint_ref、row_count、column_count、artifact_card 和必要失败原因。
 
 安全要求：
 - 不输出 SQL、schema、raw rows、DSL、query_plan、repair patch 或内部执行载荷。
@@ -104,6 +122,43 @@ BI_WORKER_PROMPT = f"""
 官方团队工具边界：
 {OFFICIAL_TEAM_TOOL_NOTICE}
 """.strip()
+
+
+def _bi_worker_permission_context() -> PermissionContext:
+    """BI worker 的权限上下文：只放行团队汇报和 Datalogue Dataset 查询，其他未匹配工具一律拒绝。"""
+
+    return PermissionContext(
+        mode=PermissionMode.DONT_ASK,
+        allow_rules={
+            # FunctionTool 默认要求显式授权；这里用工具名级 allow 保证 Dataset 查询不会被 DONT_ASK 拒绝。
+            "datalogue_query_dataset": [
+                PermissionRule(
+                    tool_name="datalogue_query_dataset",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            # 缺 dataset_id 时，BI worker 只能通过这个安全工具筛选候选卡，不允许读文件或扫描工作区。
+            "datalogue_select_candidate_datasets": [
+                PermissionRule(
+                    tool_name="datalogue_select_candidate_datasets",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            # worker 完成、失败或缺参时必须能回报 leader，否则会被 DONT_ASK 阻断。
+            "TeamSay": [
+                PermissionRule(
+                    tool_name="TeamSay",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+        },
+    )
 
 
 REPORT_WORKER_PROMPT = f"""

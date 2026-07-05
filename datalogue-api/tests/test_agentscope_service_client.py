@@ -26,14 +26,14 @@ async def test_agentscope_service_client_uses_prefixed_rest_paths_and_payloads()
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content.decode("utf-8"))
         requests.append((request.method, request.url.path, payload, request.headers.get("X-User-ID")))
-        if request.method == "POST" and request.url.path == "/agentscope/sessions":
+        if request.method == "POST" and request.url.path == "/agentscope/sessions/":
             assert payload == {
                 "agent_id": "agent-leader-1",
                 "name": "统计合同总金额",
                 "chat_model_config": {"model": "gpt-test"},
             }
             return httpx.Response(200, json={"session_id": "session-1"})
-        if request.method == "POST" and request.url.path == "/agentscope/chat":
+        if request.method == "POST" and request.url.path == "/agentscope/chat/":
             assert payload == {
                 "agent_id": "agent-leader-1",
                 "session_id": "session-1",
@@ -63,18 +63,60 @@ async def test_agentscope_service_client_uses_prefixed_rest_paths_and_payloads()
         )
 
     assert [(method, path) for method, path, _payload, _user_id in requests] == [
-        ("POST", "/agentscope/sessions"),
-        ("POST", "/agentscope/chat"),
+        ("POST", "/agentscope/sessions/"),
+        ("POST", "/agentscope/chat/"),
+    ]
+    assert {user_id for *_rest, user_id in requests} == {"datalogue-agent-team"}
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_client_upserts_openai_credential_with_fixed_id():
+    requests: list[tuple[str, str, dict, str | None]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        requests.append((request.method, request.url.path, payload, request.headers.get("X-User-ID")))
+        if request.method == "POST" and request.url.path == "/agentscope/credential/":
+            assert payload == {
+                "data": {
+                    "id": "datalogue-openai-compatible-lead-agent",
+                    "name": "Datalogue env-default",
+                    "type": "openai_credential",
+                    "api_key": "sk-test",
+                    "base_url": "https://example.test/v1",
+                }
+            }
+            return httpx.Response(
+                201,
+                json={"credential_id": "datalogue-openai-compatible-lead-agent"},
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        from app.agentscope_service.client import AgentScopeServiceClient
+
+        client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
+        credential_id = await client.upsert_openai_credential(
+            credential_id="datalogue-openai-compatible-lead-agent",
+            name="Datalogue env-default",
+            api_key="sk-test",
+            base_url="https://example.test/v1",
+        )
+
+    assert credential_id == "datalogue-openai-compatible-lead-agent"
+    assert [(method, path) for method, path, _payload, _user_id in requests] == [
+        ("POST", "/agentscope/credential/"),
     ]
     assert {user_id for *_rest, user_id in requests} == {"datalogue-agent-team"}
 
 
 @pytest.mark.asyncio
 async def test_agentscope_service_client_streams_session_sse_data_frames():
-    requests: list[tuple[str, str]] = []
+    requests: list[tuple[str, str, dict]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        requests.append((request.method, request.url.path))
+        requests.append((request.method, request.url.path, request.extensions.get("timeout") or {}))
         assert request.url.query == b"agent_id=agent-leader-1"
         assert request.headers["X-User-ID"] == "datalogue-agent-team"
         content = "\n".join(
@@ -103,7 +145,10 @@ async def test_agentscope_service_client_streams_session_sse_data_frames():
             )
         ]
 
-    assert requests == [("GET", "/agentscope/sessions/session-1/stream")]
+    assert [(method, path) for method, path, _timeout in requests] == [
+        ("GET", "/agentscope/sessions/session-1/stream")
+    ]
+    assert requests[0][2]["read"] is None
     assert events == [
         {"type": "message", "payload": {"content": "hello"}},
         {"type": "final", "payload": {"summary": "done"}},

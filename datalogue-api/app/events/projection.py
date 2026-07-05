@@ -216,6 +216,21 @@ def project_agentscope_event(
             )
         event_envelope = parsed.get("event_envelope") if isinstance(parsed, dict) else None
         event_type = event_envelope.get("event_type") if isinstance(event_envelope, dict) else parsed.get("event_type")
+        if _is_reply_end_event_type(event_type):
+            payload = parsed.get("payload") if isinstance(parsed.get("payload"), dict) else {}
+            envelope_payload = event_envelope.get("payload") if isinstance(event_envelope, dict) else {}
+            final_payload = payload or envelope_payload
+            if isinstance(final_payload, dict) and final_payload:
+                return build_task_envelope(
+                    event_type="message.completed",
+                    task_id=task_id,
+                    trace_id=parsed.get("trace_id") or trace_id,
+                    thread_id=parsed.get("thread_id") or thread_id,
+                    message_id=message_id,
+                    selected_agent=selected_agent,
+                    payload=final_payload,
+                    legacy_payload=parsed,
+                )
         if legacy_type == "final" or event_type in {"answer.completed", "error.blocked"}:
             envelope_payload = event_envelope.get("payload") if isinstance(event_envelope, dict) else {}
             answer = str(
@@ -271,6 +286,11 @@ def project_agentscope_event(
         payload={"summary": event.__class__.__name__},
         visibility="trace_only",
     )
+
+
+def _is_reply_end_event_type(event_type: Any) -> bool:
+    raw_type = str(event_type or "").lower()
+    return any(marker in raw_type for marker in ("replyendevent", "reply.end", "reply_end", "final", "finish"))
 
 
 def sanitize_event_payload_for_workbench(event_type: str, payload: dict) -> dict:

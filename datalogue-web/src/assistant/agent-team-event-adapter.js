@@ -46,6 +46,31 @@ function safeRefs(payload = {}) {
   return Object.fromEntries(Object.entries(refs).filter(([, value]) => value));
 }
 
+function artifactRefFromCard(card = {}) {
+  const primary = card?.primary_ref || card?.primaryRef || null;
+  if (typeof primary === 'string') return safeText(primary);
+  if (primary && typeof primary === 'object') {
+    return safeText(primary.ref_id || primary.ref || primary.artifact_ref || primary.artifactRef);
+  }
+  const refs = Array.isArray(card?.refs) ? card.refs : [];
+  const first = refs[0];
+  if (typeof first === 'string') return safeText(first);
+  if (first && typeof first === 'object') {
+    return safeText(first.ref_id || first.ref || first.artifact_ref || first.artifactRef);
+  }
+  return '';
+}
+
+function safeToolCalls(payload = {}) {
+  const calls = Array.isArray(payload.tool_calls) ? payload.tool_calls : payload.toolCalls;
+  if (!Array.isArray(calls)) return [];
+  return calls.slice(0, 8).map((call = {}) => ({
+    id: safeText(call.id || call.tool_call_id || call.toolCallId),
+    name: safeText(call.name || call.tool_name || call.toolName),
+    state: safeText(call.state || call.status),
+  })).filter((call) => call.id || call.name || call.state);
+}
+
 function lifecycleStatus(eventType, payload = {}) {
   const explicit = safeText(payload.status);
   if (explicit) return explicit;
@@ -91,7 +116,13 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
     return { type: 'token', content: payload.content || '' };
   }
   if (envelope.event_type === 'message.completed') {
-    const artifactRef = legacy.result_ref || legacy.artifact_ref || payload.result_ref || payload.artifact_ref || null;
+    const artifactCard = legacy.artifact_card || payload.artifact_card || null;
+    const artifactRef = legacy.result_ref
+      || legacy.artifact_ref
+      || payload.result_ref
+      || payload.artifact_ref
+      || artifactRefFromCard(artifactCard)
+      || null;
     return {
       ...legacy,
       type: 'final',
@@ -108,6 +139,7 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
       route_decision: legacy.route_decision || payload.route_decision || null,
       clarification: legacy.clarification || payload.clarification || null,
       route_payload: legacy.route_payload || payload.route_payload || null,
+      artifact_card: artifactCard,
       event_envelope: envelope,
     };
   }
@@ -152,6 +184,11 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
       summary: safeText(payload.summary || payload.message) || '需要确认后继续',
       agent: safeAgentName(payload.agent || payload.agent_name || payload.agentName),
       toolName: safeText(payload.tool_name || payload.toolName) || null,
+      toolCallId: safeText(payload.tool_call_id || payload.toolCallId || payload.call_id || payload.callId) || null,
+      replyId: safeText(payload.reply_id || payload.replyId) || null,
+      workerSessionId: safeText(payload.worker_session_id || payload.workerSessionId) || null,
+      workerAgentId: safeText(payload.worker_agent_id || payload.workerAgentId) || null,
+      toolCalls: safeToolCalls(payload),
       timing: safeTiming(payload),
       refs: safeRefs(payload),
       ...baseEvent(streamEvent, envelope),
