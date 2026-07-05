@@ -159,7 +159,8 @@ class AgentScopeServiceClient:
         """按 AgentScope provider 读取 ModelCard 列表。"""
 
         response = await self.http.get(
-            self._url("/model"),
+            # AgentScope Service 的模型发现端点使用尾斜杠；缺少尾斜杠会返回 307，控制面不应把重定向透给前端。
+            self._url("/model/"),
             params={"provider": provider},
             headers=self._headers(),
         )

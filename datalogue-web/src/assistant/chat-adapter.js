@@ -726,6 +726,39 @@ function normalizeModelConfigId(value) {
   return null;
 }
 
+function normalizeModelParameters(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const forbidden = new Set(['api_key', 'base_url', 'credential_id', 'model', 'type']);
+  return Object.fromEntries(
+    Object.entries(value).filter(([key, parameter]) => !forbidden.has(key) && parameter != null),
+  );
+}
+
+function normalizeAgentScopeModelSelection(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      modelConfigId: normalizeModelConfigId(value),
+      modelCredentialId: null,
+      modelName: null,
+      modelParameters: {},
+    };
+  }
+  const modelCredentialId = safeDisplayText(
+    value.model_credential_id || value.credential_id || value.credentialId,
+  );
+  const modelName = safeDisplayText(value.model_name || value.model || value.name);
+  const modelParameters = normalizeModelParameters(value.model_parameters || value.parameters);
+  return {
+    // credential/model 成对存在时走 AgentScope Service 原生资源；否则保留旧 ID 兼容历史配置行。
+    modelConfigId: modelCredentialId && modelName
+      ? null
+      : normalizeModelConfigId(value.model_config_id ?? value.id),
+    modelCredentialId: modelCredentialId && modelName ? modelCredentialId : null,
+    modelName: modelCredentialId && modelName ? modelName : null,
+    modelParameters,
+  };
+}
+
 function safeTiming(timing) {
   if (!timing || typeof timing !== 'object') return null;
   const allowed = [
@@ -924,7 +957,7 @@ function buildTimingMetadata(messageTiming, toolGroups = []) {
  * 构造 ChatModelAdapter
  * @param {object} opts
  * @param {{current: string|null}} opts.datasetIdRef - 数据集 ID 共享 ref，ChatPage 更新
- * @param {{current: number|null}} opts.modelConfigIdRef - 本轮模型配置 ID；null 表示后端默认模型
+ * @param {{current: object|number|null}} opts.modelConfigIdRef - 本轮 AgentScope 模型选择；null 表示后端默认模型
  */
 export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
   const fallbackSessionId = createFallbackBusinessSessionId();
@@ -965,7 +998,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         ?? normalizeDatasetId(workbenchRetryRequest?.dataset_id)
         ?? datasetIdRef?.current
         ?? null;
-      const modelConfigId = normalizeModelConfigId(modelConfigIdRef?.current);
+      const modelSelection = normalizeAgentScopeModelSelection(modelConfigIdRef?.current);
       // Workbench retry 只覆盖业务问题和 checkpoint ref；真实上下文由后端 checkpoint 恢复。
       const effectiveQuestion = safeDisplayText(workbenchRetryRequest?.question) || clarificationQuestion || question;
       const retryCheckpointRef =
@@ -981,7 +1014,10 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         conversation_id: convId,
         thread_id: requestThreadId,
         dataset_id: datasetId,
-        model_config_id: modelConfigId,
+        model_config_id: modelSelection.modelConfigId,
+        model_credential_id: modelSelection.modelCredentialId,
+        model_name: modelSelection.modelName,
+        model_parameters: modelSelection.modelParameters,
         retry_checkpoint_ref: retryCheckpointRef,
         clarification_response: clarificationResponse,
       };

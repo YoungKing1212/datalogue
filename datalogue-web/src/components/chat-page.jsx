@@ -23,7 +23,7 @@ import {
 } from '../assistant-ui';
 import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
-import { getConversation, listDatasets, listLLMModels } from '../api/client';
+import { getConversation, listAgentScopeChatModels, listDatasets } from '../api/client';
 import { normalizeWorkbenchThreadId } from '../assistant/workbench-api';
 import WorkbenchPanel from './workbench-panel';
 
@@ -76,6 +76,19 @@ export function conversationRouteIdForDatasetRestore(routeId) {
   if (/^\d+$/.test(value)) return value;
   const legacyMatch = value.match(/^conv_(\d+)$/);
   return legacyMatch ? legacyMatch[1] : null;
+}
+
+function buildAgentScopeModelSelection(model) {
+  if (!model) return null;
+  return {
+    // AgentScope credential/model 是运行时主路径；id 只保留给尚未迁完的历史配置行兜底。
+    model_config_id: model.id ?? null,
+    model_credential_id: model.credential_id ?? null,
+    model_name: model.model ?? null,
+    model_parameters: {
+      thinking_enable: Boolean(model.thinking_enabled),
+    },
+  };
 }
 
 export function submitWorkbenchRetryRun(taskRequest, { chatModelAdapter } = {}) {
@@ -370,10 +383,10 @@ function ChatPageInner({
     listDatasets().then(setDatasetList).catch(console.error);
   }, []);
 
-  // 拉取模型配置列表；选择器只展示 active 配置，默认模型由后端配置兜底。
+  // 拉取 AgentScope credential + ModelCard 组合后的模型资源；默认模型由后端配置兜底。
   useEffect(() => {
-    listLLMModels().then(setModelList).catch((err) => {
-      console.error('加载 LLM 模型配置失败', err);
+    listAgentScopeChatModels().then(setModelList).catch((err) => {
+      console.error('加载 AgentScope 模型资源失败', err);
     });
   }, []);
 
@@ -421,7 +434,7 @@ function ChatPageInner({
 
   // 模型选择直接写入 ref，chat adapter 发送时读取；null 表示保持后端默认模型策略。
   useEffect(() => {
-    modelConfigIdRef.current = selectedModel?.id ?? null;
+    modelConfigIdRef.current = buildAgentScopeModelSelection(selectedModel);
   }, [modelConfigIdRef, selectedModel]);
 
   // 监听 SSE 转发的 trace 事件

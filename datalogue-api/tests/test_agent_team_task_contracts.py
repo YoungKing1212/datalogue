@@ -47,6 +47,29 @@ def test_agent_team_task_request_allows_workbench_retry_refs():
     assert request.client_context == {"action": "retry_last_step"}
 
 
+def test_agent_team_task_request_requires_complete_agentscope_model_selection():
+    with pytest.raises(ValueError, match="AGENTSCOPE_MODEL_SELECTION_REQUIRES_CREDENTIAL_AND_MODEL"):
+        AgentTeamTaskRequest(
+            task_source="chat",
+            task_type="bi_query",
+            question="统计销售趋势",
+            model_credential_id="openai_credential:prod-main",
+        )
+
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="统计销售趋势",
+        model_credential_id="openai_credential:prod-main",
+        model_name="gpt-4.1-mini",
+        model_parameters={"thinking_enable": True},
+    )
+
+    assert request.model_credential_id == "openai_credential:prod-main"
+    assert request.model_name == "gpt-4.1-mini"
+    assert request.model_parameters == {"thinking_enable": True}
+
+
 def test_datalogue_event_envelope_supports_agent_team_event_types():
     for event_type in (
         "task.started",

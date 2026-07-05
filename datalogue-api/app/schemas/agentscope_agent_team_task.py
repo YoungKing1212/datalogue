@@ -36,6 +36,9 @@ class AgentTeamTaskRequest(BaseModel):
     conversation_id: int | None = None
     session_id: str | None = None
     thread_id: str | None = None
+    model_credential_id: str | None = Field(default=None, min_length=1, max_length=200)
+    model_name: str | None = Field(default=None, min_length=1, max_length=200)
+    model_parameters: dict[str, Any] = Field(default_factory=dict)
     model_config_id: int | None = Field(default=None, gt=0)
     clarification_response: dict[str, Any] | None = None
     retry_checkpoint_ref: str | None = None
@@ -47,6 +50,9 @@ class AgentTeamTaskRequest(BaseModel):
     def _reject_internal_payload(self) -> "AgentTeamTaskRequest":
         if contains_internal_task_payload(self.model_dump()):
             raise ValueError("AGENT_TEAM_TASK_INTERNAL_PAYLOAD_REJECTED")
+        if bool(self.model_credential_id) != bool(self.model_name):
+            # AgentScope session 创建必须同时拿到 credential 和 model；半截配置会导致 service 端用错默认模型。
+            raise ValueError("AGENTSCOPE_MODEL_SELECTION_REQUIRES_CREDENTIAL_AND_MODEL")
         return self
 
 

@@ -169,6 +169,63 @@ export function listLLMModels() {
   return get('/api/llm/models');
 }
 
+function normalizeAgentScopeCredential(item = {}) {
+  const data = item.data && typeof item.data === 'object' ? item.data : item;
+  const id = data.id || item.id || data.credential_id || item.credential_id;
+  const type = data.type || item.type;
+  if (!id || !type) return null;
+  return {
+    id: String(id),
+    name: data.name || item.name || String(id),
+    type: String(type),
+    api_key_set: Boolean(data.api_key_set ?? item.api_key_set),
+  };
+}
+
+function normalizeAgentScopeModelCard(card = {}) {
+  const name = card.name || card.model || card.id;
+  if (!name) return null;
+  const rawStatus = String(card.status || 'available').toLowerCase();
+  return {
+    name: String(name),
+    label: card.label || card.display_name || String(name),
+    status: rawStatus === 'deprecated' || rawStatus === 'disabled' ? 'inactive' : 'active',
+  };
+}
+
+/** 获取 AgentScope credential + ModelCard 组合后的聊天模型选项。 */
+export async function listAgentScopeChatModels() {
+  const rawCredentials = await get('/api/agentscope-control/credentials');
+  const credentials = (Array.isArray(rawCredentials) ? rawCredentials : [])
+    .map(normalizeAgentScopeCredential)
+    .filter(Boolean);
+  const providers = [...new Set(credentials.map((item) => item.type))];
+  const modelGroups = await Promise.all(
+    providers.map(async (provider) => {
+      const rawCards = await get(`/api/agentscope-control/model?provider=${encodeURIComponent(provider)}`);
+      const cards = Array.isArray(rawCards) ? rawCards : [];
+      return {
+        provider,
+        models: cards.map(normalizeAgentScopeModelCard).filter(Boolean),
+      };
+    }),
+  );
+  const modelsByProvider = new Map(modelGroups.map((group) => [group.provider, group.models]));
+  return credentials.flatMap((credential) => {
+    const cards = modelsByProvider.get(credential.type) || [];
+    return cards.map((card) => ({
+      id: `${credential.id}:${card.name}`,
+      credential_id: credential.id,
+      name: `${credential.name} / ${card.label}`,
+      provider: credential.type,
+      model: card.name,
+      status: credential.api_key_set ? card.status : 'inactive',
+      description: credential.api_key_set ? null : 'AgentScope credential 未配置密钥',
+      thinking_enabled: false,
+    }));
+  });
+}
+
 /** 创建数据集 */
 export function createDataset(data) {
   return post('/api/dataset', data);

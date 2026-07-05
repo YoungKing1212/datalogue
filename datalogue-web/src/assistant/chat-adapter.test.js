@@ -336,6 +336,51 @@ describe('chat-adapter C-ready metadata', () => {
     );
   });
 
+  it('passes AgentScope credential and model to Agent Team when available', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          payload: { summary: '已完成 AgentScope 模型指定查询。' },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({
+      datasetIdRef: { current: 12 },
+      modelConfigIdRef: {
+        current: {
+          id: 8,
+          credential_id: 'openai_credential:prod-main',
+          model: 'gpt-4.1-mini',
+          model_parameters: {
+            thinking_enable: true,
+            api_key: 'must-not-pass',
+          },
+        },
+      },
+      transport: 'stream',
+    });
+    await collectRun(adapter, runInput({
+      question: '用 AgentScope 模型查询销售趋势',
+      threadId: 'local-thread',
+    }));
+
+    expect(streamAgentTeamTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: '用 AgentScope 模型查询销售趋势',
+        dataset_id: 12,
+        model_config_id: null,
+        model_credential_id: 'openai_credential:prod-main',
+        model_name: 'gpt-4.1-mini',
+        model_parameters: {
+          thinking_enable: true,
+        },
+      }),
+      expect.any(Object),
+    );
+  });
+
   it('maps Agent Team final conversation id back to the current local thread', async () => {
     const resolvedListener = vi.fn();
     const renameListener = vi.fn();

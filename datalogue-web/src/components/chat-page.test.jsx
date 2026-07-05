@@ -69,8 +69,8 @@ vi.mock('../assistant-ui', () => ({
 
 vi.mock('../api/client', () => ({
   getConversation: vi.fn(),
+  listAgentScopeChatModels: vi.fn().mockResolvedValue([]),
   listDatasets: vi.fn().mockResolvedValue([]),
-  listLLMModels: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../assistant/chat-adapter', () => ({

@@ -78,6 +78,66 @@ class FakeClient:
 
 
 @pytest.mark.asyncio
+async def test_agentscope_service_task_runner_uses_agentscope_model_selection_without_local_config():
+    from app.core.config import Settings
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+
+    client = FakeClient()
+    runner = AgentScopeServiceTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(
+            OPENAI_API_KEY=None,
+            OPENAI_BASE_URL="https://example.test/v1",
+            LLM_MODEL="fallback-model",
+        ),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="用 AgentScope 模型资源查询销售趋势",
+        dataset_id=12,
+        model_credential_id="openai_credential:prod-main",
+        model_name="gpt-4.1-mini",
+        model_parameters={
+            "thinking_enable": True,
+            "temperature": 0,
+            "api_key": "must-not-pass",
+            "credential_id": "must-not-override",
+        },
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="thread-1",
+        message_id="message-1",
+        selected_agent="agent_team_leader",
+    )
+
+    [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert client.upserted_credentials == []
+    assert client.created_sessions[0]["chat_model_config"] == {
+        "type": "openai_credential",
+        "credential_id": "openai_credential:prod-main",
+        "model": "gpt-4.1-mini",
+        "parameters": {
+            "thinking_enable": True,
+            "temperature": 0,
+        },
+    }
+    assert "model_credential_id" in client.triggered_chats[0]["text"]
+    assert "legacy_model_config_id" not in client.triggered_chats[0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_session():
     from app.core.config import Settings
     from app.agentscope_service.runner import AgentScopeServiceTaskRunner

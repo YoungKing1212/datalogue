@@ -36,6 +36,7 @@ from app.services.llm_config import resolve_llm_config
 
 
 DEFAULT_LEADER_AGENT_ID = None
+_FORBIDDEN_MODEL_PARAMETER_KEYS = {"api_key", "base_url", "credential_id", "model", "type"}
 
 
 class AgentScopeServiceTaskRunner:
@@ -152,6 +153,15 @@ class AgentScopeServiceTaskRunner:
     async def _build_chat_model_config(self, request: AgentTeamTaskRequest) -> dict[str, Any]:
         """把 Datalogue LLM 配置转换成 AgentScope Service session 可运行的模型配置。"""
 
+        if request.model_credential_id and request.model_name:
+            # 新主路径：聊天请求只携带 AgentScope credential/model 资源 ID，本地 llm_model_config 不再参与运行时解析。
+            return {
+                "type": "openai_credential",
+                "credential_id": request.model_credential_id,
+                "model": request.model_name,
+                "parameters": _safe_model_parameters(request.model_parameters),
+            }
+
         config = resolve_llm_config(
             self.settings,
             role="lead_agent",
@@ -184,7 +194,9 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
         "task_type": request.task_type,
         "dataset_id": request.dataset_id,
         "conversation_id": request.conversation_id,
-        "model_config_id": request.model_config_id,
+        "model_credential_id": request.model_credential_id,
+        "model_name": request.model_name,
+        "legacy_model_config_id": request.model_config_id,
         "artifact_ref": request.artifact_ref,
         "retry_checkpoint_ref": request.retry_checkpoint_ref,
         # 该提示让 leader 使用官方 Team 工具选择 worker；Datalogue 不在这里手写 worker 路由。
@@ -222,6 +234,18 @@ def _credential_id_for_request(request: AgentTeamTaskRequest) -> str:
     if request.model_config_id is not None:
         return f"datalogue-openai-compatible-model-{request.model_config_id}"
     return "datalogue-openai-compatible-lead-agent"
+
+
+def _safe_model_parameters(parameters: dict[str, Any] | None) -> dict[str, Any]:
+    """只允许聊天请求覆盖模型运行参数，禁止把 credential 级字段塞进 session config。"""
+
+    if not parameters:
+        return {}
+    return {
+        str(key): value
+        for key, value in parameters.items()
+        if str(key) not in _FORBIDDEN_MODEL_PARAMETER_KEYS and value is not None
+    }
 
 
 def _is_agent_create_event(event: dict[str, Any]) -> bool:

@@ -148,7 +148,7 @@ async def test_agentscope_service_client_lists_models_by_provider():
         requests.append(
             (request.method, request.url.path, request.url.query, request.headers.get("X-User-ID"))
         )
-        if request.method == "GET" and request.url.path == "/agentscope/model":
+        if request.method == "GET" and request.url.path == "/agentscope/model/":
             assert request.url.query == b"provider=openai_credential"
             return httpx.Response(
                 200,
@@ -165,7 +165,7 @@ async def test_agentscope_service_client_lists_models_by_provider():
 
     assert models == [{"name": "gpt-4.1", "model_type": "chat"}]
     assert requests == [
-        ("GET", "/agentscope/model", b"provider=openai_credential", "datalogue-agent-team")
+        ("GET", "/agentscope/model/", b"provider=openai_credential", "datalogue-agent-team")
     ]
 
 
