@@ -18,8 +18,8 @@ import pytest
 from agentscope.message._block import TextBlock
 from agentscope.model._model_response import ChatResponse
 from app.core.config import Settings
-from app.core.security import encrypt_password
 from app.models import LLMModelConfig
+from app.services.llm_config import credential_id_for_model_config
 from app.services.llm_config import resolve_llm_config
 
 
@@ -92,7 +92,6 @@ def test_llm_model_crud_masks_api_key(client, db_session, monkeypatch):
 
     config = db_session.get(LLMModelConfig, data["id"])
     assert config is not None
-    assert config.api_key_enc is None
     assert config.thinking_enabled is True
     assert FakeAgentScopeCredentialClient.credentials[data["credential_id"]]["data"]["api_key"] == "sk-secret"
 
@@ -108,7 +107,6 @@ def test_llm_model_crud_masks_api_key(client, db_session, monkeypatch):
     assert resp.status_code == 200
     db_session.refresh(config)
     assert config.name == "AgentScope SQL v2"
-    assert config.api_key_enc is None
     assert FakeAgentScopeCredentialClient.credentials[data["credential_id"]]["data"]["api_key"] == "sk-secret"
     assert config.thinking_enabled is False
 
@@ -135,34 +133,6 @@ def test_llm_model_create_without_key_keeps_credential_unset(client, db_session,
     assert data["credential_id"] not in FakeAgentScopeCredentialClient.credentials
     config = db_session.get(LLMModelConfig, data["id"])
     assert config is not None
-    assert config.api_key_enc is None
-
-
-def test_llm_model_list_migrates_legacy_key_to_agentscope(client, db_session, monkeypatch):
-    """历史 DB 加密 Key 应在列表接口被补注册到 AgentScope，并清空本地列。"""
-    FakeAgentScopeCredentialClient.credentials = {}
-    monkeypatch.setattr("app.api.llm.AgentScopeServiceClient", FakeAgentScopeCredentialClient)
-    config = LLMModelConfig(
-        name="Legacy Model",
-        provider="openai-compatible",
-        base_url="http://localhost:4000/v1",
-        model="legacy-model",
-        api_key_enc=encrypt_password("sk-legacy"),
-        status="active",
-    )
-    db_session.add(config)
-    db_session.commit()
-    db_session.refresh(config)
-
-    resp = client.get("/api/llm/models")
-
-    assert resp.status_code == 200
-    row = next(item for item in resp.json() if item["id"] == config.id)
-    credential_id = row["credential_id"]
-    assert row["api_key_set"] is True
-    assert FakeAgentScopeCredentialClient.credentials[credential_id]["data"]["api_key"] == "sk-legacy"
-    db_session.refresh(config)
-    assert config.api_key_enc is None
 
 
 def test_role_binding_api_removed(client, monkeypatch):
@@ -203,7 +173,6 @@ def test_resolve_llm_config_uses_default_active_config_without_role_binding(db_s
         provider="openai-compatible",
         base_url="http://localhost:4000/v1",
         model="first-model",
-        api_key_enc=None,
         status="active",
         thinking_enabled=False,
     )
@@ -212,7 +181,6 @@ def test_resolve_llm_config_uses_default_active_config_without_role_binding(db_s
         provider="openai-compatible",
         base_url="http://localhost:4000/v1",
         model="latest-model",
-        api_key_enc=None,
         status="active",
         thinking_enabled=True,
     )
@@ -236,7 +204,6 @@ def test_resolve_llm_config_explicit_model_config_id_overrides_default(db_sessio
         provider="openai-compatible",
         base_url="http://localhost:4000/v1",
         model="default-model",
-        api_key_enc=None,
         status="active",
     )
     selected_model = LLMModelConfig(
@@ -244,19 +211,34 @@ def test_resolve_llm_config_explicit_model_config_id_overrides_default(db_sessio
         provider="qwen",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         model="qwen-plus",
-        api_key_enc=encrypt_password("sk-selected"),
         status="active",
         thinking_enabled=True,
     )
     db_session.add_all([selected_model, default_model])
     db_session.commit()
-
-    resolved = resolve_llm_config(
-        settings,
-        role="lead_agent",
-        db=db_session,
-        model_config_id=selected_model.id,
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "app.services.llm_config._fetch_agentscope_credentials",
+        lambda _settings: [
+            {
+                "id": credential_id_for_model_config(selected_model.id),
+                "data": {
+                    "id": credential_id_for_model_config(selected_model.id),
+                    "api_key": "sk-selected",
+                },
+            }
+        ],
     )
+
+    try:
+        resolved = resolve_llm_config(
+            settings,
+            role="lead_agent",
+            db=db_session,
+            model_config_id=selected_model.id,
+        )
+    finally:
+        monkeypatch.undo()
 
     assert resolved.role == "lead_agent"
     assert resolved.name == "Selected DB"
@@ -267,7 +249,6 @@ def test_resolve_llm_config_explicit_model_config_id_overrides_default(db_sessio
 
 def test_get_llm_uses_database_role_config(db_session):
     """get_llm 应使用默认启用数据库配置创建 AgentScope 客户端。"""
-    from app.core.security import encrypt_password
     from app.graph.llm import AgentScopeChatClient, ROLE_CALL_POLICIES, get_llm
 
     model = LLMModelConfig(
@@ -275,15 +256,30 @@ def test_get_llm_uses_database_role_config(db_session):
         provider="qwen",
         base_url="http://localhost:4000/v1",
         model="qwen-plus",
-        api_key_enc=encrypt_password("sk-intent"),
         status="active",
         request_timeout_seconds=12,
         thinking_enabled=False,
     )
     db_session.add(model)
     db_session.commit()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "app.services.llm_config._fetch_agentscope_credentials",
+        lambda _settings: [
+            {
+                "id": credential_id_for_model_config(model.id),
+                "data": {
+                    "id": credential_id_for_model_config(model.id),
+                    "api_key": "sk-intent",
+                },
+            }
+        ],
+    )
 
-    llm = get_llm(temperature=0.2, role="intent", db=db_session)
+    try:
+        llm = get_llm(temperature=0.2, role="intent", db=db_session)
+    finally:
+        monkeypatch.undo()
 
     assert isinstance(llm, AgentScopeChatClient)
     assert llm.provider == "qwen"
@@ -301,7 +297,6 @@ def test_get_llm_uses_database_role_config(db_session):
 
 def test_get_llm_keeps_thinking_when_enabled(db_session):
     """模型配置开启 Think 后，不应再下发禁用思考参数。"""
-    from app.core.security import encrypt_password
     from app.graph.llm import AgentScopeChatClient, get_llm
 
     model = LLMModelConfig(
@@ -309,14 +304,29 @@ def test_get_llm_keeps_thinking_when_enabled(db_session):
         provider="qwen",
         base_url="http://localhost:4000/v1",
         model="qwen-plus",
-        api_key_enc=encrypt_password("sk-thinking"),
         status="active",
         thinking_enabled=True,
     )
     db_session.add(model)
     db_session.commit()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "app.services.llm_config._fetch_agentscope_credentials",
+        lambda _settings: [
+            {
+                "id": credential_id_for_model_config(model.id),
+                "data": {
+                    "id": credential_id_for_model_config(model.id),
+                    "api_key": "sk-thinking",
+                },
+            }
+        ],
+    )
 
-    llm = get_llm(role="report", db=db_session)
+    try:
+        llm = get_llm(role="report", db=db_session)
+    finally:
+        monkeypatch.undo()
 
     assert isinstance(llm, AgentScopeChatClient)
     assert llm.model == "qwen-plus"
@@ -327,7 +337,6 @@ def test_get_llm_keeps_thinking_when_enabled(db_session):
 
 def test_get_llm_uses_agentscope_openai_compatible_adapter(db_session):
     """历史 openai-compatible 配置应映射到 AgentScope 适配器。"""
-    from app.core.security import encrypt_password
     from app.graph.llm import AgentScopeChatClient, get_llm
 
     model = LLMModelConfig(
@@ -335,15 +344,30 @@ def test_get_llm_uses_agentscope_openai_compatible_adapter(db_session):
         provider="openai-compatible",
         base_url="https://api.minimaxi.com/v1",
         model="MiniMax-M3",
-        api_key_enc=encrypt_password("sk-minimax"),
         status="active",
         request_timeout_seconds=30,
         thinking_enabled=False,
     )
     db_session.add(model)
     db_session.commit()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "app.services.llm_config._fetch_agentscope_credentials",
+        lambda _settings: [
+            {
+                "id": credential_id_for_model_config(model.id),
+                "data": {
+                    "id": credential_id_for_model_config(model.id),
+                    "api_key": "sk-minimax",
+                },
+            }
+        ],
+    )
 
-    llm = get_llm(temperature=0.1, role="lead_agent", db=db_session)
+    try:
+        llm = get_llm(temperature=0.1, role="lead_agent", db=db_session)
+    finally:
+        monkeypatch.undo()
 
     assert isinstance(llm, AgentScopeChatClient)
     assert llm.model == "MiniMax-M3"
@@ -424,7 +448,7 @@ def test_llm_model_test_endpoint_persists_result(client, db_session, monkeypatch
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
     config = db_session.get(LLMModelConfig, model_id)
-    assert config.api_key_enc is None
+    assert config is not None
     assert FakeAgentScopeCredentialClient.credentials[credential_id]["data"]["api_key"] == "sk-test"
     assert config.last_test_result["ok"] is True
     assert config.last_error_message is None

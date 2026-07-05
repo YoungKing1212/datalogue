@@ -27,7 +27,6 @@ class LLMModelConfig(Base, TimestampMixin):
     provider = Column(String(50), nullable=False, default="openai-compatible", server_default="openai-compatible")
     base_url = Column(String(500), nullable=False)
     model = Column(String(200), nullable=False)
-    api_key_enc = Column(Text, nullable=True)
     status = Column(String(20), nullable=False, default="active", server_default="active")
     description = Column(Text, nullable=True)
     request_timeout_seconds = Column(Float, nullable=False, default=60.0, server_default="60")

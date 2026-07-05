@@ -23,7 +23,6 @@ from app import models, schemas
 from app.agentscope_service.client import AgentScopeServiceClient
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.security import decrypt_password
 from app.graph.llm import AgentScopeChatClient, _llm_call_policy, build_llm_model_kwargs
 from app.services.llm_config import (
     DEFAULT_LLM_ROLE,
@@ -101,53 +100,20 @@ def _credential_ids(credentials: list[dict]) -> set[str]:
 
 
 async def _api_key_for_config(config: models.LLMModelConfig) -> str:
-    """优先从 AgentScope credential 读取密钥；旧加密列只做迁移期兼容。"""
+    """从 AgentScope credential 读取模型密钥；Datalogue DB 不再保存密钥。"""
 
     credentials = await _list_agentscope_credentials()
     api_key = credential_api_key_from_items(credentials, credential_id_for_model_config(config.id))
     if api_key:
         return api_key
-    return decrypt_password(config.api_key_enc) if config.api_key_enc else ""
-
-
-async def _sync_legacy_model_credentials(
-    db: Session,
-    configs: list[models.LLMModelConfig],
-    credentials: list[dict],
-) -> set[str]:
-    """把历史本地加密密钥补注册到 AgentScope，并在成功后清空本地密钥列。"""
-
-    credential_ids = _credential_ids(credentials)
-    migrated = False
-    for config in configs:
-        credential_id = credential_id_for_model_config(config.id)
-        if credential_id in credential_ids or not config.api_key_enc:
-            continue
-        try:
-            legacy_api_key = decrypt_password(config.api_key_enc)
-            if not legacy_api_key:
-                continue
-            # 只有 AgentScope 写入成功后才清空旧列，避免迁移中断造成配置不可用。
-            await _upsert_agentscope_model_credential(config=config, api_key=legacy_api_key)
-            config.api_key_enc = None
-            credential_ids.add(credential_id)
-            migrated = True
-            logger.info("历史 LLM 密钥已迁移到 AgentScope credential: config_id=%s", config.id)
-        except Exception:
-            logger.warning("历史 LLM 密钥迁移到 AgentScope credential 失败: config_id=%s", config.id, exc_info=True)
-    if migrated:
-        db.commit()
-        for config in configs:
-            db.refresh(config)
-    return credential_ids
+    return ""
 
 
 @router.get("/models", response_model=List[schemas.LLMModelConfigOut])
 async def list_llm_models(db: Session = Depends(get_db)):
     """获取所有 LLM 模型配置，响应不包含明文 API Key。"""
     configs = db.query(models.LLMModelConfig).order_by(models.LLMModelConfig.id.desc()).all()
-    credentials = await _list_agentscope_credentials()
-    credential_ids = await _sync_legacy_model_credentials(db, configs, credentials)
+    credential_ids = _credential_ids(await _list_agentscope_credentials())
     return [model_config_to_dict(config, credential_ids) for config in configs]
 
 
@@ -161,7 +127,6 @@ async def create_llm_model(payload: schemas.LLMModelConfigCreate, db: Session = 
         provider=payload.provider,
         base_url=payload.base_url,
         model=payload.model,
-        api_key_enc=None,
         status=payload.status,
         description=payload.description,
         request_timeout_seconds=payload.request_timeout_seconds,
@@ -207,14 +172,8 @@ async def update_llm_model(
     db.commit()
     db.refresh(config)
     try:
-        legacy_api_key = decrypt_password(config.api_key_enc) if config.api_key_enc else ""
-        credential_api_key = api_key or legacy_api_key or None
-        if credential_api_key:
-            await _upsert_agentscope_model_credential(config=config, api_key=credential_api_key)
-            # 新密钥和历史密钥都只进入 AgentScope；成功后清掉旧本地密钥列。
-            config.api_key_enc = None
-            db.commit()
-            db.refresh(config)
+        if api_key:
+            await _upsert_agentscope_model_credential(config=config, api_key=api_key)
         elif credential_id_for_model_config(config.id) in _credential_ids(await _list_agentscope_credentials()):
             await _upsert_agentscope_model_credential(config=config, api_key=None)
     except Exception as exc:

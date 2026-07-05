@@ -18,7 +18,6 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.security import decrypt_password
 from app.models.llm import LLMModelConfig
 from app.agentscope_service.client import DEFAULT_AGENTSCOPE_USER_ID
 
@@ -89,11 +88,11 @@ def _fetch_agentscope_credentials(settings: Settings) -> list[dict]:
 
 
 def api_key_set_for_model_config(config: LLMModelConfig, credential_ids: set[str] | None = None) -> bool:
-    """判断配置是否已有可用密钥；优先看 AgentScope credential，兼容旧加密列。"""
+    """判断配置是否已有可用密钥；AgentScope credential 是唯一真相源。"""
 
     if credential_ids and credential_id_for_model_config(config.id) in credential_ids:
         return True
-    return bool(config.api_key_enc)
+    return False
 
 
 def model_config_to_dict(config: LLMModelConfig, credential_ids: set[str] | None = None) -> dict:
@@ -154,13 +153,10 @@ def resolve_llm_config(
             config = _default_active_config(db)
 
     if config is not None:
-        # 新配置的密钥以 AgentScope credential 为真相源；旧 api_key_enc 只作为迁移兼容。
         api_key = credential_api_key_from_items(
             _fetch_agentscope_credentials(settings),
             credential_id_for_model_config(config.id),
         )
-        if not api_key and config.api_key_enc:
-            api_key = decrypt_password(config.api_key_enc)
         return ResolvedLLMConfig(
             role=normalized_role,
             source="database",
