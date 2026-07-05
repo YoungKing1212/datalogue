@@ -35,15 +35,15 @@ class FakeAgentScopeControlPlaneClient:
 
     async def list_credentials(self):
         self.calls.append(("list_credentials", None))
-        return [{"id": "cred-1", "data": {"name": "默认凭证"}}]
+        return [{"id": "cred-1", "data": {"name": "默认凭证", "api_key": "sk-hidden"}}]
 
     async def create_credential(self, payload):
         self.calls.append(("create_credential", payload))
-        return {"credential_id": "cred-1"}
+        return {"credential_id": "cred-1", "data": {"api_key": "sk-created"}}
 
     async def update_credential(self, credential_id, payload):
         self.calls.append(("update_credential", (credential_id, payload)))
-        return {"credential_id": credential_id, "updated": True}
+        return {"credential_id": credential_id, "updated": True, "data": {"api_key": "sk-updated"}}
 
     async def delete_credential(self, credential_id):
         self.calls.append(("delete_credential", credential_id))
@@ -52,6 +52,14 @@ class FakeAgentScopeControlPlaneClient:
     async def list_models(self, *, provider: str):
         self.calls.append(("list_models", provider))
         return [{"name": "gpt-4.1", "model_type": "chat"}]
+
+
+def _contains_api_key_field(value) -> bool:
+    if isinstance(value, dict):
+        return "api_key" in value or any(_contains_api_key_field(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_api_key_field(item) for item in value)
+    return False
 
 
 @pytest.fixture(autouse=True)
@@ -83,10 +91,13 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
     )
     delete_response = client.delete("/api/agentscope-control/credentials/cred-1")
 
-    assert list_response.json() == [{"id": "cred-1", "data": {"name": "默认凭证"}}]
-    assert create_response.json() == {"credential_id": "cred-1"}
-    assert update_response.json() == {"credential_id": "cred-1", "updated": True}
+    assert list_response.json() == [{"id": "cred-1", "data": {"name": "默认凭证", "api_key_set": True}}]
+    assert create_response.json() == {"credential_id": "cred-1", "data": {"api_key_set": True}}
+    assert update_response.json() == {"credential_id": "cred-1", "updated": True, "data": {"api_key_set": True}}
     assert delete_response.json() == {"deleted": True}
+    assert _contains_api_key_field(list_response.json()) is False
+    assert _contains_api_key_field(create_response.json()) is False
+    assert _contains_api_key_field(update_response.json()) is False
     assert ("create_credential", {"data": {"type": "openai_credential", "api_key": "sk-test"}}) in (
         FakeAgentScopeControlPlaneClient.calls
     )

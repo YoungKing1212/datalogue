@@ -18,7 +18,7 @@ from app.models.base import TimestampMixin
 
 
 class LLMModelConfig(Base, TimestampMixin):
-    """可由前端维护的 LLM 连接配置，API Key 加密后存储。"""
+    """可由前端维护的 LLM 连接配置；密钥由 AgentScope credential 承载。"""
 
     __tablename__ = "llm_model_config"
 

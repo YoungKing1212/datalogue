@@ -14,16 +14,64 @@
 import asyncio
 from unittest.mock import MagicMock, patch
 
+import pytest
 from agentscope.message._block import TextBlock
 from agentscope.model._model_response import ChatResponse
 from app.core.config import Settings
-from app.core.security import decrypt_password, encrypt_password
+from app.core.security import encrypt_password
 from app.models import LLMModelConfig
 from app.services.llm_config import resolve_llm_config
 
 
-def test_llm_model_crud_masks_api_key(client, db_session):
-    """模型配置 API 不应返回明文 API Key，空 Key 更新不覆盖旧密钥。"""
+class FakeAgentScopeCredentialClient:
+    credentials: dict[str, dict] = {}
+
+    def __init__(self, *, base_url: str, **_kwargs):
+        self.base_url = base_url
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+    async def list_credentials(self):
+        return list(self.credentials.values())
+
+    async def upsert_openai_credential(self, *, credential_id: str, name: str, api_key: str, base_url: str | None):
+        self.credentials[credential_id] = {
+            "id": credential_id,
+            "data": {
+                "id": credential_id,
+                "name": name,
+                "type": "openai_credential",
+                "api_key": api_key,
+                "base_url": base_url,
+            },
+        }
+        return credential_id
+
+    async def update_credential(self, credential_id: str, payload: dict):
+        data = self.credentials.setdefault(credential_id, {"id": credential_id, "data": {"id": credential_id}})["data"]
+        data.update(payload.get("data") or {})
+        return {"credential_id": credential_id}
+
+    async def delete_credential(self, credential_id: str):
+        self.credentials.pop(credential_id, None)
+        return {"deleted": True}
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_agentscope_credentials(monkeypatch):
+    """单测只使用测试内的 credential fake，避免读取本机真实 AgentScope 状态。"""
+
+    monkeypatch.setattr("app.services.llm_config._fetch_agentscope_credentials", lambda _settings: [])
+
+
+def test_llm_model_crud_masks_api_key(client, db_session, monkeypatch):
+    """模型配置 API 不返回明文 Key，且新密钥只写入 AgentScope credential。"""
+    FakeAgentScopeCredentialClient.credentials = {}
+    monkeypatch.setattr("app.api.llm.AgentScopeServiceClient", FakeAgentScopeCredentialClient)
     payload = {
         "name": "AgentScope SQL",
         "provider": "openai-compatible",
@@ -40,12 +88,18 @@ def test_llm_model_crud_masks_api_key(client, db_session):
     assert "api_key" not in data
     assert data["api_key_set"] is True
     assert data["thinking_enabled"] is True
+    assert data["credential_id"] == f"datalogue-openai-compatible-model-{data['id']}"
 
     config = db_session.get(LLMModelConfig, data["id"])
     assert config is not None
-    assert config.api_key_enc != "sk-secret"
-    assert decrypt_password(config.api_key_enc) == "sk-secret"
+    assert config.api_key_enc is None
     assert config.thinking_enabled is True
+    assert FakeAgentScopeCredentialClient.credentials[data["credential_id"]]["data"]["api_key"] == "sk-secret"
+
+    get_resp = client.get(f"/api/llm/models/{data['id']}")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["credential_id"] == data["credential_id"]
+    assert get_resp.json()["api_key_set"] is True
 
     resp = client.put(
         f"/api/llm/models/{data['id']}",
@@ -54,12 +108,67 @@ def test_llm_model_crud_masks_api_key(client, db_session):
     assert resp.status_code == 200
     db_session.refresh(config)
     assert config.name == "AgentScope SQL v2"
-    assert decrypt_password(config.api_key_enc) == "sk-secret"
+    assert config.api_key_enc is None
+    assert FakeAgentScopeCredentialClient.credentials[data["credential_id"]]["data"]["api_key"] == "sk-secret"
     assert config.thinking_enabled is False
 
 
-def test_role_binding_api_removed(client):
+def test_llm_model_create_without_key_keeps_credential_unset(client, db_session, monkeypatch):
+    """未填写 Key 的模型配置只能保存为投影，不能创建空 AgentScope credential。"""
+    FakeAgentScopeCredentialClient.credentials = {}
+    monkeypatch.setattr("app.api.llm.AgentScopeServiceClient", FakeAgentScopeCredentialClient)
+
+    resp = client.post(
+        "/api/llm/models",
+        json={
+            "name": "Draft Model",
+            "provider": "openai-compatible",
+            "base_url": "http://localhost:4000/v1",
+            "model": "draft-model",
+            "api_key": "",
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["api_key_set"] is False
+    assert data["credential_id"] not in FakeAgentScopeCredentialClient.credentials
+    config = db_session.get(LLMModelConfig, data["id"])
+    assert config is not None
+    assert config.api_key_enc is None
+
+
+def test_llm_model_list_migrates_legacy_key_to_agentscope(client, db_session, monkeypatch):
+    """历史 DB 加密 Key 应在列表接口被补注册到 AgentScope，并清空本地列。"""
+    FakeAgentScopeCredentialClient.credentials = {}
+    monkeypatch.setattr("app.api.llm.AgentScopeServiceClient", FakeAgentScopeCredentialClient)
+    config = LLMModelConfig(
+        name="Legacy Model",
+        provider="openai-compatible",
+        base_url="http://localhost:4000/v1",
+        model="legacy-model",
+        api_key_enc=encrypt_password("sk-legacy"),
+        status="active",
+    )
+    db_session.add(config)
+    db_session.commit()
+    db_session.refresh(config)
+
+    resp = client.get("/api/llm/models")
+
+    assert resp.status_code == 200
+    row = next(item for item in resp.json() if item["id"] == config.id)
+    credential_id = row["credential_id"]
+    assert row["api_key_set"] is True
+    assert FakeAgentScopeCredentialClient.credentials[credential_id]["data"]["api_key"] == "sk-legacy"
+    db_session.refresh(config)
+    assert config.api_key_enc is None
+
+
+def test_role_binding_api_removed(client, monkeypatch):
     """模型配置功能保留，但 role binding API 不再存在。"""
+    FakeAgentScopeCredentialClient.credentials = {}
+    monkeypatch.setattr("app.api.llm.AgentScopeServiceClient", FakeAgentScopeCredentialClient)
     model_resp = client.post(
         "/api/llm/models",
         json={
@@ -279,8 +388,10 @@ def test_agentscope_chat_client_astream_yields_chunks(monkeypatch):
     assert [chunk.content for chunk in streamed_chunks] == ["查询", "完成"]
 
 
-def test_llm_model_test_endpoint_persists_result(client, db_session):
-    """测试连接接口应通过 AgentScope 适配器保存最近一次测试结果。"""
+def test_llm_model_test_endpoint_persists_result(client, db_session, monkeypatch):
+    """测试连接接口应通过 AgentScope credential 取 Key，并保存最近一次测试结果。"""
+    FakeAgentScopeCredentialClient.credentials = {}
+    monkeypatch.setattr("app.api.llm.AgentScopeServiceClient", FakeAgentScopeCredentialClient)
     model_resp = client.post(
         "/api/llm/models",
         json={
@@ -293,6 +404,7 @@ def test_llm_model_test_endpoint_persists_result(client, db_session):
         },
     )
     model_id = model_resp.json()["id"]
+    credential_id = model_resp.json()["credential_id"]
     fake_response = MagicMock()
     fake_response.content = "OK"
 
@@ -312,5 +424,7 @@ def test_llm_model_test_endpoint_persists_result(client, db_session):
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
     config = db_session.get(LLMModelConfig, model_id)
+    assert config.api_key_enc is None
+    assert FakeAgentScopeCredentialClient.credentials[credential_id]["data"]["api_key"] == "sk-test"
     assert config.last_test_result["ok"] is True
     assert config.last_error_message is None

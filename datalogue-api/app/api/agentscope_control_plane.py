@@ -45,6 +45,22 @@ def _raise_proxy_error(exc: httpx.HTTPStatusError) -> None:
     raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
 
+def _sanitize_credential_payload(payload: Any) -> Any:
+    """脱敏 AgentScope credential 响应；API Key 只允许写入，不允许经控制面回传。"""
+
+    if isinstance(payload, list):
+        return [_sanitize_credential_payload(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+    sanitized: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key == "api_key":
+            sanitized["api_key_set"] = bool(value)
+            continue
+        sanitized[key] = _sanitize_credential_payload(value)
+    return sanitized
+
+
 @router.get("/credential/schemas")
 async def list_credential_schemas():
     """读取 AgentScope 官方 credential schemas，供前端动态渲染凭证表单。"""
@@ -62,7 +78,7 @@ async def list_credentials():
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
-            return await client.list_credentials()
+            return _sanitize_credential_payload(await client.list_credentials())
     except httpx.HTTPStatusError as exc:
         _raise_proxy_error(exc)
 
@@ -73,7 +89,7 @@ async def create_credential(payload: dict[str, Any] = Body(...)):
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
-            return await client.create_credential(payload)
+            return _sanitize_credential_payload(await client.create_credential(payload))
     except httpx.HTTPStatusError as exc:
         _raise_proxy_error(exc)
 
@@ -84,7 +100,7 @@ async def update_credential(credential_id: str, payload: dict[str, Any] = Body(.
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
-            return await client.update_credential(credential_id, payload)
+            return _sanitize_credential_payload(await client.update_credential(credential_id, payload))
     except httpx.HTTPStatusError as exc:
         _raise_proxy_error(exc)
 

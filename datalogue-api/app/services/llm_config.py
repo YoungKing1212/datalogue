@@ -14,11 +14,13 @@
 from dataclasses import dataclass
 from typing import Optional
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import decrypt_password
 from app.models.llm import LLMModelConfig
+from app.agentscope_service.client import DEFAULT_AGENTSCOPE_USER_ID
 
 DEFAULT_LLM_ROLE = "default"
 
@@ -38,10 +40,67 @@ class ResolvedLLMConfig:
     thinking_enabled: bool
 
 
-def model_config_to_dict(config: LLMModelConfig) -> dict:
+def credential_id_for_model_config(config_id: int | None) -> str:
+    """生成 Datalogue 模型配置在 AgentScope credential 存储中的稳定 ID。"""
+
+    if config_id is None:
+        return "datalogue-openai-compatible-lead-agent"
+    return f"datalogue-openai-compatible-model-{config_id}"
+
+
+def _credential_data(item: dict) -> dict:
+    data = item.get("data")
+    return data if isinstance(data, dict) else item
+
+
+def credential_api_key_from_items(credentials: list[dict], credential_id: str) -> str:
+    """从 AgentScope credential 列表中提取指定凭证的 API Key。"""
+
+    for item in credentials:
+        item_id = item.get("id") or item.get("credential_id") or _credential_data(item).get("id")
+        if item_id != credential_id:
+            continue
+        api_key = _credential_data(item).get("api_key")
+        return str(api_key or "")
+    return ""
+
+
+def _fetch_agentscope_credentials(settings: Settings) -> list[dict]:
+    """同步读取 AgentScope credential；旧同步 get_llm 链路用它摆脱本地密钥表依赖。"""
+
+    base_url = (settings.AGENTSCOPE_SERVICE_BASE_URL or "").rstrip("/")
+    if not base_url:
+        return []
+    try:
+        with httpx.Client(base_url=base_url, timeout=10.0) as client:
+            response = client.get("/credential/", headers={"X-User-ID": DEFAULT_AGENTSCOPE_USER_ID})
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return []
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("credentials", "items", "data", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def api_key_set_for_model_config(config: LLMModelConfig, credential_ids: set[str] | None = None) -> bool:
+    """判断配置是否已有可用密钥；优先看 AgentScope credential，兼容旧加密列。"""
+
+    if credential_ids and credential_id_for_model_config(config.id) in credential_ids:
+        return True
+    return bool(config.api_key_enc)
+
+
+def model_config_to_dict(config: LLMModelConfig, credential_ids: set[str] | None = None) -> dict:
     """返回前端可见的模型配置，不暴露明文 API Key。"""
     return {
         "id": config.id,
+        "credential_id": credential_id_for_model_config(config.id),
         "name": config.name,
         "provider": config.provider,
         "base_url": config.base_url,
@@ -50,7 +109,7 @@ def model_config_to_dict(config: LLMModelConfig) -> dict:
         "description": config.description,
         "request_timeout_seconds": config.request_timeout_seconds,
         "thinking_enabled": bool(config.thinking_enabled),
-        "api_key_set": bool(config.api_key_enc),
+        "api_key_set": api_key_set_for_model_config(config, credential_ids),
         "last_test_result": config.last_test_result,
         "last_error_message": config.last_error_message,
         "created_at": config.created_at,
@@ -95,7 +154,13 @@ def resolve_llm_config(
             config = _default_active_config(db)
 
     if config is not None:
-        api_key = decrypt_password(config.api_key_enc) if config.api_key_enc else ""
+        # 新配置的密钥以 AgentScope credential 为真相源；旧 api_key_enc 只作为迁移兼容。
+        api_key = credential_api_key_from_items(
+            _fetch_agentscope_credentials(settings),
+            credential_id_for_model_config(config.id),
+        )
+        if not api_key and config.api_key_enc:
+            api_key = decrypt_password(config.api_key_enc)
         return ResolvedLLMConfig(
             role=normalized_role,
             source="database",

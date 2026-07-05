@@ -20,10 +20,18 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.agentscope_service.client import AgentScopeServiceClient
+from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.security import decrypt_password, encrypt_password
+from app.core.security import decrypt_password
 from app.graph.llm import AgentScopeChatClient, _llm_call_policy, build_llm_model_kwargs
-from app.services.llm_config import DEFAULT_LLM_ROLE, ResolvedLLMConfig, model_config_to_dict
+from app.services.llm_config import (
+    DEFAULT_LLM_ROLE,
+    ResolvedLLMConfig,
+    credential_api_key_from_items,
+    credential_id_for_model_config,
+    model_config_to_dict,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -44,23 +52,116 @@ def _validate_status(status: str | None) -> str | None:
     return status
 
 
+def _agentscope_base_url() -> str:
+    settings = get_settings()
+    return (settings.AGENTSCOPE_SERVICE_BASE_URL or "http://127.0.0.1:8000/agentscope").rstrip("/")
+
+
+async def _list_agentscope_credentials() -> list[dict]:
+    async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
+        return await client.list_credentials()
+
+
+async def _upsert_agentscope_model_credential(
+    *,
+    config: models.LLMModelConfig,
+    api_key: str | None,
+) -> str | None:
+    """把模型配置的密钥写入 AgentScope credential，Datalogue DB 不再保存新密钥。"""
+
+    credential_id = credential_id_for_model_config(config.id)
+    async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
+        if api_key:
+            return await client.upsert_openai_credential(
+                credential_id=credential_id,
+                name=f"Datalogue {config.name}",
+                api_key=api_key,
+                base_url=config.base_url,
+            )
+        await client.update_credential(
+            credential_id,
+            {
+                "data": {
+                    "name": f"Datalogue {config.name}",
+                    "base_url": config.base_url,
+                }
+            },
+        )
+        return credential_id
+
+
+def _credential_ids(credentials: list[dict]) -> set[str]:
+    result: set[str] = set()
+    for item in credentials:
+        data = item.get("data") if isinstance(item.get("data"), dict) else item
+        item_id = item.get("id") or item.get("credential_id") or data.get("id")
+        if isinstance(item_id, str) and item_id:
+            result.add(item_id)
+    return result
+
+
+async def _api_key_for_config(config: models.LLMModelConfig) -> str:
+    """优先从 AgentScope credential 读取密钥；旧加密列只做迁移期兼容。"""
+
+    credentials = await _list_agentscope_credentials()
+    api_key = credential_api_key_from_items(credentials, credential_id_for_model_config(config.id))
+    if api_key:
+        return api_key
+    return decrypt_password(config.api_key_enc) if config.api_key_enc else ""
+
+
+async def _sync_legacy_model_credentials(
+    db: Session,
+    configs: list[models.LLMModelConfig],
+    credentials: list[dict],
+) -> set[str]:
+    """把历史本地加密密钥补注册到 AgentScope，并在成功后清空本地密钥列。"""
+
+    credential_ids = _credential_ids(credentials)
+    migrated = False
+    for config in configs:
+        credential_id = credential_id_for_model_config(config.id)
+        if credential_id in credential_ids or not config.api_key_enc:
+            continue
+        try:
+            legacy_api_key = decrypt_password(config.api_key_enc)
+            if not legacy_api_key:
+                continue
+            # 只有 AgentScope 写入成功后才清空旧列，避免迁移中断造成配置不可用。
+            await _upsert_agentscope_model_credential(config=config, api_key=legacy_api_key)
+            config.api_key_enc = None
+            credential_ids.add(credential_id)
+            migrated = True
+            logger.info("历史 LLM 密钥已迁移到 AgentScope credential: config_id=%s", config.id)
+        except Exception:
+            logger.warning("历史 LLM 密钥迁移到 AgentScope credential 失败: config_id=%s", config.id, exc_info=True)
+    if migrated:
+        db.commit()
+        for config in configs:
+            db.refresh(config)
+    return credential_ids
+
+
 @router.get("/models", response_model=List[schemas.LLMModelConfigOut])
-def list_llm_models(db: Session = Depends(get_db)):
+async def list_llm_models(db: Session = Depends(get_db)):
     """获取所有 LLM 模型配置，响应不包含明文 API Key。"""
     configs = db.query(models.LLMModelConfig).order_by(models.LLMModelConfig.id.desc()).all()
-    return [model_config_to_dict(config) for config in configs]
+    credentials = await _list_agentscope_credentials()
+    credential_ids = await _sync_legacy_model_credentials(db, configs, credentials)
+    return [model_config_to_dict(config, credential_ids) for config in configs]
 
 
 @router.post("/models", response_model=schemas.LLMModelConfigOut)
-def create_llm_model(payload: schemas.LLMModelConfigCreate, db: Session = Depends(get_db)):
-    """创建 LLM 模型配置，API Key 加密存储。"""
+async def create_llm_model(payload: schemas.LLMModelConfigCreate, db: Session = Depends(get_db)):
+    """创建 LLM 模型配置；密钥写入 AgentScope credential，DB 只保留模型选择投影。"""
     _validate_status(payload.status)
+    api_key = payload.api_key.strip() if payload.api_key else None
     config = models.LLMModelConfig(
         name=payload.name,
         provider=payload.provider,
         base_url=payload.base_url,
         model=payload.model,
-        api_key_enc=encrypt_password(payload.api_key) if payload.api_key else None,
+        api_key_enc=None,
         status=payload.status,
         description=payload.description,
         request_timeout_seconds=payload.request_timeout_seconds,
@@ -69,41 +170,70 @@ def create_llm_model(payload: schemas.LLMModelConfigCreate, db: Session = Depend
     db.add(config)
     db.commit()
     db.refresh(config)
+    if api_key:
+        try:
+            await _upsert_agentscope_model_credential(config=config, api_key=api_key)
+        except Exception as exc:
+            db.delete(config)
+            db.commit()
+            raise HTTPException(status_code=502, detail=f"AgentScope credential 写入失败: {exc}") from exc
     logger.info("LLM 模型配置创建成功: id=%s, provider=%s, model=%s", config.id, config.provider, config.model)
-    return model_config_to_dict(config)
+    credential_ids = {credential_id_for_model_config(config.id)} if api_key else set()
+    return model_config_to_dict(config, credential_ids)
 
 
 @router.get("/models/{config_id}", response_model=schemas.LLMModelConfigOut)
-def get_llm_model(config_id: int, db: Session = Depends(get_db)):
+async def get_llm_model(config_id: int, db: Session = Depends(get_db)):
     """获取单个 LLM 模型配置。"""
-    return model_config_to_dict(_get_model_config(db, config_id))
+    config = _get_model_config(db, config_id)
+    credential_ids = _credential_ids(await _list_agentscope_credentials())
+    return model_config_to_dict(config, credential_ids)
 
 
 @router.put("/models/{config_id}", response_model=schemas.LLMModelConfigOut)
-def update_llm_model(
+async def update_llm_model(
     config_id: int,
     payload: schemas.LLMModelConfigUpdate,
     db: Session = Depends(get_db),
 ):
-    """更新 LLM 模型配置，api_key 为空时不覆盖旧密钥。"""
+    """更新 LLM 模型配置；api_key 为空时只更新 AgentScope credential 元信息。"""
     config = _get_model_config(db, config_id)
     data = payload.model_dump(exclude_unset=True)
     _validate_status(data.get("status"))
-    api_key = data.pop("api_key", None)
-    if api_key:
-        data["api_key_enc"] = encrypt_password(api_key)
+    raw_api_key = data.pop("api_key", None)
+    api_key = raw_api_key.strip() if isinstance(raw_api_key, str) else None
     for key, value in data.items():
         setattr(config, key, value)
     db.commit()
     db.refresh(config)
+    try:
+        legacy_api_key = decrypt_password(config.api_key_enc) if config.api_key_enc else ""
+        credential_api_key = api_key or legacy_api_key or None
+        if credential_api_key:
+            await _upsert_agentscope_model_credential(config=config, api_key=credential_api_key)
+            # 新密钥和历史密钥都只进入 AgentScope；成功后清掉旧本地密钥列。
+            config.api_key_enc = None
+            db.commit()
+            db.refresh(config)
+        elif credential_id_for_model_config(config.id) in _credential_ids(await _list_agentscope_credentials()):
+            await _upsert_agentscope_model_credential(config=config, api_key=None)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AgentScope credential 更新失败: {exc}") from exc
     logger.info("LLM 模型配置更新成功: id=%s", config.id)
-    return model_config_to_dict(config)
+    credential_ids = _credential_ids(await _list_agentscope_credentials())
+    return model_config_to_dict(config, credential_ids)
 
 
 @router.delete("/models/{config_id}")
-def delete_llm_model(config_id: int, db: Session = Depends(get_db)):
+async def delete_llm_model(config_id: int, db: Session = Depends(get_db)):
     """删除 LLM 模型配置；旧模型角色映射已废弃，不再做跨表清理。"""
     config = _get_model_config(db, config_id)
+    credential_id = credential_id_for_model_config(config.id)
+    try:
+        async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
+            await client.delete_credential(credential_id)
+    except Exception:
+        logger.warning("AgentScope credential 删除失败，继续删除本地投影: credential_id=%s", credential_id, exc_info=True)
     db.delete(config)
     db.commit()
     logger.info("LLM 模型配置删除成功: id=%s", config_id)
@@ -111,15 +241,15 @@ def delete_llm_model(config_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/models/{config_id}/test", response_model=schemas.LLMTestResultOut)
-def test_llm_model(config_id: int, db: Session = Depends(get_db)):
+async def test_llm_model(config_id: int, db: Session = Depends(get_db)):
     """测试模型配置是否可用，并保存最近一次测试结果。"""
     config = _get_model_config(db, config_id)
     started_at = time.perf_counter()
     try:
-        api_key = decrypt_password(config.api_key_enc) if config.api_key_enc else ""
+        api_key = await _api_key_for_config(config)
         resolved = ResolvedLLMConfig(
             role=DEFAULT_LLM_ROLE,
-            source="database",
+            source="agentscope_credential",
             name=config.name,
             provider=config.provider,
             base_url=config.base_url,

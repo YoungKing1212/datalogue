@@ -685,7 +685,7 @@ function ModelsSection() {
             <div className="st-row">
               <div className="st-row-l">
                 <div className="st-row-label">保存配置</div>
-                <div className="st-row-hint">密钥会加密写入数据库</div>
+                <div className="st-row-hint">密钥写入 AgentScope credential，数据库仅保留模型配置</div>
               </div>
               <div className="st-row-r">
                 <div className="llm-form-actions">
