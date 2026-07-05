@@ -220,6 +220,7 @@ async def test_agent_team_task_runtime_lets_bi_worker_report_dataset_candidates(
     ]
     final_payload = events[2].payload
     assert final_payload["summary"].startswith("已筛选出可能匹配的候选数据集")
+    assert final_payload["original_question"] == "查询杨凯2025年日志"
     assert "数据集 1：生产经营管理系统日志数据集" in final_payload["summary"]
     assert final_payload["route_decision"]["decision"] == "ambiguous"
     assert final_payload["clarification"]["kind"] == "dataset_choice"

@@ -425,6 +425,7 @@ describe('MyMessage — C-ready 渲染', () => {
     setMockMessage({
       candidateDatasets: {
         clarification_id: 'clarify-1',
+        original_question: '查询杨凯2025年工作日志',
         candidates: [
           { dataset_id: 7, dataset_name: '销售明细', short_reason: '匹配销售查询' },
         ],
@@ -439,6 +440,7 @@ describe('MyMessage — C-ready 渲染', () => {
       selected_index: 1,
       selected_text: '销售明细',
       selected_dataset_id: 7,
+      original_question: '查询杨凯2025年工作日志',
     });
     expect(window.dispatchEvent).toHaveBeenCalledWith(
       expect.objectContaining({

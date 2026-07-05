@@ -387,6 +387,9 @@ class AgentTeamTaskRuntime:
                     message_completed_emitted = True
                     accumulated_text = _visible_final_answer(envelope.payload, accumulated_text)
                     envelope.payload["summary"] = accumulated_text
+                    if _requires_dataset_confirmation(envelope.payload) and not envelope.payload.get("original_question"):
+                        # 候选数据集确认后，前端需要用原始问题续跑；确认文案本身不能变成新的 BI 问题。
+                        envelope.payload["original_question"] = request.question
                     envelope.legacy_payload = {"type": "final", "answer": accumulated_text}
                     final_artifact_ref = _artifact_ref_from_final_payload(envelope.payload)
                     if final_artifact_ref and not _has_reasoning_step(reasoning_summary_steps, "生成结果"):

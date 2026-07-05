@@ -143,11 +143,62 @@ async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_ses
     assert client.triggered_chats[0]["session_id"] == "session-1"
     assert "统计合同总金额" in client.triggered_chats[0]["text"]
     assert '"dataset_id":12' in client.triggered_chats[0]["text"]
+    assert "严禁再次调用 datalogue_select_candidate_datasets" in client.triggered_chats[0]["text"]
     assert client.stream_requests == [{"session_id": "session-1", "agent_id": "agent-leader-1"}]
     assert [event.event_type for event in events] == ["message.delta", "message.completed"]
     assert events[-1].payload["summary"] == "统计完成"
     assert client.post_final_event_consumed is False
     assert client.closed is False
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_task_runner_treats_selected_dataset_as_confirmed():
+    from app.core.config import Settings
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+
+    client = FakeClient()
+    runner = AgentScopeServiceTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(
+            OPENAI_API_KEY="sk-test",
+            OPENAI_BASE_URL="https://example.test/v1",
+            LLM_MODEL="test-model",
+        ),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询杨凯2025年工作日志",
+        dataset_id=10,
+        clarification_response={
+            "selected_dataset_id": 10,
+            "selected_text": "生产经营管理系统日志数据集",
+            "original_question": "查询杨凯2025年工作日志",
+        },
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="thread-1",
+        message_id="message-1",
+        selected_agent="agent_team_leader",
+    )
+
+    [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    trigger_text = client.triggered_chats[0]["text"]
+    assert "confirmed_question" in trigger_text
+    assert "datalogue_query_dataset(dataset_id=10" in trigger_text
+    assert "严禁再次调用 datalogue_select_candidate_datasets" in trigger_text
+    assert "clarification_response" not in trigger_text
 
 
 class TeamDelegationFakeClient(FakeClient):

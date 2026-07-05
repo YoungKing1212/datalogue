@@ -743,13 +743,25 @@ function CandidateDatasetCard({ candidateDatasets, onConfirm }) {
   const handleConfirm = (candidate) => {
     if (onConfirm) onConfirm(candidate);
     if (candidate.dataset_id != null) {
-      // 构造 clarification response，与 TermClarificationCard 保持一致
-      window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
+      const originalQuestion = String(
+        candidate.original_question
+          || candidate.originalQuestion
+          || candidateDatasets.original_question
+          || candidateDatasets.originalQuestion
+          || candidateDatasets.question
+          || '',
+      ).trim();
+      // 构造 clarification response；dataset_id 用于锁定数据集，原始问题用于确认后续跑同一 BI 查询。
+      const clarificationResponse = {
         clarification_id: candidateDatasets.clarification_id || null,
         selected_index: candidate.index,
         selected_text: candidate.dataset_name,
         selected_dataset_id: candidate.dataset_id,
       };
+      if (originalQuestion) {
+        clarificationResponse.original_question = originalQuestion;
+      }
+      window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = clarificationResponse;
     }
     window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
       detail: { text: `确认使用：${candidate.dataset_name}` },

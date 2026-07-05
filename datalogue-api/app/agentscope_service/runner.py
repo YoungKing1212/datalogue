@@ -187,21 +187,35 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
         "model_config_id": request.model_config_id,
         "artifact_ref": request.artifact_ref,
         "retry_checkpoint_ref": request.retry_checkpoint_ref,
-        "clarification_response": request.clarification_response,
         # 该提示让 leader 使用官方 Team 工具选择 worker；Datalogue 不在这里手写 worker 路由。
         "available_worker_types": ["bi", "report", "python", "audit"],
     }
+    directives: list[str] = []
+    if request.dataset_id is not None:
+        context["confirmed_dataset_id"] = request.dataset_id
+        context["confirmed_question"] = request.question
+        # 用户已经在候选卡完成确认时，clarification_response 只是审计上下文；发给 LLM 会诱导它重跑候选确认。
+        directives.append(
+            "数据集已由用户确认：必须围绕原始问题直接创建 BI worker，并要求 worker 调用 "
+            f"datalogue_query_dataset(dataset_id={request.dataset_id}, confirmed_question=原始问题)。"
+            "严禁再次调用 datalogue_select_candidate_datasets 或要求用户重新确认 dataset_id。"
+        )
+    else:
+        context["clarification_response"] = request.clarification_response
     compact_context = {key: value for key, value in context.items() if value is not None}
     if not compact_context:
         return str(user_msg.content or request.question or "")
-    return "\n".join(
+    lines = [str(user_msg.content or request.question or "")]
+    if directives:
+        lines.extend(["", "Agent Team 执行指令:", *directives])
+    lines.extend(
         [
-            str(user_msg.content or request.question or ""),
             "",
             "Agent Team 任务上下文(JSON):",
             json.dumps(compact_context, ensure_ascii=False, separators=(",", ":")),
         ]
     )
+    return "\n".join(lines)
 
 
 def _credential_id_for_request(request: AgentTeamTaskRequest) -> str:

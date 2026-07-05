@@ -733,6 +733,7 @@ describe('chat-adapter C-ready metadata', () => {
             },
           ],
         },
+        original_question: '查询杨凯2025年工作日志',
       },
     ]));
 
@@ -741,6 +742,7 @@ describe('chat-adapter C-ready metadata', () => {
     const candidateDatasets = chunks.at(-1).metadata.custom.candidateDatasets;
 
     expect(candidateDatasets).toEqual({
+      original_question: '查询杨凯2025年工作日志',
       candidates: [
         {
           dataset_id: 1,
@@ -757,19 +759,22 @@ describe('chat-adapter C-ready metadata', () => {
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = {
       selected_dataset_id: 7,
       selected_text: '销售明细',
+      original_question: '查询杨凯2025年工作日志',
     };
 
     const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: null } });
-    await collectRun(adapter);
+    await collectRun(adapter, runInput({ question: '确认使用：销售明细' }));
 
     expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
         task_source: 'chat',
         task_type: 'bi_query',
+        question: '查询杨凯2025年工作日志',
         dataset_id: 7,
         clarification_response: {
           selected_dataset_id: 7,
           selected_text: '销售明细',
+          original_question: '查询杨凯2025年工作日志',
         },
       }),
       expect.any(Object),

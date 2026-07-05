@@ -955,6 +955,11 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
       if (clarificationResponse && typeof window !== 'undefined') {
         window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = null;
       }
+      const clarificationQuestion = safeDisplayText(
+        clarificationResponse?.confirmed_question
+          || clarificationResponse?.original_question
+          || clarificationResponse?.question,
+      );
       const selectedDatasetId = normalizeDatasetId(clarificationResponse?.selected_dataset_id);
       const datasetId = selectedDatasetId
         ?? normalizeDatasetId(workbenchRetryRequest?.dataset_id)
@@ -962,7 +967,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         ?? null;
       const modelConfigId = normalizeModelConfigId(modelConfigIdRef?.current);
       // Workbench retry 只覆盖业务问题和 checkpoint ref；真实上下文由后端 checkpoint 恢复。
-      const effectiveQuestion = safeDisplayText(workbenchRetryRequest?.question) || question;
+      const effectiveQuestion = safeDisplayText(workbenchRetryRequest?.question) || clarificationQuestion || question;
       const retryCheckpointRef =
         typeof workbenchRetryRequest?.retry_checkpoint_ref === 'string'
           ? workbenchRetryRequest.retry_checkpoint_ref
@@ -1251,7 +1256,13 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         if (routeDecision) {
           const rd = routeDecision;
           if ((rd.decision === 'ambiguous' || rd.decision === 'no_match') && Array.isArray(rd.candidates) && rd.candidates.length > 0) {
+            const originalQuestion = safeDisplayText(
+              finalPayload.original_question
+                || finalPayload.originalQuestion
+                || finalPayload.question,
+            );
             candidateDatasets = {
+              ...(originalQuestion ? { original_question: originalQuestion } : {}),
               candidates: rd.candidates.map((c) => ({
                 dataset_name: c.dataset_name || `数据集 ${c.dataset_id || ''}`,
                 dataset_id: c.dataset_id || null,

@@ -38,6 +38,32 @@ describe('agentTeamEnvelopeToChatEvent', () => {
     expect(event.task_id).toBe('task-1');
   });
 
+  it('keeps original question on dataset confirmation final payload', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-1',
+      event_envelope: {
+        event_type: 'message.completed',
+        payload: {
+          summary: '请选择数据集',
+          original_question: '查询杨凯2025年工作日志',
+          route_decision: {
+            decision: 'ambiguous',
+            candidates: [{ dataset_id: 10, dataset_name: '生产经营管理系统日志数据集' }],
+          },
+        },
+      },
+    });
+
+    expect(event).toMatchObject({
+      type: 'final',
+      answer: '请选择数据集',
+      original_question: '查询杨凯2025年工作日志',
+      route_decision: {
+        decision: 'ambiguous',
+      },
+    });
+  });
+
   it('does not turn task.completed into a final answer payload', () => {
     const event = agentTeamEnvelopeToChatEvent({
       task_id: 'task-1',

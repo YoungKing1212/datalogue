@@ -143,6 +143,7 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
       route_decision: legacy.route_decision || payload.route_decision || null,
       clarification: legacy.clarification || payload.clarification || null,
       route_payload: legacy.route_payload || payload.route_payload || null,
+      original_question: legacy.original_question || payload.original_question || payload.originalQuestion || null,
       artifact_card: artifactCard,
       reasoning_summary: legacy.reasoning_summary || payload.reasoning_summary || null,
       event_envelope: envelope,
