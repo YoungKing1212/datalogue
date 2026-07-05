@@ -5,7 +5,7 @@
 #
 # Responsibilities:
 #   - 确认 Datalogue 只代理 AgentScope Service 的 credential/model 资源。
-#   - 防止新模型控制面回写旧 llm_model_config 或 role binding。
+#   - 防止新模型控制面回写旧本地模型配置或角色绑定。
 #
 # Author      : yangkai
 # Created On  : 2026-07-05

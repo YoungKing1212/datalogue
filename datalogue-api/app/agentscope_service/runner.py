@@ -24,6 +24,7 @@ from agentscope.message import UserMsg
 from sqlalchemy.orm import Session
 
 from app.agentscope_service.client import AgentScopeServiceClient
+from app.agentscope_service.dataset_query_executor import execute_dataset_query_for_agent_team
 from app.agentscope_service.progress_bridge import agent_progress_subscription
 from app.agentscope_service.projection import project_agentscope_service_event
 from app.agentscope_service.registry import build_datalogue_leader_agent_spec
@@ -31,11 +32,11 @@ from app.core.config import Settings, get_settings
 from app.middlewares.lifecycle import log_lifecycle
 from app.models.agent_team_task import AgentTeamTask
 from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
-from app.schemas.bi_workbench import DatalogueEventEnvelope
-from app.services.llm_config import resolve_llm_config
+from app.schemas.bi_workbench import DatalogueEventEnvelope, build_datalogue_event_envelope
 
 
 DEFAULT_LEADER_AGENT_ID = None
+DEFAULT_MODEL_CREDENTIAL_ID = "datalogue-openai-compatible-lead-agent"
 _FORBIDDEN_MODEL_PARAMETER_KEYS = {"api_key", "base_url", "credential_id", "model", "type"}
 
 
@@ -132,6 +133,13 @@ class AgentScopeServiceTaskRunner:
                             current_reply_spawned_worker = False
                             current_reply_text = ""
                             continue
+                        if _should_run_confirmed_dataset_fallback(request=request, payload=envelope.payload):
+                            async for fallback_event in _run_confirmed_dataset_query_fallback(
+                                request=request,
+                                task=task,
+                            ):
+                                yield fallback_event
+                            break
                         yield envelope
                         if envelope.event_type == "message.completed":
                             # AgentScope session stream 是可跨多轮复用的长连接；Datalogue API 一次任务完成后要主动退出。
@@ -154,7 +162,7 @@ class AgentScopeServiceTaskRunner:
         """把 Datalogue LLM 配置转换成 AgentScope Service session 可运行的模型配置。"""
 
         if request.model_credential_id and request.model_name:
-            # 新主路径：聊天请求只携带 AgentScope credential/model 资源 ID，本地 llm_model_config 不再参与运行时解析。
+            # 新主路径：聊天请求只携带 AgentScope credential/model 资源 ID，本地模型表不再参与运行时解析。
             return {
                 "type": "openai_credential",
                 "credential_id": request.model_credential_id,
@@ -162,28 +170,36 @@ class AgentScopeServiceTaskRunner:
                 "parameters": _safe_model_parameters(request.model_parameters),
             }
 
-        config = resolve_llm_config(
-            self.settings,
-            role="lead_agent",
-            db=self.db,
-            model_config_id=request.model_config_id,
-        )
-        credential_id = _credential_id_for_request(request)
-        synced_credential_id = await self.client.upsert_openai_credential(
-            credential_id=credential_id,
-            name=f"Datalogue {config.name}",
-            api_key=config.api_key,
-            base_url=config.base_url,
-        )
-        # AgentScope ChatService 只从 session.config.chat_model_config 取模型；这里不能省略 credential_id。
+        return await self._build_default_chat_model_config()
+
+    async def _build_default_chat_model_config(self) -> dict[str, Any]:
+        """未显式选择模型时，从 AgentScope 默认 credential 派生 session 模型配置。"""
+
+        model_name = await self._resolve_default_model_name()
         return {
             "type": "openai_credential",
-            "credential_id": synced_credential_id,
-            "model": config.model,
+            "credential_id": DEFAULT_MODEL_CREDENTIAL_ID,
+            "model": model_name,
             "parameters": {
-                "thinking_enable": config.thinking_enabled,
+                "thinking_enable": False,
             },
         }
+
+    async def _resolve_default_model_name(self) -> str:
+        """优先使用 AgentScope credential 资源描述的模型名，避免回落到旧本地配置默认值。"""
+
+        with suppress(Exception):
+            credentials = await self.client.list_credentials()
+            for item in credentials:
+                if _credential_id(item) != DEFAULT_MODEL_CREDENTIAL_ID:
+                    continue
+                data = item.get("data") if isinstance(item, dict) else None
+                data = data if isinstance(data, dict) else {}
+                model_name = _model_name_from_credential_data(data)
+                if model_name:
+                    return model_name
+        # 兼容 AgentScope credential 暂不可读的启动期；真正凭证仍只从 AgentScope Service 引用。
+        return self.settings.LLM_MODEL
 
 
 def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg) -> str:
@@ -196,7 +212,6 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
         "conversation_id": request.conversation_id,
         "model_credential_id": request.model_credential_id,
         "model_name": request.model_name,
-        "legacy_model_config_id": request.model_config_id,
         "artifact_ref": request.artifact_ref,
         "retry_checkpoint_ref": request.retry_checkpoint_ref,
         # 该提示让 leader 使用官方 Team 工具选择 worker；Datalogue 不在这里手写 worker 路由。
@@ -229,13 +244,6 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
     )
     return "\n".join(lines)
 
-
-def _credential_id_for_request(request: AgentTeamTaskRequest) -> str:
-    if request.model_config_id is not None:
-        return f"datalogue-openai-compatible-model-{request.model_config_id}"
-    return "datalogue-openai-compatible-lead-agent"
-
-
 def _safe_model_parameters(parameters: dict[str, Any] | None) -> dict[str, Any]:
     """只允许聊天请求覆盖模型运行参数，禁止把 credential 级字段塞进 session config。"""
 
@@ -246,6 +254,32 @@ def _safe_model_parameters(parameters: dict[str, Any] | None) -> dict[str, Any]:
         for key, value in parameters.items()
         if str(key) not in _FORBIDDEN_MODEL_PARAMETER_KEYS and value is not None
     }
+
+
+def _credential_id(item: dict[str, Any]) -> str:
+    """兼容 AgentScope Service 可能返回顶层 id 或 data.id 的 credential 结构。"""
+
+    data = item.get("data") if isinstance(item, dict) else None
+    data = data if isinstance(data, dict) else {}
+    raw_id = item.get("id") or item.get("credential_id") or data.get("id")
+    return str(raw_id or "")
+
+
+def _model_name_from_credential_data(data: dict[str, Any]) -> str | None:
+    """从 AgentScope credential 数据提取默认模型名；设置页当前会把模型名写入 name。"""
+
+    for key in ("model", "model_name", "default_model"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    name = str(data.get("name") or "").strip()
+    # 现有设置页名称格式为 “Datalogue DeepSeek · deepseek-v4-pro”，模型名在分隔符右侧。
+    for separator in ("·", "|", ":", " - "):
+        if separator in name:
+            candidate = name.rsplit(separator, 1)[-1].strip()
+            if candidate:
+                return candidate
+    return None
 
 
 def _is_agent_create_event(event: dict[str, Any]) -> bool:
@@ -316,6 +350,91 @@ def _is_business_terminal_payload(payload: dict[str, Any]) -> bool:
         payload.get("requires_user_confirmation")
         or route_decision.get("decision") in {"ambiguous", "no_match"}
         or clarification.get("kind") in {"dataset_choice", "dataset_confirmation"}
+    )
+
+
+def _should_run_confirmed_dataset_fallback(*, request: AgentTeamTaskRequest, payload: dict[str, Any]) -> bool:
+    """确认态缺 artifact 时兜底执行查询，避免 worker 自然语言失败截断真实结果卡。"""
+
+    if request.dataset_id is None or _has_artifact_final_payload(payload):
+        return False
+    summary = str(payload.get("summary") or payload.get("content") or "")
+    return any(marker in summary for marker in ("查询未完成", "未生成可展示结果", "no artifact"))
+
+
+def _has_artifact_final_payload(payload: dict[str, Any]) -> bool:
+    """判断最终 payload 是否已经带有结果引用；有引用时必须尊重 AgentScope worker 的真实返回。"""
+
+    return bool(payload.get("artifact_ref") or payload.get("result_ref") or payload.get("artifact_card"))
+
+
+async def _run_confirmed_dataset_query_fallback(
+    *,
+    request: AgentTeamTaskRequest,
+    task: AgentTeamTask,
+) -> AsyncIterator[DatalogueEventEnvelope]:
+    """确认态 worker 未产出 artifact 时，复用 datalogue_query_dataset 的安全执行器补齐终态。"""
+
+    tool_call_id = f"confirmed-dataset-query-{task.task_id}"
+    log_lifecycle(
+        "agentscope_agent_team.runner.confirmed_dataset_fallback.started",
+        task_id=task.task_id,
+        trace_id=task.trace_id,
+        dataset_id=request.dataset_id,
+    )
+    yield build_datalogue_event_envelope(
+        event_type="tool_call.started",
+        visibility="user_visible",
+        payload={
+            "tool_name": "datalogue_query_dataset",
+            "tool_call_id": tool_call_id,
+            "summary": "BI Worker 正在执行已确认数据集查询。",
+        },
+        task_id=task.task_id,
+        trace_id=task.trace_id,
+        thread_id=task.thread_id,
+        message_id=task.message_id,
+        selected_agent=task.selected_agent,
+    )
+    result = await execute_dataset_query_for_agent_team(
+        dataset_id=int(request.dataset_id),
+        confirmed_question=request.question,
+        trace_id=task.trace_id,
+    )
+    payload = result.to_tool_payload()
+    log_lifecycle(
+        "agentscope_agent_team.runner.confirmed_dataset_fallback.completed",
+        task_id=task.task_id,
+        trace_id=task.trace_id,
+        dataset_id=request.dataset_id,
+        artifact_ref=payload.get("artifact_ref"),
+        row_count=payload.get("row_count"),
+        column_count=payload.get("column_count"),
+    )
+    yield build_datalogue_event_envelope(
+        event_type="tool_call.completed",
+        visibility="user_visible",
+        payload={
+            "tool_name": "datalogue_query_dataset",
+            "tool_call_id": tool_call_id,
+            "summary": "BI Worker 已完成已确认数据集查询。",
+            "has_artifact": bool(payload.get("artifact_ref")),
+        },
+        task_id=task.task_id,
+        trace_id=task.trace_id,
+        thread_id=task.thread_id,
+        message_id=task.message_id,
+        selected_agent=task.selected_agent,
+    )
+    yield build_datalogue_event_envelope(
+        event_type="message.completed",
+        visibility="user_visible",
+        payload=payload,
+        task_id=task.task_id,
+        trace_id=task.trace_id,
+        thread_id=task.thread_id,
+        message_id=task.message_id,
+        selected_agent=task.selected_agent,
     )
 
 

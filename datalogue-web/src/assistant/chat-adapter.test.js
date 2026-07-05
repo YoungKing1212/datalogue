@@ -170,7 +170,6 @@ describe('chat-adapter C-ready metadata', () => {
         question: '统计双周会议数据记录数量',
         dataset_id: 12,
         conversation_id: null,
-        model_config_id: null,
       }),
       expect.any(Object),
     );
@@ -306,12 +305,12 @@ describe('chat-adapter C-ready metadata', () => {
     });
   });
 
-  it('passes the selected model config id to Agent Team when the composer chooses a model', async () => {
+  it('ignores legacy numeric model config ids when the composer has no AgentScope model resource', async () => {
     streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
           event_type: 'message.completed',
-          payload: { summary: '已完成模型指定查询。' },
+          payload: { summary: '已使用默认 AgentScope 模型查询。' },
         },
       },
     ]));
@@ -322,18 +321,21 @@ describe('chat-adapter C-ready metadata', () => {
       transport: 'stream',
     });
     await collectRun(adapter, runInput({
-      question: '用指定模型查询销售趋势',
+      question: '用默认模型查询销售趋势',
       threadId: 'local-thread',
     }));
 
     expect(streamAgentTeamTask).toHaveBeenCalledWith(
       expect.objectContaining({
-        question: '用指定模型查询销售趋势',
+        question: '用默认模型查询销售趋势',
         dataset_id: 12,
-        model_config_id: 8,
+        model_credential_id: null,
+        model_name: null,
+        model_parameters: {},
       }),
       expect.any(Object),
     );
+    expect(Object.keys(streamAgentTeamTask.mock.calls[0][0])).not.toContain('model' + '_config_id');
   });
 
   it('passes AgentScope credential and model to Agent Team when available', async () => {
@@ -370,7 +372,6 @@ describe('chat-adapter C-ready metadata', () => {
       expect.objectContaining({
         question: '用 AgentScope 模型查询销售趋势',
         dataset_id: 12,
-        model_config_id: null,
         model_credential_id: 'openai_credential:prod-main',
         model_name: 'gpt-4.1-mini',
         model_parameters: {
@@ -540,7 +541,7 @@ describe('chat-adapter C-ready metadata', () => {
     expect(finalChunk.content.filter((part) => part.type === 'reasoning')).toHaveLength(0);
   });
 
-  it('passes the selected model config id through Agent Team when dataset selection is needed', async () => {
+  it('does not pass legacy model config ids through Agent Team when dataset selection is needed', async () => {
     streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
@@ -563,10 +564,13 @@ describe('chat-adapter C-ready metadata', () => {
       expect.objectContaining({
         question: '查询销售趋势',
         dataset_id: null,
-        model_config_id: 8,
+        model_credential_id: null,
+        model_name: null,
+        model_parameters: {},
       }),
       expect.any(Object),
     );
+    expect(Object.keys(streamAgentTeamTask.mock.calls[0][0])).not.toContain('model' + '_config_id');
   });
 
   it('builds stable business session ids from conversation or thread context', () => {
@@ -851,7 +855,6 @@ describe('chat-adapter C-ready metadata', () => {
         thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         retry_checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
         dataset_id: 7,
-        model_config_id: null,
         clarification_response: null,
       }),
       expect.any(Object),

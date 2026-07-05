@@ -28,7 +28,6 @@ def build_agentscope_chat_model(
     db: Session,
     role: str = "lead_agent",
     stream: bool = True,
-    model_config_id: int | None = None,
 ) -> OpenAIChatModel:
     """创建 AgentScope 2.0 OpenAIChatModel；不在这里注入任何业务 prompt。"""
 
@@ -36,7 +35,6 @@ def build_agentscope_chat_model(
         get_settings(),
         role=role,
         db=db,
-        model_config_id=model_config_id,
     )
     credential = OpenAICredential(
         name=config.name,

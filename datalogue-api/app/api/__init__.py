@@ -20,7 +20,6 @@ from app.api import (
     conversation,
     datasource,
     dataset,
-    llm,
     messages,
     workbench,
 )
@@ -36,7 +35,6 @@ router.include_router(
     prefix="/agentscope-control",
     tags=["AgentScope 控制面"],
 )
-router.include_router(llm.router, prefix="/llm", tags=["LLM 配置"])
 router.include_router(messages.router, prefix="/messages", tags=["消息反馈"])
 router.include_router(artifacts.router, prefix="/artifacts", tags=["查询产物"])
 router.include_router(workbench.router, prefix="/workbench", tags=["工作台"])

@@ -720,12 +720,6 @@ function normalizeDatasetId(value) {
   return null;
 }
 
-function normalizeModelConfigId(value) {
-  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
-  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
-  return null;
-}
-
 function normalizeModelParameters(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const forbidden = new Set(['api_key', 'base_url', 'credential_id', 'model', 'type']);
@@ -737,7 +731,6 @@ function normalizeModelParameters(value) {
 function normalizeAgentScopeModelSelection(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {
-      modelConfigId: normalizeModelConfigId(value),
       modelCredentialId: null,
       modelName: null,
       modelParameters: {},
@@ -749,10 +742,7 @@ function normalizeAgentScopeModelSelection(value) {
   const modelName = safeDisplayText(value.model_name || value.model || value.name);
   const modelParameters = normalizeModelParameters(value.model_parameters || value.parameters);
   return {
-    // credential/model 成对存在时走 AgentScope Service 原生资源；否则保留旧 ID 兼容历史配置行。
-    modelConfigId: modelCredentialId && modelName
-      ? null
-      : normalizeModelConfigId(value.model_config_id ?? value.id),
+    // credential/model 成对存在时走 AgentScope Service 原生资源；缺一项则交给后端默认 AgentScope credential。
     modelCredentialId: modelCredentialId && modelName ? modelCredentialId : null,
     modelName: modelCredentialId && modelName ? modelName : null,
     modelParameters,
@@ -1014,7 +1004,6 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         conversation_id: convId,
         thread_id: requestThreadId,
         dataset_id: datasetId,
-        model_config_id: modelSelection.modelConfigId,
         model_credential_id: modelSelection.modelCredentialId,
         model_name: modelSelection.modelName,
         model_parameters: modelSelection.modelParameters,

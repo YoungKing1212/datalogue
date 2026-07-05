@@ -164,11 +164,6 @@ export function listDatasets(datasourceId) {
   return get(`/api/dataset${qs}`);
 }
 
-/** 获取 LLM 模型配置列表；聊天模型选择器只消费 active 配置。 */
-export function listLLMModels() {
-  return get('/api/llm/models');
-}
-
 function normalizeAgentScopeCredential(item = {}) {
   const data = item.data && typeof item.data === 'object' ? item.data : item;
   const id = data.id || item.id || data.credential_id || item.credential_id;

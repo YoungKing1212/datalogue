@@ -76,7 +76,9 @@ def test_retry_action_creates_new_running_message(client, db_session):
         "retry_checkpoint_ref": checkpoint_ref,
             "artifact_ref": None,
             "dataset_id": None,
-            "model_config_id": None,
+            "model_credential_id": None,
+            "model_name": None,
+            "model_parameters": {},
             "user_confirmation": None,
             "client_context": {"action": "retry_last_step"},
         }

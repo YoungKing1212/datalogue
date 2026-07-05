@@ -39,7 +39,6 @@ class AgentTeamTaskRequest(BaseModel):
     model_credential_id: str | None = Field(default=None, min_length=1, max_length=200)
     model_name: str | None = Field(default=None, min_length=1, max_length=200)
     model_parameters: dict[str, Any] = Field(default_factory=dict)
-    model_config_id: int | None = Field(default=None, gt=0)
     clarification_response: dict[str, Any] | None = None
     retry_checkpoint_ref: str | None = None
     artifact_ref: str | None = None

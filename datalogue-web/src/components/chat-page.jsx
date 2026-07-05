@@ -81,8 +81,7 @@ export function conversationRouteIdForDatasetRestore(routeId) {
 function buildAgentScopeModelSelection(model) {
   if (!model) return null;
   return {
-    // AgentScope credential/model 是运行时主路径；id 只保留给尚未迁完的历史配置行兜底。
-    model_config_id: model.id ?? null,
+    // AgentScope credential/model 是唯一运行时主路径；未选择时由后端默认 credential 接管。
     model_credential_id: model.credential_id ?? null,
     model_name: model.model ?? null,
     model_parameters: {
