@@ -68,7 +68,7 @@ export function DatasetChip({
 
 /**
  * ModelChip — 当前轮模型选择 chip。
- * selectedModel 为空时沿用后端角色绑定默认模型，前端不推断真实密钥、Base URL 或 provider 配置。
+ * selectedModel 为空时沿用后端默认模型配置，前端不推断真实密钥、Base URL 或 provider 配置。
  */
 export function ModelChip({
   selectedModel,
@@ -106,12 +106,12 @@ export function ModelChip({
           <div
             className={`ds-dropdown-item${selectedModel ? '' : ' active'}`}
             onClick={() => {
-              setSelectedModel(null); // null 明确表示本轮不 override，由后端按角色绑定兜底。
+              setSelectedModel(null); // null 明确表示本轮不 override，由后端默认模型配置兜底。
               setOpen(false);
             }}
           >
             <div className="model-option-name">默认模型</div>
-            <div className="model-option-meta">沿用系统角色绑定</div>
+            <div className="model-option-meta">沿用后端默认模型配置</div>
           </div>
           {activeModels.length === 0 && (
             <div className="ds-dropdown-item muted">暂无启用模型</div>

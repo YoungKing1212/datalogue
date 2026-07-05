@@ -326,25 +326,15 @@ function DatasourcesSection() {
   );
 }
 
-const LLM_ROLES = [
-  { id: 'default', label: '默认模型', hint: '未单独绑定角色时使用' },
-  { id: 'intent', label: '意图理解 & 路由', hint: '低延迟，处理用户问题分类' },
-  { id: 'dsl', label: 'SQL / DSL 生成', hint: '精度优先，处理复杂查询' },
-  { id: 'sql_audit', label: 'SQL 诊断', hint: '分析执行错误并判断是否重试' },
-  { id: 'report', label: '解释 & 洞察', hint: '流式输出最终回答' },
-  { id: 'annotation', label: '字段自动标注', hint: '生成表和字段业务描述' },
-  { id: 'blueprint', label: '分析蓝图', hint: '理解 SQL 草稿和业务场景' },
-];
-
 const LLM_PRESETS = [
   {
-    id: 'litellm_proxy',
-    label: 'LiteLLM Proxy',
-    provider: 'litellm',
-    base_url: 'http://localhost:4000/v1',
-    description: '通过 LiteLLM Proxy 统一接入多厂商模型',
+    id: 'agentscope_openai',
+    label: 'AgentScope OpenAI-compatible',
+    provider: 'openai-compatible',
+    base_url: 'https://api.minimaxi.com/v1',
+    description: '通过 AgentScope 接入 OpenAI-compatible 模型服务',
     request_timeout_seconds: 60,
-    models: ['datalogue-intent', 'datalogue-sql', 'datalogue-report', 'datalogue-blueprint'],
+    models: ['MiniMax-M2.7', 'MiniMax-M3', 'gpt-4o-mini', 'gpt-4o'],
   },
   {
     id: 'openai',
@@ -383,11 +373,11 @@ const LLM_PRESETS = [
     models: ['MiniMax-M1', 'abab6.5s-chat', 'abab6.5g-chat'],
   },
   {
-    id: 'claude_litellm',
-    label: 'Claude via LiteLLM',
-    provider: 'litellm',
-    base_url: 'http://localhost:4000/v1',
-    description: '通过 LiteLLM Proxy 接入 Anthropic Claude',
+    id: 'anthropic',
+    label: 'Anthropic',
+    provider: 'anthropic',
+    base_url: 'https://api.anthropic.com',
+    description: '通过 AgentScope Anthropic ChatModel 接入 Claude',
     request_timeout_seconds: 60,
     models: ['claude-sonnet-4', 'claude-3-5-sonnet', 'claude-3-5-haiku'],
   },
@@ -403,7 +393,7 @@ const LLM_PRESETS = [
 ];
 
 const LLM_PROVIDER_OPTIONS = [
-  { value: 'litellm', label: 'LiteLLM' },
+  { value: 'openai-compatible', label: 'OpenAI-compatible' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'deepseek', label: 'DeepSeek' },
   { value: 'qwen', label: '通义千问' },
@@ -415,11 +405,11 @@ const LLM_PROVIDER_OPTIONS = [
 const emptyModelForm = {
   id: null,
   name: '',
-  provider: 'litellm',
+  provider: 'openai-compatible',
   base_url: '',
   model: '',
-  preset_id: 'litellm_proxy',
-  model_choice: 'datalogue-intent',
+  preset_id: 'agentscope_openai',
+  model_choice: 'MiniMax-M2.7',
   custom_provider: '',
   name_auto: true,
   api_key: '',
@@ -478,13 +468,11 @@ function buildFormFromPreset(presetId, currentForm = emptyModelForm) {
 
 function ModelsSection() {
   const [models, setModels] = useState([]);
-  const [bindings, setBindings] = useState({});
-  const [form, setForm] = useState(() => buildFormFromPreset('litellm_proxy'));
+  const [form, setForm] = useState(() => buildFormFromPreset('agentscope_openai'));
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState(null);
   const [message, setMessage] = useState('');
 
-  const activeModels = models.filter(m => m.status === 'active');
   const selectedPreset = findPreset(form.preset_id);
   const isTestingCurrentModel = form.id != null && testingId === form.id;
   const providerChoices = LLM_PROVIDER_OPTIONS.some(item => item.value === form.provider)
@@ -492,12 +480,8 @@ function ModelsSection() {
     : [...LLM_PROVIDER_OPTIONS, { value: form.provider, label: form.provider }];
 
   const loadConfig = async () => {
-    const [modelRows, bindingRows] = await Promise.all([
-      get('/api/llm/models'),
-      get('/api/llm/role-bindings'),
-    ]);
+    const modelRows = await get('/api/llm/models');
     setModels(modelRows);
-    setBindings(Object.fromEntries(bindingRows.map(item => [item.role, item.model_config_id || ''])));
   };
 
   useEffect(() => {
@@ -525,7 +509,7 @@ function ModelsSection() {
     });
   };
 
-  const resetForm = () => setForm(buildFormFromPreset('litellm_proxy'));
+  const resetForm = () => setForm(buildFormFromPreset('agentscope_openai'));
 
   const changePreset = (presetId) => {
     setForm(current => buildFormFromPreset(presetId, {
@@ -572,7 +556,7 @@ function ModelsSection() {
       : form.provider.trim();
     const payload = {
       name: form.name.trim(),
-      provider: provider || 'litellm',
+      provider: provider || 'openai-compatible',
       base_url: form.base_url.trim(),
       model: form.model.trim(),
       status: form.status,
@@ -635,48 +619,12 @@ function ModelsSection() {
     await loadConfig();
   };
 
-  const saveBindings = async () => {
-    const payload = {};
-    LLM_ROLES.forEach(role => {
-      const value = bindings[role.id];
-      payload[role.id] = value ? Number(value) : null;
-    });
-    await put('/api/llm/role-bindings', { bindings: payload });
-    await loadConfig();
-    setMessage('角色绑定已保存');
-  };
-
   return (
     <>
-      <SetSection title="LLM 模型" desc="通过 OpenAI-compatible 协议接入 LiteLLM Proxy 或其他模型网关。">
+      <SetSection title="LLM 模型" desc="保留模型配置管理，由 AgentScope 负责模型执行和连接测试。">
         {message && <div className="st-inline-alert">{message}</div>}
 
         <div className="st-llm-layout">
-          <div className="st-form">
-            {LLM_ROLES.map(role => (
-              <SetRow key={role.id} label={role.label} hint={role.hint} control={
-                <select
-                  className="st-input"
-                  value={bindings[role.id] || ''}
-                  onChange={e => setBindings({ ...bindings, [role.id]: e.target.value })}
-                >
-                  <option value="">环境变量兜底</option>
-                  {activeModels.map(model => (
-                    <option key={model.id} value={model.id}>{model.name} · {model.model}</option>
-                  ))}
-                </select>} />
-            ))}
-            <div className="st-row">
-              <div className="st-row-l">
-                <div className="st-row-label">角色绑定</div>
-                <div className="st-row-hint">未绑定的角色会先回退默认模型，再回退 .env</div>
-              </div>
-              <div className="st-row-r">
-                <button className="btn primary" onClick={saveBindings}><Icon name="check" />保存绑定</button>
-              </div>
-            </div>
-          </div>
-
           <div className="st-form llm-editor">
             <SetRow label={form.id ? '编辑模型' : '新增模型'} hint={form.id ? `ID ${form.id}` : '每条配置独立保存 Base URL、模型名和 Key'} control={
               <button className="btn ghost" onClick={resetForm}><Icon name="plus" />新建</button>} />
@@ -687,7 +635,7 @@ function ModelsSection() {
                 ))}
               </select>} />
             <SetRow label="名称" control={
-              <input className="st-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value, name_auto: false })} placeholder="MiniMax via LiteLLM" />} />
+              <input className="st-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value, name_auto: false })} placeholder="MiniMax via AgentScope" />} />
             <SetRow label="供应商" control={
               <div className="llm-field-stack">
                 <select className="st-input" aria-label="供应商" value={form.provider} onChange={e => changeProvider(e.target.value)}>

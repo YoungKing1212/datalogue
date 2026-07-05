@@ -370,7 +370,7 @@ function ChatPageInner({
     listDatasets().then(setDatasetList).catch(console.error);
   }, []);
 
-  // 拉取模型配置列表；选择器只展示 active 配置，默认模型仍由后端角色绑定决定。
+  // 拉取模型配置列表；选择器只展示 active 配置，默认模型由后端配置兜底。
   useEffect(() => {
     listLLMModels().then(setModelList).catch((err) => {
       console.error('加载 LLM 模型配置失败', err);

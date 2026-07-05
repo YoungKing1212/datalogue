@@ -65,7 +65,7 @@ export function DatasetChip({
 }
 
 /**
- * ModelChip — 选择本轮对话使用的 LLM 配置；空值表示沿用后端角色绑定默认模型。
+ * ModelChip — 选择本轮对话使用的 LLM 配置；空值表示沿用后端默认模型配置。
  */
 export function ModelChip({
   selectedModel,
@@ -107,7 +107,7 @@ export function ModelChip({
             }}
           >
             <div className="model-option-name">默认模型</div>
-            <div className="model-option-meta">沿用系统角色绑定</div>
+            <div className="model-option-meta">沿用后端默认模型配置</div>
           </div>
           {activeModels.length === 0 && (
             <div className="ds-dropdown-item muted">暂无启用模型</div>
