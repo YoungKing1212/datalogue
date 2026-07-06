@@ -58,7 +58,6 @@ def build_datalogue_extra_agent_tools(*, storage: StorageBase | None = None) -> 
         return [
             build_datalogue_select_candidate_datasets_tool(worker_context=worker_context),
             *build_datalogue_progressive_bi_worker_tools(worker_context=worker_context),
-            build_datalogue_query_dataset_tool(worker_context=worker_context),
         ]
 
     return _extra_agent_tools

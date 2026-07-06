@@ -35,8 +35,8 @@ LEADER_AGENT_SYSTEM_PROMPT = f"""
 - 需要 worker 时必须使用 AgentScope 官方 TeamCreate、AgentCreate、TeamSay、TeamDelete 工具。
 - 固定 worker 类型只有 bi、report、python、audit；这是业务模板类型，不是固定 Agent 实例。
 - 你可以使用 AgentScope 内置 Bash、Read、Write、Edit 和 TaskCreate/TaskGet/TaskList/TaskUpdate 工具做任务规划、读取项目文件、写入受控工作区文件和必要的命令行检查。
-- 创建 bi worker 时，必须把用户原始问题和安全输出字段要求写进 AgentCreate 的 prompt；如果你知道或上下文已提供 dataset_id，必须明确要求 bi worker 直接调用 datalogue_query_dataset，严禁再次筛选候选数据集；如果你不知道 dataset_id，必须要求 bi worker 先调用 datalogue_select_candidate_datasets 筛选候选数据集，再用 TeamSay 回传 dataset_candidates 安全 payload 给你。
-- 收到 bi worker 回传的 dataset_candidates 后，你要把候选数据集作为用户可见确认结果返回，不要在用户确认前执行 datalogue_query_dataset。
+- 创建 bi worker 时，必须把用户原始问题和安全输出字段要求写进 AgentCreate 的 prompt；如果你知道或上下文已提供 dataset_id，必须明确要求 bi worker 按 datalogue_describe_dataset_capability -> datalogue_recall_query_assets -> datalogue_execute_query_plan 的 L0/L1/L5 progressive 骨架执行，严禁再次筛选候选数据集，严禁调用 datalogue_query_dataset；如果你不知道 dataset_id，必须要求 bi worker 先调用 datalogue_select_candidate_datasets 筛选候选数据集，再用 TeamSay 回传 dataset_candidates 安全 payload 给你。
+- 收到 bi worker 回传的 dataset_candidates 后，你要把候选数据集作为用户可见确认结果返回，不要在用户确认前执行 datalogue_execute_query_plan。
 - 你不能调用 Datalogue 旧自研执行入口、旧 BI Agent 公开 API、自研 runner 或自研 handoff。
 - 用户可见回答只包含安全摘要和 refs，不输出 SQL、schema、raw rows、DSL、query_plan 或内部修复载荷。
 
@@ -107,7 +107,7 @@ BI_WORKER_PROMPT = f"""
 
 固定能力边界：
 - 只处理 Datalogue Dataset Query 类问数任务。
-- 只能调用 Datalogue 暴露的安全候选数据集筛选工具、安全 Dataset Query 工具、progressive L0-L5 Dataset Query 工具和 TeamSay。
+- 只能调用 Datalogue 暴露的安全候选数据集筛选工具、progressive L0-L5 Dataset Query 工具和 TeamSay。
 - 如果 leader 没有提供 dataset_id，必须先调用 datalogue_select_candidate_datasets(question=用户原始问题) 筛选候选数据集，再用 TeamSay 将工具返回的 dataset_candidates JSON 原样安全汇报给 leader；不要猜测一个 dataset_id。
 - 候选数据集筛选后不得仅用自然语言声称已汇报、等待确认或任务已完成；必须真正调用 TeamSay 工具回传 dataset_candidates JSON。
 - 如果 leader 已经提供明确 dataset_id，必须跳过重复筛选，严禁再次调用 datalogue_select_candidate_datasets，按 L0/L1/L5 固定骨架执行：datalogue_describe_dataset_capability -> datalogue_recall_query_assets -> datalogue_execute_query_plan。
@@ -121,7 +121,7 @@ BI_WORKER_PROMPT = f"""
 
 安全要求：
 - 不输出 SQL、schema、raw rows、DSL、query_plan、Query Plan JSON、repair patch 或内部执行载荷。
-- 不调用原生移交兼容层，不调用自研直接查询执行器。
+- 不调用原生移交兼容层，不调用自研直接查询执行器，不调用旧兼容工具 datalogue_query_dataset。
 - 完成或失败后必须使用 TeamSay 向 {{leader_name}} 汇报安全摘要。
 
 官方团队工具边界：
@@ -179,15 +179,6 @@ def _bi_worker_permission_context() -> PermissionContext:
             "datalogue_execute_query_plan": [
                 PermissionRule(
                     tool_name="datalogue_execute_query_plan",
-                    rule_content=None,
-                    behavior=PermissionBehavior.ALLOW,
-                    source="datalogue-bi-worker-template",
-                )
-            ],
-            # FunctionTool 默认要求显式授权；这里用工具名级 allow 保证 Dataset 查询不会被 DONT_ASK 拒绝。
-            "datalogue_query_dataset": [
-                PermissionRule(
-                    tool_name="datalogue_query_dataset",
                     rule_content=None,
                     behavior=PermissionBehavior.ALLOW,
                     source="datalogue-bi-worker-template",

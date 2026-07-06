@@ -77,8 +77,8 @@ async def test_extra_agent_tools_returns_dataset_tool_for_team_worker_only():
         "datalogue_profile_candidate_values",
         "datalogue_validate_query_support",
         "datalogue_execute_query_plan",
-        "datalogue_query_dataset",
     ]
+    assert "datalogue_query_dataset" not in {tool.name for tool in tools}
     assert AGENTSCOPE_SERVICE_BUILTIN_TOOL_NAMES.isdisjoint({tool.name for tool in tools})
 
 
@@ -124,7 +124,6 @@ def test_bi_worker_progressive_tools_are_registered_for_team_worker():
 async def test_bi_worker_dataset_tool_leaves_execution_logs_to_otel(monkeypatch, caplog):
     from app.agentscope_service import tools as tools_module
     from app.agentscope_service.dataset_query_executor import AgentTeamDatasetQueryResult
-    from app.agentscope_service.tools import build_datalogue_extra_agent_tools
 
     class FakeAgentData:
         name = "bi-worker"
@@ -155,9 +154,14 @@ async def test_bi_worker_dataset_tool_leaves_execution_logs_to_otel(monkeypatch,
         fake_execute_dataset_query_for_agent_team,
     )
     with caplog.at_level(logging.INFO, logger="app.agentscope_service.tools"):
-        factory = build_datalogue_extra_agent_tools(storage=FakeStorage())
-        tools = await factory("user-1", "worker-bi-1", "worker-session-1")
-        tool = next(item for item in tools if item.name == "datalogue_query_dataset")
+        tool = tools_module.build_datalogue_query_dataset_tool(
+            worker_context={
+                "user_id": "user-1",
+                "agent_id": "worker-bi-1",
+                "agent_name": "bi-worker",
+                "session_id": "worker-session-1",
+            }
+        )
         chunk = await tool(
             dataset_id=12,
             confirmed_question="查询杨凯2025年日志",

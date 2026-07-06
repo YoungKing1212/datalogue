@@ -531,7 +531,11 @@ async def test_agentscope_service_task_runner_treats_selected_dataset_as_confirm
 
     trigger_text = client.triggered_chats[0]["text"]
     assert "confirmed_question" in trigger_text
-    assert "datalogue_query_dataset(dataset_id=10" in trigger_text
+    assert "datalogue_describe_dataset_capability" in trigger_text
+    assert "datalogue_recall_query_assets" in trigger_text
+    assert "datalogue_execute_query_plan" in trigger_text
+    assert "dataset_id 必须为 10" in trigger_text
+    assert "严禁调用 datalogue_query_dataset" in trigger_text
     assert "严禁再次调用 datalogue_select_candidate_datasets" in trigger_text
     assert "clarification_response" not in trigger_text
 
@@ -795,7 +799,7 @@ async def test_agentscope_service_task_runner_falls_back_when_confirmed_dataset_
     from app.agentscope_service import runner as runner_module
     from app.agentscope_service.runner import AgentScopeServiceTaskRunner
 
-    async def fake_execute_dataset_query_for_agent_team(**kwargs):
+    async def fake_execute_dataset_query_for_agent_team_direct_fallback(**kwargs):
         assert kwargs["dataset_id"] == 10
         assert kwargs["confirmed_question"] == "查询杨凯2025年工作日志"
         return SimpleNamespace(
@@ -832,7 +836,11 @@ async def test_agentscope_service_task_runner_falls_back_when_confirmed_dataset_
             }
         )
 
-    monkeypatch.setattr(runner_module, "execute_dataset_query_for_agent_team", fake_execute_dataset_query_for_agent_team)
+    monkeypatch.setattr(
+        runner_module,
+        "execute_dataset_query_for_agent_team_direct_fallback",
+        fake_execute_dataset_query_for_agent_team_direct_fallback,
+    )
     client = ConfirmedDatasetMissingArtifactFakeClient()
     runner = AgentScopeServiceTaskRunner(
         base_url="http://testserver/agentscope",
@@ -868,6 +876,8 @@ async def test_agentscope_service_task_runner_falls_back_when_confirmed_dataset_
 
     event_types = [event.event_type for event in events]
     assert event_types[-3:] == ["tool_call.started", "tool_call.completed", "message.completed"]
+    assert events[-3].payload["tool_name"] == "datalogue_execute_query_plan"
+    assert events[-2].payload["tool_name"] == "datalogue_execute_query_plan"
     assert events[-1].payload["datalogue_event_type"] == "dataset_query_result"
     assert events[-1].payload["artifact_ref"] == "artifact:test"
     assert events[-1].payload["artifact_card"]["preview_payload"] == {"row_count": 100, "column_count": 48}
