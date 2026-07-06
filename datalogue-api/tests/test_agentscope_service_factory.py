@@ -79,6 +79,7 @@ def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, t
         "storage",
         "message_bus",
         "workspace_manager",
+        "extra_credentials",
         "extra_agent_middlewares",
         "extra_agent_tools",
         "custom_subagent_templates",
@@ -86,6 +87,9 @@ def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, t
     assert isinstance(create_app_kwargs["storage"], FakeRedisStorage)
     assert isinstance(create_app_kwargs["message_bus"], FakeRedisMessageBus)
     assert isinstance(create_app_kwargs["workspace_manager"], FakeLocalWorkspaceManager)
+    assert [credential.__name__ for credential in create_app_kwargs["extra_credentials"]] == [
+        "DatalogueLLMCredential"
+    ]
     assert callable(create_app_kwargs["extra_agent_middlewares"])
     assert callable(create_app_kwargs["extra_agent_tools"])
     assert [template.type for template in create_app_kwargs["custom_subagent_templates"]] == [

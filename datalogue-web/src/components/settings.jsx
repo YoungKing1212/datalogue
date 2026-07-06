@@ -403,15 +403,16 @@ const LLM_PROVIDER_OPTIONS = [
 ];
 
 const PROVIDER_TO_CREDENTIAL_TYPE = {
-  'openai-compatible': 'openai_credential',
+  'openai-compatible': 'datalogue_llm_credential',
   openai: 'openai_credential',
   deepseek: 'deepseek_credential',
   qwen: 'dashscope_credential',
-  minimax: 'openai_credential',
+  minimax: 'datalogue_llm_credential',
   anthropic: 'anthropic_credential',
 };
 
 const CREDENTIAL_TYPE_TO_PROVIDER = {
+  datalogue_llm_credential: 'openai-compatible',
   openai_credential: 'openai-compatible',
   deepseek_credential: 'deepseek',
   dashscope_credential: 'qwen',
@@ -461,6 +462,7 @@ function normalizeCredentialRow(item = {}) {
   const id = data.id || item.id || data.credential_id || item.credential_id;
   const credentialType = data.type || item.type || 'openai_credential';
   const apiKeySet = Boolean(data.api_key_set ?? item.api_key_set);
+  const status = data.status || item.status || (apiKeySet ? 'active' : 'disabled');
   if (!id) return null;
   return {
     id: String(id),
@@ -469,10 +471,10 @@ function normalizeCredentialRow(item = {}) {
     provider: providerForCredentialType(credentialType),
     credential_type: credentialType,
     base_url: data.base_url || data.api_host || data.host || '',
-    model: '',
-    status: apiKeySet ? 'active' : 'disabled',
+    model: data.model || data.model_name || item.model || item.model_name || '',
+    status,
     description: data.description || '',
-    request_timeout_seconds: 60,
+    request_timeout_seconds: Number(data.request_timeout_seconds || item.request_timeout_seconds || 60),
     api_key_set: apiKeySet,
     last_test_result: null,
     last_error_message: null,
@@ -491,6 +493,11 @@ function buildCredentialPayload(form, { includeId = false } = {}) {
   if (includeId && form.id) data.id = form.id;
   if (form.base_url.trim()) data.base_url = form.base_url.trim();
   if (form.api_key.trim()) data.api_key = form.api_key.trim();
+  // Datalogue 不再落本地模型配置表；页面上的模型选择和运行参数随 AgentScope credential 一起持久化。
+  if (form.model.trim()) data.model = form.model.trim();
+  data.status = form.status || 'active';
+  if (form.description.trim()) data.description = form.description.trim();
+  data.request_timeout_seconds = Number(form.request_timeout_seconds) || 60;
   return { data };
 }
 
@@ -613,21 +620,8 @@ function ModelsSection() {
   const saveModel = async () => {
     setSaving(true);
     setMessage('');
-    const provider = form.provider === 'custom'
-      ? form.custom_provider.trim()
-      : form.provider.trim();
-    const payload = {
-      name: form.name.trim(),
-      provider: provider || 'openai-compatible',
-      base_url: form.base_url.trim(),
-      model: form.model.trim(),
-      status: form.status,
-      description: form.description.trim() || null,
-      request_timeout_seconds: Number(form.request_timeout_seconds) || 60,
-    };
-    if (form.api_key.trim()) payload.api_key = form.api_key.trim();
     try {
-      if (!payload.name || !payload.base_url) {
+      if (!form.name.trim() || !form.base_url.trim()) {
         throw new Error('请填写名称和 Base URL');
       }
       if (form.id) {
@@ -647,7 +641,17 @@ function ModelsSection() {
   };
 
   const toggleStatus = async (model) => {
-    setMessage(`AgentScope credential 不支持本地停用开关；如需停用请删除 ${model.name}`);
+    const nextStatus = model.status === 'active' ? 'disabled' : 'active';
+    setMessage('');
+    try {
+      await patch(`/api/agentscope-control/credentials/${encodeURIComponent(model.id)}`, {
+        data: { status: nextStatus },
+      });
+      await loadConfig();
+      setMessage(`${model.name} 已${nextStatus === 'active' ? '启用' : '停用'}`);
+    } catch (err) {
+      setMessage(`状态更新失败：${err.message}`);
+    }
   };
 
   const testModel = async (model) => {
@@ -790,7 +794,7 @@ function ModelsSection() {
               <span className="st-llm-actions">
                 <button className="icon-btn" title="发现可用模型" disabled={testingId === model.id} onClick={() => testModel(model)}><Icon name="beaker" /></button>
                 <button className="icon-btn" title="编辑" onClick={() => startEdit(model)}><Icon name="edit" /></button>
-                <button className="icon-btn" title="AgentScope credential 不支持本地停用" onClick={() => toggleStatus(model)}><Icon name="pause" /></button>
+                <button className="icon-btn" title={model.status === 'active' ? '停用' : '启用'} onClick={() => toggleStatus(model)}><Icon name="pause" /></button>
                 <button className="icon-btn danger" title="删除" onClick={() => removeModel(model)}><Icon name="trash" /></button>
               </span>
             </div>
