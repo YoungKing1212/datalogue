@@ -33,10 +33,41 @@ Agentic Lead Agent
 - 不让 BI Worker 获取完整 schema 或直接写 SQL。
 - 不要求用户在数据集已确认后再次确认每个 Query Plan。
 - 不在本设计中实现多数据集自动 fan-out。
+- 不自研 Agent runner、Team 协作协议、工具协议、权限协议或 middleware 协议来替代 AgentScope SDK 已有能力。
 
-## 4. 角色职责
+## 4. AgentScope SDK-first 实现约束
 
-### 4.1 Agentic Lead Agent
+本设计的实现必须以 AgentScope 2.0.3 SDK 为优先边界。实现前必须先查阅本地官方文档对应章节，确认 SDK 是否已有原生能力，再决定 Datalogue 侧只补业务适配。
+
+必须优先使用：
+
+- AgentScope Agent Service 承载 session、chat、stream、storage、workspace、message bus 和服务外围生命周期。
+- AgentScope Agent Team 承载 Leader / worker 协作，并使用官方内置 `TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`。
+- AgentScope `SubAgentTemplate` 定义固定 BI Worker 类型和权限边界。
+- AgentScope `Toolkit`、`FunctionTool` 或 `ToolBase` 暴露 Datalogue 业务工具。
+- AgentScope permission context 控制 BI Worker 可调用工具集合。
+- AgentScope tool middleware / agent middleware 承载日志、审计、脱敏、重试和安全投影。
+
+Datalogue 侧只负责：
+
+- 业务工具实现。
+- 渐进式上下文披露的业务 schema。
+- Query Plan v1 校验和编译适配。
+- artifact/checkpoint 真相源。
+- 安全事件投影和前端展示协议。
+
+禁止实现：
+
+- Datalogue 自研 Agent loop 来替代 AgentScope Agent。
+- Datalogue 自研 Team runner 来替代 AgentScope Agent Team。
+- Datalogue 自研 tool-call 协议来替代 AgentScope Tool/Toolkit。
+- 绕开 AgentScope permission/middleware 的工具授权和安全拦截。
+
+如果 AgentScope SDK 暂时缺少某个业务能力，只允许在 Datalogue 侧实现薄适配层；薄适配层必须挂接在 SDK 的 Agent、Tool、Permission、Middleware 或 Service 扩展点上，不能另起一套主链运行时。
+
+## 5. 角色职责
+
+### 5.1 Agentic Lead Agent
 
 控制面角色：
 
@@ -51,7 +82,7 @@ Agentic Lead Agent
 - 不直接执行查询。
 - 不把 BI Worker 内部上下文写入用户回答。
 
-### 4.2 BI Worker
+### 5.2 BI Worker
 
 问数执行智能体：
 
@@ -70,7 +101,7 @@ Agentic Lead Agent
 - 不自由发明 join 条件。
 - 不通过 TeamSay 或最终回答暴露字段名、schema、Query Plan JSON、SQL 或 raw rows。
 
-### 4.3 BI Worker Runtime
+### 5.3 BI Worker Runtime
 
 执行面和安全边界：
 
@@ -80,7 +111,7 @@ Agentic Lead Agent
 - 编译 SQL、执行查询、执行确定性修复、生成 artifact/checkpoint。
 - 捕获数据库原始错误并转换为安全 repair request。
 
-## 5. 渐进式上下文披露
+## 6. 渐进式上下文披露
 
 ### L0 数据集能力摘要
 
@@ -213,7 +244,7 @@ L4 必须校验：
 - 内部 repair patch。
 - 数据库原始错误。
 
-## 6. BI Worker 工具面
+## 7. BI Worker 工具面
 
 固定骨架工具：
 
@@ -233,7 +264,7 @@ datalogue_validate_query_support
 
 `datalogue_execute_query_plan` 必须在内部调用 `datalogue_validate_query_support` 或同等 runtime 校验逻辑。校验未通过时不得执行 SQL。
 
-## 7. 状态机
+## 8. 状态机
 
 默认骨架：
 
@@ -276,7 +307,7 @@ unsupported
   -> TeamSay 无法回答原因和治理缺口
 ```
 
-## 8. Query Plan v1
+## 9. Query Plan v1
 
 Query Plan v1 是关系图计划，不是单表字段列表。
 
@@ -412,7 +443,7 @@ assumptions
 }
 ```
 
-## 9. 语义依赖补全
+## 10. 语义依赖补全
 
 L4 必须检查三类语义依赖：
 
@@ -472,7 +503,7 @@ semantic_display_dependency
 }
 ```
 
-## 10. 修复节点
+## 11. 修复节点
 
 修复分两层：
 
@@ -525,7 +556,7 @@ repair_request 示例：
 }
 ```
 
-## 11. 执行期数据库错误
+## 12. 执行期数据库错误
 
 数据库原始错误只进入 runtime 内部日志和审计，不直接进入 BI Worker 上下文。
 
@@ -578,7 +609,7 @@ runtime 自诊断检查：
 - 不可确定但有候选上下文：返回 safe repair_request，BI Worker 申请 L2/L3 并修 Query Plan。
 - 确实缺表或治理缺失：返回 unsupported 或 failed，并输出治理缺口。
 
-## 12. 循环与重试上限
+## 13. 循环与重试上限
 
 临时上限：
 
@@ -594,7 +625,7 @@ BI Worker plan repair 最多 1 次。
 
 这些上限用于第一阶段稳定性控制，后续可以根据真实 trace 调整。
 
-## 13. 展示分层
+## 14. 展示分层
 
 聊天区：
 
@@ -628,10 +659,12 @@ Workbench / 调试 trace：
 - 内部 repair patch。
 - 数据库原始错误。
 
-## 14. 验收标准
+## 15. 验收标准
 
 - 没有 `dataset_id` 时，BI Worker 仍先返回候选数据集确认。
 - 已有 `dataset_id` 时，BI Worker 进入 L0/L1/L5 固定骨架。
+- Agentic Lead Agent、BI Worker、工具、权限和中间件实现必须走 AgentScope SDK 扩展点。
+- 不允许新增自研 Agent loop、Team runner 或替代 Tool 协议。
 - 简单查询可不申请 L2/L3，但 L5 前必须经过 L4 强制校验。
 - 字段口径不充分时，BI Worker 可申请 L2。
 - 实体/时间/枚举覆盖不确定时，BI Worker 可申请 L3。
@@ -641,14 +674,17 @@ Workbench / 调试 trace：
 - BI Worker 不输出 SQL、raw rows、完整 schema、Query Plan JSON 或数据库原始错误。
 - 最终结果仍通过 artifact_ref/result_ref/artifact_card 展示。
 
-## 15. 后续实施顺序
+## 16. 后续实施顺序
 
-1. 定义 Query Plan v1、context slice、support validation、repair request 的 schema。
-2. 抽象 BI Worker query runtime，保留现有 direct query 作为 fallback。
-3. 实现 L0/L1 固定骨架工具。
-4. 实现 L2/L3 按需上下文工具。
-5. 实现 L4 强制门禁和语义依赖补全。
-6. 实现 L5 execute query plan，并接入 artifact_card 输出。
-7. 改造 BI Worker prompt，让它按固定骨架和按需上下文工作。
-8. 补 timeline / Workbench 安全 trace 投影。
-9. 补测试和真实链路验收。
+1. 对照 AgentScope 2.0.3 官方文档确认 Agent Service、Agent Team、Tool、Permission、Middleware 的 SDK 扩展点。
+2. 定义 Query Plan v1、context slice、support validation、repair request 的 schema。
+3. 在 AgentScope `FunctionTool` / `ToolBase` 上实现 BI Worker 工具面，不自研工具协议。
+4. 通过 AgentScope `SubAgentTemplate` 和 permission context 收紧 BI Worker 权限。
+5. 实现 L0/L1 固定骨架工具。
+6. 实现 L2/L3 按需上下文工具。
+7. 实现 L4 强制门禁和语义依赖补全。
+8. 实现 L5 execute query plan，并接入 artifact_card 输出。
+9. 使用 AgentScope middleware 或 tool middleware 补日志、审计、脱敏和安全 trace 投影。
+10. 改造 BI Worker prompt，让它按固定骨架和按需上下文工作。
+11. 补 timeline / Workbench 安全 trace 投影。
+12. 补测试和真实链路验收。
