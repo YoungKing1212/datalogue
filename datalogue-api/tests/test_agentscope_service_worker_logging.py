@@ -241,6 +241,29 @@ async def test_bi_worker_reply_publishes_safe_realtime_progress_events():
     assert "查询杨凯2025年日志" not in str(progress_events)
 
 
+def test_summarize_tool_progress_maps_progressive_bi_tools_to_safe_summaries():
+    from app.agentscope_service.worker_logging import summarize_tool_progress
+
+    assert summarize_tool_progress("datalogue_describe_dataset_capability") == {
+        "summary": "BI Worker 正在读取数据集能力摘要。"
+    }
+    assert summarize_tool_progress("datalogue_recall_query_assets") == {
+        "summary": "BI Worker 正在匹配候选数据资产。"
+    }
+    assert summarize_tool_progress("datalogue_request_schema_slice") == {
+        "summary": "BI Worker 正在申请相关数据结构切片。"
+    }
+    assert summarize_tool_progress("datalogue_profile_candidate_values") == {
+        "summary": "BI Worker 正在校验候选值覆盖度。"
+    }
+    assert summarize_tool_progress("datalogue_validate_query_support") == {
+        "summary": "BI Worker 正在校验查询支持度。"
+    }
+    assert summarize_tool_progress("datalogue_execute_query_plan") == {
+        "summary": "BI Worker 正在执行受控查询计划。"
+    }
+
+
 @pytest.mark.asyncio
 async def test_bi_worker_progress_middleware_does_not_own_model_call_logging(monkeypatch, caplog):
     from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware

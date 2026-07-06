@@ -1,6 +1,15 @@
 // Agent Team envelope 到旧 ChatModelAdapter 内部事件的迁移适配。
 
 const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_rows?|schema|query_plan|repairpatch|blueprint/i;
+const PROGRESSIVE_EVENT_LABELS = {
+  bi_worker_l0_capability: '数据集能力',
+  bi_worker_l1_assets: '数据资产匹配',
+  bi_worker_l2_schema_slice: '数据结构确认',
+  bi_worker_l3_value_profile: '候选值覆盖',
+  bi_worker_l4_validation: '查询支持度',
+  bi_worker_repair_request: '查询修复',
+};
+const PROGRESSIVE_INTERNAL_TEXT_PATTERN = /[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*|\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|raw_error|raw_rows?|schema|query_plan|filters?|selects?|entities|relationships/i;
 
 function safeText(value, fallback = '') {
   if (value == null) return fallback;
@@ -11,6 +20,17 @@ function safeText(value, fallback = '') {
 
 function safeAgentName(value) {
   return safeText(value, '').replace(/[^\w.-]+/g, '_').slice(0, 80);
+}
+
+function safeProgressiveSummary(payload = {}, label = '执行进展') {
+  const candidates = [payload.summary, payload.safe_reason, label];
+  for (const value of candidates) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (!text || PROGRESSIVE_INTERNAL_TEXT_PATTERN.test(text)) continue;
+    return text.slice(0, 160);
+  }
+  return label;
 }
 
 function safeTiming(source = {}) {
@@ -120,6 +140,16 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
     return { type: 'token', content: payload.content || '' };
   }
   if (envelope.event_type === 'message.completed') {
+    const progressiveLabel = PROGRESSIVE_EVENT_LABELS[payload.datalogue_event_type];
+    if (progressiveLabel) {
+      return {
+        type: 'agent_progress',
+        title: progressiveLabel,
+        summary: safeProgressiveSummary(payload, progressiveLabel),
+        status: payload.support_status === 'unsupported' ? 'failed' : 'completed',
+        event_envelope: streamEvent.event_envelope,
+      };
+    }
     const artifactCard = legacy.artifact_card || payload.artifact_card || null;
     const artifactRef = legacy.result_ref
       || legacy.artifact_ref

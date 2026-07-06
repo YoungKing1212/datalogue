@@ -251,6 +251,36 @@ describe('chat-adapter C-ready metadata', () => {
     expect(JSON.stringify(finalChunk)).not.toMatch(/\bselect \* from\b|hidden_table|schema/i);
   });
 
+  it('keeps BI Worker schema slice progressive payload out of chat content', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          task_id: 'task-schema-slice',
+          trace_id: 'trace-schema-slice',
+          payload: {
+            datalogue_event_type: 'bi_worker_l2_schema_slice',
+            summary: 'employee_name 字段已进入结构切片。',
+            safe_reason: '已确认相关数据结构。',
+            entities: [{ name: 'employee_name' }],
+            relationships: [{ from: 'employee_name', to: 'department_id' }],
+            selects: ['employee_name'],
+            filters: [{ field: 'employee_name', op: 'like', value: '杨凯' }],
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 10 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询员工姓名' }));
+    const finalChunk = chunks.at(-1);
+    const encodedContent = JSON.stringify(finalChunk.content);
+
+    expect(encodedContent).toContain('数据结构确认');
+    expect(encodedContent).not.toMatch(/employee_name|department_id|entities|relationships|selects|filters/i);
+    expect(JSON.stringify(finalChunk.metadata?.custom || {})).not.toMatch(/employee_name|department_id/i);
+  });
+
   it('renders an artifact card when Agent Team final returns only artifact_card', async () => {
     streamAgentTeamTask.mockReturnValue(events([
       {

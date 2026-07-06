@@ -50,6 +50,14 @@ _SAFE_TOOL_RESULT_KEYS = {
     "row_count",
     "column_count",
 }
+_PROGRESSIVE_TOOL_SUMMARIES = {
+    "datalogue_describe_dataset_capability": "BI Worker 正在读取数据集能力摘要。",
+    "datalogue_recall_query_assets": "BI Worker 正在匹配候选数据资产。",
+    "datalogue_request_schema_slice": "BI Worker 正在申请相关数据结构切片。",
+    "datalogue_profile_candidate_values": "BI Worker 正在校验候选值覆盖度。",
+    "datalogue_validate_query_support": "BI Worker 正在校验查询支持度。",
+    "datalogue_execute_query_plan": "BI Worker 正在执行受控查询计划。",
+}
 
 
 def build_datalogue_extra_agent_middlewares(*, storage: StorageBase | None = None) -> AgentMiddlewareFactory:
@@ -543,15 +551,27 @@ def _publish_tool_progress(*, worker_context: dict[str, str | None], event: Any)
     tool_name = summary.get("tool_call_name")
     if event_type != "tool_call_start" or not tool_name:
         return
+    progress = summarize_tool_progress(str(tool_name))
     _publish_worker_progress(
         worker_context=worker_context,
         phase="tool",
         status="running",
         title="工具调用",
-        summary=f"BI Worker 正在调用 {tool_name}。",
+        summary=progress["summary"],
         tool_name=str(tool_name),
         tool_call_id=_safe_context_text(summary.get("tool_call_id")),
     )
+
+
+def summarize_tool_progress(tool_name: str) -> dict[str, str]:
+    """把 BI Worker 工具名投影为用户可见安全进度，避免展示 schema/query_plan/raw rows。"""
+
+    if tool_name in _PROGRESSIVE_TOOL_SUMMARIES:
+        return {"summary": _PROGRESSIVE_TOOL_SUMMARIES[tool_name]}
+    safe_tool_name = _safe_context_text(tool_name) or "受控工具"
+    return {
+        "summary": f"BI Worker 正在调用 {safe_tool_name}。"
+    }
 
 
 def _publish_worker_progress(
