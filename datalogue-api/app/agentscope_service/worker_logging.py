@@ -1,12 +1,12 @@
 # ============================================================
 # File Name   : worker_logging.py
 # Description:
-#   AgentScope BI worker 的流式调试日志中间件。
+#   AgentScope BI worker 的前端进度中间件。
 #
 # Responsibilities:
-#   - 通过 AgentScope extra_agent_middlewares 只为 Datalogue BI worker 挂载日志中间件。
-#   - 流式打印 worker reply 事件、模型调用摘要，以及显式开启 raw debug 后的 LLM 输入输出。
-#   - 避免默认日志泄露用户问题原文、SQL、schema、raw rows 或内部执行载荷。
+#   - 通过 AgentScope extra_agent_middlewares 只为 Datalogue BI worker 挂载进度中间件。
+#   - 发布 Workbench/Chat 可消费的安全进度事件。
+#   - 模型调用与工具执行观测交给 AgentScope TracingMiddleware / OpenTelemetry。
 #
 # Author      : yangkai
 # Created On  : 2026-07-04
@@ -14,18 +14,14 @@
 
 from __future__ import annotations
 
-import json
-import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 from agentscope.app.storage import StorageBase
-from agentscope.middleware import MiddlewareBase
+from agentscope.middleware import MiddlewareBase, TracingMiddleware
 
 from app.agentscope_service.progress_bridge import publish_agent_progress
-from app.middlewares.lifecycle import raw_agent_logs_enabled
-
-logger = logging.getLogger(__name__)
+from app.agentscope_service.task_context import resolve_task_context
 
 AgentMiddlewareFactory = Callable[[str | None, str | None, str | None], Awaitable[list[MiddlewareBase]]]
 _BI_WORKER_MARKERS = ("Datalogue BI Worker", "Dataset Query", "datalogue_query_dataset")
@@ -45,16 +41,18 @@ def build_datalogue_extra_agent_middlewares(*, storage: StorageBase | None = Non
             agent_id=agent_id,
             session_id=session_id,
         )
-        if worker_context is None:
-            return []
-        _log_worker("middleware.attached", worker_context=worker_context)
-        return [BIWorkerStreamingLogMiddleware(worker_context=worker_context)]
+        # TracingMiddleware 全局挂载（所有 agent），未配置 TracerProvider 时零开销短路。
+        # BIWorkerProgressMiddleware 只发布用户可见进度事件，不再打印自定义执行日志。
+        middlewares: list[MiddlewareBase] = [TracingMiddleware()]
+        if worker_context is not None:
+            middlewares.append(BIWorkerProgressMiddleware(worker_context=worker_context))
+        return middlewares
 
     return _extra_agent_middlewares
 
 
-class BIWorkerStreamingLogMiddleware(MiddlewareBase):
-    """AgentScope Middleware：流式记录 BI worker 的工作事件和 LLM I/O。"""
+class BIWorkerProgressMiddleware(MiddlewareBase):
+    """AgentScope Middleware：只发布 BI worker 的安全进度事件。"""
 
     def __init__(self, *, worker_context: dict[str, str | None]) -> None:
         self.worker_context = worker_context
@@ -65,7 +63,7 @@ class BIWorkerStreamingLogMiddleware(MiddlewareBase):
         input_kwargs: dict,
         next_handler: Callable[..., AsyncGenerator],
     ) -> AsyncGenerator:
-        """记录 worker 一次 reply 的开始、每个事件和结束。"""
+        """发布 worker 一次 reply 的开始、工具调用和结束进度。"""
 
         _publish_worker_progress(
             worker_context=self.worker_context,
@@ -74,36 +72,18 @@ class BIWorkerStreamingLogMiddleware(MiddlewareBase):
             title="BI Worker 开始处理",
             summary="BI Worker 已开始处理任务。",
         )
-        _log_worker(
-            "reply.started",
-            worker_context=self.worker_context,
-            agent_name=getattr(agent, "name", None),
-            input_type=type(input_kwargs.get("inputs")).__name__,
-        )
-        event_count = 0
+        del agent
         try:
             async for event in next_handler(**input_kwargs):
-                event_count += 1
-                _log_worker(
-                    "reply.event",
-                    worker_context=self.worker_context,
-                    **_event_summary(event),
-                )
                 _publish_tool_progress(worker_context=self.worker_context, event=event)
                 yield event
-        except Exception as exc:
+        except Exception:
             _publish_worker_progress(
                 worker_context=self.worker_context,
                 phase="reply",
                 status="failed",
                 title="BI Worker 处理失败",
                 summary="BI Worker 处理过程中发生错误，内部细节已隐藏。",
-            )
-            _log_worker(
-                "reply.failed",
-                worker_context=self.worker_context,
-                event_count=event_count,
-                error_type=type(exc).__name__,
             )
             raise
         _publish_worker_progress(
@@ -113,76 +93,6 @@ class BIWorkerStreamingLogMiddleware(MiddlewareBase):
             title="BI Worker 完成处理",
             summary="BI Worker 已完成本轮处理。",
         )
-        _log_worker(
-            "reply.completed",
-            worker_context=self.worker_context,
-            event_count=event_count,
-        )
-
-    async def on_model_call(
-        self,
-        agent: Any,
-        input_kwargs: dict,
-        next_handler: Callable[..., Awaitable[Any]],
-    ) -> Any:
-        """记录 BI worker 的模型调用摘要；raw 开关打开时打印完整 LLM I/O。"""
-
-        del agent
-        model = input_kwargs.get("current_model")
-        safe_input = _model_input_summary(input_kwargs)
-        _log_worker(
-            "llm.input",
-            worker_context=self.worker_context,
-            model=getattr(model, "model", None),
-            **safe_input,
-        )
-        if raw_agent_logs_enabled():
-            _log_worker(
-                "llm.input.raw",
-                worker_context=self.worker_context,
-                raw=_to_json_safe(
-                    {
-                        "messages": input_kwargs.get("messages"),
-                        "tools": input_kwargs.get("tools"),
-                        "tool_choice": input_kwargs.get("tool_choice"),
-                    },
-                    raw=True,
-                ),
-            )
-
-        result = await next_handler(**input_kwargs)
-        if isinstance(result, AsyncGenerator):
-            return self._log_streaming_model_output(result)
-
-        self._log_model_output(result)
-        return result
-
-    async def _log_streaming_model_output(self, result: AsyncGenerator) -> AsyncGenerator:
-        chunk_count = 0
-        async for chunk in result:
-            chunk_count += 1
-            self._log_model_output(chunk, chunk_index=chunk_count)
-            yield chunk
-        _log_worker(
-            "llm.output.stream_completed",
-            worker_context=self.worker_context,
-            chunk_count=chunk_count,
-        )
-
-    def _log_model_output(self, response: Any, *, chunk_index: int | None = None) -> None:
-        _log_worker(
-            "llm.output",
-            worker_context=self.worker_context,
-            chunk_index=chunk_index,
-            **_model_output_summary(response),
-        )
-        if raw_agent_logs_enabled():
-            _log_worker(
-                "llm.output.raw",
-                worker_context=self.worker_context,
-                chunk_index=chunk_index,
-                raw=_to_json_safe(response, raw=True),
-            )
 
 
 async def _bi_worker_context(
@@ -204,11 +114,25 @@ async def _bi_worker_context(
     if not any(marker in system_prompt for marker in _BI_WORKER_MARKERS):
         return None
     agent_name = getattr(agent_data, "name", None)
+
+    # 从 Redis 解析 task context（通过直接命中或 TeamRecord 反查 leader session）。
+    task_ctx = await resolve_task_context(
+        storage=storage,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+
     return {
         "user_id": user_id,
         "agent_id": agent_id,
         "agent_name": str(agent_name) if agent_name else None,
         "session_id": session_id,
+        "task_id": task_ctx.get("task_id"),
+        "thread_id": task_ctx.get("thread_id"),
+        "message_id": task_ctx.get("message_id"),
+        "trace_id": task_ctx.get("trace_id"),
+        "leader_session_id": task_ctx.get("leader_session_id"),
     }
 
 
@@ -273,6 +197,9 @@ def _publish_worker_progress(
         "tool_call_id": tool_call_id,
         "worker_agent_id": _safe_context_text(worker_context.get("agent_id")),
         "worker_session_id": _safe_context_text(worker_context.get("session_id")),
+        "task_id": _safe_context_text(worker_context.get("task_id")),
+        "thread_id": _safe_context_text(worker_context.get("thread_id")),
+        "message_id": _safe_context_text(worker_context.get("message_id")),
     }
     publish_agent_progress(
         user_id=worker_context.get("user_id"),
@@ -315,23 +242,46 @@ def _pending_tool_calls(event: Any) -> list[dict[str, Any]]:
 def _model_input_summary(input_kwargs: dict[str, Any]) -> dict[str, Any]:
     messages = input_kwargs.get("messages") or []
     tools = input_kwargs.get("tools") or []
+    # 估算输入字符数（前 50 条消息，避免超大上下文撑爆日志）。
+    input_text = ""
+    if isinstance(messages, list):
+        input_text = "".join(str(getattr(m, "content", m)) for m in messages[:50])
     return {
         "message_count": len(messages) if hasattr(messages, "__len__") else None,
         "tool_count": len(tools) if hasattr(tools, "__len__") else None,
         "tool_names": _tool_names(tools),
         "tool_choice": str(input_kwargs.get("tool_choice") or ""),
+        "input_chars": len(input_text),
     }
 
 
-def _model_output_summary(response: Any) -> dict[str, Any]:
-    content = getattr(response, "content", None)
+def _model_output_summary(
+    response: Any,
+    *,
+    chunk_index: int | None = None,
+    duration_ms: int | None = None,
+) -> dict[str, Any]:
+    content = _safe_getattr(response, "content")
+    finish_reason = _safe_getattr(response, "finish_reason") or _safe_getattr(response, "stop_reason")
     return {
         "response_type": type(response).__name__,
-        "is_last": getattr(response, "is_last", None),
+        "is_last": _safe_getattr(response, "is_last"),
         "content_type": type(content).__name__ if content is not None else None,
         "content_length": len(str(content)) if content is not None else None,
-        "usage": _to_json_safe(getattr(response, "usage", None), raw=False),
+        "chunk_index": chunk_index,
+        "output_chars": len(str(content)) if content is not None else 0,
+        "finish_reason": str(finish_reason) if finish_reason else None,
+        "duration_ms": duration_ms,
+        "usage": _to_json_safe(_safe_getattr(response, "usage"), raw=False),
     }
+
+
+def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
+    """安全的 getattr — 兼容 __getattr__ 抛出 KeyError 的对象（如 AgentScope StreamingEvent）。"""
+    try:
+        return getattr(obj, name, default)
+    except KeyError:
+        return default
 
 
 def _tool_names(tools: Any) -> list[str]:
@@ -369,13 +319,3 @@ def _to_json_safe(value: Any, *, raw: bool) -> Any:
 
 def _clip(value: str, limit: int = 300) -> str:
     return value if len(value) <= limit else f"{value[:limit]}..."
-
-
-def _log_worker(checkpoint: str, *, worker_context: dict[str, str | None], **fields: Any) -> None:
-    payload = {**worker_context, **fields}
-    safe_payload = {key: value for key, value in payload.items() if value is not None and value != ""}
-    logger.info(
-        "[agentscope.bi_worker.%s] %s",
-        checkpoint,
-        json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, default=str),
-    )

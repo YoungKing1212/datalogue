@@ -21,6 +21,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api import router as api_router
 from app.agentscope_service import create_embedded_agentscope_app
+from app.agentscope_service.otel_setup import setup_agentscope_tracing
 
 # 初始化带颜色的日志，可选持久化到文件
 settings = get_settings()
@@ -35,6 +36,8 @@ setup_logging(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    # OTel 必须在 AgentScope 子应用生命周期前初始化，否则 TracingMiddleware 会按 no-op 透传。
+    setup_agentscope_tracing(settings)
     async with AsyncExitStack() as stack:
         for child_app in getattr(app.state, "managed_lifespan_apps", []):
             # Starlette 挂载子应用不会自动进入子应用 lifespan；AgentScope 的 Redis 连接池依赖这里显式进入。

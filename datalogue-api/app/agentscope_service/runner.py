@@ -23,11 +23,14 @@ from typing import Any
 from agentscope.message import UserMsg
 from sqlalchemy.orm import Session
 
+from redis.asyncio import Redis
+
 from app.agentscope_service.client import AgentScopeServiceClient
 from app.agentscope_service.dataset_query_executor import execute_dataset_query_for_agent_team
 from app.agentscope_service.progress_bridge import agent_progress_subscription
 from app.agentscope_service.projection import project_agentscope_service_event
 from app.agentscope_service.registry import build_datalogue_leader_agent_spec
+from app.agentscope_service.task_context import store_task_context
 from app.core.config import Settings, get_settings
 from app.middlewares.lifecycle import log_lifecycle
 from app.models.agent_team_task import AgentTeamTask
@@ -82,6 +85,13 @@ class AgentScopeServiceTaskRunner:
             trace_id=task.trace_id,
             agent_id=leader_agent_id,
             service_session_id=service_session_id,
+        )
+
+        # 将 task context 写入 Redis，供 AgentScope Service 侧 worker 中间件反查。
+        await _store_runner_task_context(
+            settings=self.settings,
+            leader_session_id=service_session_id,
+            task=task,
         )
 
         await self.client.trigger_chat(
@@ -469,3 +479,53 @@ async def _merge_leader_and_progress_events(
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+
+
+async def _store_runner_task_context(
+    *,
+    settings: Any,
+    leader_session_id: str,
+    task: Any,
+) -> None:
+    """将 AgentTeamTask 的关键关联字段写入 Redis，供 worker 中间件反查。
+
+    Redis 连接参数从 Datalogue Settings 读取，与 AgentScope Service 共享同一 Redis。
+    """
+    try:
+
+        redis_kwargs = _redis_kwargs_for_task_context(settings)
+        redis_client = Redis(**redis_kwargs)
+        try:
+            await store_task_context(
+                redis_client,
+                leader_session_id=leader_session_id,
+                task_id=getattr(task, "task_id", None),
+                thread_id=getattr(task, "thread_id", None),
+                message_id=getattr(task, "message_id", None),
+                trace_id=getattr(task, "trace_id", None),
+            )
+        finally:
+            await redis_client.aclose()
+    except Exception:
+        import logging
+
+        _logger = logging.getLogger(__name__)
+        _logger.debug("Failed to store task context in Redis", exc_info=True)
+
+
+def _redis_kwargs_for_task_context(settings: Any) -> dict[str, Any]:
+    """从 Datalogue Settings 构建 aioredis 连接参数。"""
+    from urllib.parse import unquote, urlparse
+
+    redis_url = getattr(settings, "AGENTSCOPE_REDIS_URL", None) or "redis://localhost:6379/0"
+    parsed = urlparse(redis_url)
+    kwargs: dict[str, Any] = {
+        "host": parsed.hostname or "localhost",
+        "port": parsed.port or 6379,
+        "db": int(parsed.path.lstrip("/")) if parsed.path.lstrip("/") else 0,
+    }
+    if parsed.password:
+        kwargs["password"] = unquote(parsed.password)
+    if parsed.username:
+        kwargs["username"] = unquote(parsed.username)
+    return kwargs

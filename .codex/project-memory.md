@@ -253,3 +253,31 @@
 - 关键改动：补充 AgentScope `on_model_call` 模型调用日志方案，明确模型调用可观测入口放在 AgentScope 中间件层，不再围绕 LiteLLM adapter 设计。方案采用双层日志：默认只输出可长期保留的结构化摘要；`AGENT_DEBUG_RAW_LOGS` 显式开启时允许输出未脱敏完整 LLM 输入、工具 schema、tool_choice 和模型输出，用于现场排障。
 - 验证方式：本轮为方案文档完善，未改运行时代码；已按 AgentScope 2.0.3 中间件文档核对 `on_model_call` 与 `TracingMiddleware` 能力，并对齐现有 `BIWorkerStreamingLogMiddleware.on_model_call()`、`raw_agent_logs_enabled()` 开关。
 - 残留风险：raw 日志入口包含敏感上下文，后续落代码时必须确认 raw 内容只写后端日志，不进入 SSE、Workbench、artifact API、前端状态或普通业务响应；如果要接集中日志或 OTel exporter，需要另行评估采样、加密、保留期和访问审计。
+
+### 2026-07-06 09:30 · 生成当前系统架构图
+
+- 涉及文件：`outputs/datalogue-system-architecture.mmd`、`outputs/datalogue-system-architecture.svg`、`outputs/datalogue-system-architecture.png`、`.codex/project-memory.md`
+- 关键改动：基于当前代码中的前端路由、FastAPI API 聚合、Agent Team SSE 主入口、Workbench ViewModel、AgentScope Service、BI 原子工具链、语义数据集、存储与观测边界，生成一张系统全景架构图。图中突出 Datalogue Web 工作台、FastAPI 后端服务、Datalogue 业务运行层、AgentScope Service 执行层、BI 与语义能力层、存储外部依赖、观测治理七个分区。
+- 验证方式：执行 `mmdc -i outputs/datalogue-system-architecture.mmd -o outputs/datalogue-system-architecture.svg -b white` 与 `mmdc -i outputs/datalogue-system-architecture.mmd -o outputs/datalogue-system-architecture.png -b white -s 2` 成功；执行 `file outputs/datalogue-system-architecture.svg outputs/datalogue-system-architecture.png` 确认 PNG 为 `1568 x 950`；使用本地图片预览确认渲染非空且中文节点可读。
+- 残留风险：该图是系统全景图，节点和箭头较多，适合内部技术对齐；若用于管理汇报或对外材料，建议另做一版 6-8 条主链路的简化图。
+
+### 2026-07-06 09:34 · 生成非 Mermaid 的 Agent 系统架构图
+
+- 涉及文件：`outputs/datalogue-agent-system-architecture.svg`、`outputs/datalogue-agent-system-architecture.png`、`.codex/project-memory.md`
+- 关键改动：按当前 Agent 主链生成手写 SVG 架构图，不再使用 Mermaid。图中突出入口与用户可见层、Datalogue Host Runtime、AgentScope Service Agent Team、Datalogue BI Tools 四个分区，并标注 Leader 不直接查数、Team worker 身份门禁、TeamSay/Progress Bridge、事件投影、公开输出契约和 Datalogue 业务真相源边界。
+- 验证方式：先用 Quick Look 生成 PNG 时发现方形缩略图有裁切风险，改用 Chrome headless 按 SVG 原始画布渲染：`Google Chrome --headless --disable-gpu --hide-scrollbars --screenshot=outputs/datalogue-agent-system-architecture.png --window-size=1800,1180 file:///.../outputs/datalogue-agent-system-architecture.svg`；执行 `file` 与 `sips -g pixelWidth -g pixelHeight` 确认 PNG 为 `1800 x 1180`；本地预览确认图片完整、中文可读。
+- 残留风险：该图是当前 Agent 执行主链视角，未展开 Report/Python/Audit 等未来 worker 类型；如果这些 worker 真正接入，需要补对应工具门禁和结果契约。
+
+### 2026-07-06 09:56 · 自定义执行日志收口到 OTel
+
+- 涉及文件：`datalogue-api/app/middlewares/lifecycle.py`、`datalogue-api/app/middlewares/dataset_tool_logging.py`、`datalogue-api/app/agentscope_service/worker_logging.py`、`datalogue-api/app/agentscope_service/tools.py`、`datalogue-api/tests/test_agentic_architecture_p1_boundaries.py`、`datalogue-api/tests/test_agentscope_service_worker_logging.py`、`datalogue-api/tests/test_agentscope_service_tools.py`、`datalogue-api/tests/test_agentscope_dataset_runtime_bridge.py`、`docs/superpowers/plans/2026-07-06-agentscope-otel-model-call-logging.md`、`.codex/project-memory.md`
+- 关键改动：去除前期为排障新增的 Datalogue 自定义执行日志输出，`log_lifecycle()`、`log_output()` 保持静默兼容；`DatasetRuntimeToolLoggingMiddleware` 改为 ToolMiddleware 透传兼容壳；`BIWorkerStreamingLogMiddleware` 收口为 `BIWorkerProgressMiddleware`，只发布前端安全进度事件，不再持有 `on_model_call` 或 `[agentscope.bi_worker.*]` 日志；AgentScope Service 工具层移除 toolkit/dataset_candidates/dataset_query started/completed 日志。模型、reply、tool_execution 观测统一交给 AgentScope `TracingMiddleware` / OTel。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentic_architecture_p1_boundaries.py tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_tools.py tests/test_agentscope_dataset_runtime_bridge.py -q` 为 `38 passed, 2 warnings`；执行 `cd datalogue-api && .venv/bin/ruff check app/agentscope_service/worker_logging.py app/agentscope_service/tools.py app/middlewares/lifecycle.py app/middlewares/dataset_tool_logging.py tests/test_agentic_architecture_p1_boundaries.py tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_tools.py tests/test_agentscope_dataset_runtime_bridge.py` 通过；执行 `cd datalogue-api && .venv/bin/python -m compileall app/agentscope_service app/middlewares tests/test_agentic_architecture_p1_boundaries.py tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_tools.py tests/test_agentscope_dataset_runtime_bridge.py -q` 通过；扫描确认应用代码中不再有 `[datalogue.lifecycle]`、`[datalogue.output]`、`[agentscope.bi_worker.*]`、`[agentscope.dataset_tool.*]` 或 `BIWorkerStreamingLogMiddleware` 输出点。
+- 残留风险：普通后端日志的 grep 排障能力会下降，后续需要依赖 OTel exporter、异常栈、业务 artifact 和前端/Workbench 事件对齐；当前只跑了目标后端测试，未重新做真实页面 smoke。
+
+### 2026-07-06 10:10 · OTel 本地日志 exporter 接入
+
+- 涉及文件：`datalogue-api/app/agentscope_service/otel_setup.py`、`datalogue-api/app/main.py`、`datalogue-api/app/core/config.py`、`datalogue-api/tests/test_agentscope_service_worker_logging.py`、`datalogue-api/tests/test_agentscope_service_factory.py`、`docs/superpowers/plans/2026-07-06-agentscope-otel-model-call-logging.md`、`.codex/project-memory.md`
+- 关键改动：定位到 AgentScope `TracingMiddleware` 只创建 OTel span，不会自动打印日志；此前 `setup_agentscope_tracing()` 也没有接入 FastAPI lifespan，导致即使 `.env` 打开 tracing 也看不到 span 日志。新增 `AGENTSCOPE_OTEL_LOGGING_ENABLED`，在 tracing 开启时默认用本地 logging span exporter 打印 `[agentscope.otel.span]` JSON，不启用 OTLP 外发；同时在 `main.lifespan()` 中先初始化 OTel，再进入 AgentScope 子应用 lifespan。
+- 验证方式：先补失败测试确认无 OTLP 时必须装配 logging exporter、父应用 lifespan 必须先初始化 OTel；实现后执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentic_architecture_p1_boundaries.py tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_factory.py tests/test_agentscope_service_tools.py tests/test_agentscope_dataset_runtime_bridge.py -q` 为 `43 passed, 2 warnings`；执行 `cd datalogue-api && .venv/bin/ruff check app/agentscope_service/otel_setup.py app/main.py app/core/config.py app/agentscope_service/worker_logging.py tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_factory.py` 通过；执行 `cd datalogue-api && .venv/bin/python -m compileall app/agentscope_service app/main.py app/core/config.py tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_factory.py -q` 通过。
+- 残留风险：`[agentscope.otel.span]` 会包含 AgentScope span attributes，可能包括模型 messages/tools/output 等调试敏感内容；仅建议本地或短时间排障打开 `AGENTSCOPE_OTEL_TRACING_ENABLED=true`，定位完成后关闭。

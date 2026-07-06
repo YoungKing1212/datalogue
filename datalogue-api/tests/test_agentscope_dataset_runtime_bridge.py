@@ -108,7 +108,7 @@ def test_bi_atomic_tools_are_toolbase_classes_exposed_by_toolkit(db_session):
 
 
 @pytest.mark.asyncio
-async def test_dataset_runtime_tool_logging_middleware_wraps_toolbase_calls(caplog):
+async def test_dataset_runtime_tool_logging_middleware_passthroughs_without_custom_logs(caplog):
     class DummyDatasetTool(ToolBase):
         name = "execute_compiled_query"
         description = "Dummy DatasetAgent tool."
@@ -160,13 +160,15 @@ async def test_dataset_runtime_tool_logging_middleware_wraps_toolbase_calls(capl
         ]
 
     assert len(chunks) == 1
+    assert chunks[0].state is ToolResultState.SUCCESS
     logs = "\n".join(record.getMessage() for record in caplog.records)
-    assert "[agentscope.dataset_tool.call]" in logs
-    assert "[agentscope.dataset_tool.result]" in logs
-    assert '"tool": "execute_compiled_query"' in logs
-    assert '"has_compiled_query_ref": true' in logs
+    assert "[agentscope.dataset_tool.call]" not in logs
+    assert "[agentscope.dataset_tool.result]" not in logs
+    assert "execute_compiled_query" not in logs
+    assert "compiled_query_ref" not in logs
     for forbidden in ("SELECT", "user_logs", "sql", "raw_rows", "account", "alice", "schema", "query_plan"):
         assert forbidden.lower() not in logs.lower()
+    assert logs == ""
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -32,7 +31,6 @@ from app.schemas.bi_workbench import sanitize_event_payload
 
 
 AgentToolFactory = Callable[[str | None, str | None, str | None], Awaitable[list[ToolBase]]]
-logger = logging.getLogger(__name__)
 
 
 def build_datalogue_extra_agent_tools(*, storage: StorageBase | None = None) -> AgentToolFactory:
@@ -53,8 +51,6 @@ def build_datalogue_extra_agent_tools(*, storage: StorageBase | None = None) -> 
         )
         if worker_context is None:
             return []  # Dataset 查询只能由 Team worker 调用；拿不到身份时 fail-closed，避免 Leader 直接查数。
-        tool_names = ["datalogue_select_candidate_datasets", "datalogue_query_dataset"]
-        _log_bi_worker_event("toolkit.attached", worker_context=worker_context, tool_names=tool_names)
         return [
             build_datalogue_select_candidate_datasets_tool(worker_context=worker_context),
             build_datalogue_query_dataset_tool(worker_context=worker_context),
@@ -76,7 +72,7 @@ async def _team_worker_context(
     agent_id: str | None,
     session_id: str | None,
 ) -> dict[str, str | None] | None:
-    """读取 Team worker 的安全日志上下文；身份不满足时返回 None。"""
+    """读取 Team worker 的安全业务上下文；身份不满足时返回 None。"""
 
     if storage is None or not user_id or not agent_id:
         return None
@@ -107,46 +103,16 @@ def build_datalogue_query_dataset_tool(*, worker_context: dict[str, str | None] 
     ) -> ToolChunk:
         """Run the confirmed Datalogue Dataset query and return safe result refs."""
 
-        _log_bi_worker_dataset_query(
-            "started",
-            worker_context=worker_context,
+        result = await execute_dataset_query_for_agent_team(
             dataset_id=dataset_id,
+            confirmed_question=confirmed_question,
+            task_goal=task_goal,
+            user_confirmation_id=user_confirmation_id,
+            routing_rationale=routing_rationale,
             trace_id=trace_id,
-            confirmed_question_length=len(confirmed_question or ""),
-            has_task_goal=bool(task_goal),
-            has_user_confirmation=bool(user_confirmation_id),
-            has_routing_rationale=bool(routing_rationale),
+            parent_run_id=parent_run_id,
         )
-        try:
-            result = await execute_dataset_query_for_agent_team(
-                dataset_id=dataset_id,
-                confirmed_question=confirmed_question,
-                task_goal=task_goal,
-                user_confirmation_id=user_confirmation_id,
-                routing_rationale=routing_rationale,
-                trace_id=trace_id,
-                parent_run_id=parent_run_id,
-            )
-        except Exception as exc:
-            _log_bi_worker_dataset_query(
-                "failed",
-                worker_context=worker_context,
-                dataset_id=dataset_id,
-                trace_id=trace_id,
-                error_type=type(exc).__name__,
-            )
-            raise
         payload = result.to_tool_payload()
-        _log_bi_worker_dataset_query(
-            "completed",
-            worker_context=worker_context,
-            dataset_id=dataset_id,
-            trace_id=trace_id,
-            artifact_ref=payload.get("artifact_ref"),
-            checkpoint_ref=payload.get("checkpoint_ref"),
-            row_count=payload.get("row_count"),
-            column_count=payload.get("column_count"),
-        )
         _publish_worker_business_final(worker_context=worker_context, payload=payload)
         return ToolChunk(
             content=[TextBlock(text=json.dumps(payload, ensure_ascii=False, default=str))],
@@ -174,22 +140,10 @@ def build_datalogue_select_candidate_datasets_tool(
         """Select safe dataset candidates for user confirmation before querying."""
 
         safe_limit = max(1, min(int(limit or 5), 8))
-        _log_bi_worker_event(
-            "dataset_candidates.started",
-            worker_context=worker_context,
-            question_length=len(question or ""),
-            limit=safe_limit,
-        )
         payload = select_candidate_datasets_for_agent_team(question=question, limit=safe_limit)
         safe_payload = sanitize_event_payload(payload)
         if not isinstance(safe_payload, dict):
             safe_payload = {"summary": "BI worker 未能生成候选数据集。"}
-        _log_bi_worker_event(
-            "dataset_candidates.completed",
-            worker_context=worker_context,
-            candidate_count=len(((safe_payload.get("route_decision") or {}).get("candidates") or [])),
-            decision=(safe_payload.get("route_decision") or {}).get("decision"),
-        )
         if safe_payload.get("requires_user_confirmation"):
             # 候选数据集确认是本轮用户可见终点；即使 LLM 忘记调用 TeamSay，也不能让主链落到空 final。
             _publish_worker_business_final(worker_context=worker_context, payload=safe_payload)
@@ -310,34 +264,3 @@ def _dataset_candidate_payload(*, dataset: SemanticDataset, score: int, matched:
         "score": score,
         "requires_confirmation": True,
     }
-
-
-def _log_bi_worker_dataset_query(
-    checkpoint: str,
-    *,
-    worker_context: dict[str, str | None] | None,
-    **fields: Any,
-) -> None:
-    """打印 BI worker 查询工具安全日志，不记录问题原文、SQL、schema 或 raw rows。"""
-
-    _log_bi_worker_event(f"dataset_query.{checkpoint}", worker_context=worker_context, **fields)
-
-
-def _log_bi_worker_event(
-    checkpoint: str,
-    *,
-    worker_context: dict[str, str | None] | None,
-    **fields: Any,
-) -> None:
-    """打印 BI worker 安全结构化日志。"""
-
-    payload = {
-        **(worker_context or {}),
-        **fields,
-    }
-    safe_payload = {key: value for key, value in payload.items() if value is not None}
-    logger.info(
-        "[agentscope.bi_worker.%s] %s",
-        checkpoint,
-        json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, default=str),
-    )

@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     # 本地调试开关：打开后打印 Agent 原始 prompt 和返回值。
     AGENT_DEBUG_RAW_LOGS: bool = False
 
+    # ---- AgentScope OpenTelemetry 配置 ----
+    # WARNING: TracingMiddleware 会将模型请求/响应内容（messages、tools schema、
+    # 模型输出）写入 span 属性。开启 exporter 后这些内容会外发到 collector。
+    # 默认全部关闭；排障时按短时间窗口打开。
+    AGENTSCOPE_OTEL_TRACING_ENABLED: bool = False       # 启用 tracing（创建 span）
+    AGENTSCOPE_OTEL_LOGGING_ENABLED: bool = True        # tracing 开启时，把 span 打到后端日志
+    AGENTSCOPE_OTEL_EXPORTER_ENABLED: bool = False      # 启用 exporter（外发 span）
+    AGENTSCOPE_OTEL_EXPORTER_ENDPOINT: str | None = None
+    AGENTSCOPE_OTEL_SERVICE_NAME: str = "datalogue-api"
+
     # AgentScope 官方 Agent Service 子应用挂载配置；默认开启，让主链从 /api 旁路进入官方 service。
     AGENTSCOPE_SERVICE_ENABLED: bool = True
     AGENTSCOPE_MOUNT_PATH: str = "/agentscope"

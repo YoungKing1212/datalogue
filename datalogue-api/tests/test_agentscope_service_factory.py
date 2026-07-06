@@ -170,3 +170,52 @@ def test_main_lifespan_enters_mounted_agentscope_service_lifespan(monkeypatch):
         assert events == ["child-enter"]
 
     assert events == ["child-enter", "child-exit"]
+
+
+def test_main_lifespan_initializes_agentscope_otel_before_child_lifespan(monkeypatch):
+    """父应用启动时先初始化 AgentScope OTel，再进入 AgentScope 子应用 lifespan。"""
+
+    from app import main as main_module
+
+    events: list[str] = []
+
+    @asynccontextmanager
+    async def fake_child_lifespan(_app):
+        events.append("child-enter")
+        yield
+        events.append("child-exit")
+
+    def fake_create_embedded_agentscope_app(_settings):
+        return FastAPI(title="fake-agentscope", lifespan=fake_child_lifespan)
+
+    def fake_setup_agentscope_tracing(settings):
+        assert settings is main_module.settings
+        events.append("otel")
+
+    monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        main_module,
+        "create_embedded_agentscope_app",
+        fake_create_embedded_agentscope_app,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "setup_agentscope_tracing",
+        fake_setup_agentscope_tracing,
+        raising=False,
+    )
+
+    root_app = FastAPI(lifespan=main_module.lifespan)
+    main_module.mount_agentscope_service(
+        root_app,
+        Settings(
+            AGENTSCOPE_SERVICE_ENABLED=True,
+            AGENTSCOPE_MOUNT_PATH="/agentscope",
+        ),
+    )
+
+    with TestClient(root_app):
+        assert events == ["otel", "child-enter"]
+
+    assert events == ["otel", "child-enter", "child-exit"]

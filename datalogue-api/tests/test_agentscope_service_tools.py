@@ -89,7 +89,7 @@ async def test_extra_agent_tools_fail_closed_without_agent_record():
 
 
 @pytest.mark.asyncio
-async def test_bi_worker_dataset_tool_prints_safe_worker_logs(monkeypatch, caplog):
+async def test_bi_worker_dataset_tool_leaves_execution_logs_to_otel(monkeypatch, caplog):
     from app.agentscope_service import tools as tools_module
     from app.agentscope_service.dataset_query_executor import AgentTeamDatasetQueryResult
     from app.agentscope_service.tools import build_datalogue_extra_agent_tools
@@ -151,16 +151,15 @@ async def test_bi_worker_dataset_tool_prints_safe_worker_logs(monkeypatch, caplo
         "disabled": False,
     }
     logs = "\n".join(record.getMessage() for record in caplog.records)
-    assert "[agentscope.bi_worker.toolkit.attached]" in logs
-    assert "[agentscope.bi_worker.dataset_query.started]" in logs
-    assert "[agentscope.bi_worker.dataset_query.completed]" in logs
-    assert '"agent_id": "worker-bi-1"' in logs
-    assert '"agent_name": "bi-worker"' in logs
-    assert '"session_id": "worker-session-1"' in logs
-    assert '"dataset_id": 12' in logs
-    assert '"row_count": 2' in logs
+    assert "[agentscope.bi_worker." not in logs
+    assert "worker-bi-1" not in logs
+    assert "bi-worker" not in logs
+    assert "worker-session-1" not in logs
+    assert "dataset_id" not in logs
+    assert "row_count" not in logs
     assert "查询杨凯2025年日志" not in logs
     assert "SELECT" not in logs
+    assert logs == ""
 
 
 @pytest.mark.asyncio

@@ -27,7 +27,7 @@ def test_p1_middlewares_new_paths_own_runtime_logging():
 
 
 def test_p1_lifecycle_logging_new_path_is_silent_after_agent_debug_log_cutover(caplog):
-    from app.middlewares.lifecycle import log_lifecycle
+    from app.middlewares.lifecycle import log_lifecycle, log_output
 
     with caplog.at_level(logging.INFO, logger="app.middlewares.lifecycle"):
         log_lifecycle(
@@ -37,11 +37,18 @@ def test_p1_lifecycle_logging_new_path_is_silent_after_agent_debug_log_cutover(c
             schema_context="secret schema",
             artifact_ref="artifact:1",
         )
+        log_output(
+            event_type="message.completed",
+            trace_id="trace-1",
+            summary="查询已完成",
+            artifact_ref="artifact:1",
+        )
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert "SELECT" not in logs
     assert "secret schema" not in logs
     assert "[datalogue.lifecycle]" not in logs
+    assert "[datalogue.output]" not in logs
     assert logs == ""
 
 

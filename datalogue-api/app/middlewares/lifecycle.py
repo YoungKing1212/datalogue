@@ -84,9 +84,9 @@ def log_agent_io(agent: str, stage: str, **fields: Any) -> None:
 
 
 def log_output(**fields: Any) -> None:
-    """输出 Datalogue 用户可见结果摘要，仍复用同一套敏感执行态脱敏规则。"""
+    """用户可见结果日志已切到 OTel；保留函数签名避免迁移期调用方大面积改动。"""
 
-    logger.info("[datalogue.output] %s", json.dumps(_sanitize(fields), ensure_ascii=False, sort_keys=True))
+    return None
 
 
 def _sanitize(value: Any) -> Any:
