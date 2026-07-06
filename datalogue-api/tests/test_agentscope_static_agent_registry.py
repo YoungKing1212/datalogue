@@ -62,10 +62,21 @@ def test_agent_team_prompts_allow_official_team_tools_only():
 
 def test_worker_template_specs_convert_to_agentscope_subagent_templates():
     from agentscope.app import SubAgentTemplate
-    from agentscope.permission import PermissionMode
+    from agentscope.permission import PermissionBehavior, PermissionMode
     from app.agentscope_service.registry import build_datalogue_worker_template_specs
 
     template = build_datalogue_worker_template_specs()[0].to_subagent_template()
+    expected_allow_rules = {
+        "TeamSay",
+        "datalogue_describe_dataset_capability",
+        "datalogue_execute_query_plan",
+        "datalogue_profile_candidate_values",
+        "datalogue_query_dataset",
+        "datalogue_recall_query_assets",
+        "datalogue_request_schema_slice",
+        "datalogue_select_candidate_datasets",
+        "datalogue_validate_query_support",
+    }
 
     assert isinstance(template, SubAgentTemplate)
     assert template.type == "bi"
@@ -75,11 +86,12 @@ def test_worker_template_specs_convert_to_agentscope_subagent_templates():
     assert template.override_leader_mode is True
     assert template.extend_leader_permission_rules is False
     assert template.extend_leader_working_directories is False
-    assert set(template.permission_context.allow_rules) == {
-        "TeamSay",
-        "datalogue_query_dataset",
-        "datalogue_select_candidate_datasets",
-    }
+    assert set(template.permission_context.allow_rules) == expected_allow_rules
+    for tool_name in expected_allow_rules:
+        [rule] = template.permission_context.allow_rules[tool_name]
+        assert rule.tool_name == tool_name
+        assert rule.behavior == PermissionBehavior.ALLOW
+        assert rule.source == "datalogue-bi-worker-template"
 
 
 @pytest.mark.asyncio
@@ -122,6 +134,12 @@ async def test_extra_agent_tools_registers_non_read_only_dataset_function_tool(m
 
     assert [tool.name for tool in registered_tools] == [
         "datalogue_select_candidate_datasets",
+        "datalogue_describe_dataset_capability",
+        "datalogue_recall_query_assets",
+        "datalogue_request_schema_slice",
+        "datalogue_profile_candidate_values",
+        "datalogue_validate_query_support",
+        "datalogue_execute_query_plan",
         "datalogue_query_dataset",
     ]
     tool = next(item for item in registered_tools if item.name == "datalogue_query_dataset")
@@ -216,6 +234,13 @@ def test_prompt_and_tool_boundary_forbid_private_tokens():
     assert "TeamSay" in LEADER_AGENT_SYSTEM_PROMPT
     assert "安全 Dataset Query 工具" in BI_WORKER_PROMPT
     assert "datalogue_select_candidate_datasets" in BI_WORKER_PROMPT
+    assert "datalogue_describe_dataset_capability" in BI_WORKER_PROMPT
+    assert "datalogue_recall_query_assets" in BI_WORKER_PROMPT
+    assert "datalogue_execute_query_plan" in BI_WORKER_PROMPT
+    assert "L0/L1/L5" in BI_WORKER_PROMPT
+    assert "L2/L3" in BI_WORKER_PROMPT
+    assert "Query Plan JSON" in BI_WORKER_PROMPT
+    assert "不得生成 SQL" in BI_WORKER_PROMPT
     assert "严禁再次调用 datalogue_select_candidate_datasets" in BI_WORKER_PROMPT
     assert "不得仅用自然语言声称已汇报" in BI_WORKER_PROMPT
     assert "dataset_query_result" in BI_WORKER_PROMPT

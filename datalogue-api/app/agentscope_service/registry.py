@@ -107,17 +107,20 @@ BI_WORKER_PROMPT = f"""
 
 固定能力边界：
 - 只处理 Datalogue Dataset Query 类问数任务。
-- 只能调用 Datalogue 暴露的安全候选数据集筛选工具和 Dataset Query 工具。
-- 如果 leader 已经提供明确 dataset_id，必须直接调用 datalogue_query_dataset(dataset_id=该值, confirmed_question=用户原始问题)；严禁再次调用 datalogue_select_candidate_datasets，严禁要求 Leader 或用户重新确认 dataset_id。
+- 只能调用 Datalogue 暴露的安全候选数据集筛选工具、安全 Dataset Query 工具、progressive L0-L5 Dataset Query 工具和 TeamSay。
 - 如果 leader 没有提供 dataset_id，必须先调用 datalogue_select_candidate_datasets(question=用户原始问题) 筛选候选数据集，再用 TeamSay 将工具返回的 dataset_candidates JSON 原样安全汇报给 leader；不要猜测一个 dataset_id。
 - 候选数据集筛选后不得仅用自然语言声称已汇报、等待确认或任务已完成；必须真正调用 TeamSay 工具回传 dataset_candidates JSON。
-- 调用安全 Dataset Query 工具前必须已经拿到明确且经用户确认的 dataset_id。
-- datalogue_query_dataset 成功后，必须使用 TeamSay 将工具返回的 dataset_query_result JSON 原样安全汇报给 {{leader_name}}；不要只用自然语言说“已完成”，必须保留 answer_summary、artifact_ref、result_ref、checkpoint_ref、row_count、column_count 和 artifact_card。
+- 如果 leader 已经提供明确 dataset_id，必须跳过重复筛选，严禁再次调用 datalogue_select_candidate_datasets，按 L0/L1/L5 固定骨架执行：datalogue_describe_dataset_capability -> datalogue_recall_query_assets -> datalogue_execute_query_plan。
+- L2/L3 按需补充：字段口径、join、展示语义不足时调用 datalogue_request_schema_slice；实体、年份、枚举覆盖不确定时调用 datalogue_profile_candidate_values。
+- datalogue_validate_query_support 可以主动预检查询是否受支持；datalogue_execute_query_plan 会强制校验，不允许绕过校验。
+- 可以生成 Query Plan JSON 作为 datalogue_execute_query_plan 的输入，但不得生成 SQL、执行 SQL、读取 raw rows 或自由发明 join 条件。
+- Query Plan join 必须引用 relationship_ref；字段必须来自 L1/L2 返回的 asset_ref，不得凭空使用 schema 字段。
+- datalogue_execute_query_plan 成功后，必须使用 TeamSay 将工具返回的 dataset_query_result JSON 原样安全汇报给 {{leader_name}}；不要只用自然语言说“已完成”，必须保留 answer_summary、artifact_ref、result_ref、checkpoint_ref、row_count、column_count 和 artifact_card。
 - 不得使用 Bash、Read、Write、Edit、Glob、Grep 或任何文件/命令行工具发现数据集、扫描工作区或读取项目文件。
-- 只能回传 answer_summary、artifact_ref、result_ref、checkpoint_ref、row_count、column_count、artifact_card 和必要失败原因。
+- TeamSay 只允许输出安全摘要、refs、card、澄清问题或不支持原因；不得输出 SQL、完整 schema、raw rows、DSL、内部 Query Plan JSON、repair patch、数据库原始错误。
 
 安全要求：
-- 不输出 SQL、schema、raw rows、DSL、query_plan、repair patch 或内部执行载荷。
+- 不输出 SQL、schema、raw rows、DSL、query_plan、Query Plan JSON、repair patch 或内部执行载荷。
 - 不调用原生移交兼容层，不调用自研直接查询执行器。
 - 完成或失败后必须使用 TeamSay 向 {{leader_name}} 汇报安全摘要。
 
@@ -132,6 +135,55 @@ def _bi_worker_permission_context() -> PermissionContext:
     return PermissionContext(
         mode=PermissionMode.DONT_ASK,
         allow_rules={
+            # progressive 查询工具按 L0-L5 分层授权；worker 仍不能继承 leader 的文件/命令权限。
+            "datalogue_describe_dataset_capability": [
+                PermissionRule(
+                    tool_name="datalogue_describe_dataset_capability",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_recall_query_assets": [
+                PermissionRule(
+                    tool_name="datalogue_recall_query_assets",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_request_schema_slice": [
+                PermissionRule(
+                    tool_name="datalogue_request_schema_slice",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_profile_candidate_values": [
+                PermissionRule(
+                    tool_name="datalogue_profile_candidate_values",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_validate_query_support": [
+                PermissionRule(
+                    tool_name="datalogue_validate_query_support",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_execute_query_plan": [
+                PermissionRule(
+                    tool_name="datalogue_execute_query_plan",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
             # FunctionTool 默认要求显式授权；这里用工具名级 allow 保证 Dataset 查询不会被 DONT_ASK 拒绝。
             "datalogue_query_dataset": [
                 PermissionRule(
