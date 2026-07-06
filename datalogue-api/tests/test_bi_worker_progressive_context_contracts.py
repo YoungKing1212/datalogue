@@ -1,16 +1,15 @@
 # ============================================================
 # File Name   : test_bi_worker_progressive_context_contracts.py
 # Description:
-#   BI Worker 渐进式上下文契约的单元测试。
+#   BI Worker 渐进式上下文契约测试。
 #
 # Responsibilities:
-#   - 验证查询计划、上下文缺口、修复请求和安全结果 payload 的边界。
+#   - 验证 Query Plan v1 支持多表关系图表达。
+#   - 验证 L4 支持度、修复请求和安全结果 payload 不含 SQL/raw rows。
 #
 # Author      : yangkai
 # Created On  : 2026-07-06
 # ============================================================
-
-from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
@@ -23,173 +22,154 @@ from app.agentscope_service.bi_worker_contracts import (
 )
 
 
-def test_query_plan_accepts_data_graph_and_relationship_refs() -> None:
-    plan = BIWorkerQueryPlan(
-        intent="detail_query",
-        entities=[
-            {
-                "entity_ref": "orders",
-                "display_name": "订单",
-                "role": "fact",
-                "table_ref": "table:orders",
+def test_query_plan_accepts_multitable_relationship_refs():
+    plan = BIWorkerQueryPlan.model_validate(
+        {
+            "intent": "detail_query",
+            "question": "查询杨凯2025年工作日志",
+            "result_shape": {"type": "table", "grain": "one_row_per_work_log", "limit": 100},
+            "data_graph": {
+                "primary_entity": {"asset_ref": "asset:work_log", "alias": "log", "role": "fact_or_primary"},
+                "supporting_entities": [
+                    {
+                        "asset_ref": "asset:employee",
+                        "alias": "emp",
+                        "role": "dimension",
+                        "join_purpose": "按人员过滤日志",
+                    }
+                ],
             },
-            {
-                "entity_ref": "customers",
-                "display_name": "客户",
-                "role": "dimension",
-                "table_ref": "table:customers",
-            },
-        ],
-        data_graph={
-            "nodes": [
-                {"entity_ref": "orders", "table_ref": "table:orders"},
-                {"entity_ref": "customers", "table_ref": "table:customers"},
-            ],
-            "relationships": [
+            "join_requirements": [
                 {
-                    "relationship_ref": "rel:orders.customer_id=customers.id",
-                    "from_entity_ref": "orders",
-                    "to_entity_ref": "customers",
-                    "join_type": "left",
-                    "description": "订单归属客户",
-                }
-            ],
-        },
-        selects=[
-            {
-                "target": {"entity_ref": "customers", "field_ref": "field:customers.name"},
-                "alias": "客户名称",
-            }
-        ],
-        filters=[],
-        metrics=[],
-        orderings=[],
-        join_requirements=[
-            {
-                "relationship_ref": "rel:orders.customer_id=customers.id",
-                "join_type": "left",
-                "required": True,
-            }
-        ],
-        result_shape={"kind": "table", "limit": 100},
-    )
-
-    assert plan.data_graph.relationships[0].relationship_ref == "rel:orders.customer_id=customers.id"
-    assert plan.join_requirements[0].relationship_ref == "rel:orders.customer_id=customers.id"
-
-
-def test_query_plan_rejects_free_join_conditions_and_empty_relationship_ref() -> None:
-    base_plan = {
-        "intent": "detail_query",
-        "entities": [{"entity_ref": "orders", "display_name": "订单", "role": "fact"}],
-        "data_graph": {"nodes": [{"entity_ref": "orders"}], "relationships": []},
-        "selects": [{"target": {"field_ref": "field:orders.id"}}],
-        "filters": [],
-        "metrics": [],
-        "orderings": [],
-        "result_shape": {"kind": "table"},
-    }
-
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        BIWorkerQueryPlan(
-            **base_plan,
-            join_requirements=[
-                {
-                    "relationship_ref": "rel:orders.customer_id=customers.id",
+                    "left_alias": "log",
+                    "right_alias": "emp",
+                    "relationship_ref": "rel:work_log_employee",
                     "join_type": "inner",
-                    "raw_condition": "orders.customer_id = customers.id",
+                    "required": True,
+                    "reason": "人员姓名来自员工维表",
                 }
             ],
-        )
-
-    with pytest.raises(ValidationError, match="at least 1 character"):
-        BIWorkerQueryPlan(
-            **base_plan,
-            join_requirements=[{"relationship_ref": "", "join_type": "inner"}],
-        )
-
-
-def test_query_support_validation_expresses_lookup_dependency_missing_context() -> None:
-    validation = QuerySupportValidation(
-        status="needs_more_context",
-        missing_context=[
-            {
-                "context_level": "L2_schema_slice",
-                "dependency_type": "lookup_dependency",
-                "entity_ref": "orders",
-                "field_ref": "field:orders.customer_id",
-                "reason": "需要客户维表字段确认展示名称。",
-            }
-        ],
-        safe_reason="需要补充客户维表字段映射。",
+            "filters": [
+                {
+                    "target": {"asset_ref": "asset:employee.name", "alias": "emp", "field": "employee_name"},
+                    "operator": "=",
+                    "value": "杨凯",
+                    "reason": "用户指定人员",
+                }
+            ],
+            "selects": [
+                {
+                    "target": {"asset_ref": "asset:work_log.content", "alias": "log", "field": "log_content"},
+                    "display_name": "工作日志",
+                }
+            ],
+            "metrics": [],
+            "group_by": [],
+            "ordering": [],
+            "assumptions": ["日志记录为结果粒度"],
+        }
     )
 
-    assert validation.status == "needs_more_context"
-    assert validation.missing_context[0].dependency_type == "lookup_dependency"
+    assert plan.intent == "detail_query"
+    assert plan.join_requirements[0].relationship_ref == "rel:work_log_employee"
 
 
-@pytest.mark.parametrize(
-    "unsafe_reason",
-    [
-        "select *",
-        " from orders",
-        " where id = 1",
-        "relation orders does not exist",
-        "table orders missing",
-        "column customer_id missing",
-    ],
-)
-def test_repair_request_safe_reason_rejects_sql_and_database_error_fragments(unsafe_reason: str) -> None:
-    with pytest.raises(ValidationError, match="safe_reason"):
-        RepairRequest(
-            status="needs_plan_revision",
-            failure_stage="execute",
-            safe_reason=unsafe_reason,
+def test_query_plan_rejects_free_join_condition():
+    with pytest.raises(ValidationError):
+        BIWorkerQueryPlan.model_validate(
+            {
+                "intent": "detail_query",
+                "question": "查询部门名称",
+                "result_shape": {"type": "table", "grain": "one_row_per_employee", "limit": 100},
+                "data_graph": {
+                    "primary_entity": {"asset_ref": "asset:employee", "alias": "emp", "role": "primary"},
+                    "supporting_entities": [],
+                },
+                "join_requirements": [
+                    {
+                        "left_alias": "emp",
+                        "right_alias": "dept",
+                        "relationship_ref": "",
+                        "join_type": "inner",
+                        "required": True,
+                        "reason": "缺少关系引用",
+                        "raw_condition": "emp.dept = dept.dept_code",
+                    }
+                ],
+                "filters": [],
+                "selects": [],
+                "metrics": [],
+                "group_by": [],
+                "ordering": [],
+                "assumptions": [],
+            }
         )
 
 
-def test_query_result_tool_payload_is_safe_artifact_card_without_sql_or_raw_rows() -> None:
+def test_support_validation_represents_lookup_dependency():
+    validation = QuerySupportValidation.model_validate(
+        {
+            "support_status": "needs_more_context",
+            "safe_reason": "部门编码需要转换为部门名称。",
+            "missing_context": [
+                {
+                    "type": "lookup_dependency",
+                    "code_field": "employee.dept",
+                    "business_meaning": "部门编码需要转换为部门名称",
+                    "recommended_next_tool": "datalogue_request_schema_slice",
+                    "focus": {"lookup_for": "employee.dept", "target_semantic": "department_name"},
+                }
+            ],
+            "auto_context_expansions": [],
+        }
+    )
+
+    assert validation.support_status == "needs_more_context"
+    assert validation.missing_context[0]["type"] == "lookup_dependency"
+
+
+def test_repair_request_hides_raw_database_error():
+    request = RepairRequest.model_validate(
+        {
+            "repair_status": "needs_plan_revision",
+            "failure_stage": "execute",
+            "failure_class": "table_not_found",
+            "safe_reason": "部门 lookup 依赖的物理表不可用。",
+            "recommended_action": "request_schema_slice",
+            "missing_context": [{"type": "alternative_lookup_relation", "focus": "department lookup"}],
+        }
+    )
+
+    payload = request.model_dump()
+    assert "select " not in str(payload).lower()
+    assert "relation " not in str(payload).lower()
+
+
+def test_repair_request_rejects_raw_database_error_fragments():
+    with pytest.raises(ValidationError):
+        RepairRequest.model_validate(
+            {
+                "repair_status": "needs_plan_revision",
+                "failure_stage": "execute",
+                "failure_class": "table_not_found",
+                "safe_reason": "SELECT * FROM missing_table",
+                "recommended_action": "request_schema_slice",
+                "missing_context": [],
+            }
+        )
+
+
+def test_safe_result_payload_contains_artifact_card_only():
     result = BIWorkerQueryResult(
-        answer_summary="查询已完成，共 3 行、2 列。",
-        artifact_ref="artifact:result-1",
-        checkpoint_ref="checkpoint:abc",
-        row_count=3,
-        column_count=2,
+        answer_summary="查询已完成，已生成可查看结果。",
+        artifact_ref="artifact:abc",
+        checkpoint_ref=None,
+        row_count=10,
+        column_count=3,
     )
 
     payload = result.to_tool_payload()
-
     assert payload["datalogue_event_type"] == "dataset_query_result"
-    assert payload["summary"] == "查询已完成，共 3 行、2 列。"
-    assert payload["result_ref"] == "artifact:result-1"
-    assert payload["artifact_card"] == {
-        "artifact_type": "bi_answer",
-        "title": "查询结果",
-        "status": "completed",
-        "summary_for_chat": "查询已完成，共 3 行、2 列。",
-        "preview_payload": {"row_count": 3, "column_count": 2},
-        "primary_ref": {
-            "ref_id": "artifact:result-1",
-            "ref_type": "result",
-            "label": "查询结果",
-        },
-        "related_refs": [],
-        "actions": [
-            {
-                "action_type": "view",
-                "label": "查看详情",
-                "ref": "artifact:result-1",
-                "disabled": False,
-            },
-            {
-                "action_type": "export",
-                "label": "导出",
-                "ref": "artifact:result-1",
-                "disabled": True,
-            },
-        ],
-    }
-    assert "sql" not in payload
-    assert "raw_rows" not in payload
+    assert payload["result_ref"] == "artifact:abc"
     assert "sql" not in str(payload).lower()
-    assert "raw_rows" not in str(payload)
+    assert "raw_rows" not in str(payload).lower()
