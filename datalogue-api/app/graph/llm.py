@@ -15,6 +15,7 @@
 
 
 import asyncio
+import inspect
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -275,6 +276,23 @@ class AgentScopeChatClient:
     def invoke(self, messages: list[BaseMessage] | list[Any]) -> AIMessage:
         model = self._build_model(stream=False)
         response = model(_to_agentscope_messages(messages))
+        if inspect.isawaitable(response):
+            # AgentScope 2.x ChatModel.__call__ 是异步实现；同步兼容入口只在无事件循环场景使用。
+            response = asyncio.run(response)
+        content = _agentscope_response_text(response)
+        return AIMessage(
+            content=content,
+            response_metadata={"provider": "agentscope", "model": self.model},
+            usage_metadata=_agentscope_usage_metadata(response),
+        )
+
+    async def ainvoke(self, messages: list[BaseMessage] | list[Any]) -> AIMessage:
+        """异步调用 AgentScope ChatModel，供 FastAPI endpoint 等事件循环内场景使用。"""
+
+        model = self._build_model(stream=False)
+        response = model(_to_agentscope_messages(messages))
+        if inspect.isawaitable(response):
+            response = await response
         content = _agentscope_response_text(response)
         return AIMessage(
             content=content,

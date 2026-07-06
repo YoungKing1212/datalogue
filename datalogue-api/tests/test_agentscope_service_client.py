@@ -289,6 +289,29 @@ async def test_agentscope_service_client_ensures_leader_agent_via_official_agent
 
 
 @pytest.mark.asyncio
+async def test_agentscope_service_client_create_session_error_includes_response_body():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/agentscope/sessions/"
+        return httpx.Response(404, json={"detail": "Agent 'agent-missing' not found."})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        from app.agentscope_service.client import AgentScopeServiceClient
+
+        client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await client.create_session(
+                agent_id="agent-missing",
+                name="debug",
+                chat_model_config=None,
+            )
+
+    assert "response_body=" in str(exc_info.value)
+    assert "Agent 'agent-missing' not found" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_agentscope_service_client_reuses_existing_leader_agent():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"

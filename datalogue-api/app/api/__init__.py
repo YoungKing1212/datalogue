@@ -20,6 +20,7 @@ from app.api import (
     conversation,
     datasource,
     dataset,
+    llm,
     messages,
     workbench,
 )
@@ -28,6 +29,7 @@ router = APIRouter()
 
 router.include_router(datasource.router, prefix="/datasource", tags=["数据源"])
 router.include_router(dataset.router, prefix="/dataset", tags=["数据集"])
+router.include_router(llm.router, prefix="/llm", tags=["LLM 配置"])
 router.include_router(conversation.router, prefix="/conversation", tags=["对话"])
 router.include_router(agent_team.router, prefix="/agent-team", tags=["Agent Team"])
 router.include_router(

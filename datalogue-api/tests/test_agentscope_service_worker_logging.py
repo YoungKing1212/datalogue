@@ -4,7 +4,7 @@
 #   AgentScope BI worker 进度中间件与 OTel 边界测试。
 #
 # Responsibilities:
-#   - 验证 BI worker 只保留前端进度事件，不再打印自定义执行日志。
+#   - 验证 BI worker 保留前端进度事件和脱敏事件链路日志。
 #   - 验证模型调用观测交给 AgentScope TracingMiddleware / OTel。
 #
 # Author      : yangkai
@@ -60,7 +60,7 @@ async def test_extra_agent_middlewares_attaches_only_to_bi_worker():
 
     middlewares = await factory("user-1", "worker-bi-1", "session-bi-1")
 
-    # BI worker 保留 OTel TracingMiddleware 和前端进度中间件；不再挂自定义模型 I/O 日志中间件。
+    # BI worker 保留 OTel TracingMiddleware 和前端进度/事件链路中间件；不再挂自定义模型 I/O 日志中间件。
     assert len(middlewares) == 2
     assert isinstance(middlewares[0], TracingMiddleware)
     assert isinstance(middlewares[1], BIWorkerProgressMiddleware)
@@ -94,9 +94,21 @@ def test_event_summary_includes_pending_confirmation_tool_names():
 
 
 @pytest.mark.asyncio
-async def test_bi_worker_reply_does_not_log_custom_execution_events(caplog):
+async def test_bi_worker_reply_logs_safe_event_chain_without_raw_inputs(monkeypatch, caplog):
+    from agentscope.event import (
+        ReplyEndEvent,
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+        ToolCallDeltaEvent,
+        ToolCallEndEvent,
+        ToolCallStartEvent,
+    )
+
     from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
 
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
     middleware = BIWorkerProgressMiddleware(
         worker_context={
             "user_id": "user-1",
@@ -108,9 +120,26 @@ async def test_bi_worker_reply_does_not_log_custom_execution_events(caplog):
     agent = SimpleNamespace(name="bi-worker")
 
     async def next_handler(**_kwargs):
-        yield SimpleNamespace(type="reply_start")
-        yield SimpleNamespace(type="tool_call_start", tool_call_name="datalogue_query_dataset")
-        yield SimpleNamespace(type="reply_end")
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        yield ThinkingBlockDeltaEvent(
+            reply_id="reply-1",
+            block_id="think-1",
+            delta="先分析用户问题，再选择数据集。",
+        )
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
+        yield ToolCallStartEvent(
+            reply_id="reply-1",
+            tool_call_id="call-1",
+            tool_call_name="datalogue_query_dataset",
+        )
+        yield ToolCallDeltaEvent(
+            reply_id="reply-1",
+            tool_call_id="call-1",
+            delta='{"sql":"SELECT * FROM users"}',
+        )
+        yield ToolCallEndEvent(reply_id="reply-1", tool_call_id="call-1")
+        yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
 
     with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
         events = [
@@ -122,10 +151,26 @@ async def test_bi_worker_reply_does_not_log_custom_execution_events(caplog):
             )
         ]
 
-    assert [event.type for event in events] == ["reply_start", "tool_call_start", "reply_end"]
+    assert [str(event.type) for event in events] == [
+        "REPLY_START",
+        "THINKING_BLOCK_START",
+        "THINKING_BLOCK_DELTA",
+        "THINKING_BLOCK_END",
+        "TOOL_CALL_START",
+        "TOOL_CALL_DELTA",
+        "TOOL_CALL_END",
+        "REPLY_END",
+    ]
     logs = "\n".join(record.getMessage() for record in caplog.records)
-    assert "[agentscope.bi_worker." not in logs
+    assert "[agentscope.bi_worker.event]" in logs
+    assert '"category": "thinking"' in logs
+    assert '"category": "tool_call"' not in logs
+    assert '"tool_call_name": "datalogue_query_dataset"' not in logs
+    assert '"delta_length":' in logs
     assert "查询杨凯2025年日志" not in logs
+    assert "先分析用户问题" not in logs
+    assert "SELECT" not in logs
+    assert "users" not in logs
 
 
 @pytest.mark.asyncio
@@ -217,6 +262,281 @@ async def test_bi_worker_progress_middleware_does_not_own_model_call_logging(mon
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert "[agentscope.bi_worker.llm." not in logs
+    assert "查询杨凯2025年日志" not in logs
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_event_log_includes_model_call_token_usage(caplog):
+    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+            "task_id": "task-1",
+            "trace_id": "trace-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+
+    async def next_handler(**_kwargs):
+        yield SimpleNamespace(
+            type="model_call_start",
+            reply_id="reply-1",
+            model_name="qwen-test",
+        )
+        yield SimpleNamespace(
+            type="model_call_end",
+            reply_id="reply-1",
+            input_tokens=12,
+            output_tokens=34,
+        )
+
+    with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
+        events = [
+            event
+            async for event in middleware.on_reply(
+                agent=agent,
+                input_kwargs={"inputs": "敏感问题不应进入日志"},
+                next_handler=next_handler,
+            )
+        ]
+
+    assert [event.type for event in events] == ["model_call_start", "model_call_end"]
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"category": "model_call"' not in logs
+    assert '"model_name": "qwen-test"' not in logs
+    assert '"input_tokens": 12' not in logs
+    assert '"output_tokens": 34' not in logs
+    assert '"task_id": "task-1"' in logs
+    assert '"trace_id": "trace-1"' in logs
+    assert "敏感问题" not in logs
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_raw_debug_log_requires_debug_flag(monkeypatch, caplog):
+    from agentscope.event import ReplyStartEvent, ThinkingBlockDeltaEvent, ThinkingBlockStartEvent
+
+    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        yield ThinkingBlockDeltaEvent(
+            reply_id="reply-1",
+            block_id="think-1",
+            delta="这是模型原始 thinking delta",
+        )
+
+    with caplog.at_level(logging.DEBUG, logger="app.agentscope_service.worker_logging"):
+        async for _event in middleware.on_reply(
+            agent=agent,
+            input_kwargs={"inputs": "敏感问题不应进入日志"},
+            next_handler=next_handler,
+        ):
+            pass
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[agentscope.bi_worker.raw_debug]" not in logs
+    assert "这是模型原始 thinking delta" not in logs
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug_level(monkeypatch, caplog):
+    from agentscope.event import (
+        ReplyStartEvent,
+        TextBlockDeltaEvent,
+        TextBlockStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockStartEvent,
+        ToolCallDeltaEvent,
+        ToolCallStartEvent,
+        ToolResultEndEvent,
+        ToolResultStartEvent,
+        ToolResultTextDeltaEvent,
+    )
+    from agentscope.message import ToolResultState
+
+    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+            "task_id": "task-1",
+            "trace_id": "trace-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        yield ThinkingBlockDeltaEvent(
+            reply_id="reply-1",
+            block_id="think-1",
+            delta="这是模型原始",
+        )
+        yield ThinkingBlockDeltaEvent(
+            reply_id="reply-1",
+            block_id="think-1",
+            delta=" thinking delta",
+        )
+        yield TextBlockStartEvent(reply_id="reply-1", block_id="text-1")
+        yield TextBlockDeltaEvent(
+            reply_id="reply-1",
+            block_id="text-1",
+            delta="这是最终回答文本",
+        )
+        yield ToolCallStartEvent(
+            reply_id="reply-1",
+            tool_call_id="call-1",
+            tool_call_name="datalogue_query_dataset",
+        )
+        yield ToolCallDeltaEvent(
+            reply_id="reply-1",
+            tool_call_id="call-1",
+            delta='{"dataset_id":1,',
+        )
+        yield ToolCallDeltaEvent(
+            reply_id="reply-1",
+            tool_call_id="call-1",
+            delta='"question":"原始工具参数 delta"}',
+        )
+        yield ToolResultStartEvent(
+            reply_id="reply-1",
+            tool_call_id="call-1",
+            tool_call_name="datalogue_query_dataset",
+        )
+        yield ToolResultTextDeltaEvent(
+            reply_id="reply-1",
+            tool_call_id="call-1",
+            delta='{"status":"completed","rows":[{"name":"原始出参"}]}',
+        )
+        yield ToolResultEndEvent(reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS)
+
+    with caplog.at_level(logging.DEBUG, logger="app.agentscope_service.worker_logging"):
+        async for _event in middleware.on_reply(
+            agent=agent,
+            input_kwargs={"inputs": "敏感问题只允许 raw debug 时按 delta 输出"},
+            next_handler=next_handler,
+        ):
+            pass
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert logs.count("[agentscope.bi_worker.raw_debug]") == 1
+    assert "[agentscope.bi_worker.raw_tool_io]" not in logs
+    assert "[agentscope.bi_worker.raw_blocks]" not in logs
+    assert "[agentscope.bi_worker.raw_delta]" not in logs
+    raw_line = next(line for line in logs.splitlines() if "[agentscope.bi_worker.raw_debug]" in line)
+    assert '"delta":' not in logs
+    assert '"thinking": ["这是模型原始 thinking delta"]' in raw_line
+    assert '"text": ["这是最终回答文本"]' in raw_line
+    assert '"tools":' in raw_line
+    assert '"tool_name": "datalogue_query_dataset"' in raw_line
+    assert '"input": "{\\"dataset_id\\":1,\\"question\\":\\"原始工具参数 delta\\"}"' in raw_line
+    assert '"output": "{\\"status\\":\\"completed\\",\\"rows\\":[{\\"name\\":\\"原始出参\\"}]}"' in raw_line
+    assert '"blocks":' not in raw_line
+    assert '"content":' not in raw_line
+    assert '"reply_id":' not in raw_line
+    assert '"task_id":' not in raw_line
+    assert '"trace_id":' not in raw_line
+    assert "敏感问题只允许 raw debug 时按 delta 输出" not in raw_line
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_reply_blocks_log_safe_tool_result_and_thinking_path(monkeypatch, caplog):
+    from agentscope.event import (
+        ReplyEndEvent,
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+        ToolResultEndEvent,
+        ToolResultStartEvent,
+        ToolResultTextDeltaEvent,
+    )
+    from agentscope.message import ToolResultState
+
+    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+            "task_id": "task-1",
+            "trace_id": "trace-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+    safe_tool_result = (
+        '{"status":"completed","display_summary":"查询完成，返回 5 行",'
+        '"result_ref":"artifact:result-1","row_count":5,'
+        '"artifact_card":{"title":"查询结果","summary_for_chat":"已生成结果表",'
+        '"primary_ref":{"ref":"artifact:result-1","ref_type":"query_result","label":"结果表"},'
+        '"preview_payload":{"rows":[{"secret":"raw_rows"}]}},'
+        '"sql":"SELECT * FROM users","raw_rows":[{"id":1}]}'
+    )
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        yield ThinkingBlockDeltaEvent(
+            reply_id="reply-1",
+            block_id="think-1",
+            delta="先分析用户问题，再决定调用数据集查询工具。",
+        )
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
+        yield ToolResultStartEvent(
+            reply_id="reply-1",
+            tool_call_id="call-1",
+            tool_call_name="datalogue_query_dataset",
+        )
+        yield ToolResultTextDeltaEvent(reply_id="reply-1", tool_call_id="call-1", delta=safe_tool_result)
+        yield ToolResultEndEvent(reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS)
+        yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
+
+    with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
+        async for _event in middleware.on_reply(
+            agent=agent,
+            input_kwargs={"inputs": "查询杨凯2025年日志"},
+            next_handler=next_handler,
+        ):
+            pass
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[agentscope.bi_worker.reply_blocks]" in logs
+    assert '"thinking_path":' in logs
+    assert '"content_length":' in logs
+    assert '"tool_results":' in logs
+    assert '"tool_name": "datalogue_query_dataset"' in logs
+    assert '"result_ref": "artifact:result-1"' in logs
+    assert '"row_count": 5' in logs
+    assert '"primary_ref": {"label": "结果表", "ref": "artifact:result-1", "ref_type": "query_result"}' in logs
+    assert "先分析用户问题" not in logs
+    assert "SELECT" not in logs
+    assert "users" not in logs
+    assert "raw_rows" not in logs
+    assert "preview_payload" not in logs
     assert "查询杨凯2025年日志" not in logs
 
 
@@ -525,3 +845,25 @@ def test_setup_agentscope_tracing_attaches_logging_exporter_when_otlp_disabled(m
     assert calls["provider"] is calls["logging_provider"]
     assert calls["logging_enabled"] is True
     assert "otlp_provider" not in calls
+
+
+def test_otel_span_payload_filters_model_messages_and_tool_payloads(monkeypatch):
+    """OTel 本地日志只保留 span 定位字段，模型消息和工具载荷交给安全 reply_blocks。"""
+    from app.agentscope_service.otel_setup import _safe_span_attributes
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
+    attributes = _safe_span_attributes(
+        {
+            "gen_ai.request.model": "qwen-test",
+            "gen_ai.usage.input_tokens": 12,
+            "gen_ai.output.messages": "完整模型输出不应进入普通日志",
+            "gen_ai.input.messages": "完整模型输入不应进入普通日志",
+            "gen_ai.tool_calls": '{"sql":"SELECT * FROM users"}',
+            "custom.output": "工具原始输出不应进入普通日志",
+        }
+    )
+
+    assert attributes == {
+        "gen_ai.request.model": "qwen-test",
+        "gen_ai.usage.input_tokens": 12,
+    }

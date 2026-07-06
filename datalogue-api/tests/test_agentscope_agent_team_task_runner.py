@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from agentscope.message import UserMsg
 
@@ -81,6 +82,31 @@ class FakeClient:
         self.closed = True
 
 
+class AgentNotFoundThenRecoveredClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self._ensure_count = 0
+
+    async def ensure_agent(self, *, name, system_prompt):
+        self.ensure_agent_requests.append({"name": name, "system_prompt": system_prompt})
+        self._ensure_count += 1
+        return f"agent-leader-{self._ensure_count}"
+
+    async def create_session(self, *, agent_id, name, chat_model_config=None):
+        self.created_sessions.append(
+            {
+                "agent_id": agent_id,
+                "name": name,
+                "chat_model_config": chat_model_config,
+            }
+        )
+        if agent_id == "agent-leader-1":
+            request = httpx.Request("POST", "http://testserver/agentscope/sessions/")
+            response = httpx.Response(404, json={"detail": "Agent 'agent-leader-1' not found."}, request=request)
+            response.raise_for_status()
+        return "session-1"
+
+
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_uses_agentscope_model_selection_without_local_config():
     from app.core.config import Settings
@@ -142,6 +168,47 @@ async def test_agentscope_service_task_runner_uses_agentscope_model_selection_wi
 
 
 @pytest.mark.asyncio
+async def test_agentscope_service_task_runner_refreshes_default_leader_when_session_agent_missing():
+    from app.core.config import Settings
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+
+    client = AgentNotFoundThenRecoveredClient()
+    runner = AgentScopeServiceTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(OPENAI_API_KEY="sk-test"),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询销售额",
+        dataset_id=12,
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="thread-1",
+        message_id="message-1",
+        selected_agent="agent_team_leader",
+    )
+
+    events = [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert len(client.ensure_agent_requests) == 2
+    assert [item["agent_id"] for item in client.created_sessions] == ["agent-leader-1", "agent-leader-2"]
+    assert client.triggered_chats[0]["agent_id"] == "agent-leader-2"
+    assert client.stream_requests[0]["agent_id"] == "agent-leader-2"
+    assert events
+
+
+@pytest.mark.asyncio
 async def test_agentscope_service_task_runner_default_model_comes_from_agentscope_credential():
     from app.core.config import Settings
     from app.agentscope_service.runner import AgentScopeServiceTaskRunner
@@ -198,6 +265,154 @@ async def test_agentscope_service_task_runner_default_model_comes_from_agentscop
 
 
 @pytest.mark.asyncio
+async def test_agentscope_service_task_runner_default_model_comes_from_database_config(db_session):
+    from app.core.config import Settings
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.models.llm import LLMModelConfig
+    from app.services.llm_config import credential_id_for_model_config
+
+    config = LLMModelConfig(
+        name="设置页默认模型",
+        provider="openai-compatible",
+        base_url="https://db.example/v1",
+        model="db-default-model",
+        status="active",
+        request_timeout_seconds=45,
+        thinking_enabled=True,
+    )
+    db_session.add(config)
+    db_session.commit()
+    db_session.refresh(config)
+    credential_id = credential_id_for_model_config(config.id)
+
+    client = FakeClient()
+    client.credentials = [{"id": credential_id, "data": {"id": credential_id, "type": "openai_credential"}}]
+    runner = AgentScopeServiceTaskRunner(
+        base_url="http://testserver/agentscope",
+        db=db_session,
+        settings=Settings(OPENAI_API_KEY=None, LLM_MODEL="env-should-not-win"),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询销售额",
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="thread-1",
+        message_id="message-1",
+        selected_agent="agent_team_leader",
+    )
+
+    [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert client.upserted_credentials == []
+    assert client.created_sessions[0]["chat_model_config"] == {
+        "type": "openai_credential",
+        "credential_id": credential_id,
+        "model": "db-default-model",
+        "parameters": {"thinking_enable": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_task_runner_upserts_missing_default_credential_from_settings():
+    from app.core.config import Settings
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+
+    client = FakeClient()
+    runner = AgentScopeServiceTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(
+            OPENAI_API_KEY="sk-default",
+            OPENAI_BASE_URL="https://example.test/v1",
+            LLM_MODEL="qwen-debug",
+        ),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询销售额",
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="thread-1",
+        message_id="message-1",
+        selected_agent="agent_team_leader",
+    )
+
+    [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert client.upserted_credentials == [
+        {
+            "credential_id": "datalogue-openai-compatible-lead-agent",
+            "name": "Datalogue 默认模型 · qwen-debug",
+            "api_key": "sk-default",
+            "base_url": "https://example.test/v1",
+        }
+    ]
+    assert client.created_sessions[0]["chat_model_config"] == {
+        "type": "openai_credential",
+        "credential_id": "datalogue-openai-compatible-lead-agent",
+        "model": "qwen-debug",
+        "parameters": {"thinking_enable": False},
+    }
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_task_runner_reports_missing_default_credential_without_api_key():
+    from app.core.config import Settings
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+
+    client = FakeClient()
+    runner = AgentScopeServiceTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(OPENAI_API_KEY=None),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询销售额",
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="thread-1",
+        message_id="message-1",
+        selected_agent="agent_team_leader",
+    )
+
+    with pytest.raises(ValueError, match="AGENTSCOPE_DEFAULT_CREDENTIAL_NOT_CONFIGURED"):
+        [
+            event
+            async for event in runner.stream(
+                request=request,
+                task=task,
+                user_msg=UserMsg(name="user", content=request.question),
+            )
+        ]
+
+
+@pytest.mark.asyncio
 async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_session():
     from app.core.config import Settings
     from app.agentscope_service.runner import AgentScopeServiceTaskRunner
@@ -248,7 +463,14 @@ async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_ses
             },
         }
     ]
-    assert client.upserted_credentials == []
+    assert client.upserted_credentials == [
+        {
+            "credential_id": "datalogue-openai-compatible-lead-agent",
+            "name": "Datalogue 默认模型 · test-model",
+            "api_key": "sk-test",
+            "base_url": "https://example.test/v1",
+        }
+    ]
     assert len(client.ensure_agent_requests) == 1
     assert client.ensure_agent_requests[0]["name"] == "Datalogue Agent Team Leader"
     assert "AgentCreate" in client.ensure_agent_requests[0]["system_prompt"]

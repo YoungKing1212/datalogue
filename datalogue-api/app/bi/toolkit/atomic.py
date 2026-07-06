@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import logging
 from dataclasses import dataclass, field
@@ -478,7 +479,16 @@ class DatalogueBIAtomicToolkit:
 
     def execute_tool(self, name: str, **kwargs: Any) -> dict[str, Any]:
         tool = self.get_tool(name)
-        return tool.execute_external(**kwargs)
+        logger.debug(
+            "[datalogue.bi_atomic_tool.input] %s",
+            _json_log_payload({"tool_name": name, "input": kwargs}),
+        )
+        result = tool.execute_external(**kwargs)
+        logger.debug(
+            "[datalogue.bi_atomic_tool.output] %s",
+            _json_log_payload({"tool_name": name, "output": result}),
+        )
+        return result
 
     @property
     def tool_names(self) -> list[str]:
@@ -503,6 +513,15 @@ def build_bi_atomic_toolkit(
         GetArtifactSummaryTool(context),
     ]
     return DatalogueBIAtomicToolkit(context=context, tools=tools)
+
+
+def _json_log_payload(payload: dict[str, Any]) -> str:
+    """把工具入参/出参转成可 grep 的 JSON 日志；无法序列化时降级为 repr。"""
+
+    try:
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        return json.dumps({"repr": repr(payload)}, ensure_ascii=False)
 
 
 def _get_dataset(db: Session, dataset_id: int) -> SemanticDataset | None:

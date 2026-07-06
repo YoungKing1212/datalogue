@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import Any
 
+import httpx
 from agentscope.message import UserMsg
 from sqlalchemy.orm import Session
 
@@ -36,11 +38,12 @@ from app.middlewares.lifecycle import log_lifecycle
 from app.models.agent_team_task import AgentTeamTask
 from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 from app.schemas.bi_workbench import DatalogueEventEnvelope, build_datalogue_event_envelope
+from app.services.llm_config import DEFAULT_MODEL_CREDENTIAL_ID, resolve_llm_config
 
 
 DEFAULT_LEADER_AGENT_ID = None
-DEFAULT_MODEL_CREDENTIAL_ID = "datalogue-openai-compatible-lead-agent"
 _FORBIDDEN_MODEL_PARAMETER_KEYS = {"api_key", "base_url", "credential_id", "model", "type"}
+logger = logging.getLogger(__name__)
 
 
 class AgentScopeServiceTaskRunner:
@@ -74,7 +77,7 @@ class AgentScopeServiceTaskRunner:
         leader_agent_id = await self._resolve_leader_agent_id()
         chat_model_config = await self._build_chat_model_config(request)
         session_name = (request.question or "Datalogue Agent Team")[:80]
-        service_session_id = await self.client.create_session(
+        service_session_id, leader_agent_id = await self._create_leader_session(
             agent_id=leader_agent_id,
             name=session_name,
             chat_model_config=chat_model_config,
@@ -168,11 +171,47 @@ class AgentScopeServiceTaskRunner:
         spec = build_datalogue_leader_agent_spec()
         return await self.client.ensure_agent(**spec.to_agent_payload())
 
+    async def _create_leader_session(
+        self,
+        *,
+        agent_id: str,
+        name: str,
+        chat_model_config: dict[str, Any] | None,
+    ) -> tuple[str, str]:
+        """创建 leader session；默认 leader 遇到 AgentScope 短暂 id 不一致时刷新一次后重试。"""
+
+        try:
+            session_id = await self.client.create_session(
+                agent_id=agent_id,
+                name=name,
+                chat_model_config=chat_model_config,
+            )
+            return session_id, agent_id
+        except httpx.HTTPStatusError as exc:
+            if self.leader_agent_id or not _is_agentscope_agent_not_found(exc):
+                raise
+            logger.warning(
+                "AgentScope leader agent not found when creating session; refreshing leader once: "
+                "agent_id=%s status_code=%s response=%s",
+                agent_id,
+                exc.response.status_code,
+                exc.response.text[:300],
+            )
+            refreshed_agent_id = await self._resolve_leader_agent_id()
+            if refreshed_agent_id == agent_id:
+                raise
+            session_id = await self.client.create_session(
+                agent_id=refreshed_agent_id,
+                name=name,
+                chat_model_config=chat_model_config,
+            )
+            return session_id, refreshed_agent_id
+
     async def _build_chat_model_config(self, request: AgentTeamTaskRequest) -> dict[str, Any]:
         """把 Datalogue LLM 配置转换成 AgentScope Service session 可运行的模型配置。"""
 
         if request.model_credential_id and request.model_name:
-            # 新主路径：聊天请求只携带 AgentScope credential/model 资源 ID，本地模型表不再参与运行时解析。
+            # 显式选择模型时使用请求携带的 AgentScope credential/model；默认模型仍由 DB 配置表决定。
             return {
                 "type": "openai_credential",
                 "credential_id": request.model_credential_id,
@@ -183,33 +222,74 @@ class AgentScopeServiceTaskRunner:
         return await self._build_default_chat_model_config()
 
     async def _build_default_chat_model_config(self) -> dict[str, Any]:
-        """未显式选择模型时，从 AgentScope 默认 credential 派生 session 模型配置。"""
+        """未显式选择模型时，优先从 Datalogue LLM 配置表派生 session 模型配置。"""
 
-        model_name = await self._resolve_default_model_name()
+        resolved = resolve_llm_config(self.settings, role="agent_team_leader", db=self.db)
+        if resolved.source == "database":
+            if not resolved.credential_id:
+                raise ValueError("DATALOGUE_LLM_CONFIG_MISSING_CREDENTIAL_ID: 数据库 LLM 配置缺少 credential_id")
+            credentials = await self._list_credentials_safely()
+            if _find_credential(credentials, resolved.credential_id) is None:
+                raise ValueError(
+                    "AGENTSCOPE_MODEL_CREDENTIAL_NOT_CONFIGURED: "
+                    f"LLM 配置表已启用模型 '{resolved.name}'，但 AgentScope credential "
+                    f"'{resolved.credential_id}' 不存在；请在设置页重新保存该模型的 API Key。"
+                )
+            return {
+                "type": "openai_credential",
+                "credential_id": resolved.credential_id,
+                "model": resolved.model,
+                "parameters": {
+                    "thinking_enable": bool(resolved.thinking_enabled),
+                },
+            }
+
+        credentials = await self._list_credentials_safely()
+        default_credential = _find_credential(credentials, DEFAULT_MODEL_CREDENTIAL_ID)
+        if default_credential is None:
+            await self._ensure_default_model_credential()
+            model_name = self.settings.LLM_MODEL
+        else:
+            data = default_credential.get("data") if isinstance(default_credential, dict) else None
+            data = data if isinstance(data, dict) else {}
+            model_name = _model_name_from_credential_data(data) or self.settings.LLM_MODEL
         return {
             "type": "openai_credential",
             "credential_id": DEFAULT_MODEL_CREDENTIAL_ID,
             "model": model_name,
-            "parameters": {
-                "thinking_enable": False,
-            },
+            "parameters": {"thinking_enable": False},
         }
 
-    async def _resolve_default_model_name(self) -> str:
-        """优先使用 AgentScope credential 资源描述的模型名，避免回落到旧本地配置默认值。"""
+    async def _list_credentials_safely(self) -> list[dict[str, Any]]:
+        """读取 AgentScope credential；启动期读取失败时返回空列表，由后续 upsert/报错接管。"""
 
         with suppress(Exception):
-            credentials = await self.client.list_credentials()
-            for item in credentials:
-                if _credential_id(item) != DEFAULT_MODEL_CREDENTIAL_ID:
-                    continue
-                data = item.get("data") if isinstance(item, dict) else None
-                data = data if isinstance(data, dict) else {}
-                model_name = _model_name_from_credential_data(data)
-                if model_name:
-                    return model_name
-        # 兼容 AgentScope credential 暂不可读的启动期；真正凭证仍只从 AgentScope Service 引用。
-        return self.settings.LLM_MODEL
+            return await self.client.list_credentials()
+        return []
+
+    async def _ensure_default_model_credential(self) -> None:
+        """默认模型路径缺 credential 时，用 .env 中的 OpenAI-compatible 配置补齐 AgentScope credential。"""
+
+        api_key = str(self.settings.OPENAI_API_KEY or "").strip()
+        if not api_key:
+            raise ValueError(
+                "AGENTSCOPE_DEFAULT_CREDENTIAL_NOT_CONFIGURED: "
+                "AgentScope credential 'datalogue-openai-compatible-lead-agent' 不存在，"
+                "且 OPENAI_API_KEY 未配置；请先在设置页保存模型凭证，或在 .env 配置 OPENAI_API_KEY。"
+            )
+        await self.client.upsert_openai_credential(
+            credential_id=DEFAULT_MODEL_CREDENTIAL_ID,
+            name=f"Datalogue 默认模型 · {self.settings.LLM_MODEL}",
+            api_key=api_key,
+            base_url=self.settings.OPENAI_BASE_URL,
+        )
+
+
+def _find_credential(credentials: list[dict[str, Any]], credential_id: str) -> dict[str, Any] | None:
+    for item in credentials:
+        if _credential_id(item) == credential_id:
+            return item
+    return None
 
 
 def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg) -> str:
@@ -253,6 +333,15 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
         ]
     )
     return "\n".join(lines)
+
+
+def _is_agentscope_agent_not_found(exc: httpx.HTTPStatusError) -> bool:
+    """判断 AgentScope Service 是否因为 agent_id 不存在而拒绝创建 session。"""
+
+    if exc.response.status_code != 404:
+        return False
+    response_text = exc.response.text.lower()
+    return "agent" in response_text and "not found" in response_text
 
 def _safe_model_parameters(parameters: dict[str, Any] | None) -> dict[str, Any]:
     """只允许聊天请求覆盖模型运行参数，禁止把 credential 级字段塞进 session config。"""

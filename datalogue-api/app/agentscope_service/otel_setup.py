@@ -102,7 +102,9 @@ def _setup_logging_exporter(provider: Any, settings: Settings) -> None:
     try:
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-        provider.add_span_processor(SimpleSpanProcessor(_LoggingSpanExporter(service_name=settings.AGENTSCOPE_OTEL_SERVICE_NAME)))
+        provider.add_span_processor(
+            SimpleSpanProcessor(_LoggingSpanExporter(service_name=settings.AGENTSCOPE_OTEL_SERVICE_NAME))
+        )
         logger.info("AgentScope OTel logging exporter configured.")
     except ImportError:
         logger.warning("opentelemetry-sdk not installed; OTel logging export skipped.")
@@ -148,6 +150,7 @@ def _span_log_payload(span: Any, *, service_name: str) -> dict[str, Any]:
     context = span.get_span_context()
     parent = getattr(span, "parent", None)
     status = getattr(span, "status", None)
+    attributes = dict(getattr(span, "attributes", {}) or {})
     return {
         "service_name": service_name,
         "name": getattr(span, "name", None),
@@ -158,8 +161,26 @@ def _span_log_payload(span: Any, *, service_name: str) -> dict[str, Any]:
         "status_description": getattr(status, "description", None) if status else None,
         "start_time": getattr(span, "start_time", None),
         "end_time": getattr(span, "end_time", None),
-        "attributes": dict(getattr(span, "attributes", {}) or {}),
+        # 本地 span 日志只保留可定位字段；模型消息、工具入参和工具原始输出由专门的安全日志处理。
+        "attributes": _safe_span_attributes(attributes),
     }
+
+
+def _safe_span_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+    """过滤 OTel span attributes，避免把 messages/tools/output 原文写入普通后端日志。"""
+
+    blocked_fragments = ("message", "messages", "prompt", "input", "output", "tools", "tool_calls")
+    safe: dict[str, Any] = {}
+    for key, value in attributes.items():
+        key_text = str(key)
+        lowered = key_text.lower()
+        if lowered.startswith("gen_ai.usage."):
+            safe[key_text] = value
+            continue
+        if any(fragment in lowered for fragment in blocked_fragments):
+            continue
+        safe[key_text] = value
+    return safe
 
 
 def _hex_id(value: Any, *, width: int) -> str | None:

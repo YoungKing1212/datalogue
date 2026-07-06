@@ -17,8 +17,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import pytest
-
 from app.bi.toolchain import (
     DatasetAgentNextToolCall,
     DatasetAgentToolCallRuntime,
@@ -99,6 +97,25 @@ def test_dataset_agent_tool_runtime_runs_atomic_tool_chain_to_artifact_summary(
     dumped = repr(result)
     for forbidden in ("SELECT", "user_logs", "account", "alice", "raw_rows", "query_plan", "schema"):
         assert forbidden.lower() not in dumped.lower()
+
+
+def test_bi_atomic_toolkit_logs_tool_input_and_output(
+    db_session,
+    sample_dataset,
+    caplog,
+):
+    toolkit = build_bi_atomic_toolkit(db_session, query_executor=lambda _sql: {"rows": []})
+
+    with caplog.at_level(logging.DEBUG, logger="app.bi.toolkit.atomic"):
+        result = toolkit.execute_tool("get_dataset_status", dataset_id=sample_dataset.id)
+
+    assert result["dataset_id"] == sample_dataset.id
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[datalogue.bi_atomic_tool.input]" in logs
+    assert "[datalogue.bi_atomic_tool.output]" in logs
+    assert '"tool_name": "get_dataset_status"' in logs
+    assert f'"input": {{"dataset_id": {sample_dataset.id}}}' in logs
+    assert '"output": {' in logs
 
 
 def test_agentscope_middlewares_exports_only_tool_logging_middleware():

@@ -220,7 +220,16 @@ class AgentScopeServiceClient:
         }
         # AgentScope 2.0.3 官方 Service 创建会话端点注册为 /sessions/；缺少尾斜杠会触发 307。
         response = await self.http.post(self._url("/sessions/"), json=payload, headers=self._headers())
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # httpx 默认异常只展示 URL；把 AgentScope detail 带上，避免排障时误判为挂载路径 404。
+            detail = response.text[:500]
+            raise httpx.HTTPStatusError(
+                f"{exc.args[0]} response_body={detail}",
+                request=exc.request,
+                response=exc.response,
+            ) from exc
         session_id = response.json().get("session_id")
         if not session_id:
             raise ValueError("AGENTSCOPE_SERVICE_SESSION_ID_MISSING")
