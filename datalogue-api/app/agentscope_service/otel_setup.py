@@ -125,7 +125,9 @@ class _LoggingSpanExporter:
             return None
 
         for span in spans:
-            logger.info(
+            if not logger.isEnabledFor(logging.DEBUG):
+                continue
+            logger.debug(
                 "[agentscope.otel.span] %s",
                 json.dumps(
                     _span_log_payload(span, service_name=self.service_name),
@@ -145,42 +147,38 @@ class _LoggingSpanExporter:
 
 
 def _span_log_payload(span: Any, *, service_name: str) -> dict[str, Any]:
-    """把 ReadableSpan 转成可 grep 的 JSON payload。"""
+    """把 ReadableSpan 转成精简的可 grep JSON payload。
+
+    只保留排障定位必需字段：span 名称、耗时、状态码、token 用量。
+    模型消息、工具入参和工具原始输出不进入 span 日志。
+    """
 
     context = span.get_span_context()
-    parent = getattr(span, "parent", None)
     status = getattr(span, "status", None)
-    attributes = dict(getattr(span, "attributes", {}) or {})
-    return {
-        "service_name": service_name,
+    attributes: dict[str, Any] = dict(getattr(span, "attributes", {}) or {})
+    start_time = getattr(span, "start_time", None)
+    end_time = getattr(span, "end_time", None)
+    duration_ms: int | None = None
+    if isinstance(start_time, (int, float)) and isinstance(end_time, (int, float)):
+        duration_ms = (end_time - start_time) // 1_000_000  # ns → ms（截断）
+
+    payload: dict[str, Any] = {
+        "service": service_name,
         "name": getattr(span, "name", None),
         "trace_id": _hex_id(getattr(context, "trace_id", None), width=32),
         "span_id": _hex_id(getattr(context, "span_id", None), width=16),
-        "parent_span_id": _hex_id(getattr(parent, "span_id", None), width=16) if parent else None,
-        "status_code": str(getattr(status, "status_code", "")) if status else None,
-        "status_description": getattr(status, "description", None) if status else None,
-        "start_time": getattr(span, "start_time", None),
-        "end_time": getattr(span, "end_time", None),
-        # 本地 span 日志只保留可定位字段；模型消息、工具入参和工具原始输出由专门的安全日志处理。
-        "attributes": _safe_span_attributes(attributes),
+        "duration_ms": duration_ms,
+        "status": str(getattr(status, "status_code", "")) if status else None,
     }
-
-
-def _safe_span_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
-    """过滤 OTel span attributes，避免把 messages/tools/output 原文写入普通后端日志。"""
-
-    blocked_fragments = ("message", "messages", "prompt", "input", "output", "tools", "tool_calls")
-    safe: dict[str, Any] = {}
+    # 只保留 token 用量，其余 attributes 丢弃
+    usage: dict[str, int] = {}
     for key, value in attributes.items():
         key_text = str(key)
-        lowered = key_text.lower()
-        if lowered.startswith("gen_ai.usage."):
-            safe[key_text] = value
-            continue
-        if any(fragment in lowered for fragment in blocked_fragments):
-            continue
-        safe[key_text] = value
-    return safe
+        if key_text.startswith("gen_ai.usage.") and isinstance(value, (int, float)):
+            usage[key_text.replace("gen_ai.usage.", "")] = int(value)
+    if usage:
+        payload["usage"] = usage
+    return {k: v for k, v in payload.items() if v is not None}
 
 
 def _hex_id(value: Any, *, width: int) -> str | None:

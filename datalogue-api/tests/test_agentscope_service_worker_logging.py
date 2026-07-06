@@ -163,10 +163,10 @@ async def test_bi_worker_reply_logs_safe_event_chain_without_raw_inputs(monkeypa
     ]
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert "[agentscope.bi_worker.event]" in logs
-    assert '"category": "thinking"' in logs
+    assert '"category": "thinking"' not in logs
     assert '"category": "tool_call"' not in logs
     assert '"tool_call_name": "datalogue_query_dataset"' not in logs
-    assert '"delta_length":' in logs
+    assert '"delta_length":' not in logs
     assert "查询杨凯2025年日志" not in logs
     assert "先分析用户问题" not in logs
     assert "SELECT" not in logs
@@ -359,10 +359,13 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
     from agentscope.event import (
         ReplyStartEvent,
         TextBlockDeltaEvent,
+        TextBlockEndEvent,
         TextBlockStartEvent,
         ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
         ThinkingBlockStartEvent,
         ToolCallDeltaEvent,
+        ToolCallEndEvent,
         ToolCallStartEvent,
         ToolResultEndEvent,
         ToolResultStartEvent,
@@ -398,12 +401,14 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
             block_id="think-1",
             delta=" thinking delta",
         )
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
         yield TextBlockStartEvent(reply_id="reply-1", block_id="text-1")
         yield TextBlockDeltaEvent(
             reply_id="reply-1",
             block_id="text-1",
             delta="这是最终回答文本",
         )
+        yield TextBlockEndEvent(reply_id="reply-1", block_id="text-1")
         yield ToolCallStartEvent(
             reply_id="reply-1",
             tool_call_id="call-1",
@@ -419,6 +424,7 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
             tool_call_id="call-1",
             delta='"question":"原始工具参数 delta"}',
         )
+        yield ToolCallEndEvent(reply_id="reply-1", tool_call_id="call-1")
         yield ToolResultStartEvent(
             reply_id="reply-1",
             tool_call_id="call-1",
@@ -446,18 +452,56 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
     assert "[agentscope.bi_worker.raw_delta]" not in logs
     raw_line = next(line for line in logs.splitlines() if "[agentscope.bi_worker.raw_debug]" in line)
     assert '"delta":' not in logs
-    assert '"thinking": ["这是模型原始 thinking delta"]' in raw_line
-    assert '"text": ["这是最终回答文本"]' in raw_line
-    assert '"tools":' in raw_line
+    assert '"timeline"' in raw_line
+    assert '"step": 1' in raw_line
+    assert '"type": "thinking"' in raw_line
+    assert '"thinking": "这是模型原始 thinking delta"' in raw_line
+    assert '"step": 2' in raw_line
+    assert '"type": "text"' in raw_line
+    assert '"text": "这是最终回答文本"' in raw_line
+    assert '"step": 3' in raw_line
+    assert '"type": "tool_call"' in raw_line
     assert '"tool_name": "datalogue_query_dataset"' in raw_line
-    assert '"input": "{\\"dataset_id\\":1,\\"question\\":\\"原始工具参数 delta\\"}"' in raw_line
-    assert '"output": "{\\"status\\":\\"completed\\",\\"rows\\":[{\\"name\\":\\"原始出参\\"}]}"' in raw_line
+    assert '"input":' in raw_line
+    assert '"step": 4' in raw_line
+    assert '"type": "tool_result"' in raw_line
+    assert '"output":' in raw_line
     assert '"blocks":' not in raw_line
     assert '"content":' not in raw_line
     assert '"reply_id":' not in raw_line
     assert '"task_id":' not in raw_line
     assert '"trace_id":' not in raw_line
     assert "敏感问题只允许 raw debug 时按 delta 输出" not in raw_line
+
+
+def test_raw_debug_blocks_outputs_timeline_in_msg_content_order():
+    """timeline 按 msg.content 原始顺序输出全部 block。"""
+    from types import SimpleNamespace
+
+    from app.agentscope_service.worker_logging import _raw_debug_blocks_from_msg
+
+    msg = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="thinking", thinking="第一步思考"),
+            SimpleNamespace(type="text", text="最终回复文本"),
+            SimpleNamespace(type="tool_call", name="query_db", input='{"sql":"SELECT 1"}'),
+            SimpleNamespace(
+                type="tool_result", name="query_db", state="success",
+                output='{"rows": [{"a": 1}]}',
+            ),
+        ]
+    )
+    timeline = _raw_debug_blocks_from_msg(msg)
+    assert len(timeline) == 4
+    assert timeline[0] == {"step": 1, "type": "thinking", "thinking": "第一步思考"}
+    assert timeline[1] == {"step": 2, "type": "text", "text": "最终回复文本"}
+    assert timeline[2] == {
+        "step": 3, "type": "tool_call", "tool_name": "query_db", "input": '{"sql":"SELECT 1"}',
+    }
+    assert timeline[3] == {
+        "step": 4, "type": "tool_result", "tool_name": "query_db", "state": "success",
+        "output": '{"rows": [{"a": 1}]}',
+    }
 
 
 @pytest.mark.asyncio
@@ -806,7 +850,7 @@ def test_agentscope_otel_config_defaults(tmp_path, monkeypatch):
     assert settings.AGENTSCOPE_OTEL_TRACING_ENABLED is False
     assert settings.AGENTSCOPE_OTEL_EXPORTER_ENABLED is False
     assert settings.AGENTSCOPE_OTEL_EXPORTER_ENDPOINT is None
-    assert settings.AGENTSCOPE_OTEL_LOGGING_ENABLED is True
+    assert settings.AGENTSCOPE_OTEL_LOGGING_ENABLED is False
     assert settings.AGENTSCOPE_OTEL_SERVICE_NAME == "datalogue-api"
 
 
@@ -847,23 +891,43 @@ def test_setup_agentscope_tracing_attaches_logging_exporter_when_otlp_disabled(m
     assert "otlp_provider" not in calls
 
 
-def test_otel_span_payload_filters_model_messages_and_tool_payloads(monkeypatch):
-    """OTel 本地日志只保留 span 定位字段，模型消息和工具载荷交给安全 reply_blocks。"""
-    from app.agentscope_service.otel_setup import _safe_span_attributes
+def test_otel_span_log_payload_only_keeps_usage_and_drops_model_messages(monkeypatch):
+    """OTel span 本地日志只保留 span 名称、耗时、状态和 token 用量，丢弃模型消息和工具载荷。"""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.agentscope_service.otel_setup import _span_log_payload
 
     monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
-    attributes = _safe_span_attributes(
-        {
+    ctx = MagicMock()
+    ctx.trace_id = 1
+    ctx.span_id = 2
+    span = SimpleNamespace(
+        name="chat.qwen-test",
+        start_time=1_000_000_000,
+        end_time=1_002_500_000,  # 2.5ms later (in ns) → // 1_000_000 = 2ms
+        parent=None,
+        status=SimpleNamespace(status_code="OK", description=None),
+        attributes={
             "gen_ai.request.model": "qwen-test",
             "gen_ai.usage.input_tokens": 12,
+            "gen_ai.usage.output_tokens": 8,
             "gen_ai.output.messages": "完整模型输出不应进入普通日志",
             "gen_ai.input.messages": "完整模型输入不应进入普通日志",
             "gen_ai.tool_calls": '{"sql":"SELECT * FROM users"}',
             "custom.output": "工具原始输出不应进入普通日志",
-        }
+        },
     )
+    span.get_span_context = lambda: ctx
 
-    assert attributes == {
-        "gen_ai.request.model": "qwen-test",
-        "gen_ai.usage.input_tokens": 12,
-    }
+    payload = _span_log_payload(span, service_name="datalogue-api")
+
+    assert payload["name"] == "chat.qwen-test"
+    assert payload["duration_ms"] == 2
+    assert payload["status"] == "OK"
+    assert payload["usage"] == {"input_tokens": 12, "output_tokens": 8}
+    # 模型消息和工具载荷不应出现
+    assert "attributes" not in payload
+    assert "output.messages" not in str(payload)
+    assert "input.messages" not in str(payload)
+    assert "tool_calls" not in str(payload)

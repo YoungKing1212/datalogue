@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # 模型输出）写入 span 属性。开启 exporter 后这些内容会外发到 collector。
     # 默认全部关闭；排障时按短时间窗口打开。
     AGENTSCOPE_OTEL_TRACING_ENABLED: bool = False       # 启用 tracing（创建 span）
-    AGENTSCOPE_OTEL_LOGGING_ENABLED: bool = True        # tracing 开启时，把 span 打到后端日志
+    AGENTSCOPE_OTEL_LOGGING_ENABLED: bool = False       # tracing 开启时，把 span 打到后端日志（DEBUG 级别）
     AGENTSCOPE_OTEL_EXPORTER_ENABLED: bool = False      # 启用 exporter（外发 span）
     AGENTSCOPE_OTEL_EXPORTER_ENDPOINT: str | None = None
     AGENTSCOPE_OTEL_SERVICE_NAME: str = "datalogue-api"

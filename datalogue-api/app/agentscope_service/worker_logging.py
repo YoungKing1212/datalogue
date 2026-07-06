@@ -6,7 +6,7 @@
 # Responsibilities:
 #   - 通过 AgentScope extra_agent_middlewares 只为 Datalogue BI worker 挂载进度中间件。
 #   - 发布 Workbench/Chat 可消费的安全进度事件。
-#   - 记录 BI Worker 的 AgentScope 事件链路摘要，辅助排查 thinking/tool/model 事件顺序。
+#   - 在 DEBUG raw 开关开启时，基于完整 Msg 打印 thinking/text 与工具入出参。
 #   - 模型调用完整观测交给 AgentScope TracingMiddleware / OpenTelemetry。
 #
 # Author      : yangkai
@@ -107,8 +107,6 @@ class BIWorkerProgressMiddleware(MiddlewareBase):
         try:
             async for event in next_handler(**input_kwargs):
                 reply_msg = _append_event_to_reply_msg(reply_msg, event, agent_name=agent_name)
-                if _should_log_worker_event(event):
-                    _log_worker_event(worker_context=self.worker_context, event=event)
                 _publish_tool_progress(worker_context=self.worker_context, event=event)
                 yield event
         except Exception:
@@ -232,103 +230,47 @@ def _log_worker_lifecycle(
     logger.info("[agentscope.bi_worker.event] %s", _json_log(payload))
 
 
-def _log_worker_event(*, worker_context: dict[str, str | None], event: Any) -> None:
-    """记录 AgentScope 原生 thinking 事件摘要；不写原始思维文本。"""
-
-    payload = {
-        "agent_role": "worker",
-        **_worker_context_log_fields(worker_context),
-        "event": _event_summary(event),
-    }
-    logger.info("[agentscope.bi_worker.event] %s", _json_log(payload))
-
-
 def _log_raw_debug_blocks_if_enabled(*, msg: Any) -> None:
     """显式开启 raw debug 时，在 reply 拼接完成后用 DEBUG 打印原始调试内容。"""
 
     if msg is None or not raw_agent_logs_enabled():
         return
-    payload = _raw_debug_blocks_from_msg(msg)
-    if not payload:
+    timeline = _raw_debug_blocks_from_msg(msg)
+    if not timeline:
         return
-    logger.debug("[agentscope.bi_worker.raw_debug] %s", _json_raw_log(payload))
+    logger.info("[agentscope.bi_worker.raw_debug] %s", _json_raw_log({"timeline": timeline}))
 
 
-def _raw_debug_blocks_from_msg(msg: Any) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-    thinking = _raw_thinking_from_msg(msg)
-    text = _raw_text_from_msg(msg)
-    tools = _raw_tool_io_from_msg(msg)
-    if thinking:
-        payload["thinking"] = thinking
-    if text:
-        payload["text"] = text
-    if tools:
-        payload["tools"] = tools
-    return payload
-
-
-def _raw_thinking_from_msg(msg: Any) -> list[str]:
-    return [
-        str(_safe_getattr(block, "thinking") or "")
-        for block in _safe_content_blocks(msg, "thinking")[:20]
-        if str(_safe_getattr(block, "thinking") or "")
-    ]
-
-
-def _raw_text_from_msg(msg: Any) -> list[str]:
-    return [
-        str(_safe_getattr(block, "text") or "")
-        for block in _safe_content_blocks(msg, "text")[:20]
-        if str(_safe_getattr(block, "text") or "")
-    ]
-
-
-def _raw_tool_io_from_msg(msg: Any) -> list[dict[str, Any]]:
-    results_by_id = {
-        str(_safe_getattr(block, "id") or ""): block
-        for block in _safe_content_blocks(msg, "tool_result")[:20]
-    }
-    tools: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for block in _safe_content_blocks(msg, "tool_call")[:20]:
-        call_id = str(_safe_getattr(block, "id") or "")
-        seen_ids.add(call_id)
-        result_block = results_by_id.get(call_id)
-        tools.append(
-            _raw_tool_io_item(
-                name=_safe_getattr(block, "name") or _safe_getattr(result_block, "name"),
-                input_text=str(_safe_getattr(block, "input") or ""),
-                output_text=_tool_result_output_text(_safe_getattr(result_block, "output")) if result_block else "",
-            )
-        )
-    for call_id, result_block in results_by_id.items():
-        if call_id in seen_ids:
+def _raw_debug_blocks_from_msg(msg: Any) -> list[dict[str, Any]]:
+    """按 msg.content 原始顺序输出所有内容块，还原 ReAct 思考→调工具→结果的先后顺序。"""
+    timeline: list[dict[str, Any]] = []
+    content = _safe_getattr(msg, "content")
+    if not isinstance(content, list):
+        return timeline
+    for idx, block in enumerate(content):
+        block_type = str(_safe_getattr(block, "type") or "")
+        entry: dict[str, Any] = {"step": idx + 1, "type": block_type}
+        if block_type == "text":
+            text = _raw_block_text(block, attrs=("text", "content"))
+            if text:
+                entry["text"] = text
+        elif block_type == "thinking":
+            thinking = _raw_block_text(block, attrs=("thinking", "text", "content"))
+            if thinking:
+                entry["thinking"] = thinking
+        elif block_type == "tool_call":
+            entry["tool_name"] = str(_safe_getattr(block, "name") or "")
+            entry["input"] = str(_safe_getattr(block, "input") or "")
+        elif block_type == "tool_result":
+            entry["tool_name"] = str(_safe_getattr(block, "name") or "")
+            entry["state"] = str(_safe_getattr(block, "state") or "")
+            entry["output"] = _tool_result_output_text(_safe_getattr(block, "output"))
+        else:
             continue
-        tools.append(
-            _raw_tool_io_item(
-                name=_safe_getattr(result_block, "name"),
-                input_text="",
-                output_text=_tool_result_output_text(_safe_getattr(result_block, "output")),
-            )
-        )
-    return tools
+        timeline.append(entry)
+    return timeline
 
 
-def _raw_tool_io_item(*, name: Any, input_text: str, output_text: str) -> dict[str, Any]:
-    item = {
-        "tool_name": str(name) if name else None,
-        "input": input_text,
-        "output": output_text,
-    }
-    return {key: value for key, value in item.items() if value not in (None, "")}
-
-
-def _should_log_worker_event(event: Any) -> bool:
-    """普通事件日志只保留思考路径摘要；工具结果在 reply 结束后从 Msg 块统一提取。"""
-
-    event_type = str(_safe_getattr(event, "type") or event.__class__.__name__)
-    return _event_category(event_type) == "thinking"
 
 
 def _append_event_to_reply_msg(msg: Any, event: Any, *, agent_name: str) -> Any:
@@ -403,7 +345,14 @@ def _tool_results_from_msg(msg: Any) -> list[dict[str, Any]]:
 
 
 def _safe_content_blocks(msg: Any, block_type: str) -> list[Any]:
-    get_blocks = getattr(msg, "get_content_blocks", None)
+    has_blocks = _safe_getattr(msg, "has_content_blocks")
+    if callable(has_blocks):
+        try:
+            if not has_blocks(block_type):
+                return []
+        except Exception:
+            pass
+    get_blocks = _safe_getattr(msg, "get_content_blocks")
     if not callable(get_blocks):
         return []
     try:
@@ -411,6 +360,14 @@ def _safe_content_blocks(msg: Any, block_type: str) -> list[Any]:
     except Exception:
         return []
     return blocks if isinstance(blocks, list) else []
+
+
+def _raw_block_text(block: Any, *, attrs: tuple[str, ...]) -> str:
+    for attr in attrs:
+        value = _safe_getattr(block, attr)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
 def _tool_result_output_text(output: Any) -> str:
