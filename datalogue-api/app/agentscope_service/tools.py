@@ -23,6 +23,10 @@ from agentscope.message import TextBlock, ToolResultState
 from agentscope.app.storage import StorageBase
 from agentscope.tool import FunctionTool, ToolBase, ToolChunk
 
+from app.agentscope_service.bi_worker_context import BIWorkerContextProvider
+from app.agentscope_service.bi_worker_contracts import BIWorkerQueryPlan
+from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
+from app.agentscope_service.bi_worker_validator import BIWorkerQueryValidator, ProgressiveContextState
 from app.agentscope_service.dataset_query_executor import execute_dataset_query_for_agent_team
 from app.agentscope_service.progress_bridge import publish_agent_event
 from app.core.database import SessionLocal
@@ -53,10 +57,20 @@ def build_datalogue_extra_agent_tools(*, storage: StorageBase | None = None) -> 
             return []  # Dataset 查询只能由 Team worker 调用；拿不到身份时 fail-closed，避免 Leader 直接查数。
         return [
             build_datalogue_select_candidate_datasets_tool(worker_context=worker_context),
+            *build_datalogue_progressive_bi_worker_tools(worker_context=worker_context),
             build_datalogue_query_dataset_tool(worker_context=worker_context),
         ]
 
     return _extra_agent_tools
+
+
+def _tool_success_chunk(payload: dict[str, Any]) -> ToolChunk:
+    """把 BI Worker 工具 payload 统一封装为 AgentScope SDK 的成功 ToolChunk。"""
+
+    return ToolChunk(
+        content=[TextBlock(text=json.dumps(payload, ensure_ascii=False, default=str))],
+        state=ToolResultState.SUCCESS,
+    )
 
 
 async def _is_team_worker(*, storage: StorageBase | None, user_id: str | None, agent_id: str | None) -> bool:
@@ -89,6 +103,137 @@ async def _team_worker_context(
     }
 
 
+def build_datalogue_progressive_bi_worker_tools(
+    worker_context: dict[str, str | None] | None = None,
+) -> list[ToolBase]:
+    """创建 Agent Team BI Worker 可见的 L0-L5 渐进式上下文工具。"""
+
+    def datalogue_describe_dataset_capability(dataset_id: int, confirmed_question: str) -> ToolChunk:
+        """Describe dataset capability before recalling detailed query context."""
+
+        with SessionLocal() as db:
+            payload = BIWorkerContextProvider(db).describe_dataset_capability(
+                dataset_id=dataset_id,
+                question=confirmed_question,
+            ).model_dump()
+        return _tool_success_chunk(payload)
+
+    def datalogue_recall_query_assets(dataset_id: int, confirmed_question: str) -> ToolChunk:
+        """Recall coarse query assets for the confirmed dataset and question."""
+
+        with SessionLocal() as db:
+            payload = BIWorkerContextProvider(db).recall_query_assets(
+                dataset_id=dataset_id,
+                question=confirmed_question,
+            ).model_dump()
+        return _tool_success_chunk(payload)
+
+    def datalogue_request_schema_slice(
+        dataset_id: int,
+        confirmed_question: str,
+        focus: dict[str, Any] | None = None,
+    ) -> ToolChunk:
+        """Request a focused schema slice for query planning."""
+
+        with SessionLocal() as db:
+            payload = BIWorkerContextProvider(db).request_schema_slice(
+                dataset_id=dataset_id,
+                question=confirmed_question,
+                focus=focus,
+            ).model_dump()
+        return _tool_success_chunk(payload)
+
+    def datalogue_profile_candidate_values(
+        dataset_id: int,
+        confirmed_question: str,
+        probes: list[dict[str, Any]],
+    ) -> ToolChunk:
+        """Profile candidate value probes using safe metadata-only context."""
+
+        with SessionLocal() as db:
+            payload = BIWorkerContextProvider(db).profile_candidate_values(
+                dataset_id=dataset_id,
+                question=confirmed_question,
+                probes=probes,
+            ).model_dump()
+        return _tool_success_chunk(payload)
+
+    def datalogue_validate_query_support(
+        query_plan: dict[str, Any],
+        context_state: dict[str, Any],
+    ) -> ToolChunk:
+        """Validate whether the current progressive context supports the query plan."""
+
+        plan = BIWorkerQueryPlan.model_validate(query_plan)
+        state = ProgressiveContextState(**context_state)
+        payload = BIWorkerQueryValidator().validate(plan, state).model_dump()
+        return _tool_success_chunk(payload)
+
+    async def datalogue_execute_query_plan(
+        dataset_id: int,
+        confirmed_question: str,
+        query_plan: dict[str, Any],
+        context_state: dict[str, Any],
+        trace_id: str | None = None,
+    ) -> ToolChunk:
+        """Execute a validated BI Worker query plan and return safe result refs."""
+
+        plan = BIWorkerQueryPlan.model_validate(query_plan)
+        state = ProgressiveContextState(**context_state)
+        with SessionLocal() as db:
+            runtime = BIWorkerQueryRuntime(db)
+            payload = await runtime.execute_query_plan(
+                dataset_id=dataset_id,
+                confirmed_question=confirmed_question,
+                query_plan=plan,
+                context_state=state,
+                trace_id=trace_id,
+            )
+            db.commit()  # L5 可能写入 artifact/checkpoint 引用，成功路径统一提交事务。
+        if payload.get("datalogue_event_type") == "dataset_query_result":
+            _publish_worker_business_final(worker_context=worker_context, payload=payload)
+        return _tool_success_chunk(payload)
+
+    return [
+        FunctionTool(
+            datalogue_describe_dataset_capability,
+            description="BI Worker L0：描述已确认数据集的业务能力边界，不返回 schema 或明细数据。",
+            is_concurrency_safe=True,
+            is_read_only=True,
+        ),
+        FunctionTool(
+            datalogue_recall_query_assets,
+            description="BI Worker L1：召回与确认问题相关的数据资产摘要，不展开字段清单或 SQL。",
+            is_concurrency_safe=True,
+            is_read_only=True,
+        ),
+        FunctionTool(
+            datalogue_request_schema_slice,
+            description="BI Worker L2：按问题焦点返回受控 schema 切片，用于后续查询计划。",
+            is_concurrency_safe=True,
+            is_read_only=True,
+        ),
+        FunctionTool(
+            datalogue_profile_candidate_values,
+            description="BI Worker L3：基于元数据画像候选值探针，不访问业务明细数据。",
+            is_concurrency_safe=True,
+            is_read_only=True,
+        ),
+        FunctionTool(
+            datalogue_validate_query_support,
+            description="BI Worker L4：校验查询计划是否被当前渐进式上下文支持。",
+            is_concurrency_safe=True,
+            is_read_only=True,
+        ),
+        FunctionTool(
+            datalogue_execute_query_plan,
+            description="BI Worker L5：执行已通过上下文校验的查询计划，只返回安全结果引用。",
+            is_concurrency_safe=False,
+            is_read_only=False,
+        ),
+    ]
+
+
 def build_datalogue_query_dataset_tool(*, worker_context: dict[str, str | None] | None = None) -> FunctionTool:
     """创建 Agent Team worker 可见的 Dataset 查询工具。"""
 
@@ -114,10 +259,7 @@ def build_datalogue_query_dataset_tool(*, worker_context: dict[str, str | None] 
         )
         payload = result.to_tool_payload()
         _publish_worker_business_final(worker_context=worker_context, payload=payload)
-        return ToolChunk(
-            content=[TextBlock(text=json.dumps(payload, ensure_ascii=False, default=str))],
-            state=ToolResultState.SUCCESS,
-        )
+        return _tool_success_chunk(payload)
 
     return FunctionTool(
         datalogue_query_dataset,
@@ -147,10 +289,7 @@ def build_datalogue_select_candidate_datasets_tool(
         if safe_payload.get("requires_user_confirmation"):
             # 候选数据集确认是本轮用户可见终点；即使 LLM 忘记调用 TeamSay，也不能让主链落到空 final。
             _publish_worker_business_final(worker_context=worker_context, payload=safe_payload)
-        return ToolChunk(
-            content=[TextBlock(text=json.dumps(safe_payload, ensure_ascii=False, default=str))],
-            state=ToolResultState.SUCCESS,
-        )
+        return _tool_success_chunk(safe_payload)
 
     return FunctionTool(
         datalogue_select_candidate_datasets,

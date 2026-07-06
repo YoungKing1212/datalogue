@@ -69,7 +69,16 @@ async def test_extra_agent_tools_returns_dataset_tool_for_team_worker_only():
 
     tools = await factory("user-1", "worker-bi-1", "session-1")
 
-    assert [tool.name for tool in tools] == ["datalogue_select_candidate_datasets", "datalogue_query_dataset"]
+    assert [tool.name for tool in tools] == [
+        "datalogue_select_candidate_datasets",
+        "datalogue_describe_dataset_capability",
+        "datalogue_recall_query_assets",
+        "datalogue_request_schema_slice",
+        "datalogue_profile_candidate_values",
+        "datalogue_validate_query_support",
+        "datalogue_execute_query_plan",
+        "datalogue_query_dataset",
+    ]
     assert AGENTSCOPE_SERVICE_BUILTIN_TOOL_NAMES.isdisjoint({tool.name for tool in tools})
 
 
@@ -86,6 +95,29 @@ async def test_extra_agent_tools_fail_closed_without_agent_record():
     tools = await factory("user-1", "missing-agent", "session-1")
 
     assert tools == []
+
+
+def test_bi_worker_progressive_tools_are_registered_for_team_worker():
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    tools = build_datalogue_progressive_bi_worker_tools(
+        worker_context={
+            "user_id": "u",
+            "agent_id": "a",
+            "agent_name": "worker",
+            "session_id": "s",
+        }
+    )
+    names = [tool.name for tool in tools]
+
+    assert names == [
+        "datalogue_describe_dataset_capability",
+        "datalogue_recall_query_assets",
+        "datalogue_request_schema_slice",
+        "datalogue_profile_candidate_values",
+        "datalogue_validate_query_support",
+        "datalogue_execute_query_plan",
+    ]
 
 
 @pytest.mark.asyncio
