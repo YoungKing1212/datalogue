@@ -92,6 +92,31 @@ async def execute_dataset_query_for_agent_team(
     )
 
 
+async def execute_dataset_query_for_agent_team_direct_fallback(
+    *,
+    db: Session | None = None,
+    dataset_id: int,
+    confirmed_question: str,
+    task_goal: str | None = None,
+    user_confirmation_id: str | None = None,
+    routing_rationale: str | None = None,
+    trace_id: str | None = None,
+    parent_run_id: str | None = None,
+) -> AgentTeamDatasetQueryResult:
+    """显式 fallback：仅在 progressive runtime 被关闭或回滚时使用旧 direct query。"""
+
+    return await execute_dataset_query_for_agent_team(
+        db=db,
+        dataset_id=dataset_id,
+        confirmed_question=confirmed_question,
+        task_goal=task_goal,
+        user_confirmation_id=user_confirmation_id,
+        routing_rationale=routing_rationale,
+        trace_id=trace_id,
+        parent_run_id=parent_run_id,
+    )
+
+
 async def _execute_dataset_query_with_db(
     *,
     db: Session,
