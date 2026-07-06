@@ -146,8 +146,8 @@ class BIWorkerQueryValidator:
 
     def _recommended_tool(self, missing_item: dict[str, Any]) -> str:
         if missing_item["type"] == "lookup_dependency":
-            return "bi_worker_get_l3_value_profile"
-        return "bi_worker_get_l2_schema_slice"
+            return "datalogue_profile_candidate_values"
+        return "datalogue_request_schema_slice"
 
     def _focus_for_type(self, missing_type: str) -> str:
         return {
