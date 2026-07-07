@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from redis.asyncio import Redis
 
 from app.agentscope_service.client import AgentScopeServiceClient
-from app.agentscope_service.dataset_query_executor import execute_dataset_query_for_agent_team
+from app.agentscope_service.dataset_query_executor import execute_dataset_query_for_agent_team_direct_fallback
 from app.agentscope_service.progress_bridge import agent_progress_subscription
 from app.agentscope_service.projection import project_agentscope_service_event
 from app.agentscope_service.registry import build_datalogue_leader_agent_spec
@@ -153,6 +153,12 @@ class AgentScopeServiceTaskRunner:
                             ):
                                 yield fallback_event
                             break
+                        if envelope.event_type == "message.completed" and _has_pending_tool_calls(envelope.payload):
+                            # AgentScope ReAct 中，带 pending tool_calls 的 ReplyEnd 只是“模型已决定调工具”；
+                            # 真实业务结果要等 ToolResult/TeamSay，不能把这一段提前投成 Datalogue 终态。
+                            current_reply_spawned_worker = False
+                            current_reply_text = ""
+                            continue
                         yield envelope
                         if envelope.event_type == "message.completed":
                             # AgentScope session stream 是可跨多轮复用的长连接；Datalogue API 一次任务完成后要主动退出。
@@ -313,9 +319,9 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
         context["confirmed_question"] = request.question
         # 用户已经在候选卡完成确认时，clarification_response 只是审计上下文；发给 LLM 会诱导它重跑候选确认。
         directives.append(
-            "数据集已由用户确认：必须围绕原始问题直接创建 BI worker，并要求 worker 调用 "
-            f"datalogue_query_dataset(dataset_id={request.dataset_id}, confirmed_question=原始问题)。"
-            "严禁再次调用 datalogue_select_candidate_datasets 或要求用户重新确认 dataset_id。"
+            f"数据集已由用户确认：dataset_id={request.dataset_id}，用户问题={request.question}。"
+            f" 必须将 dataset_id 和用户问题原文明确告知 BI worker，要求 worker 使用 "
+            f"datalogue_prepare_query_context -> datalogue_execute_query_plan_bundle 的标准路径执行。"
         )
     else:
         context["clarification_response"] = request.clarification_response
@@ -395,6 +401,22 @@ def _is_agent_create_event(event: dict[str, Any]) -> bool:
     return "tool_call" in raw_type and tool_name == "AgentCreate"
 
 
+def _has_pending_tool_calls(payload: dict[str, Any]) -> bool:
+    """识别还在等待工具执行的中间回复完成事件。"""
+
+    tool_calls = payload.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return False
+    for item in tool_calls:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        state = str(item.get("state") or "").lower()
+        if name and state not in {"completed", "success", "failed", "error"}:
+            return True
+    return False
+
+
 def _event_text(event: dict[str, Any]) -> str:
     payload = event.get("payload")
     if isinstance(payload, dict):
@@ -472,7 +494,7 @@ async def _run_confirmed_dataset_query_fallback(
     request: AgentTeamTaskRequest,
     task: AgentTeamTask,
 ) -> AsyncIterator[DatalogueEventEnvelope]:
-    """确认态 worker 未产出 artifact 时，复用 datalogue_query_dataset 的安全执行器补齐终态。"""
+    """确认态 worker 未产出 artifact 时，使用显式代码级 fallback 补齐终态。"""
 
     tool_call_id = f"confirmed-dataset-query-{task.task_id}"
     log_lifecycle(
@@ -485,9 +507,9 @@ async def _run_confirmed_dataset_query_fallback(
         event_type="tool_call.started",
         visibility="user_visible",
         payload={
-            "tool_name": "datalogue_query_dataset",
+            "tool_name": "datalogue_execute_query_plan",
             "tool_call_id": tool_call_id,
-            "summary": "BI Worker 正在执行已确认数据集查询。",
+            "summary": "BI Worker 正在执行受控查询兜底。",
         },
         task_id=task.task_id,
         trace_id=task.trace_id,
@@ -495,7 +517,7 @@ async def _run_confirmed_dataset_query_fallback(
         message_id=task.message_id,
         selected_agent=task.selected_agent,
     )
-    result = await execute_dataset_query_for_agent_team(
+    result = await execute_dataset_query_for_agent_team_direct_fallback(
         dataset_id=int(request.dataset_id),
         confirmed_question=request.question,
         trace_id=task.trace_id,
@@ -514,9 +536,9 @@ async def _run_confirmed_dataset_query_fallback(
         event_type="tool_call.completed",
         visibility="user_visible",
         payload={
-            "tool_name": "datalogue_query_dataset",
+            "tool_name": "datalogue_execute_query_plan",
             "tool_call_id": tool_call_id,
-            "summary": "BI Worker 已完成已确认数据集查询。",
+            "summary": "BI Worker 已完成受控查询兜底。",
             "has_artifact": bool(payload.get("artifact_ref")),
         },
         task_id=task.task_id,
@@ -568,6 +590,10 @@ async def _merge_leader_and_progress_events(
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+        aclose = getattr(leader_iter, "aclose", None)
+        if callable(aclose):
+            with suppress(Exception):
+                await aclose()
 
 
 async def _store_runner_task_context(

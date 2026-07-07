@@ -6,7 +6,7 @@
 # Responsibilities:
 #   - 通过 AgentScope extra_agent_middlewares 只为 Datalogue BI worker 挂载进度中间件。
 #   - 发布 Workbench/Chat 可消费的安全进度事件。
-#   - 在 DEBUG raw 开关开启时，基于完整 Msg 打印 thinking/text 与工具入出参。
+#   - 在 DEBUG raw 开关开启时，基于完整 Msg 打印 Leader/BI worker 的 thinking/text 与工具入出参。
 #   - 模型调用完整观测交给 AgentScope TracingMiddleware / OpenTelemetry。
 #
 # Author      : yangkai
@@ -30,7 +30,8 @@ from app.agentscope_service.task_context import resolve_task_context
 from app.middlewares.lifecycle import raw_agent_logs_enabled
 
 AgentMiddlewareFactory = Callable[[str | None, str | None, str | None], Awaitable[list[MiddlewareBase]]]
-_BI_WORKER_MARKERS = ("Datalogue BI Worker", "Dataset Query", "datalogue_query_dataset")
+_BI_WORKER_MARKERS = ("Datalogue BI Worker", "Dataset Query")
+_LEADER_MARKERS = ("Datalogue Agent Team Leader", "Agent Team Leader", "智能问数主链")
 logger = logging.getLogger(__name__)
 _SENSITIVE_TEXT_PATTERN = re.compile(
     r"\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b"
@@ -50,6 +51,12 @@ _SAFE_TOOL_RESULT_KEYS = {
     "row_count",
     "column_count",
 }
+_PROGRESSIVE_TOOL_SUMMARIES = {
+    "datalogue_prepare_query_context": "BI Worker 正在准备查询上下文。",
+    "datalogue_request_schema_slice": "BI Worker 正在申请相关数据结构切片。",
+    "datalogue_execute_query_plan_bundle": "BI Worker 正在校验并执行受控查询计划。",
+    "datalogue_repair_query_plan": "BI Worker 正在生成查询修复建议。",
+}
 
 
 def build_datalogue_extra_agent_middlewares(*, storage: StorageBase | None = None) -> AgentMiddlewareFactory:
@@ -66,14 +73,43 @@ def build_datalogue_extra_agent_middlewares(*, storage: StorageBase | None = Non
             agent_id=agent_id,
             session_id=session_id,
         )
+        leader_context = None
+        if worker_context is None:
+            leader_context = await _leader_context(
+                storage=storage,
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
         # TracingMiddleware 全局挂载（所有 agent），未配置 TracerProvider 时零开销短路。
         # BIWorkerProgressMiddleware 只记录 thinking 路径摘要、工具结果摘要与用户可见进度，不接管原始模型 I/O 日志。
         middlewares: list[MiddlewareBase] = [TracingMiddleware()]
         if worker_context is not None:
             middlewares.append(BIWorkerProgressMiddleware(worker_context=worker_context))
+        elif leader_context is not None:
+            middlewares.append(LeaderRawDebugMiddleware())
         return middlewares
 
     return _extra_agent_middlewares
+
+
+class LeaderRawDebugMiddleware(MiddlewareBase):
+    """AgentScope Middleware：仅在 raw debug 开启时记录 Leader 原始 reply timeline。"""
+
+    async def on_reply(
+        self,
+        agent: Any,
+        input_kwargs: dict,
+        next_handler: Callable[..., AsyncGenerator],
+    ) -> AsyncGenerator:
+        """透传 Leader reply 事件，并在本地 DEBUG 开关开启时输出原始思考链。"""
+
+        agent_name = _safe_context_text(_safe_getattr(agent, "name")) or "Datalogue Agent Team Leader"
+        reply_msg = None
+        async for event in next_handler(**input_kwargs):
+            reply_msg = _append_event_to_reply_msg(reply_msg, event, agent_name=agent_name)
+            yield event
+        _log_raw_debug_blocks_if_enabled(msg=reply_msg, log_name="agentscope.leader.raw_debug")
 
 
 class BIWorkerProgressMiddleware(MiddlewareBase):
@@ -123,7 +159,7 @@ class BIWorkerProgressMiddleware(MiddlewareBase):
                 summary="BI Worker 处理过程中发生错误，内部细节已隐藏。",
             )
             raise
-        _log_raw_debug_blocks_if_enabled(msg=reply_msg)
+        _log_raw_debug_blocks_if_enabled(msg=reply_msg, log_name="agentscope.bi_worker.raw_debug")
         _log_reply_content_blocks(worker_context=self.worker_context, msg=reply_msg)
         _log_worker_lifecycle(
             worker_context=self.worker_context,
@@ -180,6 +216,34 @@ async def _bi_worker_context(
     }
 
 
+async def _leader_context(
+    *,
+    storage: StorageBase | None,
+    user_id: str | None,
+    agent_id: str | None,
+    session_id: str | None,
+) -> dict[str, str | None] | None:
+    """识别 Datalogue Agent Team Leader；只用于挂 raw debug 中间件。"""
+
+    del session_id
+    if storage is None or not user_id or not agent_id:
+        return None
+    agent_record = await storage.get_agent(user_id, agent_id)
+    if not agent_record:
+        return None
+    agent_data = getattr(agent_record, "data", None)
+    system_prompt = str(getattr(agent_data, "system_prompt", "") or "")
+    agent_name = str(getattr(agent_data, "name", "") or "")
+    marker_text = f"{agent_name}\n{system_prompt}"
+    if not any(marker in marker_text for marker in _LEADER_MARKERS):
+        return None
+    return {
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "agent_name": agent_name or None,
+    }
+
+
 def _event_summary(event: Any) -> dict[str, Any]:
     raw_type = _safe_getattr(event, "type")
     event_type = str(raw_type or event.__class__.__name__)
@@ -230,7 +294,7 @@ def _log_worker_lifecycle(
     logger.info("[agentscope.bi_worker.event] %s", _json_log(payload))
 
 
-def _log_raw_debug_blocks_if_enabled(*, msg: Any) -> None:
+def _log_raw_debug_blocks_if_enabled(*, msg: Any, log_name: str) -> None:
     """显式开启 raw debug 时，在 reply 拼接完成后用 DEBUG 打印原始调试内容。"""
 
     if msg is None or not raw_agent_logs_enabled():
@@ -238,7 +302,7 @@ def _log_raw_debug_blocks_if_enabled(*, msg: Any) -> None:
     timeline = _raw_debug_blocks_from_msg(msg)
     if not timeline:
         return
-    logger.info("[agentscope.bi_worker.raw_debug] %s", _json_raw_log({"timeline": timeline}))
+    logger.info("[%s] %s", log_name, _json_raw_log({"timeline": timeline}))
 
 
 def _raw_debug_blocks_from_msg(msg: Any) -> list[dict[str, Any]]:
@@ -543,15 +607,27 @@ def _publish_tool_progress(*, worker_context: dict[str, str | None], event: Any)
     tool_name = summary.get("tool_call_name")
     if event_type != "tool_call_start" or not tool_name:
         return
+    progress = summarize_tool_progress(str(tool_name))
     _publish_worker_progress(
         worker_context=worker_context,
         phase="tool",
         status="running",
         title="工具调用",
-        summary=f"BI Worker 正在调用 {tool_name}。",
+        summary=progress["summary"],
         tool_name=str(tool_name),
         tool_call_id=_safe_context_text(summary.get("tool_call_id")),
     )
+
+
+def summarize_tool_progress(tool_name: str) -> dict[str, str]:
+    """把 BI Worker 工具名投影为用户可见安全进度，避免展示 schema/query_plan/raw rows。"""
+
+    if tool_name in _PROGRESSIVE_TOOL_SUMMARIES:
+        return {"summary": _PROGRESSIVE_TOOL_SUMMARIES[tool_name]}
+    safe_tool_name = _safe_context_text(tool_name) or "受控工具"
+    return {
+        "summary": f"BI Worker 正在调用 {safe_tool_name}。"
+    }
 
 
 def _publish_worker_progress(

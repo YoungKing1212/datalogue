@@ -29,7 +29,6 @@ const NODE_DISPLAY = {
   entry_intent_classification: '入口判断',
   analysis_blueprint_execute: '分析蓝图执行',
   candidate_assets: '数据资产匹配',
-  query_plan: '查询规划',
   schema_recall: '数据范围确认',
   term_normalize_node: '术语标准化',
   semantic_asset_resolution_node: '语义资产解析',
@@ -48,22 +47,7 @@ function safeStepLabel(node, displayName) {
   return NODE_DISPLAY[node] || NODE_DISPLAY[displayName] || '任务处理';
 }
 
-const QUERY_TYPE_LABELS = {
-  detail_query: '明细查询',
-  metric_query: '指标查询',
-  blueprint_query: '蓝图查询',
-  knowledge_qa: '知识问答',
-  ambiguous: '需要澄清',
-  unsupported: '暂不支持',
-};
 
-const EXECUTION_STRATEGY_LABELS = {
-  blueprint_execute: '直接执行蓝图',
-  blueprint_as_reference: '参考蓝图生成查询',
-  query_graph: '普通查询生成',
-  clarify: '需要补充信息',
-  reject: '无法处理',
-};
 
 function enumLabel(labels, value) {
   return value ? labels[value] || value : null;
@@ -174,29 +158,6 @@ function summarizeCandidateAssets(candidateAssets) {
     .join(' · ');
 }
 
-function summarizeQueryPlan(queryPlan) {
-  if (!queryPlan || typeof queryPlan !== 'object') return '';
-  const explanation = queryPlan.explanation || {};
-  const decisionFactors = Array.isArray(queryPlan.decision_factors)
-    ? queryPlan.decision_factors
-    : [];
-  const plannerWarnings = Array.isArray(queryPlan.planner_warnings)
-    ? queryPlan.planner_warnings
-    : [];
-  const firstFactor = decisionFactors.find((item) => item?.message)?.message;
-  const firstWarning = plannerWarnings.find((item) => item?.message)?.message;
-  return [
-    queryPlan.query_type ? `类型 ${enumLabel(QUERY_TYPE_LABELS, queryPlan.query_type)}` : null,
-    queryPlan.execution_strategy
-      ? `策略 ${enumLabel(EXECUTION_STRATEGY_LABELS, queryPlan.execution_strategy)}`
-      : null,
-    explanation.summary || null,
-    firstFactor ? `依据 ${firstFactor}` : null,
-    firstWarning ? `提示 ${firstWarning}` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-}
 
 /**
  * 把单个 step 事件格式化成 reasoning 文本（一行小卡片式）
@@ -216,8 +177,6 @@ function formatStepAsReasoning(ev) {
     detail = lines.length ? lines.join(' / ') : '已检索相关表结构';
   } else if (ev.node === 'candidate_assets') {
     detail = summarizeCandidateAssets(ev.candidate_assets) || '已召回候选资产';
-  } else if (ev.node === 'query_plan') {
-    detail = summarizeQueryPlan(ev.query_plan) || '已生成查询规划';
   } else if (ev.node === 'term_normalize_node') {
     const normalization = ev.term_normalization || {};
     const matched = normalization.matched_terms?.length ?? 0;
@@ -351,12 +310,8 @@ const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
   'llm_sql',
   'compiled_sql',
   'sql_list',
-  'query_plan',
-  'queryPlan',
   'candidate_assets',
   'candidateAssets',
-  'query_plan_debug',
-  'queryPlanDebug',
   'dsl',
   'rows',
   'columns',
@@ -783,6 +738,18 @@ function safeRefs(refs = {}) {
   );
 }
 
+function safeStepTraceEvent(event = {}) {
+  const title = safeStepLabel(event.node, event.display_name);
+  const text = safeDisplayText(formatStepAsReasoning(event));
+  return compactObject({
+    type: 'step',
+    status: safeDisplayText(event.status) || null,
+    title,
+    text,
+    refs: safeRefs(event.refs),
+  });
+}
+
 function safeToolCalls(calls = []) {
   if (!Array.isArray(calls)) return [];
   return calls.slice(0, 8).map((call = {}) => compactObject({
@@ -1156,7 +1123,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         } else if (ev.type === 'step') {
           // 通知 AgentPanel（保持现有行为）
           emitTrace(ev);
-          stepTrace.push(sanitizeUserVisibleTrace(ev));
+          stepTrace.push(safeStepTraceEvent(ev));
           // 只把"完成"的节点累积为 reasoning（running 状态等完成时再算）
           if (ev.status === 'done' && ev.node !== 'error') {
             reasonings.push({

@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { fetchWorkbenchArtifact, fetchWorkbenchThread, requestWorkbenchRetry } from '../assistant/workbench-api';
 import { Icon } from './icons';
 
-const FORBIDDEN_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|query_plan|field_patch)\b/i;
+const FORBIDDEN_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|field_patch)\b/i;
 const RUNNING_REFRESH_INTERVAL_MS = 2000;
 
 function safeText(value, fallback = '') {

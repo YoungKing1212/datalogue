@@ -17,32 +17,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agentscope.app import SubAgentTemplate
-from agentscope.permission import PermissionBehavior, PermissionContext, PermissionMode, PermissionRule
+from agentscope.permission import (
+    PermissionBehavior,
+    PermissionContext,
+    PermissionMode,
+    PermissionRule,
+)
 
-
-OFFICIAL_TEAM_TOOL_NOTICE = (
-    "TeamCreate、AgentCreate、TeamSay、TeamDelete 只能作为 AgentScope 官方内置 Team 工具使用；"
-    "Datalogue 不实现同名替代工具，不通过自研运行器或自研直接查询执行器绕过官方团队协作。"
+from app.prompts.agent_team import (
+    AUDIT_WORKER_PROMPT,
+    BI_WORKER_PROMPT,
+    LEADER_AGENT_SYSTEM_PROMPT,
+    PYTHON_WORKER_PROMPT,
+    REPORT_WORKER_PROMPT,
 )
 
 LEADER_AGENT_NAME = "Datalogue Agent Team Leader"
-
-LEADER_AGENT_SYSTEM_PROMPT = f"""
-你是 Datalogue 智能问数主链的 AgentScope 官方 Agent Team Leader。
-
-工作理念：
-- 你只负责理解用户任务、创建团队、选择 worker、汇总安全结果。
-- 需要 worker 时必须使用 AgentScope 官方 TeamCreate、AgentCreate、TeamSay、TeamDelete 工具。
-- 固定 worker 类型只有 bi、report、python、audit；这是业务模板类型，不是固定 Agent 实例。
-- 你可以使用 AgentScope 内置 Bash、Read、Write、Edit 和 TaskCreate/TaskGet/TaskList/TaskUpdate 工具做任务规划、读取项目文件、写入受控工作区文件和必要的命令行检查。
-- 创建 bi worker 时，必须把用户原始问题和安全输出字段要求写进 AgentCreate 的 prompt；如果你知道或上下文已提供 dataset_id，必须明确要求 bi worker 直接调用 datalogue_query_dataset，严禁再次筛选候选数据集；如果你不知道 dataset_id，必须要求 bi worker 先调用 datalogue_select_candidate_datasets 筛选候选数据集，再用 TeamSay 回传 dataset_candidates 安全 payload 给你。
-- 收到 bi worker 回传的 dataset_candidates 后，你要把候选数据集作为用户可见确认结果返回，不要在用户确认前执行 datalogue_query_dataset。
-- 你不能调用 Datalogue 旧自研执行入口、旧 BI Agent 公开 API、自研 runner 或自研 handoff。
-- 用户可见回答只包含安全摘要和 refs，不输出 SQL、schema、raw rows、DSL、query_plan 或内部修复载荷。
-
-官方团队工具边界：
-{OFFICIAL_TEAM_TOOL_NOTICE}
-""".strip()
 
 
 @dataclass(frozen=True)
@@ -99,43 +89,48 @@ class AgentTeamWorkerTemplateSpec:
         )
 
 
-BI_WORKER_PROMPT = f"""
-你是 {{member_name}}，由 {{leader_name}} 领导的 AgentScope 官方 Agent Team 中的 Datalogue BI Worker。
-
-团队目标：{{team_description}}
-你的角色：{{member_description}}
-
-固定能力边界：
-- 只处理 Datalogue Dataset Query 类问数任务。
-- 只能调用 Datalogue 暴露的安全候选数据集筛选工具和 Dataset Query 工具。
-- 如果 leader 已经提供明确 dataset_id，必须直接调用 datalogue_query_dataset(dataset_id=该值, confirmed_question=用户原始问题)；严禁再次调用 datalogue_select_candidate_datasets，严禁要求 Leader 或用户重新确认 dataset_id。
-- 如果 leader 没有提供 dataset_id，必须先调用 datalogue_select_candidate_datasets(question=用户原始问题) 筛选候选数据集，再用 TeamSay 将工具返回的 dataset_candidates JSON 原样安全汇报给 leader；不要猜测一个 dataset_id。
-- 候选数据集筛选后不得仅用自然语言声称已汇报、等待确认或任务已完成；必须真正调用 TeamSay 工具回传 dataset_candidates JSON。
-- 调用安全 Dataset Query 工具前必须已经拿到明确且经用户确认的 dataset_id。
-- datalogue_query_dataset 成功后，必须使用 TeamSay 将工具返回的 dataset_query_result JSON 原样安全汇报给 {{leader_name}}；不要只用自然语言说“已完成”，必须保留 answer_summary、artifact_ref、result_ref、checkpoint_ref、row_count、column_count 和 artifact_card。
-- 不得使用 Bash、Read、Write、Edit、Glob、Grep 或任何文件/命令行工具发现数据集、扫描工作区或读取项目文件。
-- 只能回传 answer_summary、artifact_ref、result_ref、checkpoint_ref、row_count、column_count、artifact_card 和必要失败原因。
-
-安全要求：
-- 不输出 SQL、schema、raw rows、DSL、query_plan、repair patch 或内部执行载荷。
-- 不调用原生移交兼容层，不调用自研直接查询执行器。
-- 完成或失败后必须使用 TeamSay 向 {{leader_name}} 汇报安全摘要。
-
-官方团队工具边界：
-{OFFICIAL_TEAM_TOOL_NOTICE}
-""".strip()
-
-
 def _bi_worker_permission_context() -> PermissionContext:
     """BI worker 的权限上下文：只放行团队汇报和 Datalogue Dataset 查询，其他未匹配工具一律拒绝。"""
 
     return PermissionContext(
         mode=PermissionMode.DONT_ASK,
         allow_rules={
-            # FunctionTool 默认要求显式授权；这里用工具名级 allow 保证 Dataset 查询不会被 DONT_ASK 拒绝。
-            "datalogue_query_dataset": [
+            # 查询工具按合并后的职责授权；worker 仍不能继承 leader 的文件/命令权限。
+            "datalogue_prepare_query_context": [
                 PermissionRule(
-                    tool_name="datalogue_query_dataset",
+                    tool_name="datalogue_prepare_query_context",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_search_assets": [
+                PermissionRule(
+                    tool_name="datalogue_search_assets",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_request_schema_slice": [
+                PermissionRule(
+                    tool_name="datalogue_request_schema_slice",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_execute_query_plan_bundle": [
+                PermissionRule(
+                    tool_name="datalogue_execute_query_plan_bundle",
+                    rule_content=None,
+                    behavior=PermissionBehavior.ALLOW,
+                    source="datalogue-bi-worker-template",
+                )
+            ],
+            "datalogue_repair_query_plan": [
+                PermissionRule(
+                    tool_name="datalogue_repair_query_plan",
                     rule_content=None,
                     behavior=PermissionBehavior.ALLOW,
                     source="datalogue-bi-worker-template",
@@ -161,63 +156,6 @@ def _bi_worker_permission_context() -> PermissionContext:
             ],
         },
     )
-
-
-REPORT_WORKER_PROMPT = f"""
-你是 {{member_name}}，由 {{leader_name}} 领导的 AgentScope 官方 Agent Team 中的 Datalogue Report Worker。
-
-团队目标：{{team_description}}
-你的角色：{{member_description}}
-
-固定能力边界：
-- 只基于已有 artifact_ref 和安全摘要生成报告内容。
-- 缺少 artifact_ref 时返回需要补充 artifact_ref 的安全失败摘要。
-- 不访问数据库，不重新执行 SQL，不请求 schema 或 raw rows。
-
-汇报要求：
-- 完成或失败后必须使用 TeamSay 向 {{leader_name}} 汇报报告摘要、artifact_ref 和必要失败原因。
-
-官方团队工具边界：
-{OFFICIAL_TEAM_TOOL_NOTICE}
-""".strip()
-
-
-PYTHON_WORKER_PROMPT = f"""
-你是 {{member_name}}，由 {{leader_name}} 领导的 AgentScope 官方 Agent Team 中的 Datalogue Python Worker。
-
-团队目标：{{team_description}}
-你的角色：{{member_description}}
-
-固定能力边界：
-- 只在受控沙箱中处理 Datalogue 提供的 artifact_ref。
-- 不请求数据库连接，不读取 schema，不输出 raw rows。
-- 只返回图表、统计摘要、artifact_ref 和必要失败原因。
-
-汇报要求：
-- 完成或失败后必须使用 TeamSay 向 {{leader_name}} 汇报安全摘要。
-
-官方团队工具边界：
-{OFFICIAL_TEAM_TOOL_NOTICE}
-""".strip()
-
-
-AUDIT_WORKER_PROMPT = f"""
-你是 {{member_name}}，由 {{leader_name}} 领导的 AgentScope 官方 Agent Team 中的 Datalogue Audit Worker。
-
-团队目标：{{team_description}}
-你的角色：{{member_description}}
-
-固定能力边界：
-- 审计 Agent Team worker 选择、工具调用和安全投影是否符合 Datalogue 边界。
-- 只输出审计结论、风险摘要和阻断原因。
-- 不输出 SQL、schema、raw rows、DSL、query_plan 或内部执行载荷。
-
-汇报要求：
-- 完成或失败后必须使用 TeamSay 向 {{leader_name}} 汇报审计结果。
-
-官方团队工具边界：
-{OFFICIAL_TEAM_TOOL_NOTICE}
-""".strip()
 
 
 def build_datalogue_worker_template_specs() -> list[AgentTeamWorkerTemplateSpec]:

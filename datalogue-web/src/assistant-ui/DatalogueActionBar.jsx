@@ -1,5 +1,5 @@
 // DatalogueActionBar — 消息动作栏的 assistant-ui primitive 壳层。
-// 只提供用户可见动作，不暴露 SQL、schema、raw rows 或 query_plan 等内部控制面信息。
+// 只提供用户可见动作，不暴露 SQL、schema等内部控制面信息。
 
 import React from 'react';
 import { ActionBarPrimitive, AuiIf } from '@assistant-ui/react';

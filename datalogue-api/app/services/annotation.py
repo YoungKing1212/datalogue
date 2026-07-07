@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.models.dataset import SourceTable, SourceColumn
 from app.graph.llm import get_llm
-from app.prompts.annotation import ANNOTATION_SYSTEM_PROMPT, TABLE_ANNOTATION_PROMPT
+from app.prompts import ANNOTATION_SYSTEM_PROMPT, TABLE_ANNOTATION_PROMPT
 from langchain_core.messages import SystemMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,6 @@ def refresh_table_effective_desc(table: SourceTable) -> None:
 # ── 批量标注一张表 ──────────────────────────────────
 
 
-
 def _safe_json_parse(content: str) -> List[Dict[str, Any]]:
     """安全解析 LLM 返回的 JSON，支持 markdown code block 包裹。解析失败返回空列表。"""
     if not content or not content.strip():
@@ -157,8 +156,6 @@ def _safe_json_parse(content: str) -> List[Dict[str, Any]]:
 
     logger.warning(f"无法解析 LLM 返回为 JSON: {text[:200]}")
     return []
-
-
 
 
 def _annotate_table_description(
@@ -318,7 +315,9 @@ def annotate_table_columns(
         col.ai_semantic_role = r.get("semantic_role")
         col.ai_suggested_agg = r.get("default_agg")
         try:
-            col.ai_confidence = float(r.get("confidence")) if r.get("confidence") is not None else None
+            col.ai_confidence = (
+                float(r.get("confidence")) if r.get("confidence") is not None else None
+            )
         except (TypeError, ValueError):
             col.ai_confidence = None
         col.ai_reason = r.get("reason")

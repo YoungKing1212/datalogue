@@ -26,6 +26,7 @@ from app.models.dataset import AnalysisBlueprint, SemanticDataset
 from app.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
 from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.middlewares.lifecycle import log_lifecycle
+from app.prompts import NATIVE_HANDOFF_CHILD_MESSAGE_TEMPLATE
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.services.artifact_store import ArtifactStore
 from app.agents.bi_agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
@@ -221,7 +222,9 @@ class AgentScopeNativeBIHandoff:
                 has_session_artifact=bool(getattr(session, "artifact_ref", None)),
                 has_session_error=bool(getattr(session, "last_error", None)),
             )
-            payload = self._collect_payload(events=events, session=session, child_run_id=child_run_id)
+            payload = self._collect_payload(
+                events=events, session=session, child_run_id=child_run_id
+            )
             if self._missing_terminal_evidence(payload):
                 self._log_missing_terminal_evidence_debug(
                     request=request,
@@ -279,7 +282,9 @@ class AgentScopeNativeBIHandoff:
             )
             return result
         except Exception:
-            logger.error("BI Agent native handoff failed at %s; internal details are hidden.", failure_stage)
+            logger.error(
+                "BI Agent native handoff failed at %s; internal details are hidden.", failure_stage
+            )
             result = self._result_from_payload(
                 request=request,
                 handoff_id=handoff_id,
@@ -307,17 +312,13 @@ class AgentScopeNativeBIHandoff:
         handoff_id: str,
         child_run_id: str,
     ) -> Any:
-        content = (
-            "AgentScope native handoff: 请作为 DatasetAgent 子运行执行已确认任务。\n"
-            f"handoff_id: {handoff_id}\n"
-            f"parent_agent: bi_agent\n"
-            f"child_agent: dataset_agent\n"
-            f"child_run_id: {child_run_id}\n"
-            f"dataset_id: {request.dataset_id}\n"
-            f"task_goal: {request.task_goal}\n"
-            f"confirmed_question: {request.confirmed_question}\n"
-            f"routing_rationale: {request.routing_rationale}\n"
-            "只能返回安全 JSON：event_type、child_run_id、artifact_ref、checkpoint_ref、answer_summary、row_count、column_count。"
+        content = NATIVE_HANDOFF_CHILD_MESSAGE_TEMPLATE.format(
+            handoff_id=handoff_id,
+            child_run_id=child_run_id,
+            dataset_id=request.dataset_id,
+            task_goal=request.task_goal,
+            confirmed_question=request.confirmed_question,
+            routing_rationale=request.routing_rationale,
         )
         return UserMsg(name="user", content=content)
 
@@ -464,7 +465,9 @@ class AgentScopeNativeBIHandoff:
             "status_reason": "controlled_blueprint_completion",
         }
 
-    def _select_controlled_blueprint(self, request: BIAgentHandoffRequest) -> AnalysisBlueprint | None:
+    def _select_controlled_blueprint(
+        self, request: BIAgentHandoffRequest
+    ) -> AnalysisBlueprint | None:
         if self.db is None:
             return None
         blueprints = (
@@ -588,7 +591,9 @@ class AgentScopeNativeBIHandoff:
         status = str(payload.get("handoff_status") or "").strip().lower()
         if status in {"completed", "blocked", "failed", "cancelled"}:
             return False
-        return not (payload.get("artifact_ref") or payload.get("error_code") or payload.get("error_summary"))
+        return not (
+            payload.get("artifact_ref") or payload.get("error_code") or payload.get("error_summary")
+        )
 
     @staticmethod
     def _last_tool_name(session: Any) -> str | None:
@@ -714,5 +719,7 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
-def _native_allowed_tables_and_sql_context(dataset: SemanticDataset) -> tuple[list[str], dict[str, Any]]:
+def _native_allowed_tables_and_sql_context(
+    dataset: SemanticDataset,
+) -> tuple[list[str], dict[str, Any]]:
     return allowed_tables_and_sql_context(dataset)

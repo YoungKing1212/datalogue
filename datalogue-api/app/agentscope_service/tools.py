@@ -21,9 +21,17 @@ from typing import Any
 
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.app.storage import StorageBase
+from agentscope.permission import PermissionBehavior, PermissionDecision
 from agentscope.tool import FunctionTool, ToolBase, ToolChunk
+from pydantic import ValidationError
 
-from app.agentscope_service.dataset_query_executor import execute_dataset_query_for_agent_team
+from app.agentscope_service.bi_worker_context import BIWorkerContextProvider
+from app.agentscope_service.bi_worker_contracts import (
+    BIWorkerQueryPlan,
+    RepairRequest,
+)
+from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
+from app.agentscope_service.bi_worker_validator import ProgressiveContextState
 from app.agentscope_service.progress_bridge import publish_agent_event
 from app.core.database import SessionLocal
 from app.models.dataset import SemanticDataset
@@ -31,6 +39,102 @@ from app.schemas.bi_workbench import sanitize_event_payload
 
 
 AgentToolFactory = Callable[[str | None, str | None, str | None], Awaitable[list[ToolBase]]]
+
+BI_WORKER_PLAN_CONTRACT_MAX_RETRIES = 1
+_BI_WORKER_PLAN_CONTRACT_TOTAL_ATTEMPT_KEY = "__total_contract_attempts__"
+_BI_WORKER_REPAIR_MAX_RETRIES = 2
+_BI_WORKER_REPAIR_ATTEMPT_KEY = "__total_repair_attempts__"
+
+BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
+    "required_top_level_fields": [
+        "intent",
+        "question",
+        "result_shape",
+        "data_graph",
+        "join_requirements",
+        "filters",
+        "selects",
+        "metrics",
+        "group_by",
+        "ordering",
+        "assumptions",
+    ],
+    "detail_query_required_field": "selects",
+    "metric_query_required_field": "metrics",
+    "allowed_filter_operators": ["=", "!=", ">", ">=", "<", "<=", "between", "in", "contains"],
+    "target_shape": {"asset_ref": "asset_or_field_ref_from_L1_or_L2", "alias": "entity_alias", "field": "field_name"},
+    "join_requirement_shape": {
+        "left_alias": "primary_entity_alias",
+        "right_alias": "supporting_entity_alias",
+        "relationship_ref": "relationship_ref_from_L2",
+        "join_type": "inner",
+        "required": True,
+        "reason": "为什么必须关联该实体",
+    },
+    "context_state_shape": {
+        "asset_refs": ["asset_ref_from_L2"],
+        "relationship_refs": ["relationship_ref_from_L2"],
+        "field_refs": ["field_ref_from_L2"],
+        "lookup_dependencies": {},
+        "missing_context_history": [],
+        "l2_request_count": 0,
+        "l3_profile_count": 0,
+        "validation_more_context_count": 0,
+    },
+    "context_state_usage": "优先合并 L2 返回的 context_state_patch；不要从 l0_summary/l1_assets/l2_entities 摘要手写 context_state。",
+    "minimal_detail_query_plan": {
+        "intent": "detail_query",
+        "question": "用户确认后的问题",
+        "result_shape": {"type": "table", "grain": "one_row_per_business_record", "limit": 100},
+        "data_graph": {
+            "primary_entity": {"asset_ref": "asset:primary", "alias": "main", "role": "primary"},
+            "supporting_entities": [],
+        },
+        "join_requirements": [],
+        "filters": [
+            {
+                "target": {"asset_ref": "asset:primary.date", "alias": "main", "field": "date_field"},
+                "operator": "between",
+                "value": ["2025-01-01", "2025-12-31"],
+                "reason": "限定用户指定时间范围",
+            }
+        ],
+        "selects": [
+            {
+                "target": {"asset_ref": "asset:primary.content", "alias": "main", "field": "content_field"},
+                "display_name": "展示名称",
+                "display_semantic": "业务含义",
+                "requires_decoding": False,
+            }
+        ],
+        "metrics": [],
+        "group_by": [],
+        "ordering": [],
+        "assumptions": [],
+    },
+    "minimal_metric_query_plan": {
+        "intent": "metric_query",
+        "question": "用户确认后的指标问题",
+        "result_shape": {"type": "metric", "grain": "overall", "limit": 100},
+        "data_graph": {
+            "primary_entity": {"asset_ref": "asset:primary", "alias": "main", "role": "primary"},
+            "supporting_entities": [],
+        },
+        "join_requirements": [],
+        "filters": [],
+        "selects": [],
+        "metrics": [
+            {
+                "target": {"asset_ref": "asset:primary.metric", "alias": "main", "field": "metric_field"},
+                "aggregation": "sum",
+                "display_name": "指标名称",
+            }
+        ],
+        "group_by": [],
+        "ordering": [],
+        "assumptions": [],
+    },
+}
 
 
 def build_datalogue_extra_agent_tools(*, storage: StorageBase | None = None) -> AgentToolFactory:
@@ -52,11 +156,83 @@ def build_datalogue_extra_agent_tools(*, storage: StorageBase | None = None) -> 
         if worker_context is None:
             return []  # Dataset 查询只能由 Team worker 调用；拿不到身份时 fail-closed，避免 Leader 直接查数。
         return [
+            build_datalogue_search_assets_tool(worker_context=worker_context),
             build_datalogue_select_candidate_datasets_tool(worker_context=worker_context),
-            build_datalogue_query_dataset_tool(worker_context=worker_context),
+            *build_datalogue_progressive_bi_worker_tools(worker_context=worker_context),
         ]
 
     return _extra_agent_tools
+
+
+def _tool_success_chunk(payload: dict[str, Any]) -> ToolChunk:
+    """把 BI Worker 工具 payload 统一封装为 AgentScope SDK 的成功 ToolChunk。"""
+
+    return ToolChunk(
+        content=[TextBlock(text=json.dumps(payload, ensure_ascii=False, default=str))],
+        state=ToolResultState.SUCCESS,
+    )
+
+
+def _safe_plan_contract_signature(exc: Exception) -> str:
+    """把契约错误压缩成不含用户输入、字段明细或 SQL 的稳定签名。"""
+
+    if isinstance(exc, ValidationError):
+        parts = []
+        for item in exc.errors(include_url=False, include_context=False, include_input=False):
+            loc = ".".join(str(part) for part in item.get("loc") or ("root",))
+            parts.append(f"{item.get('type', 'validation_error')}:{loc}")
+        return "|".join(sorted(parts)) or "validation_error"
+    return type(exc).__name__
+
+
+def _safe_plan_contract_error_summary(exc: Exception) -> list[str]:
+    """返回只包含错误类型和位置的摘要，不回显用户输入、SQL 或原始 schema。"""
+
+    if isinstance(exc, ValidationError):
+        summary = []
+        for item in exc.errors(include_url=False, include_context=False, include_input=False):
+            loc = ".".join(str(part) for part in item.get("loc") or ("root",))
+            summary.append(f"{item.get('type', 'validation_error')}:{loc}")
+        return sorted(summary) or ["validation_error"]
+    # TypeError 通常是 context_state 传入了意外字段（如 dataset_summary），
+    # 把错误信息安全地暴露给 LLM 可帮助其自修复。
+    return [f"{type(exc).__name__}: {exc}"]
+
+
+def _bi_worker_plan_contract_repair_payload(*, failure_counts: dict[str, int], exc: Exception) -> dict[str, Any]:
+    """生成可回传给 Agent 的安全修复提示，避免同类契约错误耗满 ReAct 轮次。"""
+
+    signature = _safe_plan_contract_signature(exc)
+    signature_attempt = failure_counts.get(signature, 0) + 1
+    total_attempt = failure_counts.get(_BI_WORKER_PLAN_CONTRACT_TOTAL_ATTEMPT_KEY, 0) + 1
+    failure_counts[signature] = signature_attempt
+    failure_counts[_BI_WORKER_PLAN_CONTRACT_TOTAL_ATTEMPT_KEY] = total_attempt
+    # 同类错误和变体错误都要止损：Agent 改变错误形态时不能重置整体重试预算。
+    stop_retry = (
+        signature_attempt > BI_WORKER_PLAN_CONTRACT_MAX_RETRIES
+        or total_attempt > BI_WORKER_PLAN_CONTRACT_MAX_RETRIES
+    )
+    return {
+        "datalogue_event_type": "bi_worker_repair_request",
+        "repair_status": "failed" if stop_retry else "needs_plan_revision",
+        "failure_stage": "validate",
+        "failure_class": "query_plan_contract_error",
+        "safe_reason": "Query Plan JSON 未符合 BI Worker 安全契约，查询尚未执行。",
+        "recommended_action": (
+            "停止重试，使用 TeamSay 向 leader 汇报需要澄清查询计划字段结构。"
+            if stop_retry
+            else "按 query_plan_contract_hint 修正后最多再重试一次。"
+        ),
+        "retry_policy": {
+            "attempt": signature_attempt,
+            "signature_attempt": signature_attempt,
+            "total_attempt": total_attempt,
+            "max_retries": BI_WORKER_PLAN_CONTRACT_MAX_RETRIES,
+            "stop_retry": stop_retry,
+        },
+        "validation_error_summary": _safe_plan_contract_error_summary(exc),
+        "query_plan_contract_hint": BI_WORKER_QUERY_PLAN_CONTRACT_HINT,
+    }
 
 
 async def _is_team_worker(*, storage: StorageBase | None, user_id: str | None, agent_id: str | None) -> bool:
@@ -89,45 +265,183 @@ async def _team_worker_context(
     }
 
 
-def build_datalogue_query_dataset_tool(*, worker_context: dict[str, str | None] | None = None) -> FunctionTool:
-    """创建 Agent Team worker 可见的 Dataset 查询工具。"""
+class DatalogueSearchAssetsTool(FunctionTool):
+    """datalogue_search_assets 的自定义 FunctionTool，绕过 AgentScope 2.0.3 DONT_ASK
+    权限引擎在 SubAgentTemplate 场景下对 FunctionTool 的误拦截。"""
 
-    async def datalogue_query_dataset(
+    async def check_permissions(self, **kwargs: Any) -> PermissionDecision:
+        return PermissionDecision(
+            behavior=PermissionBehavior.ALLOW,
+            message="datalogue_search_assets is always allowed for BI workers.",
+            decision_reason="ALLOWED_BY_TOOL",
+        )
+
+
+def build_datalogue_search_assets_tool(
+    *, worker_context: dict[str, str | None] | None = None
+) -> DatalogueSearchAssetsTool:
+    """列出数据集下所有候选蓝图、指标、维度，命中蓝图时可走 SQL 模板快速路径。"""
+
+    def datalogue_search_assets(dataset_id: int) -> ToolChunk:
+        """List all blueprints, metrics and dimensions for the confirmed dataset.
+
+        蓝图含 call_template（SQL 模板）和 parameters（参数提取规则），
+        命中后直接填参构造 SQL 执行，跳过 L0/L1/L2/L5 渐进式探索。
+        """
+        _ = worker_context
+        with SessionLocal() as db:
+            payload = BIWorkerContextProvider(db).search_assets(dataset_id=dataset_id)
+        return _tool_success_chunk(payload)
+
+    return DatalogueSearchAssetsTool(
+        datalogue_search_assets,
+        name="datalogue_search_assets",
+        description="列出数据集下所有蓝图（含SQL模板）、指标和维度，优先用蓝图快速路径。",
+        is_concurrency_safe=True,
+        is_read_only=True,
+    )
+
+
+def build_datalogue_progressive_bi_worker_tools(
+    worker_context: dict[str, str | None] | None = None,
+) -> list[ToolBase]:
+    """创建 Agent Team BI Worker 可见的查询工具集。"""
+
+    plan_contract_failure_counts: dict[str, int] = {}
+
+    def datalogue_prepare_query_context(dataset_id: int, confirmed_question: str) -> ToolChunk:
+        """Describe dataset capability and recall query assets in one step (merged L0+L1)."""
+
+        with SessionLocal() as db:
+            payload = BIWorkerContextProvider(db).prepare_query_context(
+                dataset_id=dataset_id,
+                question=confirmed_question,
+            )
+        return _tool_success_chunk(payload)
+
+    def datalogue_request_schema_slice(
         dataset_id: int,
         confirmed_question: str,
-        task_goal: str | None = None,
-        user_confirmation_id: str | None = None,
-        routing_rationale: str | None = None,
-        trace_id: str | None = None,
-        parent_run_id: str | None = None,
+        focus: dict[str, Any] | None = None,
     ) -> ToolChunk:
-        """Run the confirmed Datalogue Dataset query and return safe result refs."""
+        """Request a focused schema slice for query planning."""
 
-        result = await execute_dataset_query_for_agent_team(
-            dataset_id=dataset_id,
-            confirmed_question=confirmed_question,
-            task_goal=task_goal,
-            user_confirmation_id=user_confirmation_id,
-            routing_rationale=routing_rationale,
-            trace_id=trace_id,
-            parent_run_id=parent_run_id,
-        )
-        payload = result.to_tool_payload()
-        _publish_worker_business_final(worker_context=worker_context, payload=payload)
-        return ToolChunk(
-            content=[TextBlock(text=json.dumps(payload, ensure_ascii=False, default=str))],
-            state=ToolResultState.SUCCESS,
-        )
+        with SessionLocal() as db:
+            payload = BIWorkerContextProvider(db).request_schema_slice(
+                dataset_id=dataset_id,
+                question=confirmed_question,
+                focus=focus,
+            ).model_dump()
+        return _tool_success_chunk(payload)
 
-    return FunctionTool(
-        datalogue_query_dataset,
-        description=(
-            "Agent Team BI Worker 的 Datalogue Dataset 查询工具；只返回 answer_summary、"
-            "artifact_ref、checkpoint_ref、row_count、column_count。"
+    async def datalogue_execute_query_plan_bundle(
+        dataset_id: int,
+        confirmed_question: str,
+        query_plan: dict[str, Any],
+        context_state: dict[str, Any],
+        trace_id: str | None = None,
+    ) -> ToolChunk:
+        """Validate plan support then execute in one step (merged L4+L5)."""
+
+        try:
+            plan = BIWorkerQueryPlan.model_validate(query_plan)
+            # 只保留 ProgressiveContextState 认识的字段；
+            # LLM 可能把 prepare_query_context 返回的 dataset_summary 等额外字段一并传入。
+            valid_keys = ProgressiveContextState.field_names()
+            filtered_state = {
+                key: value for key, value in context_state.items()
+                if key in valid_keys
+            }
+            state = ProgressiveContextState(**filtered_state)
+        except (TypeError, ValidationError) as exc:
+            return _tool_success_chunk(
+                _bi_worker_plan_contract_repair_payload(
+                    failure_counts=plan_contract_failure_counts,
+                    exc=exc,
+                )
+            )
+        with SessionLocal() as db:
+            runtime = BIWorkerQueryRuntime(db)
+            payload = await runtime.execute_query_plan(
+                dataset_id=dataset_id,
+                confirmed_question=confirmed_question,
+                query_plan=plan,
+                context_state=state,
+                trace_id=trace_id,
+            )
+            db.commit()
+        if payload.get("datalogue_event_type") == "dataset_query_result" and payload.get("status") == "completed":
+            _publish_worker_business_final(worker_context=worker_context, payload=payload)
+        return _tool_success_chunk(payload)
+
+    def datalogue_repair_query_plan(
+        failure_type: str,
+        current_query_plan: dict[str, Any] | None = None,
+        context_state: dict[str, Any] | None = None,
+    ) -> ToolChunk:
+        """Repair a failed query plan with targeted hints based on failure type."""
+
+        retry_key = f"repair:{failure_type}"
+        retry_attempt = plan_contract_failure_counts.get(retry_key, 0) + 1
+        total_repair = plan_contract_failure_counts.get(_BI_WORKER_REPAIR_ATTEMPT_KEY, 0) + 1
+        plan_contract_failure_counts[retry_key] = retry_attempt
+        plan_contract_failure_counts[_BI_WORKER_REPAIR_ATTEMPT_KEY] = total_repair
+
+        stop_retry = (
+            retry_attempt > _BI_WORKER_REPAIR_MAX_RETRIES
+            or total_repair > _BI_WORKER_REPAIR_MAX_RETRIES
+        )
+        valid_failure_types = {"FIELD_NOT_FOUND", "FILTER_MISSING", "AGGREGATION_WRONG",
+                               "VALUE_BINDING_FAILED", "SQL_GUARD_BLOCKED", "EMPTY_RESULT"}
+        resolved_type = failure_type if failure_type in valid_failure_types else "FIELD_NOT_FOUND"
+        repair = RepairRequest.from_failure_type(
+            resolved_type,  # type: ignore[arg-type]
+            retry_count=retry_attempt,
+        )
+        payload = {
+            "datalogue_event_type": "bi_worker_repair",
+            "repair_status": "no_more_retries" if stop_retry else "retry_with_hint",
+            "failure_type": failure_type,
+            "safe_reason": repair.safe_reason,
+            "recommended_action": repair.recommended_action,
+            "stop_retry": stop_retry,
+            "retry_attempt": retry_attempt,
+            "max_retries": _BI_WORKER_REPAIR_MAX_RETRIES,
+            "hints": [
+                {
+                    "target_field": failure_type,
+                    "suggested_action": repair.recommended_action,
+                }
+            ],
+        }
+        return _tool_success_chunk(payload)
+
+    return [
+        FunctionTool(
+            datalogue_prepare_query_context,
+            description="BI Worker L0+L1：描述数据集能力并召回相关资产，返回统一查询上下文。",
+            is_concurrency_safe=True,
+            is_read_only=True,
         ),
-        is_concurrency_safe=False,
-        is_read_only=False,
-    )
+        FunctionTool(
+            datalogue_request_schema_slice,
+            description="BI Worker L2：按问题焦点返回受控 schema 切片，用于后续查询计划。",
+            is_concurrency_safe=True,
+            is_read_only=True,
+        ),
+        FunctionTool(
+            datalogue_execute_query_plan_bundle,
+            description="BI Worker L4+L5：校验查询计划支持度并执行，一路返回结果或失败诊断。",
+            is_concurrency_safe=False,
+            is_read_only=False,
+        ),
+        FunctionTool(
+            datalogue_repair_query_plan,
+            description="BI Worker Repair：基于故障类型提供查询计划修复建议。",
+            is_concurrency_safe=True,
+            is_read_only=True,
+        ),
+    ]
 
 
 def build_datalogue_select_candidate_datasets_tool(
@@ -147,10 +461,7 @@ def build_datalogue_select_candidate_datasets_tool(
         if safe_payload.get("requires_user_confirmation"):
             # 候选数据集确认是本轮用户可见终点；即使 LLM 忘记调用 TeamSay，也不能让主链落到空 final。
             _publish_worker_business_final(worker_context=worker_context, payload=safe_payload)
-        return ToolChunk(
-            content=[TextBlock(text=json.dumps(safe_payload, ensure_ascii=False, default=str))],
-            state=ToolResultState.SUCCESS,
-        )
+        return _tool_success_chunk(safe_payload)
 
     return FunctionTool(
         datalogue_select_candidate_datasets,

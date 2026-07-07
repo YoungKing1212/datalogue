@@ -19,7 +19,6 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.bi.toolchain import DatasetAgentToolCallRuntime, DatasetDslGenerator
 from app.bi.toolkit import DatalogueBIAtomicToolkit, build_bi_atomic_toolkit
 from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 
@@ -41,17 +40,6 @@ class DatasetQuerySkill:
     def build_toolkit(self) -> DatalogueBIAtomicToolkit:
         return build_bi_atomic_toolkit(self.db, query_executor=self.query_executor)
 
-    def build_toolchain_runtime(
-        self,
-        *,
-        dsl_generator: DatasetDslGenerator,
-        toolkit: DatalogueBIAtomicToolkit | None = None,
-    ) -> DatasetAgentToolCallRuntime:
-        return DatasetAgentToolCallRuntime(
-            toolkit=toolkit or self.build_toolkit(),
-            dsl_generator=dsl_generator,
-        )
-
     def build_runtime_bridge(
         self,
         *,
@@ -65,7 +53,6 @@ class DatasetQuerySkill:
             "skill_name": self.skill_name,
             "tool_names": toolkit.tool_names,
             "toolkit_provider": "DatalogueBIAtomicToolkit",
-            "toolchain_provider": "DatasetAgentToolCallRuntime",
             "exposes_internal_sql": False,
             "exposes_schema": False,
             "exposes_row_data": False,

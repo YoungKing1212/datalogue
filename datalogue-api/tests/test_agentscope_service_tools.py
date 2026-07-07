@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import json
-import logging
 
 import pytest
 
@@ -69,7 +68,15 @@ async def test_extra_agent_tools_returns_dataset_tool_for_team_worker_only():
 
     tools = await factory("user-1", "worker-bi-1", "session-1")
 
-    assert [tool.name for tool in tools] == ["datalogue_select_candidate_datasets", "datalogue_query_dataset"]
+    assert [tool.name for tool in tools] == [
+        "datalogue_search_assets",
+        "datalogue_select_candidate_datasets",
+        "datalogue_prepare_query_context",
+        "datalogue_request_schema_slice",
+        "datalogue_execute_query_plan_bundle",
+        "datalogue_repair_query_plan",
+    ]
+    assert "datalogue_query_dataset" not in {tool.name for tool in tools}
     assert AGENTSCOPE_SERVICE_BUILTIN_TOOL_NAMES.isdisjoint({tool.name for tool in tools})
 
 
@@ -88,80 +95,249 @@ async def test_extra_agent_tools_fail_closed_without_agent_record():
     assert tools == []
 
 
-@pytest.mark.asyncio
-async def test_bi_worker_dataset_tool_leaves_execution_logs_to_otel(monkeypatch, caplog):
-    from app.agentscope_service import tools as tools_module
-    from app.agentscope_service.dataset_query_executor import AgentTeamDatasetQueryResult
-    from app.agentscope_service.tools import build_datalogue_extra_agent_tools
+def test_bi_worker_progressive_tools_are_registered_for_team_worker():
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
 
-    class FakeAgentData:
-        name = "bi-worker"
-
-    class FakeAgentRecord:
-        source = "team"
-        data = FakeAgentData()
-
-    class FakeStorage:
-        async def get_agent(self, user_id, agent_id):
-            assert user_id == "user-1"
-            assert agent_id == "worker-bi-1"
-            return FakeAgentRecord()
-
-    async def fake_execute_dataset_query_for_agent_team(**kwargs):
-        assert kwargs["dataset_id"] == 12
-        return AgentTeamDatasetQueryResult(
-            answer_summary="查询已完成，结果已生成 artifact_ref=artifact:ok，共 2 行、3 列。",
-            artifact_ref="artifact:ok",
-            checkpoint_ref="checkpoint:ok",
-            row_count=2,
-            column_count=3,
-        )
-
-    monkeypatch.setattr(
-        tools_module,
-        "execute_dataset_query_for_agent_team",
-        fake_execute_dataset_query_for_agent_team,
+    tools = build_datalogue_progressive_bi_worker_tools(
+        worker_context={
+            "user_id": "u",
+            "agent_id": "a",
+            "agent_name": "worker",
+            "session_id": "s",
+        }
     )
-    with caplog.at_level(logging.INFO, logger="app.agentscope_service.tools"):
-        factory = build_datalogue_extra_agent_tools(storage=FakeStorage())
-        tools = await factory("user-1", "worker-bi-1", "worker-session-1")
-        tool = next(item for item in tools if item.name == "datalogue_query_dataset")
-        chunk = await tool(
-            dataset_id=12,
-            confirmed_question="查询杨凯2025年日志",
-            trace_id="trace-1",
-        )
+    names = [tool.name for tool in tools]
 
-    assert chunk.state.name == "SUCCESS"
+    assert names == [
+        "datalogue_prepare_query_context",
+        "datalogue_request_schema_slice",
+        "datalogue_execute_query_plan_bundle",
+        "datalogue_repair_query_plan",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_query_plan_returns_repair_payload_after_repeated_contract_errors():
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+    execute_tool = next(tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle")
+    invalid_plan = {
+        "intent": "detail_query",
+        "question": "查询杨凯2025年日志",
+        "result_shape": {"type": "table", "grain": "detail"},
+        "data_graph": {
+            "primary_entity": {
+                "asset_ref": "table:pm_tenant.plan_task_daily_record",
+                "alias": "log",
+                "role": "fact",
+            }
+        },
+        "select": [
+            {
+                "target": {
+                    "asset_ref": "table:pm_tenant.plan_task_daily_record",
+                    "alias": "log",
+                    "field": "rzrq",
+                },
+                "display_name": "日志日期",
+            }
+        ],
+    }
+
+    first_chunk = await execute_tool(
+        dataset_id=10,
+        confirmed_question="查询杨凯2025年日志",
+        query_plan=invalid_plan,
+        context_state={},
+    )
+    second_chunk = await execute_tool(
+        dataset_id=10,
+        confirmed_question="查询杨凯2025年日志",
+        query_plan=invalid_plan,
+        context_state={},
+    )
+
+    first_payload = json.loads(first_chunk.content[0].text)
+    second_payload = json.loads(second_chunk.content[0].text)
+
+    assert first_chunk.state.name == "SUCCESS"
+    assert first_payload["datalogue_event_type"] == "bi_worker_repair_request"
+    assert first_payload["retry_policy"] == {
+        "attempt": 1,
+        "signature_attempt": 1,
+        "total_attempt": 1,
+        "max_retries": 1,
+        "stop_retry": False,
+    }
+    assert first_payload["query_plan_contract_hint"]["detail_query_required_field"] == "selects"
+    assert '"select"' not in json.dumps(first_payload, ensure_ascii=False)
+
+    assert second_chunk.state.name == "SUCCESS"
+    assert second_payload["datalogue_event_type"] == "bi_worker_repair_request"
+    assert second_payload["repair_status"] == "failed"
+    assert second_payload["retry_policy"] == {
+        "attempt": 2,
+        "signature_attempt": 2,
+        "total_attempt": 2,
+        "max_retries": 1,
+        "stop_retry": True,
+    }
+    assert "TeamSay" in second_payload["recommended_action"]
+
+
+@pytest.mark.asyncio
+async def test_query_plan_contract_hint_points_to_real_operator_and_join_shape():
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+    execute_tool = next(tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle")
+    invalid_plan = {
+        "intent": "detail_query",
+        "question": "查询杨凯2025年日志",
+        "result_shape": {"type": "table", "grain": "detail"},
+        "data_graph": {
+            "primary_entity": {"asset_ref": "table:pm_tenant.plan_task_daily_record", "alias": "log", "role": "fact"},
+            "supporting_entities": [
+                {"asset_ref": "table:pm_tenant.eas_personofile", "alias": "person", "role": "dimension"}
+            ],
+        },
+        "join_requirements": [
+            {
+                "relationship_ref": "dataset_selected:table:pm_tenant.plan_task_daily_record->table:pm_tenant.eas_personofile",
+                "join_type": "inner",
+                "left_asset_ref": "table:pm_tenant.plan_task_daily_record",
+                "right_asset_ref": "table:pm_tenant.eas_personofile",
+            }
+        ],
+        "filters": [
+            {
+                "target": {
+                    "asset_ref": "table:pm_tenant.eas_personofile.person_name",
+                    "alias": "person",
+                    "field": "person_name",
+                },
+                "operator": "eq",
+                "value": "杨凯",
+                "reason": "筛选人员姓名",
+            }
+        ],
+        "selects": [
+            {
+                "target": {
+                    "asset_ref": "table:pm_tenant.plan_task_daily_record.rzrq",
+                    "alias": "log",
+                    "field": "rzrq",
+                },
+                "display_name": "日志日期",
+            }
+        ],
+        "metrics": [],
+        "group_by": [],
+        "ordering": [],
+        "assumptions": [],
+    }
+
+    chunk = await execute_tool(
+        dataset_id=10,
+        confirmed_question="查询杨凯2025年日志",
+        query_plan=invalid_plan,
+        context_state={},
+    )
+
     payload = json.loads(chunk.content[0].text)
-    assert payload["datalogue_event_type"] == "dataset_query_result"
-    assert payload["summary"] == "查询已完成，结果已生成 artifact_ref=artifact:ok，共 2 行、3 列。"
-    assert payload["result_ref"] == "artifact:ok"
-    assert payload["artifact_ref"] == "artifact:ok"
-    assert payload["artifact_card"]["title"] == "查询结果"
-    assert payload["artifact_card"]["primary_ref"] == {
-        "ref_id": "artifact:ok",
-        "ref_type": "result",
-        "label": "查询结果",
+
+    assert payload["query_plan_contract_hint"]["allowed_filter_operators"] == [
+        "=",
+        "!=",
+        ">",
+        ">=",
+        "<",
+        "<=",
+        "between",
+        "in",
+        "contains",
+    ]
+    assert payload["query_plan_contract_hint"]["join_requirement_shape"] == {
+        "left_alias": "primary_entity_alias",
+        "right_alias": "supporting_entity_alias",
+        "relationship_ref": "relationship_ref_from_L2",
+        "join_type": "inner",
+        "required": True,
+        "reason": "为什么必须关联该实体",
     }
-    assert payload["artifact_card"]["actions"][0] == {
-        "action_type": "view",
-        "label": "查看详情",
-        "ref": "artifact:ok",
-        "disabled": False,
-    }
-    logs = "\n".join(record.getMessage() for record in caplog.records)
-    assert "[agentscope.bi_worker." not in logs
-    assert "worker-bi-1" not in logs
-    assert "bi-worker" not in logs
-    assert "worker-session-1" not in logs
-    assert "dataset_id" not in logs
-    assert "row_count" not in logs
-    assert "查询杨凯2025年日志" not in logs
-    assert "SELECT" not in logs
-    assert logs == ""
+    assert "literal_error:filters.0.operator" in payload["validation_error_summary"]
+    assert "missing:join_requirements.0.left_alias" in payload["validation_error_summary"]
+    assert "extra_forbidden:join_requirements.0.left_asset_ref" in payload["validation_error_summary"]
 
 
+@pytest.mark.asyncio
+async def test_query_plan_contract_total_attempts_stop_retry_across_changed_error_signatures():
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+    execute_tool = next(tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle")
+    first_invalid_plan = {"intent": "detail_query"}
+    second_invalid_plan = {
+        "intent": "detail_query",
+        "question": "查询杨凯2025年日志",
+        "result_shape": {"type": "table", "grain": "detail"},
+        "data_graph": {
+            "primary_entity": {"asset_ref": "table:pm_tenant.plan_task_daily_record", "alias": "main", "role": "fact"}
+        },
+        "join_requirements": [],
+        "filters": [
+            {
+                "target": {
+                    "asset_ref": "table:pm_tenant.plan_task_daily_record.xgr",
+                    "alias": "main",
+                    "field": "xgr",
+                },
+                "operator": "eq",
+                "value": "杨凯",
+                "reason": "筛选人员姓名",
+            }
+        ],
+        "selects": [
+            {
+                "target": {
+                    "asset_ref": "table:pm_tenant.plan_task_daily_record.rzrq",
+                    "alias": "main",
+                    "field": "rzrq",
+                },
+                "display_name": "日志日期",
+            }
+        ],
+        "metrics": [],
+        "group_by": [],
+        "ordering": [],
+        "assumptions": [],
+    }
+
+    first_chunk = await execute_tool(
+        dataset_id=10,
+        confirmed_question="查询杨凯2025年日志",
+        query_plan=first_invalid_plan,
+        context_state={},
+    )
+    second_chunk = await execute_tool(
+        dataset_id=10,
+        confirmed_question="查询杨凯2025年日志",
+        query_plan=second_invalid_plan,
+        context_state={},
+    )
+
+    first_payload = json.loads(first_chunk.content[0].text)
+    second_payload = json.loads(second_chunk.content[0].text)
+
+    assert first_payload["retry_policy"]["total_attempt"] == 1
+    assert first_payload["retry_policy"]["stop_retry"] is False
+    assert second_payload["retry_policy"]["total_attempt"] == 2
+    assert second_payload["retry_policy"]["signature_attempt"] == 1
+    assert second_payload["retry_policy"]["stop_retry"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_bi_worker_candidate_dataset_tool_returns_safe_candidates(monkeypatch):
     from app.agentscope_service import tools as tools_module

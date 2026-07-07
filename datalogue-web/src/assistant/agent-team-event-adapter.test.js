@@ -77,6 +77,37 @@ describe('agentTeamEnvelopeToChatEvent', () => {
     expect(event.node).toBe('task.completed');
   });
 
+  it('maps BI Worker progressive validation completion to safe agent progress', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-progressive',
+      event_envelope: {
+        event_type: 'message.completed',
+        task_id: 'task-progressive',
+        trace_id: 'trace-progressive',
+        payload: {
+          datalogue_event_type: 'bi_worker_l4_validation',
+          summary: '查询支持度已确认。',
+          support_status: 'supported',
+          query_plan: { sql: 'SELECT employee_name FROM hidden_table' },
+          raw_error: 'hidden_table.employee_name not found',
+        },
+      },
+    });
+
+    expect(event).toMatchObject({
+      type: 'agent_progress',
+      title: '查询支持度',
+      summary: '查询支持度已确认。',
+      status: 'completed',
+      event_envelope: {
+        event_type: 'message.completed',
+      },
+    });
+    expect(`${event.title} ${event.summary}`).toContain('查询支持度');
+    expect(`${event.title} ${event.summary}`).not.toMatch(/employee_name|hidden_table|query_plan|raw_error/i);
+    expect(event.event_envelope.payload.query_plan).toEqual({ sql: 'SELECT employee_name FROM hidden_table' });
+  });
+
   it('keeps repair envelopes as repair events', () => {
     const event = agentTeamEnvelopeToChatEvent({
       task_id: 'task-1',

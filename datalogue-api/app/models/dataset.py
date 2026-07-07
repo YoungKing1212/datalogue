@@ -39,8 +39,7 @@ class SemanticDataset(Base, TimestampMixin):
     datasource_id = Column(Integer, ForeignKey("datasource.id"), nullable=False)
     tables_json = Column(JSON, default=dict)
     description = Column(Text)
-    # 数据集级 LLM 约束（硬性要求）。由用户在前端编辑，问数时由
-    # build_schema_prompt / report_generator 注入到 prompt。
+    # 数据集级 LLM 约束（硬性要求）。由用户在前端编辑；当前用于候选数据集匹配评分。
     prompt_instructions = Column(Text, nullable=True)
     # 数据集级 SQL 生成约束。默认启用：无时间范围时查近 30 天，无条数时 LIMIT 100。
     query_constraints = Column(JSON, default=dict)
@@ -218,9 +217,7 @@ class BusinessTerm(Base, TimestampMixin):
 class BusinessTermAssetLink(Base):
     __tablename__ = "business_term_asset_link"
     __table_args__ = (
-        UniqueConstraint(
-            "term_id", "asset_type", "asset_id", name="uix_business_term_asset_link"
-        ),
+        UniqueConstraint("term_id", "asset_type", "asset_id", name="uix_business_term_asset_link"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -311,7 +308,11 @@ class DatasetSubAgentManifest(Base, TimestampMixin):
         payload = self.manifest_json or {}
         quality = payload.get("quality") or {}
         auto_fields = payload.get("auto_fields") or {}
-        return quality.get("schema_hash") or auto_fields.get("bound_schema_version") or self.bound_schema_version
+        return (
+            quality.get("schema_hash")
+            or auto_fields.get("bound_schema_version")
+            or self.bound_schema_version
+        )
 
     @property
     def permission_scope(self):

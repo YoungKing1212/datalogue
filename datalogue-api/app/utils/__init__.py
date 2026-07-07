@@ -24,7 +24,6 @@
 
 from app.utils.json_utils import safe_json_parse
 from app.utils.token import extract_token_usage, merge_token_usage
-from app.utils.prompt import build_schema_prompt
 from app.utils.sql_dialect import (
     resolve_dialect,
     quote_ident,
@@ -41,7 +40,6 @@ __all__ = [
     "safe_json_parse",
     "extract_token_usage",
     "merge_token_usage",
-    "build_schema_prompt",
     "resolve_dialect",
     "quote_ident",
     "sanitize_filter_sql",
