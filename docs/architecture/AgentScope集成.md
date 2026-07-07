@@ -64,7 +64,15 @@ Datalogue API 启动
         └── root_app.mount("/agentscope", agentscope_app)
 ```
 
-## 五、Datalogue 注册到 AgentScope 的组件
+## 五、P0 主链与安全边界
+
+- 唯一产品主链是 `POST /api/agent-team/tasks/stream → AgentScope Agent Team → BI Worker Tools`；Datalogue API 只通过 AgentScope Service 子应用驱动 Leader / Worker 协作。
+- Leader Agent 是控制面，负责规划、候选确认、AgentCreate、TeamSay 收敛和多 Worker 扩展；BI Worker Agent 是执行/诊断面，负责通过 Datalogue tools 调用受控 QueryPlan、repair 和 artifact 能力。
+- direct-query 仅作为内部 fallback、开发调试或兼容入口；不能把它宣传成产品主入口，也不能为了提速绕过 Leader。
+- repair 是一等链路，阶段固定为 Failure Classifier、Private Diagnosis、Repair Planner、User Confirmation、Retry Executor、Artifact Writer。
+- SQL、schema、raw rows、原始报错和 RepairPatch 主体只允许在 runtime/tool 私有诊断层流转；AgentScope LLM prompt、SSE、用户可见消息、artifact 摘要和 OpenViking 普通上下文只能获得安全摘要与 refs。
+
+## 六、Datalogue 注册到 AgentScope 的组件
 
 1. **Leader Agent 规格**（`registry.py`）:
    - 包含 Datalogue 自定义工具（dataset_query, generate_report）
@@ -75,8 +83,8 @@ Datalogue API 启动
    - 提供 JSON Schema 供前端动态渲染表单
 
 3. **Tools**（`tools.py`）:
-   - `dataset_query`: BI 查询工具，桥接到 Datalogue BI 工具链
-   - 在 Worker Agent 上下文中可用
+   - BI 查询与 repair 工具，桥接到 Datalogue BI 工具链，包括候选筛选、上下文准备、schema 证据、QueryPlan 执行、修复计划和 artifact 写入。
+   - 在 Worker Agent 上下文中可用，但工具返回值必须先经过安全投影，不能把 SQL、schema、raw rows 或原始报错泄漏到用户可见层。
 
 4. **Progress Bridge**（`progress_bridge.py`）:
    - 后台任务进度订阅通道

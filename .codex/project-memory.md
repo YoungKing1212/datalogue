@@ -250,3 +250,11 @@
 - 关键改动：更新 `datalogue-api/AGENTS.md` 以反映当前 AS-R0 技术架构；删除过时的"当前上下文状态"和"可丢弃背景"（Jun 20 交接临时内容）；新增"技术架构"章节（技术栈：Python 3.11 + FastAPI 0.111 + SQLAlchemy 2.0 + AgentScope 2.0.3 主链 + LangGraph 旧链残留；核心调用链：`/api/agent-team/tasks/stream` SSE → AgentTeamTaskRuntime → AgentScopeServiceTaskRunner → `/agentscope` 子应用 → Agent Team Leader+Worker → BI 工具 → query_plan_compiler/executor；目录结构表；关键边界：BI Worker 安全边界、Prompt 统一管理 `app/prompts/`、官方团队工具）；保留协作约束与执行偏好；新增参考文档索引（`../docs/`、`../.codex/`）。根 `AGENTS.md`（通用规范，7月7日已更新）未动。
 - 验证方式：基于 `../docs/上下文入口.md`、`pyproject.toml` 依赖、`app/main.py` 挂载（`/api` 路由 + `/agentscope` 子应用）、`app/api/agent_team.py` 路由、`app/` 目录结构核对；引用路径 `../docs/`、`../.codex/` 经 `ls` 确认存在。
 - 残留风险：本轮是文档更新，未跑自动化测试；架构随 AS-R0 演进，后续若主链再次迁移需同步更新本文件与 `../docs/上下文入口.md`。
+
+
+### 2026-07-07 18:20 · P0 架构收口：唯一主链、Leader 控制面与 repair 一等闭环
+
+- 涉及文件：`docs/上下文入口.md`、`docs/architecture/系统架构.md`、`docs/architecture/执行链路.md`、`docs/architecture/AgentScope集成.md`、`docs/architecture/OpenViking-Service交接记忆.md`、`datalogue-api/AGENTS.md`、`datalogue-api/tests/test_architecture_docs_p0_closure.py`、`.codex/project-memory.md`
+- 关键改动：将当前唯一产品主链明确为 `POST /api/agent-team/tasks/stream → AgentScope Agent Team → BI Worker Tools`，旧 LangGraph、direct-query、legacy payload 和 BI LeadAgent 目录降级为历史迁移层、内部 fallback 或兼容说明；明确 Leader 控制面不可绕过，BI Worker 只作为执行/诊断面；明确 repair 一等可信闭环为 Failure Classifier、Private Diagnosis、Repair Planner、User Confirmation、Retry Executor、Artifact Writer 六阶段。
+- 验证方式：新增 `datalogue-api/tests/test_architecture_docs_p0_closure.py` 扫描当前权威文档和后端 AGENTS 规则，防止唯一主链、Leader 边界、repair 阶段、raw rows 私有诊断边界和旧 L4/L5 主叙事回退；执行 `python -m pytest datalogue-api/tests/test_architecture_docs_p0_closure.py` 与 `git diff --check`。
+- 残留风险：本轮是 P0 架构口径与协作规则收口，不改 runtime 行为；QueryPlan 原生执行替代 legacy DSL、Workbench/event 复杂度压缩、assistant-ui runtime 守护和部署健康检查等 P1/P2 项需要后续按同样工作树与计划流程继续处理。
