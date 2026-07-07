@@ -182,6 +182,16 @@ def _contains_forbidden_visible_detail(value: Any) -> bool:
     return False
 
 
+def sanitize_stream_delta_content(content: Any) -> str | None:
+    """清洗流式 token 增量：保留 token 边界空格/换行避免拼接粘连，仅做 SQL 泄露防护与长度截断。"""
+
+    if not isinstance(content, str) or not content:
+        return None
+    if _SQL_TEXT_RE.search(content):
+        return None  # 单个增量命中 SQL 直接丢弃，不写回 content
+    return content[:2000]
+
+
 class ArtifactRef(BaseModel):
     """外层 Agent 只能拿引用句柄，不能拿 artifact body 或执行结果明细。"""
 

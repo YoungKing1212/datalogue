@@ -45,6 +45,10 @@ const NODE_STEP_NAMES = {
   sql_execute: '查询执行',
   sql_audit: '结果诊断',
   report_generator: '结果整理',
+  reasoning_summary: '推理摘要',
+  live_thinking: '推理过程',
+  multi_agent_handoff: 'Agent 协作',
+  confirmation: '待确认',
 };
 
 const NODE_ICONS = {
@@ -60,12 +64,24 @@ const NODE_ICONS = {
 
 const THINK_OPEN_RE = /<think\b[^>]*>/i;
 const THINK_CLOSE_RE = /<\/think\s*>/i;
+const REASONING_LABEL_BLOCKED_RE = /\b(select|insert|update|delete|from|join|where|schema|raw_rows?|raw_result|query_plan|field_patch|repair_patch|control_plane)\b|[`;]/i;
+
+// 推理标签专用清洗：空值或疑似 SQL/schema 等内部字段不作为标签。
+function safeReasoningLabelText(value) {
+  const text = String(value ?? '').trim();
+  if (!text || REASONING_LABEL_BLOCKED_RE.test(text)) return null;
+  return text.slice(0, 40);
+}
 
 function reasoningStepLabel(part, node) {
   if (node && String(node).startsWith('agent-')) {
     return part.agentName || (part.agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
   }
-  return NODE_STEP_NAMES[node] || '任务处理';
+  if (node === 'reasoning_summary') {
+    // 最终摘要每条自带业务标题（如“识别任务”“生成结果”），优先使用，避免全部退化为“任务处理”。
+    return safeReasoningLabelText(part.title) || NODE_STEP_NAMES.reasoning_summary;
+  }
+  return NODE_STEP_NAMES[node] || safeReasoningLabelText(part.title) || '任务处理';
 }
 
 function stripThink(raw = '') {
@@ -121,6 +137,47 @@ export function StepCard({ node, display_name, status, elapsed_ms }) {
 /**
  * ChainOfThought 包装组件 — assistant-ui 提供 reasoning parts，Ant Design 负责可见的推理摘要 UI。
  */
+// 把长推理文本切成小节：优先按换行，其次按中英文句末标点，便于用户分段阅读一大块思考。
+function splitThinkingSegments(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  let segments = raw.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  if (segments.length <= 1) {
+    segments = raw
+      .split(/(?<=[。！？；.!?;])\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  // 过滤纯标点/过短噪声段（如单独一行的 "." 或 "。"）：至少含 2 个字母/数字/汉字才保留。
+  segments = segments.filter((s) => (s.match(/[\p{L}\p{N}]/gu) || []).length >= 2);
+  return segments.slice(0, 60);
+}
+
+function ReasoningText({ part }) {
+  const segments = splitThinkingSegments(part.text);
+  if (segments.length <= 1) {
+    // 短文本不拆分，pre-wrap 保留原有换行。
+    return (
+      <Typography.Text
+        className="cot-ant-text"
+        style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+      >
+        {part.text}
+      </Typography.Text>
+    );
+  }
+  return (
+    <div className="cot-ant-segments">
+      {segments.map((seg, index) => (
+        <div key={index} className="cot-ant-segment">
+          <span className="cot-ant-segment-dot" />
+          <span className="cot-ant-segment-text">{seg}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ChainOfThought({ children: _children }) {
   const message = useAuiState((s) => s.message);
   const reasonings = (message?.content || []).filter((part) => part.type === 'reasoning');
@@ -140,7 +197,7 @@ function ChainOfThought({ children: _children }) {
             <Icon name={icon} style={{ width: 12, height: 12 }} />
             {label}
           </Tag>
-          <Typography.Text className="cot-ant-text">{part.text}</Typography.Text>
+          <ReasoningText part={part} />
         </div>
       ),
     };

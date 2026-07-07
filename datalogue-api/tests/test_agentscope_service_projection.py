@@ -55,6 +55,29 @@ def test_projection_filters_sensitive_payload_with_lead_agent_sanitizer():
     assert "query_plan" not in encoded
 
 
+def test_projection_preserves_message_delta_whitespace():
+    """message.delta 增量必须保留 token 边界空格/换行，避免英文被 strip 粘成一坨。"""
+
+    from app.agentscope_service.projection import project_agentscope_service_event
+
+    first = project_agentscope_service_event(
+        {"event_type": "message.delta", "payload": {"content": " Now I need to"}},
+        task_id="task-delta",
+        trace_id="trace-delta",
+        selected_agent="agent_team_leader",
+    )
+    second = project_agentscope_service_event(
+        {"event_type": "message.delta", "payload": {"content": " present this\n"}},
+        task_id="task-delta",
+        trace_id="trace-delta",
+        selected_agent="agent_team_leader",
+    )
+
+    assert first.event_type == "message.delta"
+    # 拼接后仍保留空格与换行，前端才能还原正常表述并分小节
+    assert first.payload["content"] + second.payload["content"] == " Now I need to present this\n"
+
+
 def test_projection_maps_terminal_and_tool_events_to_stable_event_types():
     from app.agentscope_service.projection import project_agentscope_service_event
 

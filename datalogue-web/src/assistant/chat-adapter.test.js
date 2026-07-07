@@ -582,6 +582,53 @@ describe('chat-adapter C-ready metadata', () => {
       .toBe('fallback');
   });
 
+  it('collapses repeated streaming reasoning and routes leader monologue into the thinking chain', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      { event_envelope: { event_type: 'message.delta', payload: { content: '用户想查询工作日志，' } } },
+      { event_envelope: { event_type: 'message.delta', payload: { content: '我需要创建团队来处理。' } } },
+      { type: 'step', node: 'task.step', status: 'done', display_name: '处理中' },
+      { type: 'step', node: 'task.step', status: 'done', display_name: '处理中' },
+      { type: 'step', node: 'task.step', status: 'done', display_name: '处理中' },
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          payload: {
+            summary: '查询已完成，共 3 行。',
+            reasoning_summary: [
+              { title: '识别任务', summary: '已识别为 BI 查询。', status: 'completed' },
+            ],
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 5 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询工作日志', threadId: 'local-thread' }));
+
+    // 流式阶段：正文不铺 Leader 规划，改由思考链承载
+    const streamingChunks = chunks.filter((c) =>
+      c.content.some((p) => p.type === 'reasoning' && p.parentId === 'live_thinking'),
+    );
+    expect(streamingChunks.length).toBeGreaterThan(0);
+    expect(streamingChunks[0].content.find((p) => p.type === 'text').text).toBe('');
+    // live_thinking 按分组键 upsert，多条 delta 累积到同一条，不再逐条堆叠
+    const lastStreaming = streamingChunks[streamingChunks.length - 1];
+    const liveThinking = lastStreaming.content.find((p) => p.parentId === 'live_thinking');
+    expect(liveThinking.text).toContain('我需要创建团队');
+
+    // 重复 step 折叠为一条，不再堆出几百条
+    const beforeFinal = chunks[chunks.length - 2];
+    const repeatedStep = beforeFinal.content.filter(
+      (p) => p.type === 'reasoning' && p.parentId === 'task.step',
+    );
+    expect(repeatedStep).toHaveLength(1);
+
+    // final：正文收敛为干净答案，思考过程（live_thinking）保留不消失
+    const finalChunk = chunks.at(-1);
+    expect(finalChunk.content.find((p) => p.type === 'text').text).toBe('查询已完成，共 3 行。');
+    expect(finalChunk.content.some((p) => p.type === 'reasoning' && p.parentId === 'live_thinking')).toBe(true);
+  });
+
   it('converts route, step and final events into timeline and artifact metadata', async () => {
     streamAgentTeamTask.mockReturnValue(events([
       {
