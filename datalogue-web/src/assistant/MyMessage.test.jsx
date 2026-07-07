@@ -213,6 +213,36 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
   });
 
+  it('uses each final reasoning summary title instead of the generic fallback label', () => {
+    setMockMessage();
+    mockMessageState.message.content = [
+      {
+        type: 'reasoning',
+        text: '识别任务：已识别为 BI 查询。',
+        parentId: 'reasoning_summary',
+        title: '识别任务',
+        summary: '已识别为 BI 查询。',
+        status: 'completed',
+      },
+      {
+        type: 'reasoning',
+        text: '生成结果：已生成可查看的查询结果。',
+        parentId: 'reasoning_summary',
+        title: '生成结果',
+        summary: '已生成可查看的查询结果。',
+        status: 'completed',
+      },
+      { type: 'text', text: '查询已完成。' },
+    ];
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByText('推理摘要'));
+
+    expect(screen.getByText('识别任务')).toBeInTheDocument();
+    expect(screen.getByText('生成结果')).toBeInTheDocument();
+    expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
+  });
+
   it('loads query artifact rows when artifact view action is clicked', async () => {
     getArtifact.mockResolvedValue({
       artifact_ref: 'artifact:result-1',

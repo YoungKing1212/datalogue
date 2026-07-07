@@ -411,6 +411,34 @@ function safeDisplayList(values, limit = 6) {
   return result;
 }
 
+function reasoningGroupKey(part = {}) {
+  const parentId = String(part.parentId || '').trim();
+  if (parentId) return parentId; // 同一节点/同一 Agent 复用同一分组键
+  const title = String(part.title || '').trim();
+  return title ? `title:${title}` : 'reasoning';
+}
+
+// 流式阶段按分组键 upsert：同一节点或同一 Agent 的重复事件原地更新，避免推理摘要堆出几百条“任务处理”。
+function upsertReasoningPart(reasonings, part) {
+  if (!part) return;
+  const key = reasoningGroupKey(part);
+  const index = reasonings.findIndex((existing) => reasoningGroupKey(existing) === key);
+  if (index >= 0) {
+    reasonings[index] = { ...reasonings[index], ...part }; // 保留最新文本与状态
+    return;
+  }
+  reasonings.push(part);
+}
+
+const LIVE_THINKING_SQL_RE = /\b(select|insert|update|delete)\b[\s\S]{0,80}\bfrom\b|hidden_table|raw_result|raw_rows?|schema_context/i;
+
+// 流式 message.delta 是 Leader 的“边想边说”，只作为思考链展示；命中 SQL/schema 等执行细节时整体丢弃。
+function sanitizeLiveThinkingText(text) {
+  const value = String(text || '').trim();
+  if (!value || LIVE_THINKING_SQL_RE.test(value)) return '';
+  return value.slice(0, 4000);
+}
+
 function safeReasoningSummary(reasoningSummary) {
   if (!Array.isArray(reasoningSummary)) return [];
   return reasoningSummary
@@ -809,8 +837,12 @@ function buildStructuredReasoningPart(event = {}) {
   });
 }
 
-function isRealtimeAgentReasoning(part = {}) {
-  return part.type === 'reasoning' && typeof part.parentId === 'string' && part.parentId.startsWith('agent-');
+// final 后需要保留的流式思考：Leader 推理（live_thinking）与 Agent 进度（agent-*），
+// 避免“问完后思考过程消失”；trace/step 等状态噪声仍由业务摘要收敛。
+function isPreservedStreamingReasoning(part = {}) {
+  if (part.type !== 'reasoning') return false;
+  const parentId = String(part.parentId || '');
+  return parentId.startsWith('agent-') || parentId === 'live_thinking';
 }
 
 function upsertToolCallPart(toolParts, event = {}) {
@@ -1017,7 +1049,8 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
       const toolGroups = [];
       const confirmations = [];
       const stepTrace = [];
-      let accText = '';      // 已累积的 text
+      let accText = '';      // 已累积的 text（final 收敛与兜底用）
+      let liveThinkingText = ''; // 流式 Leader 独白，只进思考链，不铺回答正文
       let finalPayload = null;
       const repairTimeline = [];
       let repairPlan = null;
@@ -1026,10 +1059,11 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
       const taskTimeline = [];
 
       // 工具：构造当前 message content
+      // 流式阶段正文保持为空，Leader 独白与步骤只在思考链呈现；正文只在 final 收敛为干净答案。
       const buildContent = () => [
         ...reasonings,
         ...toolParts,
-        { type: 'text', text: accText },
+        { type: 'text', text: '' },
       ];
 
       for await (const rawEvent of stream) {
@@ -1039,10 +1073,22 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
 
         if (ev.type === 'token') {
           accText += ev.content || '';
+          liveThinkingText += ev.content || '';
+          const safeThinking = sanitizeLiveThinkingText(liveThinkingText);
+          if (safeThinking) {
+            // 把流式正文改投思考链，避免 Leader 规划长文本直接铺在回答区。
+            upsertReasoningPart(reasonings, {
+              type: 'reasoning',
+              text: safeThinking,
+              parentId: 'live_thinking',
+              title: '推理过程',
+              status: 'running',
+            });
+          }
           yield { content: buildContent() };
         } else if (ev.type === 'route_decision') {
           emitTrace(ev);
-          reasonings.push({
+          upsertReasoningPart(reasonings, {
             type: 'reasoning',
             text: formatRouteDecisionAsReasoning(ev),
             parentId: 'manifest_route',
@@ -1058,7 +1104,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           yield { content: buildContent() };
         } else if (ev.type === 'agent_handoff') {
           emitTrace(ev);
-          reasonings.push(buildStructuredReasoningPart(ev));
+          upsertReasoningPart(reasonings, buildStructuredReasoningPart(ev));
           upsertTaskTimelineEvent(taskTimeline, {
             type: 'task_understood',
             label: '任务理解',
@@ -1068,7 +1114,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           yield { content: buildContent() };
         } else if (ev.type === 'agent_progress') {
           emitTrace(ev);
-          reasonings.push(buildStructuredReasoningPart(ev));
+          upsertReasoningPart(reasonings, buildStructuredReasoningPart(ev));
           upsertTaskTimelineEvent(taskTimeline, {
             type: ev.agentRole === 'worker' ? 'bi_execution' : 'task_understood',
             label: ev.agentRole === 'worker' ? 'BI 执行' : '任务理解',
@@ -1091,7 +1137,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           emitTrace(ev);
           const confirmation = structuredEventSummary(ev);
           confirmations.push(confirmation);
-          reasonings.push(buildStructuredReasoningPart(ev));
+          upsertReasoningPart(reasonings, buildStructuredReasoningPart(ev));
           upsertTaskTimelineEvent(taskTimeline, {
             type: 'next_action',
             label: '下一步',
@@ -1114,7 +1160,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         } else if (ev.type === 'lead_agent_tools') {
           emitTrace(ev);
           emitResolvedConversation(unstable_threadId, ev.thread_context?.conversation_id);
-          reasonings.push({
+          upsertReasoningPart(reasonings, {
             type: 'reasoning',
             text: formatLeadAgentToolsAsReasoning(ev),
             parentId: 'lead_agent_tools',
@@ -1126,12 +1172,21 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           stepTrace.push(safeStepTraceEvent(ev));
           // 只把"完成"的节点累积为 reasoning（running 状态等完成时再算）
           if (ev.status === 'done' && ev.node !== 'error') {
-            reasonings.push({
-              type: 'reasoning',
-              text: formatStepAsReasoning(ev),
-              parentId: ev.node,
-            });
-            yield { content: buildContent() };
+            const stepLabel = safeStepLabel(ev.node, ev.display_name);
+            let stepReasoningText = formatStepAsReasoning(ev);
+            if (!NODE_DISPLAY[ev.node]) {
+              // 未知节点：优先展示安全 summary；退化为纯“任务处理”标签、无业务 detail 的兜底步骤直接跳过，避免噪声堆叠。
+              const summary = safeDisplayText(ev.display_name);
+              stepReasoningText = summary && summary !== stepLabel && summary !== ev.node ? summary : null;
+            }
+            if (stepReasoningText) {
+              upsertReasoningPart(reasonings, {
+                type: 'reasoning',
+                text: stepReasoningText,
+                parentId: ev.node,
+              });
+              yield { content: buildContent() };
+            }
           }
           // 业务时间线：将 step 映射为业务级节点
           if (ev.node === 'intent_recognition' && ev.status === 'done') {
@@ -1290,8 +1345,16 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         }
 
         const finalReasonings = safeReasoningSummary(finalPayload.reasoning_summary);
+        // 保留完整推理过程：流式阶段的 Leader 思考和 Agent 进度在 final 后不丢弃，live_thinking 收尾标记完成态。
+        const preservedStreaming = reasonings
+          .filter(isPreservedStreamingReasoning)
+          .map((part) => (
+            part.parentId === 'live_thinking' && part.status === 'running'
+              ? { ...part, status: 'completed' }
+              : part
+          ));
         const mergedReasonings = finalReasonings.length
-          ? [...reasonings.filter(isRealtimeAgentReasoning), ...finalReasonings]
+          ? [...preservedStreaming, ...finalReasonings]
           : reasonings;
 
         yield {
@@ -1334,7 +1397,11 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           },
         };
       } else {
-        yield { content: buildContent(), status: { type: 'complete', reason: 'stop' } };
+        // 没有 final 时兜底：把已累积文本落到正文，避免答案丢失。
+        yield {
+          content: [...reasonings, ...toolParts, { type: 'text', text: accText }],
+          status: { type: 'complete', reason: 'stop' },
+        };
       }
     },
   };

@@ -6879,6 +6879,32 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   line-height: 1.55;
   word-break: break-word;
 }
+.cot-ant-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+.cot-ant-segment {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+}
+.cot-ant-segment-dot {
+  flex: none;
+  width: 4px;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--accent-line);
+}
+.cot-ant-segment-text {
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.6;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
 
 /* ─── COMPOSER FAB（圆形浮动发送/停止按钮） ─── */
 .composer-fab {

@@ -17,7 +17,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.events.projection import build_task_envelope
-from app.schemas.bi_workbench import DatalogueEventEnvelope, DatalogueEventType, sanitize_event_payload
+from app.schemas.bi_workbench import (
+    DatalogueEventEnvelope,
+    DatalogueEventType,
+    sanitize_event_payload,
+    sanitize_stream_delta_content,
+)
 
 
 def project_agentscope_service_event(
@@ -31,12 +36,13 @@ def project_agentscope_service_event(
 ) -> DatalogueEventEnvelope:
     """将 AgentScope Service 原始事件投影为 Datalogue envelope。"""
 
+    event_type = _event_type(event)
     payload = _payload_from_event(event)
     safe_payload = sanitize_event_payload(payload)
     if not isinstance(safe_payload, dict):
         safe_payload = {"summary": str(safe_payload or "")}
-    return build_task_envelope(
-        event_type=_event_type(event),
+    envelope = build_task_envelope(
+        event_type=event_type,
         task_id=task_id,
         trace_id=trace_id,
         thread_id=thread_id,
@@ -44,6 +50,13 @@ def project_agentscope_service_event(
         selected_agent=selected_agent,
         payload=safe_payload,
     )
+    if event_type == "message.delta" and isinstance(payload, dict):
+        # build_task_envelope 内部会再次 sanitize（strip 掉边界空格）；这里在构建后回填保留空格/换行的增量，
+        # 避免英文被粘成一块、换行丢失无法分小节。content 已在 sanitize_stream_delta_content 做过 SQL 防护。
+        preserved = sanitize_stream_delta_content(payload.get("content"))
+        if preserved is not None:
+            envelope.payload["content"] = preserved
+    return envelope
 
 
 def _payload_from_event(event: dict[str, Any]) -> dict[str, Any]:
