@@ -17,6 +17,9 @@
 - [数据集治理 API](api/数据集治理.md) — Dataset / Datasource
 - [工作台 API](api/工作台.md) — Workbench / Artifact
 
+### 运维与验证
+- [运行时健康检查](operations/运行时健康检查.md) — AgentScope、Redis、Credential、Leader、Session stream、BI Tool、Artifact API、Frontend version 检查清单
+
 ### 开发指南
 - [开发环境搭建](开发指南.md)
 - [代码规范](开发指南.md#代码规范)

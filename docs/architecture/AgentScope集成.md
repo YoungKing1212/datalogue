@@ -72,7 +72,13 @@ Datalogue API 启动
 - repair 是一等链路，阶段固定为 Failure Classifier、Private Diagnosis、Repair Planner、User Confirmation、Retry Executor、Artifact Writer。
 - SQL、schema、raw rows、原始报错和 RepairPatch 主体只允许在 runtime/tool 私有诊断层流转；AgentScope LLM prompt、SSE、用户可见消息、artifact 摘要和 OpenViking 普通上下文只能获得安全摘要与 refs。
 
-## 六、Datalogue 注册到 AgentScope 的组件
+## 六、扩展 Worker 暂缓边界
+
+Report / Python / Audit Worker 可以保留在长期 prompt、事件协议或 worker type 设计中，但当前阶段暂停继续扩展实现。只有当 BI Worker 主链满足“一轮成功率稳定、repair 可闭环、artifact 必达、最终回答不泄露内部计划、Workbench checkpoint 可回放、日志能区分 Leader / Worker / Tool / DB”后，才允许恢复扩展 Worker。
+
+运行时接手和部署前，按 `docs/operations/运行时健康检查.md` 检查 AgentScope Service、Redis、Credential、Leader Agent、Session stream、BI Tool、Artifact API 和 Frontend version。
+
+## 七、Datalogue 注册到 AgentScope 的组件
 
 1. **Leader Agent 规格**（`registry.py`）:
    - 包含 Datalogue 自定义工具（dataset_query, generate_report）

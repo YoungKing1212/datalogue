@@ -258,3 +258,11 @@
 - 关键改动：将当前唯一产品主链明确为 `POST /api/agent-team/tasks/stream → AgentScope Agent Team → BI Worker Tools`，旧 LangGraph、direct-query、legacy payload 和 BI LeadAgent 目录降级为历史迁移层、内部 fallback 或兼容说明；明确 Leader 控制面不可绕过，BI Worker 只作为执行/诊断面；明确 repair 一等可信闭环为 Failure Classifier、Private Diagnosis、Repair Planner、User Confirmation、Retry Executor、Artifact Writer 六阶段。
 - 验证方式：新增 `datalogue-api/tests/test_architecture_docs_p0_closure.py` 扫描当前权威文档和后端 AGENTS 规则，防止唯一主链、Leader 边界、repair 阶段、raw rows 私有诊断边界和旧 L4/L5 主叙事回退；执行 `python -m pytest datalogue-api/tests/test_architecture_docs_p0_closure.py` 与 `git diff --check`。
 - 残留风险：本轮是 P0 架构口径与协作规则收口，不改 runtime 行为；QueryPlan 原生执行替代 legacy DSL、Workbench/event 复杂度压缩、assistant-ui runtime 守护和部署健康检查等 P1/P2 项需要后续按同样工作树与计划流程继续处理。
+
+
+### 2026-07-07 18:36 · P0 后剩余架构问题治理收口
+
+- 涉及文件：`docs/architecture/系统架构.md`、`docs/architecture/执行链路.md`、`docs/architecture/AgentScope集成.md`、`docs/api/API概览.md`、`docs/operations/运行时健康检查.md`、`docs/README.md`、`docs/上下文入口.md`、`datalogue-api/tests/test_architecture_docs_remaining_closure.py`、`.codex/project-memory.md`
+- 关键改动：把 P1/P2 审计剩余问题落成仓库治理边界：QueryPlan 是 BI Worker 契约、legacy DSL 是执行器兼容层和迁移债务，中期目标是 QueryPlan 原生执行或 `ControlledQuerySpec`；事件分为用户可见、Workbench、Debug 三层，`legacy_payload` 冻结不再扩字段；assistant-ui 近期只做可见层稳定，禁止 headless primitives / runtime 级大重构；新增运行时健康检查规格；Report/Python/Audit Worker 暂缓并明确解除标准。
+- 验证方式：新增 `datalogue-api/tests/test_architecture_docs_remaining_closure.py`，与 P0 架构文档守护测试一起执行；执行 `python3 -m pytest datalogue-api/tests/test_architecture_docs_p0_closure.py datalogue-api/tests/test_architecture_docs_remaining_closure.py` 与 `git diff --check`。
+- 残留风险：本轮继续保持治理收口，不改 runtime 行为；真正移除 QueryPlan→legacy DSL 转换、实现更完整的机器可读 health endpoint、以及恢复 Report/Python/Audit Worker 扩展，需要后续在 BI 主链稳定证据达标后单独开任务。
