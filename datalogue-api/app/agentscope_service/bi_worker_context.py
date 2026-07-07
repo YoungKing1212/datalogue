@@ -74,7 +74,7 @@ def _json_list(value: Any) -> list[Any]:
 
 
 class BIWorkerContextProvider:
-    """基于 Datalogue 元数据提供 BI Worker L0-L3 渐进式上下文。"""
+    """基于 Datalogue 元数据提供 BI Worker 查询上下文。"""
 
     def __init__(self, db: Session):
         self._db = db
@@ -187,6 +187,10 @@ class BIWorkerContextProvider:
             dataset_id=dataset.id,
             entities=entities,
             relationships=relationships,
+            # L2 已经拿到实体、字段和关系 ref，这里同步生成机器可合并状态，
+            # 避免 Worker 从自然语言摘要反推 context_state 时写错结构。
+            context_state_patch=self._context_state_patch(entities, relationships),
+            context_state_usage="将 context_state_patch 合并进后续 L4/L5 的 context_state；不要从自然语言摘要手写 context_state。",
             summary=f"已返回 {len(entities)} 个实体的相关 schema 切片。",
         )
 
@@ -235,6 +239,194 @@ class BIWorkerContextProvider:
             profiles=profiles,
             summary=f"已生成 {len(profiles)} 个候选值探针画像。",
         )
+
+    def search_assets(self, dataset_id: int) -> dict[str, Any]:
+        """列出数据集下所有候选蓝图、指标和维度。
+
+        蓝图命中时可直接用 call_template（SQL 模板）构造查询，跳过渐进式探索。
+        """
+        dataset = self._get_dataset(dataset_id)
+        blueprints = self._list_blueprints(dataset)
+        metrics = self._list_metrics(dataset)
+        dimensions = self._list_dimensions(dataset)
+        return {
+            "dataset_id": dataset.id,
+            "dataset_name": dataset.name,
+            "blueprints": blueprints,
+            "blueprint_count": len(blueprints),
+            "metrics": metrics,
+            "metric_count": len(metrics),
+            "dimensions": dimensions,
+            "dimension_count": len(dimensions),
+            "usage_hint": (
+                "优先匹配蓝图：若某蓝图的 name/description/trigger_keywords 与用户问题相关，"
+                "按其 call_template 构造 SQL，填入 parameters 要求的参数值后调用 datalogue_execute_query_plan_bundle 执行。"
+                "若无蓝图匹配，再使用 datalogue_prepare_query_context → datalogue_execute_query_plan_bundle。"
+                if blueprints
+                else "无可用蓝图，请走 datalogue_prepare_query_context → datalogue_request_schema_slice → datalogue_execute_query_plan_bundle。"
+            ),
+        }
+
+    def prepare_query_context(self, dataset_id: int, question: str) -> dict[str, Any]:
+        """合并 L0+L1+蓝图：描述数据集能力、召回资产并列出蓝图快速路径。"""
+        capability = self.describe_dataset_capability(dataset_id, question)
+        assets = self.recall_query_assets(dataset_id, question)
+        blueprint_catalog = self.search_assets(dataset_id)
+        matched_assets = [
+            {
+                "asset_type": item.get("asset_type"),
+                "name": item.get("name"),
+                "schema": item.get("schema"),
+                "description": item.get("description"),
+                "match_reason": item.get("match_reason"),
+            }
+            for item in assets.assets
+        ]
+        suggested_filters = self._extract_filter_clues(question)
+        missing_conditions: list[dict[str, Any]] = []
+        if not capability.key_dimensions:
+            missing_conditions.append({
+                "type": "missing_dimension",
+                "detail": "未发现业务维度信息，可能影响维度筛选。",
+            })
+        if not capability.key_metrics:
+            missing_conditions.append({
+                "type": "missing_metric",
+                "detail": "未发现业务指标信息，可能影响指标查询。",
+            })
+        if not matched_assets:
+            missing_conditions.append({
+                "type": "no_assets_recalled",
+                "detail": "未召回相关数据资产，建议调整问题描述。",
+            })
+        if suggested_filters:
+            missing_conditions.append({
+                "type": "filter_hint_unresolved",
+                "detail": "问题中包含筛选条件，需要在 QueryPlan filters 中完整表达。",
+                "clues": suggested_filters,
+            })
+        asset_coverage = "insufficient" if missing_conditions else "sufficient"
+        next_step = "request_more_schema" if asset_coverage == "insufficient" else "generate_query_plan"
+        return {
+            "asset_coverage": asset_coverage,
+            "dataset_id": capability.dataset_id,
+            "dataset_name": capability.dataset_name,
+            "business_domain": capability.business_domain,
+            "supported_questions": capability.supported_questions[:5],
+            "key_metrics": capability.key_metrics[:8],
+            "key_dimensions": capability.key_dimensions[:8],
+            "matched_assets": matched_assets,
+            "matched_asset_count": len(matched_assets),
+            "blueprints": blueprint_catalog.get("blueprints", []),
+            "blueprint_count": blueprint_catalog.get("blueprint_count", 0),
+            "missing_conditions": missing_conditions,
+            "next_step_suggestion": next_step,
+            "suggested_filters": suggested_filters,
+            "context_state": {
+                "asset_refs": [item["asset_type"] + ":" + item["name"] for item in matched_assets],
+                "relationship_refs": [],
+                "field_refs": [],
+                "dataset_summary": capability.summary,
+                "suggested_filters": suggested_filters,
+            },
+            "summary": (
+                f"数据集「{capability.dataset_name}」资产覆盖{'充足' if asset_coverage == 'sufficient' else '不充分'}，"
+                f"建议{'生成查询计划' if next_step == 'generate_query_plan' else '补充数据上下文'}。"
+            ),
+        }
+
+    @staticmethod
+    def _extract_filter_clues(question: str) -> list[dict[str, Any]]:
+        """从用户问题中提取筛选线索（中文人名、年份、日期等）。
+
+        Args:
+            question: 用户原始问题。
+
+        Returns:
+            筛选线索列表，每条含 clue_type、value 和 reason。
+        """
+        clues: list[dict[str, Any]] = []
+        # 中文人名：查询XXX的、按XXX、XXX的日志/记录
+        for pattern in [
+            r'查询\s*([一-龥]{2,4})\s*的',
+            r'按\s*([一-龥]{2,4})\s*(?:查询|筛选|过滤)',
+            r'([一-龥]{2,4})\s*(?:的日志|的记录|的订单|的数据)',
+        ]:
+            match = re.search(pattern, question)
+            if match:
+                name = match.group(1)
+                clues.append({
+                    "clue_type": "person_name",
+                    "value": name,
+                    "reason": f"用户输入的人名「{name}」应从员工姓名或相关人员字段筛选",
+                })
+                break
+        # 年份：YYYY年 或 YYYY
+        year_match = re.search(r'(\d{4})\s*年', question)
+        if year_match:
+            clues.append({
+                "clue_type": "year",
+                "value": year_match.group(1),
+                "reason": f"用户输入的年份「{year_match.group(1)}」应从日期字段筛选",
+            })
+        # 日期范围：YYYY-MM-DD 或 YYYY/MM/DD
+        date_match = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', question)
+        if date_match:
+            clues.append({
+                "clue_type": "date",
+                "value": date_match.group(1),
+                "reason": f"用户输入的日期「{date_match.group(1)}」应从日志或日期字段筛选",
+            })
+        return clues
+
+    def _list_blueprints(self, dataset: SemanticDataset) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for bp in dataset.blueprints:
+            if bp.status != "active":
+                continue
+            results.append(
+                {
+                    "blueprint_id": bp.id,
+                    "name": bp.name,
+                    "description": bp.description,
+                    "when_to_use": bp.when_to_use,
+                    "trigger_keywords": _json_list(bp.trigger_keywords),
+                    "trigger_examples": _json_list(bp.trigger_examples),
+                    "parameters": _json_list(bp.parameters),
+                    "call_template": bp.call_template,
+                    "output_schema": _json_list(bp.output_schema),
+                }
+            )
+        return results
+
+    def _list_metrics(self, dataset: SemanticDataset) -> list[dict[str, Any]]:
+        return [
+            {
+                "metric_id": m.id,
+                "name": m.name,
+                "display_name": m.display_name,
+                "expr": m.expr,
+                "table_name": m.table_name,
+                "time_field": m.time_field,
+                "granularity": m.granularity,
+                "description": m.description,
+            }
+            for m in dataset.metrics
+        ]
+
+    def _list_dimensions(self, dataset: SemanticDataset) -> list[dict[str, Any]]:
+        return [
+            {
+                "dimension_id": d.id,
+                "name": d.name,
+                "display_name": d.display_name,
+                "column_name": d.column_name,
+                "table_name": d.table_name,
+                "join_to": d.join_to,
+                "join_key": d.join_key,
+            }
+            for d in dataset.dimensions
+        ]
 
     def _get_dataset(self, dataset_id: int) -> SemanticDataset:
         dataset = self._db.get(SemanticDataset, dataset_id)
@@ -371,6 +563,26 @@ class BIWorkerContextProvider:
             }
             for entity in entities[1:]
         ]
+
+    def _context_state_patch(self, entities: list[dict[str, Any]], relationships: list[dict[str, Any]]) -> dict[str, Any]:
+        """把 L2 schema 切片转换成 ProgressiveContextState 可直接合并的安全 ref 集合。"""
+
+        field_refs: list[str] = []
+        for entity in entities:
+            asset_ref = str(entity["asset_ref"])
+            for field in entity.get("fields") or []:
+                field_name = field.get("name")
+                if field_name:
+                    field_refs.append(f"{asset_ref}.{field_name}")
+        return {
+            "asset_refs": [str(entity["asset_ref"]) for entity in entities],
+            "relationship_refs": [
+                str(relationship["relationship_ref"])
+                for relationship in relationships
+                if relationship.get("relationship_ref")
+            ],
+            "field_refs": field_refs,
+        }
 
     def _find_table(self, tables: list[SourceTable], table_name: str) -> SourceTable | None:
         lowered = table_name.lower()

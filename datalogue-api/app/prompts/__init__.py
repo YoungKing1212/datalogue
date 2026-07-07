@@ -1,1 +1,34 @@
-# 当前只保留生产服务仍在使用的字段标注与蓝图分析 Prompt。
+# Datalogue 统一 Prompt 管理入口
+# 所有 Agent/Service prompt 按模块拆分到子文件，统一从此处 re-export。
+# 调用方推荐：from app.prompts import XXX
+
+from app.prompts.annotation import ANNOTATION_SYSTEM_PROMPT, TABLE_ANNOTATION_PROMPT
+from app.prompts.blueprint_analyzer import (
+    BLUEPRINT_DESCRIPTION_SYSTEM,
+    BLUEPRINT_SQL_ANALYSIS_SYSTEM,
+)
+from app.prompts.dataset_agent import DATASET_AGENT_SYSTEM_PROMPT
+from app.prompts.native_handoff import NATIVE_HANDOFF_CHILD_MESSAGE_TEMPLATE
+from app.prompts.agent_team import (
+    AUDIT_WORKER_PROMPT,
+    BI_WORKER_PROMPT,
+    LEADER_AGENT_SYSTEM_PROMPT,
+    OFFICIAL_TEAM_TOOL_NOTICE,
+    PYTHON_WORKER_PROMPT,
+    REPORT_WORKER_PROMPT,
+)
+
+__all__ = [
+    "ANNOTATION_SYSTEM_PROMPT",
+    "TABLE_ANNOTATION_PROMPT",
+    "BLUEPRINT_SQL_ANALYSIS_SYSTEM",
+    "BLUEPRINT_DESCRIPTION_SYSTEM",
+    "DATASET_AGENT_SYSTEM_PROMPT",
+    "NATIVE_HANDOFF_CHILD_MESSAGE_TEMPLATE",
+    "OFFICIAL_TEAM_TOOL_NOTICE",
+    "LEADER_AGENT_SYSTEM_PROMPT",
+    "BI_WORKER_PROMPT",
+    "REPORT_WORKER_PROMPT",
+    "PYTHON_WORKER_PROMPT",
+    "AUDIT_WORKER_PROMPT",
+]

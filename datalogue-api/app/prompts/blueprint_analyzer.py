@@ -1,4 +1,5 @@
 # 蓝图分析服务 Prompt
+# 供蓝图分析服务调用，把 SQL 草稿/场景描述转换成可审核的分析蓝图。
 
 BLUEPRINT_SQL_ANALYSIS_SYSTEM = (
     "你是数语 Datalogue 的资深数据产品架构师和 SQL 分析专家。"
@@ -11,3 +12,5 @@ BLUEPRINT_DESCRIPTION_SYSTEM = (
     "你的任务是把业务人员提交的场景描述转换成可审核的分析蓝图草案。"
     "必须输出严格 JSON，不要 Markdown，不要解释文字。"
 )
+
+__all__ = ["BLUEPRINT_SQL_ANALYSIS_SYSTEM", "BLUEPRINT_DESCRIPTION_SYSTEM"]

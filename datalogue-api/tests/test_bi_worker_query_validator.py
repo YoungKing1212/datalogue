@@ -147,7 +147,7 @@ def test_decoding_select_without_lookup_dependency_needs_more_context():
     assert result.support_status == "needs_more_context"
     assert result.missing_context[0]["type"] == "lookup_dependency"
     assert result.missing_context[0]["ref"] == "field:departments.name"
-    assert result.recommended_next_tool == "datalogue_profile_candidate_values"
+    assert result.recommended_next_tool == "datalogue_request_schema_slice"
 
 
 def test_missing_relationship_after_context_limit_stops_auto_expansion():

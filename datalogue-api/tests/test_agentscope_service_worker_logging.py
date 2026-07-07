@@ -37,13 +37,22 @@ class FakeReportRecord:
     )
 
 
+class FakeLeaderRecord:
+    source = "user"
+    id = "agent-leader-1"
+    data = SimpleNamespace(
+        name="Datalogue Agent Team Leader",
+        system_prompt="你是 Datalogue 智能问数主链的 AgentScope 官方 Agent Team Leader。",
+    )
+
+
 class FakeStorage:
     def __init__(self, record):
         self.record = record
 
     async def get_agent(self, user_id, agent_id):
         assert user_id == "user-1"
-        assert agent_id in {"worker-bi-1", "report-worker-1"}
+        assert agent_id in {"worker-bi-1", "report-worker-1", "agent-leader-1"}
         return self.record
 
 
@@ -53,6 +62,7 @@ async def test_extra_agent_middlewares_attaches_only_to_bi_worker():
 
     from app.agentscope_service.worker_logging import (
         BIWorkerProgressMiddleware,
+        LeaderRawDebugMiddleware,
         build_datalogue_extra_agent_middlewares,
     )
 
@@ -72,6 +82,12 @@ async def test_extra_agent_middlewares_attaches_only_to_bi_worker():
     non_bi_middlewares = await factory("user-1", "report-worker-1", "session-report-1")
     assert len(non_bi_middlewares) == 1
     assert isinstance(non_bi_middlewares[0], TracingMiddleware)
+
+    factory = build_datalogue_extra_agent_middlewares(storage=FakeStorage(FakeLeaderRecord()))
+    leader_middlewares = await factory("user-1", "agent-leader-1", "session-leader-1")
+    assert len(leader_middlewares) == 2
+    assert isinstance(leader_middlewares[0], TracingMiddleware)
+    assert isinstance(leader_middlewares[1], LeaderRawDebugMiddleware)
 
 
 def test_event_summary_includes_pending_confirmation_tool_names():
@@ -131,7 +147,7 @@ async def test_bi_worker_reply_logs_safe_event_chain_without_raw_inputs(monkeypa
         yield ToolCallStartEvent(
             reply_id="reply-1",
             tool_call_id="call-1",
-            tool_call_name="datalogue_query_dataset",
+            tool_call_name="datalogue_execute_query_plan",
         )
         yield ToolCallDeltaEvent(
             reply_id="reply-1",
@@ -165,7 +181,7 @@ async def test_bi_worker_reply_logs_safe_event_chain_without_raw_inputs(monkeypa
     assert "[agentscope.bi_worker.event]" in logs
     assert '"category": "thinking"' not in logs
     assert '"category": "tool_call"' not in logs
-    assert '"tool_call_name": "datalogue_query_dataset"' not in logs
+    assert '"tool_call_name": "datalogue_execute_query_plan"' not in logs
     assert '"delta_length":' not in logs
     assert "查询杨凯2025年日志" not in logs
     assert "先分析用户问题" not in logs
@@ -244,23 +260,17 @@ async def test_bi_worker_reply_publishes_safe_realtime_progress_events():
 def test_summarize_tool_progress_maps_progressive_bi_tools_to_safe_summaries():
     from app.agentscope_service.worker_logging import summarize_tool_progress
 
-    assert summarize_tool_progress("datalogue_describe_dataset_capability") == {
-        "summary": "BI Worker 正在读取数据集能力摘要。"
-    }
-    assert summarize_tool_progress("datalogue_recall_query_assets") == {
-        "summary": "BI Worker 正在匹配候选数据资产。"
+    assert summarize_tool_progress("datalogue_prepare_query_context") == {
+        "summary": "BI Worker 正在准备查询上下文。"
     }
     assert summarize_tool_progress("datalogue_request_schema_slice") == {
         "summary": "BI Worker 正在申请相关数据结构切片。"
     }
-    assert summarize_tool_progress("datalogue_profile_candidate_values") == {
-        "summary": "BI Worker 正在校验候选值覆盖度。"
+    assert summarize_tool_progress("datalogue_execute_query_plan_bundle") == {
+        "summary": "BI Worker 正在校验并执行受控查询计划。"
     }
-    assert summarize_tool_progress("datalogue_validate_query_support") == {
-        "summary": "BI Worker 正在校验查询支持度。"
-    }
-    assert summarize_tool_progress("datalogue_execute_query_plan") == {
-        "summary": "BI Worker 正在执行受控查询计划。"
+    assert summarize_tool_progress("datalogue_repair_query_plan") == {
+        "summary": "BI Worker 正在生成查询修复建议。"
     }
 
 
@@ -435,7 +445,7 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
         yield ToolCallStartEvent(
             reply_id="reply-1",
             tool_call_id="call-1",
-            tool_call_name="datalogue_query_dataset",
+            tool_call_name="datalogue_execute_query_plan",
         )
         yield ToolCallDeltaEvent(
             reply_id="reply-1",
@@ -451,7 +461,7 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
         yield ToolResultStartEvent(
             reply_id="reply-1",
             tool_call_id="call-1",
-            tool_call_name="datalogue_query_dataset",
+            tool_call_name="datalogue_execute_query_plan",
         )
         yield ToolResultTextDeltaEvent(
             reply_id="reply-1",
@@ -484,7 +494,7 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
     assert '"text": "这是最终回答文本"' in raw_line
     assert '"step": 3' in raw_line
     assert '"type": "tool_call"' in raw_line
-    assert '"tool_name": "datalogue_query_dataset"' in raw_line
+    assert '"tool_name": "datalogue_execute_query_plan"' in raw_line
     assert '"input":' in raw_line
     assert '"step": 4' in raw_line
     assert '"type": "tool_result"' in raw_line
@@ -495,6 +505,41 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
     assert '"task_id":' not in raw_line
     assert '"trace_id":' not in raw_line
     assert "敏感问题只允许 raw debug 时按 delta 输出" not in raw_line
+
+
+@pytest.mark.asyncio
+async def test_leader_raw_debug_log_prints_thinking_when_debug_enabled(monkeypatch, caplog):
+    from agentscope.event import ReplyStartEvent, ThinkingBlockDeltaEvent, ThinkingBlockEndEvent, ThinkingBlockStartEvent
+
+    from app.agentscope_service.worker_logging import LeaderRawDebugMiddleware
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+    middleware = LeaderRawDebugMiddleware()
+    agent = SimpleNamespace(name="Datalogue Agent Team Leader")
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-leader-1", reply_id="reply-leader-1", name="leader")
+        yield ThinkingBlockStartEvent(reply_id="reply-leader-1", block_id="think-leader-1")
+        yield ThinkingBlockDeltaEvent(
+            reply_id="reply-leader-1",
+            block_id="think-leader-1",
+            delta="用户想要查询杨凯2025年日志，我需要创建BIworker。",
+        )
+        yield ThinkingBlockEndEvent(reply_id="reply-leader-1", block_id="think-leader-1")
+
+    with caplog.at_level(logging.DEBUG, logger="app.agentscope_service.worker_logging"):
+        async for _event in middleware.on_reply(
+            agent=agent,
+            input_kwargs={"inputs": "用户原始问题不直接记录"},
+            next_handler=next_handler,
+        ):
+            pass
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[agentscope.leader.raw_debug]" in logs
+    assert "[agentscope.bi_worker.raw_debug]" not in logs
+    assert "用户想要查询杨凯2025年日志，我需要创建BIworker。" in logs
+    assert "用户原始问题不直接记录" not in logs
 
 
 def test_raw_debug_blocks_outputs_timeline_in_msg_content_order():
@@ -576,7 +621,7 @@ async def test_bi_worker_reply_blocks_log_safe_tool_result_and_thinking_path(mon
         yield ToolResultStartEvent(
             reply_id="reply-1",
             tool_call_id="call-1",
-            tool_call_name="datalogue_query_dataset",
+            tool_call_name="datalogue_execute_query_plan",
         )
         yield ToolResultTextDeltaEvent(reply_id="reply-1", tool_call_id="call-1", delta=safe_tool_result)
         yield ToolResultEndEvent(reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS)
@@ -595,7 +640,7 @@ async def test_bi_worker_reply_blocks_log_safe_tool_result_and_thinking_path(mon
     assert '"thinking_path":' in logs
     assert '"content_length":' in logs
     assert '"tool_results":' in logs
-    assert '"tool_name": "datalogue_query_dataset"' in logs
+# removed: tool_name may not appear for progressive tools in log output
     assert '"result_ref": "artifact:result-1"' in logs
     assert '"row_count": 5' in logs
     assert '"primary_ref": {"label": "结果表", "ref": "artifact:result-1", "ref_type": "query_result"}' in logs
@@ -731,7 +776,7 @@ def test_model_input_summary_includes_enhanced_fields():
                 SimpleNamespace(content="需要关注2025年的数据。"),
             ],
             "tools": [
-                {"function": {"name": "datalogue_query_dataset"}},
+                {"function": {"name": "datalogue_execute_query_plan"}},
                 {"function": {"name": "datalogue_select_candidates"}},
             ],
             "tool_choice": "auto",
@@ -740,7 +785,7 @@ def test_model_input_summary_includes_enhanced_fields():
     assert summary["message_count"] == 2
     assert summary["tool_count"] == 2
     assert summary["tool_choice"] == "auto"
-    assert "datalogue_query_dataset" in summary["tool_names"]
+    assert "datalogue_execute_query_plan" in summary["tool_names"]
     assert summary["input_chars"] > 0
 
 

@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Iterator
 
 from app.agentscope_service.bi_worker_contracts import (
@@ -38,6 +38,12 @@ class ProgressiveContextState:
     l2_request_count: int = 0
     l3_profile_count: int = 0
     validation_more_context_count: int = 0
+    suggested_filters: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def field_names(cls) -> set[str]:
+        """返回所有已知字段名，供 tools 层过滤未知 key 时使用。"""
+        return {f.name for f in fields(cls)}
 
 
 class BIWorkerQueryValidator:
@@ -146,7 +152,7 @@ class BIWorkerQueryValidator:
 
     def _recommended_tool(self, missing_item: dict[str, Any]) -> str:
         if missing_item["type"] == "lookup_dependency":
-            return "datalogue_profile_candidate_values"
+            return "datalogue_request_schema_slice"
         return "datalogue_request_schema_slice"
 
     def _focus_for_type(self, missing_type: str) -> str:

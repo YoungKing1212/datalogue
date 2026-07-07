@@ -1,4 +1,5 @@
 # 字段/表标注服务 Prompt
+# 供标注服务调用，为数据仓库字段/表生成业务语义标注。
 
 ANNOTATION_SYSTEM_PROMPT = """你是一个资深数据分析师，负责为数据仓库字段标注业务语义。
 请分析以下表和字段信息，为每个字段输出：
@@ -39,3 +40,5 @@ TABLE_ANNOTATION_PROMPT = """你是一个资深数据分析师。根据表名、
 - 只输出描述文字，不要任何解释或 JSON
 - 例如："客户基础信息主表"、"订单明细记录表"、"商品类目层级表"
 """
+
+__all__ = ["ANNOTATION_SYSTEM_PROMPT", "TABLE_ANNOTATION_PROMPT"]

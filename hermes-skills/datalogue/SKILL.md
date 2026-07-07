@@ -24,6 +24,17 @@ Use this skill as a lightweight live API client for the Datalogue project. It ex
 - `scripts/api_assets.py`: live API client for datasets, metrics, dimensions, blueprints, schema, terms, Manifest summaries, asset search, SQL planning context, and readonly SQL preview.
 - `references/capabilities.md`: capability index, supported asset units, and Datalogue API endpoints.
 
+## Performance Context
+
+This skill's path (direct API calls through `scripts/api_assets.py`) takes ~2s per query — vs the full AgentScope Agent Team chain which takes 15–45s through 8–12 LLM inference rounds. The full chain exists for ambiguous questions requiring dataset confirmation, multi-step exploration, and auto-repair; for straightforward queries with a known dataset, always prefer this skill. Full analysis: `references/execution-chain-comparison.md`.
+
+## Code Changes in Datalogue
+
+When the user asks to modify Datalogue backend code:
+- Delegate the code change to Claude Code (`claude` CLI) rather than doing it manually with `patch`/`write_file`.
+- Provide Claude with: the task description, target files, and evaluation criteria.
+- Manual edits are error-prone (docstring syntax breaks, escaping issues) and the user prefers Claude Code for this class of work.
+
 ## Common Tasks
 
 For "有哪些数据集 / 指标 / 维度 / 蓝图 / schema":

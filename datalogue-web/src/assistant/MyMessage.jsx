@@ -34,7 +34,6 @@ const NODE_STEP_NAMES = {
   entry_intent_classification: '入口判断',
   analysis_blueprint_execute: '分析蓝图执行',
   candidate_assets: '数据资产匹配',
-  query_plan: '查询规划',
   schema_recall: '数据范围确认',
   term_normalize_node: '术语标准化',
   semantic_asset_resolution_node: '语义资产解析',
@@ -266,7 +265,7 @@ function toArray(value) {
 
 const DETAIL_ROW_LIMIT = 100;
 const DETAIL_CELL_LIMIT = 240;
-const DETAIL_BLOCKED_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|query_plan|field_patch|repair_patch|control_plane)\b/i;
+const DETAIL_BLOCKED_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|field_patch|repair_patch|control_plane)\b/i;
 
 function formatArtifactRef(ref) {
   if (!ref) return '';
@@ -302,7 +301,7 @@ function safeDetailColumnText(value) {
   if (
     !text ||
     DETAIL_BLOCKED_TEXT_RE.test(text) ||
-    /sql|schema|raw|hidden|secret|queryplan|query_plan|patch|control|dsl/i.test(text)
+    /sql|schema|raw|hidden|secret|queryplan|patch|control|dsl/i.test(text)
   ) {
     return '';
   }

@@ -68,13 +68,12 @@ def test_worker_template_specs_convert_to_agentscope_subagent_templates():
     template = build_datalogue_worker_template_specs()[0].to_subagent_template()
     expected_allow_rules = {
         "TeamSay",
-        "datalogue_describe_dataset_capability",
-        "datalogue_execute_query_plan",
-        "datalogue_profile_candidate_values",
-        "datalogue_recall_query_assets",
+        "datalogue_prepare_query_context",
+        "datalogue_search_assets",
+        "datalogue_execute_query_plan_bundle",
+        "datalogue_repair_query_plan",
         "datalogue_request_schema_slice",
         "datalogue_select_candidate_datasets",
-        "datalogue_validate_query_support",
     }
 
     assert isinstance(template, SubAgentTemplate)
@@ -93,6 +92,24 @@ def test_worker_template_specs_convert_to_agentscope_subagent_templates():
         assert rule.source == "datalogue-bi-worker-template"
 
 
+def test_bi_worker_prompt_template_is_agentscope_format_safe():
+    from app.agentscope_service.registry import build_datalogue_worker_template_specs
+
+    template = build_datalogue_worker_template_specs()[0].to_subagent_template()
+
+    rendered = template.system_prompt_template.format(
+        member_name="bi-worker",
+        leader_name="Datalogue Agent Team Leader",
+        team_description="查询杨凯2025年日志",
+        member_description="Datalogue BI Worker",
+    )
+
+    assert '"target"' in rendered
+    assert '"display_name"' in rendered
+    assert "{member_name}" not in rendered
+    assert "{leader_name}" not in rendered
+
+
 @pytest.mark.asyncio
 async def test_extra_agent_tools_registers_progressive_tools_without_legacy_dataset_query():
     from app.agentscope_service import tools as datalogue_tools
@@ -107,15 +124,13 @@ async def test_extra_agent_tools_registers_progressive_tools_without_legacy_data
     registered_tools = await factory(user_id="user-1", agent_id="agent-created-by-agentcreate", session_id="session-1")
 
     assert [tool.name for tool in registered_tools] == [
+        "datalogue_search_assets",
         "datalogue_select_candidate_datasets",
-        "datalogue_describe_dataset_capability",
-        "datalogue_recall_query_assets",
+        "datalogue_prepare_query_context",
         "datalogue_request_schema_slice",
-        "datalogue_profile_candidate_values",
-        "datalogue_validate_query_support",
-        "datalogue_execute_query_plan",
+        "datalogue_execute_query_plan_bundle",
+        "datalogue_repair_query_plan",
     ]
-    assert "datalogue_query_dataset" not in {tool.name for tool in registered_tools}
 
 
 def test_prompt_and_tool_boundary_forbid_private_tokens():
@@ -140,16 +155,16 @@ def test_prompt_and_tool_boundary_forbid_private_tokens():
     assert "AgentCreate" in LEADER_AGENT_SYSTEM_PROMPT
     assert "TeamSay" in LEADER_AGENT_SYSTEM_PROMPT
     assert "datalogue_select_candidate_datasets" in BI_WORKER_PROMPT
-    assert "datalogue_describe_dataset_capability" in BI_WORKER_PROMPT
-    assert "datalogue_recall_query_assets" in BI_WORKER_PROMPT
-    assert "datalogue_execute_query_plan" in BI_WORKER_PROMPT
-    assert "严禁调用 datalogue_query_dataset" in LEADER_AGENT_SYSTEM_PROMPT
-    assert "不调用旧兼容工具 datalogue_query_dataset" in BI_WORKER_PROMPT
-    assert "L0/L1/L5" in BI_WORKER_PROMPT
-    assert "L2/L3" in BI_WORKER_PROMPT
+    assert "datalogue_prepare_query_context" in BI_WORKER_PROMPT
+    assert "datalogue_execute_query_plan_bundle" in BI_WORKER_PROMPT
+    assert "datalogue_repair_query_plan" in BI_WORKER_PROMPT
+    assert "datalogue_request_schema_slice" in BI_WORKER_PROMPT
     assert "Query Plan JSON" in BI_WORKER_PROMPT
+    assert '"selects"' in BI_WORKER_PROMPT
+    assert '"metrics"' in BI_WORKER_PROMPT
+    assert '"target"' in BI_WORKER_PROMPT
+    assert '"display_name"' in BI_WORKER_PROMPT
     assert "不得生成 SQL" in BI_WORKER_PROMPT
-    assert "严禁再次调用 datalogue_select_candidate_datasets" in BI_WORKER_PROMPT
     assert "不得仅用自然语言声称已汇报" in BI_WORKER_PROMPT
     assert "dataset_query_result" in BI_WORKER_PROMPT
     assert "dataset_id" in BI_WORKER_PROMPT
@@ -163,9 +178,7 @@ def test_prompt_and_tool_boundary_forbid_private_tokens():
     ):
         assert forbidden not in source
     for expected in (
-        "build_bi_atomic_toolkit",
-        "AgentScopeDatasetRuntimeBridge",
-        "build_bi_runtime_context",
+        "BIWorkerQueryRuntime",
     ):
         assert expected in source
 

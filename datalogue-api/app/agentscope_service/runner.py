@@ -153,6 +153,12 @@ class AgentScopeServiceTaskRunner:
                             ):
                                 yield fallback_event
                             break
+                        if envelope.event_type == "message.completed" and _has_pending_tool_calls(envelope.payload):
+                            # AgentScope ReAct 中，带 pending tool_calls 的 ReplyEnd 只是“模型已决定调工具”；
+                            # 真实业务结果要等 ToolResult/TeamSay，不能把这一段提前投成 Datalogue 终态。
+                            current_reply_spawned_worker = False
+                            current_reply_text = ""
+                            continue
                         yield envelope
                         if envelope.event_type == "message.completed":
                             # AgentScope session stream 是可跨多轮复用的长连接；Datalogue API 一次任务完成后要主动退出。
@@ -313,12 +319,9 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
         context["confirmed_question"] = request.question
         # 用户已经在候选卡完成确认时，clarification_response 只是审计上下文；发给 LLM 会诱导它重跑候选确认。
         directives.append(
-            "数据集已由用户确认：必须围绕原始问题直接创建 BI worker，并要求 worker 使用 "
-            "datalogue_describe_dataset_capability -> datalogue_recall_query_assets -> "
-            "datalogue_execute_query_plan 的 L0/L1/L5 progressive 骨架执行；"
-            f"datalogue_execute_query_plan 的 dataset_id 必须为 {request.dataset_id}，"
-            "confirmed_question 必须为原始问题。严禁调用 datalogue_query_dataset，"
-            "严禁再次调用 datalogue_select_candidate_datasets 或要求用户重新确认 dataset_id。"
+            f"数据集已由用户确认：dataset_id={request.dataset_id}，用户问题={request.question}。"
+            f" 必须将 dataset_id 和用户问题原文明确告知 BI worker，要求 worker 使用 "
+            f"datalogue_prepare_query_context -> datalogue_execute_query_plan_bundle 的标准路径执行。"
         )
     else:
         context["clarification_response"] = request.clarification_response
@@ -396,6 +399,22 @@ def _is_agent_create_event(event: dict[str, Any]) -> bool:
         or "",
     )
     return "tool_call" in raw_type and tool_name == "AgentCreate"
+
+
+def _has_pending_tool_calls(payload: dict[str, Any]) -> bool:
+    """识别还在等待工具执行的中间回复完成事件。"""
+
+    tool_calls = payload.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return False
+    for item in tool_calls:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        state = str(item.get("state") or "").lower()
+        if name and state not in {"completed", "success", "failed", "error"}:
+            return True
+    return False
 
 
 def _event_text(event: dict[str, Any]) -> str:
@@ -571,6 +590,10 @@ async def _merge_leader_and_progress_events(
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+        aclose = getattr(leader_iter, "aclose", None)
+        if callable(aclose):
+            with suppress(Exception):
+                await aclose()
 
 
 async def _store_runner_task_context(

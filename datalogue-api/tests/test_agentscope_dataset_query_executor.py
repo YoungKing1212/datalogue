@@ -69,7 +69,7 @@ async def test_dataset_query_executor_commits_artifact_when_it_owns_session(
         fake_execute_dataset_query_with_db,
     )
 
-    result = await executor.execute_dataset_query_for_agent_team(
+    result = await executor.execute_dataset_query_for_agent_team_direct_fallback(
         db=None,
         dataset_id=10,
         confirmed_question="查询杨凯2025年工作日志",

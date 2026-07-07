@@ -24,6 +24,14 @@ QueryIntent = Literal["detail_query", "metric_query", "knowledge_qa", "unsupport
 JoinType = Literal["inner", "left"]
 RepairStatus = Literal["needs_plan_revision", "auto_repaired", "unsupported", "failed"]
 FailureStage = Literal["validate", "compile", "execute", "artifact"]
+QueryFailureType = Literal[
+    "FIELD_NOT_FOUND",
+    "FILTER_MISSING",
+    "AGGREGATION_WRONG",
+    "VALUE_BINDING_FAILED",
+    "SQL_GUARD_BLOCKED",
+    "EMPTY_RESULT",
+]
 
 _FORBIDDEN_SAFE_REASON_FRAGMENTS = (
     "select ",
@@ -145,6 +153,8 @@ class SchemaSliceContext(StrictModel):
     dataset_id: int
     entities: list[dict[str, Any]] = Field(default_factory=list)
     relationships: list[dict[str, Any]] = Field(default_factory=list)
+    context_state_patch: dict[str, Any] = Field(default_factory=dict)
+    context_state_usage: str | None = None
     summary: str
 
 
@@ -162,6 +172,34 @@ class QuerySupportValidation(StrictModel):
     missing_context: list[dict[str, Any]] = Field(default_factory=list)
     auto_context_expansions: list[dict[str, Any]] = Field(default_factory=list)
     recommended_next_tool: str | None = None
+
+
+REPAIR_HINTS: dict[QueryFailureType, dict[str, str]] = {
+    "FIELD_NOT_FOUND": {
+        "safe_reason": "查询计划中引用了未在上下文中发现的字段，需要补充数据资产信息。",
+        "recommended_action": "使用 datalogue_request_schema_slice 补充缺失字段的 schema 切片，然后基于新上下文重新生成查询计划。",
+    },
+    "FILTER_MISSING": {
+        "safe_reason": "查询计划缺少必要的过滤条件，可能导致结果不准确或执行失败。",
+        "recommended_action": "为用户的问题补充适当的过滤条件（时间范围、业务维度等），然后重新生成查询计划。",
+    },
+    "AGGREGATION_WRONG": {
+        "safe_reason": "聚合操作与字段类型或上下文不匹配，无法正确执行。",
+        "recommended_action": "检查指标字段的聚合方式（sum/count/avg/min/max/count_distinct），确保与字段口径一致。",
+    },
+    "VALUE_BINDING_FAILED": {
+        "safe_reason": "查询参数值绑定失败，当前上下文提供的参数不满足执行要求。",
+        "recommended_action": "确认查询参数值后重新生成查询计划并重试。",
+    },
+    "SQL_GUARD_BLOCKED": {
+        "safe_reason": "查询被安全规则拦截，涉及未授权的数据访问范围。",
+        "recommended_action": "调整查询范围，仅使用已授权数据集和字段，确认后重新生成查询计划。",
+    },
+    "EMPTY_RESULT": {
+        "safe_reason": "查询执行成功但未返回数据行，可能是过滤条件过严或数据集无匹配记录。",
+        "recommended_action": "放宽过滤条件，或确认数据集在所选时间范围内是否有数据。",
+    },
+}
 
 
 class RepairRequest(StrictModel):
@@ -182,6 +220,58 @@ class RepairRequest(StrictModel):
             raise ValueError("safe_reason contains raw database or SQL detail")
         return value
 
+    @classmethod
+    def from_failure_type(
+        cls,
+        failure_type: QueryFailureType,
+        *,
+        retry_count: int = 0,
+    ) -> "RepairRequest":
+        """根据 QueryFailureType 生成标准化修复请求。"""
+        hints = REPAIR_HINTS.get(failure_type, {})
+        return cls(
+            repair_status="needs_plan_revision",
+            failure_stage="validate",
+            failure_class=failure_type,
+            safe_reason=hints.get("safe_reason", "查询执行过程中遇到未知错误。"),
+            recommended_action=hints.get("recommended_action", "重新生成查询计划后重试。"),
+            missing_context=[
+                {
+                    "type": failure_type,
+                    "hint": hints.get("safe_reason", ""),
+                    "retry_count": retry_count,
+                }
+            ],
+        )
+
+
+FAILURE_DIAGNOSIS_MAP: dict[QueryFailureType, dict[str, str]] = {
+    "FIELD_NOT_FOUND": {
+        "safe_diagnosis": "查询引用了当前上下文中不存在的字段引用。",
+        "recommended_action": "使用 datalogue_request_schema_slice 验证并补充缺失字段后重新生成查询计划。",
+    },
+    "FILTER_MISSING": {
+        "safe_diagnosis": "查询计划缺少必要的过滤条件引用。",
+        "recommended_action": "补齐过滤条件所需的实体和关系引用后重试。",
+    },
+    "AGGREGATION_WRONG": {
+        "safe_diagnosis": "聚合操作与字段类型或上下文不兼容。",
+        "recommended_action": "检查指标字段的聚合方式是否正确（sum/count/avg/min/max/count_distinct）。",
+    },
+    "VALUE_BINDING_FAILED": {
+        "safe_diagnosis": "查询参数绑定失败，无法完成执行。",
+        "recommended_action": "重新生成查询计划后重试。",
+    },
+    "SQL_GUARD_BLOCKED": {
+        "safe_diagnosis": "查询被安全规则拦截，可能涉及未授权的数据范围或操作。",
+        "recommended_action": "调整查询范围，确认只访问已授权数据集和字段后重试。",
+    },
+    "EMPTY_RESULT": {
+        "safe_diagnosis": "查询执行成功但未返回数据。",
+        "recommended_action": "尝试放宽过滤条件或确认数据集在所选时间范围内是否有数据。",
+    },
+}
+
 
 class BIWorkerQueryResult(StrictModel):
     answer_summary: str
@@ -189,8 +279,20 @@ class BIWorkerQueryResult(StrictModel):
     checkpoint_ref: str | None
     row_count: int | None
     column_count: int | None
+    failure_type: QueryFailureType | None = None
+    safe_diagnosis: str | None = None
+    recommended_action: str | None = None
 
     def to_tool_payload(self) -> dict[str, Any]:
+        if self.failure_type:
+            return {
+                "status": "failed",
+                "failure_type": self.failure_type,
+                "safe_diagnosis": self.safe_diagnosis or FAILURE_DIAGNOSIS_MAP.get(self.failure_type, {}).get("safe_diagnosis", "未知错误"),
+                "recommended_action": self.recommended_action or FAILURE_DIAGNOSIS_MAP.get(self.failure_type, {}).get("recommended_action", "重试或联系管理员。"),
+                "datalogue_event_type": "dataset_query_result",
+                "summary": self.answer_summary,
+            }
         artifact_card = None
         if self.artifact_ref:
             artifact_card = {
@@ -214,6 +316,7 @@ class BIWorkerQueryResult(StrictModel):
                 ],
             }
         return {
+            "status": "completed",
             "answer_summary": self.answer_summary,
             "artifact_ref": self.artifact_ref,
             "checkpoint_ref": self.checkpoint_ref,

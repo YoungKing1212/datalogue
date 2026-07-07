@@ -17,7 +17,7 @@ from typing import Dict
 
 from sqlalchemy.orm import Session
 
-from app.models import SemanticDataset, SemanticMetric, SemanticDimension, DatasetSourceTable
+from app.models import SemanticDataset, DatasetSourceTable
 
 
 def build_column_labels(db: Session, dataset_id: int | None) -> Dict[str, str]:

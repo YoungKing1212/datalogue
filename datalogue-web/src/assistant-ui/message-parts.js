@@ -17,8 +17,6 @@ export const UNSAFE_FIELD_NAMES = new Set([
   'rawRows',
   'raw_result',
   'rawResult',
-  'query_plan',
-  'queryPlan',
   'repair_patch',
   'repairPatch',
   'patch',
@@ -28,7 +26,7 @@ export const UNSAFE_FIELD_NAMES = new Set([
 ]);
 
 const UNSAFE_TEXT_RE =
-  /\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with|schema|raw_rows|raw_result|query_plan|repair_patch|control_plane|dsl)\b|[`;]/i;
+  /\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with|schema|raw_rows|raw_result|repair_patch|control_plane|dsl)\b|[`;]/i;
 
 const THINK_BLOCK_RE = /<think\b[^>]*>[\s\S]*?(?:<\/think\s*>|$)/gi;
 const MAX_TEXT_LENGTH = 220;
@@ -57,7 +55,6 @@ export function isUnsafeKey(key) {
     || lowered.includes('sql')
     || lowered.includes('schema')
     || lowered.includes('raw')
-    || lowered.includes('query_plan')
     || lowered.includes('queryplan')
     || lowered.includes('repairpatch')
     || lowered.includes('repair_patch')

@@ -34,6 +34,7 @@ from app.agentscope_service.bi_worker_validator import ProgressiveContextState
 from app.agentscope_service.dataset_query_executor import (
     execute_dataset_query_for_agent_team_direct_fallback,
 )
+from app.services.query_plan_compiler import compile_query_plan_to_sql
 
 
 def _target(ref: str, field: str, alias: str = "o") -> FieldTarget:
@@ -132,8 +133,10 @@ async def test_validation_needs_more_context_returns_l4_and_does_not_execute(mon
         context_state=_known_context(),
     )
 
-    assert payload["datalogue_event_type"] == "bi_worker_l4_validation"
-    assert payload["support_status"] == "needs_more_context"
+    assert payload["datalogue_event_type"] == "dataset_query_result"
+    assert payload["status"] == "failed"
+    assert "failure_type" in payload
+    assert "safe_diagnosis" in payload
     assert called is False
 
 
@@ -153,8 +156,9 @@ async def test_execute_failure_returns_safe_repair_request(monkeypatch):
         context_state=_known_context(),
     )
 
-    assert payload["datalogue_event_type"] == "bi_worker_repair_request"
-    assert payload["failure_stage"] == "execute"
+    assert payload["datalogue_event_type"] == "dataset_query_result"
+    assert payload["status"] == "failed"
+    assert payload["failure_type"] is not None
     result_text = str(payload).lower()
     assert "select " not in result_text
     assert "missing_table" not in result_text
@@ -192,3 +196,170 @@ async def test_supported_plan_returns_dataset_query_result_without_private_detai
 
 def test_direct_fallback_helper_exists():
     assert callable(execute_dataset_query_for_agent_team_direct_fallback)
+
+
+@pytest.mark.asyncio
+async def test_empty_filters_with_suggested_filters_returns_filter_missing(monkeypatch):
+    runtime = BIWorkerQueryRuntime(db=None)
+    called = False
+
+    async def _fail_if_executed(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("缺少 filter 时不得执行 L5 查询")
+
+    monkeypatch.setattr(runtime, "_execute_supported_plan", _fail_if_executed)
+
+    plan_no_filters = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="查看杨凯的工作日志",
+        result_shape=ResultShape(type="table", grain="工作日志", limit=50),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(asset_ref="asset:employee_work_log", alias="e", role="fact"),
+            supporting_entities=[],
+        ),
+        selects=[
+            QuerySelect(
+                target=_target("field:employee_work_log.log_content", "log_content"),
+                display_name="日志内容",
+            ),
+        ],
+    )
+    # 构建含 suggested_filters 且 field_refs 匹配计划的上下文
+    state = ProgressiveContextState(
+        asset_refs={"asset:employee_work_log"},
+        field_refs={"field:employee_work_log.log_content"},
+        suggested_filters=[
+            {"clue_type": "person_name", "value": "杨凯", "reason": "用户输入的人名应从员工姓名字段筛选"},
+        ],
+    )
+
+    payload = await runtime.execute_query_plan(
+        dataset_id=1,
+        confirmed_question="查看杨凯的工作日志",
+        query_plan=plan_no_filters,
+        context_state=state,
+    )
+
+    assert payload["datalogue_event_type"] == "dataset_query_result"
+    assert payload["status"] == "failed"
+    assert payload["failure_type"] == "FILTER_MISSING"
+    assert "过滤条件" in payload["safe_diagnosis"]
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_empty_filters_without_suggested_filters_executes_normally(monkeypatch):
+    """确认没有 suggested_filters 时空 filters 不会触发 FILTER_MISSING。"""
+    runtime = BIWorkerQueryRuntime(db=None)
+    executed = False
+
+    async def _record_execution(*args, **kwargs):
+        nonlocal executed
+        executed = True
+        return BIWorkerQueryResult(
+            answer_summary="查询已完成。",
+            artifact_ref="artifact:query-result-1",
+            checkpoint_ref="checkpoint:query-1",
+            row_count=5,
+            column_count=2,
+        )
+
+    monkeypatch.setattr(runtime, "_execute_supported_plan", _record_execution)
+
+    plan_no_filters = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="查看工作日志",
+        result_shape=ResultShape(type="table", grain="工作日志", limit=50),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(asset_ref="asset:employee_work_log", alias="e", role="fact"),
+            supporting_entities=[],
+        ),
+        selects=[
+            QuerySelect(
+                target=_target("field:employee_work_log.log_content", "log_content"),
+                display_name="日志内容",
+            ),
+        ],
+    )
+    # 确保 field_refs 与计划匹配且 suggested_filters 为空
+    state = ProgressiveContextState(
+        asset_refs={"asset:employee_work_log"},
+        field_refs={"field:employee_work_log.log_content"},
+        suggested_filters=[],
+    )
+
+    payload = await runtime.execute_query_plan(
+        dataset_id=1,
+        confirmed_question="查看工作日志",
+        query_plan=plan_no_filters,
+        context_state=state,
+    )
+
+    assert payload["status"] == "completed"
+    assert executed is True
+
+
+def test_query_plan_conversion_preserves_table_name_for_detail_sql():
+    runtime = BIWorkerQueryRuntime(db=None)
+
+    dsl = runtime._query_plan_to_legacy_query_plan(_plan())
+    compiled = compile_query_plan_to_sql(
+        query_plan=dsl,
+        sql_generation_context={
+            "table_schemas": [
+                {"table_name": "orders", "fields": [{"column_name": "order_id"}, {"column_name": "order_date"}]},
+                {"table_name": "departments", "fields": [{"column_name": "name"}]},
+            ],
+        },
+        dialect="sqlite",
+        allowed_tables=["orders", "departments"],
+    )
+
+    assert compiled["ok"] is True
+    assert 'FROM "orders"' in compiled["sql"]
+    assert 'FROM "order_id"' not in compiled["sql"]
+    assert '"orders"."order_id" AS "订单号"' in compiled["sql"]
+    assert '"orders"."order_date" >= ' in compiled["sql"]
+    assert 'ORDER BY "orders"."amount" DESC' in compiled["sql"]
+
+
+def test_metric_query_plan_conversion_compiles_aggregation_and_group_by():
+    runtime = BIWorkerQueryRuntime(db=None)
+    metric_plan = BIWorkerQueryPlan(
+        intent="metric_query",
+        question="按部门统计销售额",
+        result_shape=ResultShape(type="metric", grain="部门", limit=100),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(asset_ref="asset:orders", alias="o", role="fact"),
+            supporting_entities=[
+                QueryEntity(asset_ref="asset:departments", alias="d", role="dimension"),
+            ],
+        ),
+        metrics=[
+            QueryMetric(
+                target=_target("field:orders.amount", "amount"),
+                aggregation="sum",
+                display_name="销售额",
+            )
+        ],
+        group_by=[_target("field:departments.name", "name", alias="d")],
+    )
+
+    dsl = runtime._query_plan_to_legacy_query_plan(metric_plan)
+    compiled = compile_query_plan_to_sql(
+        query_plan=dsl,
+        sql_generation_context={
+            "table_schemas": [
+                {"table_name": "orders", "fields": [{"column_name": "amount"}]},
+                {"table_name": "departments", "fields": [{"column_name": "name"}]},
+            ],
+        },
+        dialect="sqlite",
+        allowed_tables=["orders", "departments"],
+    )
+
+    assert compiled["ok"] is True
+    assert 'SUM("orders"."amount") AS "销售额"' in compiled["sql"]
+    assert '"departments"."name" AS "name"' in compiled["sql"]
+    assert 'GROUP BY "departments"."name"' in compiled["sql"]

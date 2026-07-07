@@ -688,80 +688,78 @@ function ModelsSection() {
       <SetSection title="LLM 模型" desc="保留模型配置入口，但持久化对象改为 AgentScope credential；可用模型由 ModelCard 发现。">
         {message && <div className="st-inline-alert">{message}</div>}
 
-        <div className="st-llm-layout">
-          <div className="st-form llm-editor">
-            <SetRow label={form.id ? '编辑 credential' : '新增 credential'} hint={form.id ? `ID ${form.id}` : '每条 credential 独立保存 Base URL 和 Key'} control={
-              <button className="btn ghost" onClick={resetForm}><Icon name="plus" />新建</button>} />
-            <SetRow label="接入模板" hint="选择后自动填充供应商、Base URL 和默认模型" control={
-              <select className="st-input" aria-label="接入模板" value={form.preset_id} onChange={e => changePreset(e.target.value)}>
-                {LLM_PRESETS.map(preset => (
-                  <option key={preset.id} value={preset.id}>{preset.label}</option>
+        <div className="st-form llm-editor">
+          <SetRow label={form.id ? '编辑 credential' : '新增 credential'} hint={form.id ? `ID ${form.id}` : '每条 credential 独立保存 Base URL 和 Key'} control={
+            <button className="btn ghost" onClick={resetForm}><Icon name="plus" />新建</button>} />
+          <SetRow label="接入模板" hint="选择后自动填充供应商、Base URL 和默认模型" control={
+            <select className="st-input" aria-label="接入模板" value={form.preset_id} onChange={e => changePreset(e.target.value)}>
+              {LLM_PRESETS.map(preset => (
+                <option key={preset.id} value={preset.id}>{preset.label}</option>
+              ))}
+            </select>} />
+          <SetRow label="名称" control={
+            <input className="st-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value, name_auto: false })} placeholder="MiniMax via AgentScope" />} />
+          <SetRow label="供应商" control={
+            <div className="llm-field-stack">
+              <select className="st-input" aria-label="供应商" value={form.provider} onChange={e => changeProvider(e.target.value)}>
+                {providerChoices.map(provider => (
+                  <option key={provider.value} value={provider.value}>{provider.label}</option>
                 ))}
-              </select>} />
-            <SetRow label="名称" control={
-              <input className="st-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value, name_auto: false })} placeholder="MiniMax via AgentScope" />} />
-            <SetRow label="供应商" control={
-              <div className="llm-field-stack">
-                <select className="st-input" aria-label="供应商" value={form.provider} onChange={e => changeProvider(e.target.value)}>
-                  {providerChoices.map(provider => (
-                    <option key={provider.value} value={provider.value}>{provider.label}</option>
-                  ))}
-                </select>
-                {form.provider === 'custom' && (
-                  <input
-                    className="st-input"
-                    value={form.custom_provider}
-                    onChange={e => setForm({ ...form, custom_provider: e.target.value })}
-                    placeholder="输入供应商标识，如 volcengine"
-                  />
-                )}
-              </div>} />
-            <SetRow label="Base URL" control={
-              <input className="st-input" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="http://localhost:4000/v1" />} />
-            <SetRow label="模型名" hint="用于名称生成；真实可选模型由 AgentScope ModelCard 返回" control={
-              <div className="llm-field-stack">
-                <select className="st-input" aria-label="模型名" value={form.model_choice} onChange={e => changeModelChoice(e.target.value)}>
-                  {selectedPreset.models.map(model => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                  <option value="custom">自定义模型</option>
-                </select>
-                {form.model_choice === 'custom' && (
-                  <input
-                    className="st-input"
-                    value={form.model}
-                    onChange={e => changeModelName(e.target.value)}
-                    placeholder="输入模型名，如 datalogue-sql"
-                  />
-                )}
-              </div>} />
-            <SetRow label="API Key" hint={form.id ? '留空则不覆盖已保存密钥' : '保存后不再展示明文'} control={
-              <input className="st-input" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={form.id ? '不覆盖' : 'sk-...'} />} />
-            <SetRow label="状态" control={
-              <select className="st-input" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
-                <option value="active">启用</option>
-                <option value="disabled">停用</option>
-              </select>} />
-            <SetRow label="超时" control={
-              <input className="st-input" type="number" min="1" value={form.request_timeout_seconds} onChange={e => setForm({ ...form, request_timeout_seconds: e.target.value })} />} />
-            <SetRow label="描述" control={
-              <textarea className="st-input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="用途、供应商或路由说明" />} />
-            <div className="st-row">
-              <div className="st-row-l">
-                <div className="st-row-label">保存配置</div>
-        <div className="st-row-hint">密钥写入 AgentScope credential，模型由 ModelCard 自动发现</div>
-              </div>
-              <div className="st-row-r">
-                <div className="llm-form-actions">
-                  <button
-                    className="btn ghost"
-                    disabled={isTestingCurrentModel}
-                    onClick={testCurrentModel}
-                  >
-                    <Icon name="beaker" />{isTestingCurrentModel ? '发现中' : '发现模型'}
-                  </button>
-                  <button className="btn primary" disabled={saving} onClick={saveModel}><Icon name="check" />{saving ? '保存中' : '保存'}</button>
-                </div>
+              </select>
+              {form.provider === 'custom' && (
+                <input
+                  className="st-input"
+                  value={form.custom_provider}
+                  onChange={e => setForm({ ...form, custom_provider: e.target.value })}
+                  placeholder="输入供应商标识，如 volcengine"
+                />
+              )}
+            </div>} />
+          <SetRow label="Base URL" control={
+            <input className="st-input" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="http://localhost:4000/v1" />} />
+          <SetRow label="模型名" hint="用于名称生成；真实可选模型由 AgentScope ModelCard 返回" control={
+            <div className="llm-field-stack">
+              <select className="st-input" aria-label="模型名" value={form.model_choice} onChange={e => changeModelChoice(e.target.value)}>
+                {selectedPreset.models.map(model => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+                <option value="custom">自定义模型</option>
+              </select>
+              {form.model_choice === 'custom' && (
+                <input
+                  className="st-input"
+                  value={form.model}
+                  onChange={e => changeModelName(e.target.value)}
+                  placeholder="输入模型名，如 datalogue-sql"
+                />
+              )}
+            </div>} />
+          <SetRow label="API Key" hint={form.id ? '留空则不覆盖已保存密钥' : '保存后不再展示明文'} control={
+            <input className="st-input" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={form.id ? '不覆盖' : 'sk-...'} />} />
+          <SetRow label="状态" control={
+            <select className="st-input" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
+              <option value="active">启用</option>
+              <option value="disabled">停用</option>
+            </select>} />
+          <SetRow label="超时" control={
+            <input className="st-input" type="number" min="1" value={form.request_timeout_seconds} onChange={e => setForm({ ...form, request_timeout_seconds: e.target.value })} />} />
+          <SetRow label="描述" control={
+            <textarea className="st-input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="用途、供应商或路由说明" />} />
+          <div className="st-row">
+            <div className="st-row-l">
+              <div className="st-row-label">保存配置</div>
+              <div className="st-row-hint">密钥写入 AgentScope credential，模型由 ModelCard 自动发现</div>
+            </div>
+            <div className="st-row-r">
+              <div className="llm-form-actions">
+                <button
+                  className="btn ghost"
+                  disabled={isTestingCurrentModel}
+                  onClick={testCurrentModel}
+                >
+                  <Icon name="beaker" />{isTestingCurrentModel ? '发现中' : '发现模型'}
+                </button>
+                <button className="btn primary" disabled={saving} onClick={saveModel}><Icon name="check" />{saving ? '保存中' : '保存'}</button>
               </div>
             </div>
           </div>
@@ -769,7 +767,7 @@ function ModelsSection() {
       </SetSection>
 
       <SetSection title="模型配置列表">
-        <div className="st-table">
+        <div className="st-table llm-config-table">
           <div className="st-th llm-models">
             <span>模型</span><span>Base URL</span><span>状态</span><span>测试</span><span></span>
           </div>
@@ -778,17 +776,17 @@ function ModelsSection() {
           )}
           {models.map(model => (
             <div className="st-tr llm-models" key={model.id}>
-              <span>
+              <span className="llm-model-cell">
                 <div className="st-row-label">{model.name}</div>
-                <div className="st-row-hint mono">{model.provider} · {model.model || 'ModelCard 自动发现'} · {model.api_key_set ? 'Key 已保存' : '无 Key'}</div>
+                <div className="st-row-hint mono llm-model-meta">{model.provider} · {model.model || 'ModelCard 自动发现'} · {model.api_key_set ? 'Key 已保存' : '无 Key'}</div>
               </span>
-              <span className="mono text-3">{model.base_url}</span>
+              <span className="mono text-3 llm-url-cell" title={model.base_url}>{model.base_url}</span>
               <span>
                 <span className={'st-ds-status ' + (model.status === 'active' ? 'connected' : 'error')}>
                   <span className="dot" />{model.status === 'active' ? '启用' : '停用'}
                 </span>
               </span>
-              <span className="text-3">
+              <span className="text-3 llm-test-cell">
                 {model.last_test_result?.ok ? `通过 · ${model.last_test_result.latency_ms}ms` : model.last_error_message || '未测试'}
               </span>
               <span className="st-llm-actions">

@@ -143,6 +143,26 @@ def test_l2_returns_relevant_schema_slice_without_raw_rows(db_session, employee_
     assert "select " not in payload_text
 
 
+def test_l2_returns_context_state_patch_for_worker_passthrough(db_session, employee_dataset):
+    provider = BIWorkerContextProvider(db_session)
+
+    context = provider.request_schema_slice(employee_dataset.id, "按员工姓名查询工作日志")
+    payload = context.model_dump()
+
+    assert payload["context_state_patch"]["asset_refs"] == [
+        "table:public.employee_work_log",
+        "table:public.employee_dim",
+    ]
+    assert "table:public.employee_work_log.log_date" in payload["context_state_patch"]["field_refs"]
+    assert "table:public.employee_dim.employee_name" in payload["context_state_patch"]["field_refs"]
+    assert payload["context_state_patch"]["relationship_refs"] == [
+        "dataset_selected:table:public.employee_work_log->table:public.employee_dim"
+    ]
+    assert payload["context_state_usage"] == (
+        "将 context_state_patch 合并进后续 L4/L5 的 context_state；不要从自然语言摘要手写 context_state。"
+    )
+
+
 def test_l3_profiles_candidate_values_without_returning_rows(db_session, employee_dataset):
     provider = BIWorkerContextProvider(db_session)
 
@@ -175,3 +195,42 @@ def test_context_provider_raises_dataset_not_found(db_session):
 
     with pytest.raises(ValueError, match="DATASET_NOT_FOUND"):
         provider.describe_dataset_capability(999999, "查询工作日志")
+
+
+def test_prepare_query_context_extracts_filter_clues(db_session, employee_dataset):
+    provider = BIWorkerContextProvider(db_session)
+
+    # "按杨凯查询2025年日志" 可匹配第二个姓名模式 + 年份模式
+    result = provider.prepare_query_context(employee_dataset.id, "按杨凯查询2025年日志")
+
+    assert "suggested_filters" in result
+    assert len(result["suggested_filters"]) >= 2
+
+    clue_types = {item["clue_type"] for item in result["suggested_filters"]}
+    assert "person_name" in clue_types
+    assert "year" in clue_types
+
+    condition_types = {item["type"] for item in result["missing_conditions"]}
+    assert "filter_hint_unresolved" in condition_types
+
+    name_clues = [item for item in result["suggested_filters"] if item["clue_type"] == "person_name"]
+    assert any("杨凯" in item["value"] for item in name_clues)
+
+    year_clues = [item for item in result["suggested_filters"] if item["clue_type"] == "year"]
+    assert any("2025" in item["value"] for item in year_clues)
+
+    # 确认 context_state 中也包含了 suggested_filters
+    assert "suggested_filters" in result["context_state"]
+    assert len(result["context_state"]["suggested_filters"]) >= 2
+
+
+def test_prepare_query_context_without_filter_clues_returns_empty(db_session, employee_dataset):
+    provider = BIWorkerContextProvider(db_session)
+
+    result = provider.prepare_query_context(employee_dataset.id, "查看所有工作日志")
+
+    assert "suggested_filters" in result
+    assert len(result["suggested_filters"]) == 0
+
+    condition_types = {item["type"] for item in result["missing_conditions"]}
+    assert "filter_hint_unresolved" not in condition_types

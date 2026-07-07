@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.graph.llm import get_llm
 from app.utils import safe_json_parse
-from app.prompts.blueprint_analyzer import BLUEPRINT_SQL_ANALYSIS_SYSTEM, BLUEPRINT_DESCRIPTION_SYSTEM
+from app.prompts import BLUEPRINT_SQL_ANALYSIS_SYSTEM, BLUEPRINT_DESCRIPTION_SYSTEM
 
 
 logger = logging.getLogger(__name__)
@@ -336,16 +336,16 @@ def _infer_column_name(expr: str, index: int) -> str:
         flags=re.IGNORECASE,
     )
     if alias_match:
-        return alias_match.group(1).strip("`\"[]")
+        return alias_match.group(1).strip('`"[]')
     simple_identifier = re.match(r"^[`\"\[]?([\w\u4e00-\u9fff]+)[`\"\]]?$", expr.strip())
     if simple_identifier:
         return simple_identifier.group(1)
     plain_alias = re.search(r"\s+([`\"\[]?[\w\u4e00-\u9fff]+[`\"\]]?)\s*$", expr)
     if plain_alias and not expr.strip().endswith(")"):
-        return plain_alias.group(1).strip("`\"[]")
+        return plain_alias.group(1).strip('`"[]')
     dotted = re.search(r"([\w]+)\.([`\"\[]?[\w\u4e00-\u9fff]+[`\"\]]?)", expr)
     if dotted:
-        return dotted.group(2).strip("`\"[]")
+        return dotted.group(2).strip('`"[]')
     func = re.search(r"\b(sum|count|avg|min|max)\s*\(", expr, flags=re.IGNORECASE)
     if func:
         return f"{func.group(1).lower()}_{index}"
@@ -447,7 +447,7 @@ def _extract_output_schema(sql: str) -> list[dict[str, Any]]:
 def _extract_tables(sql: str) -> list[str]:
     """提取 FROM/JOIN 涉及的表名。"""
     tables = re.findall(r"\b(?:from|join)\s+([`\"\[]?[\w.]+[`\"\]]?)", sql, flags=re.IGNORECASE)
-    return [table.strip("`\"[]") for table in tables]
+    return [table.strip('`"[]') for table in tables]
 
 
 def _build_steps(sql: str, output_schema: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -713,7 +713,9 @@ def _ensure_list(value: Any) -> list:
     return value if isinstance(value, list) else []
 
 
-def _sanitize_param_defaults(params: list[dict[str, Any]], reference: dict[str, Any]) -> list[dict[str, Any]]:
+def _sanitize_param_defaults(
+    params: list[dict[str, Any]], reference: dict[str, Any]
+) -> list[dict[str, Any]]:
     """清理参数默认值，避免保留变量实际值。"""
     reference_defaults = {
         item.get("name"): item.get("default_expr")
@@ -733,7 +735,9 @@ def _sanitize_param_defaults(params: list[dict[str, Any]], reference: dict[str, 
                 and default_expr.upper() not in ("TODAY", "MONTH_START", "NULL")
             )
             if looks_like_value:
-                param["default_expr"] = reference_defaults.get(name) or _normalize_param(str(name))[3]
+                param["default_expr"] = (
+                    reference_defaults.get(name) or _normalize_param(str(name))[3]
+                )
         cleaned.append(param)
     return cleaned
 
@@ -819,7 +823,9 @@ def _merge_ai_blueprint(
 
     call_template = ai_result.get("call_template")
     if implementation_type == "sql_template" and not call_template:
-        call_template = reference.get("call_template") or _sanitize_sql_variables(_strip_comments(sql))
+        call_template = reference.get("call_template") or _sanitize_sql_variables(
+            _strip_comments(sql)
+        )
     if implementation_type == "stored_procedure" and call_template is None:
         call_template = ""
     if call_template:
@@ -885,7 +891,9 @@ def _merge_ai_blueprint(
     return result
 
 
-def _manual_reference(payload: dict[str, Any], dataset_context: dict[str, Any] | None = None) -> dict[str, Any]:
+def _manual_reference(
+    payload: dict[str, Any], dataset_context: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """根据业务场景输入生成手动蓝图的兜底草案。"""
     name = (payload.get("name") or "").strip() or "业务场景分析蓝图"
     scenario = (payload.get("business_scenario") or "").strip()
@@ -1089,7 +1097,9 @@ def _trigger_examples(name: str, keywords: list[str]) -> list[str]:
 def _attribution_hints(metrics: list[str], dimensions: list[str]) -> str:
     """生成归因提示。"""
     if metrics and dimensions:
-        return f"优先关注{'、'.join(metrics[:3])}在{'、'.join(dimensions[:3])}上的变化、排名和异常值。"
+        return (
+            f"优先关注{'、'.join(metrics[:3])}在{'、'.join(dimensions[:3])}上的变化、排名和异常值。"
+        )
     if metrics:
         return f"优先关注{'、'.join(metrics[:3])}的趋势、异常和与预期的偏差。"
     return "优先解释输出结果中的关键字段、筛选条件和排序规则。"

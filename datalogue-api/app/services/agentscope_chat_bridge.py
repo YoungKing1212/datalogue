@@ -16,7 +16,6 @@ import re
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.schemas.agentscope_workbench import AgentScopeThreadKind
 from app.schemas.bi_workbench import DatalogueEventEnvelope
 from app.events.projection import project_event_envelope_to_agentscope
 from app.services.agentscope_mirror import (

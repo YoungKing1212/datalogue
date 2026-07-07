@@ -30,8 +30,6 @@ from app.models.dataset import AnalysisBlueprint, SemanticDataset
 from app.safety import DataloguePayloadSanitizer
 from app.services.artifact_store import ArtifactStore
 from app.services.query_plan_compiler import compile_query_plan_to_sql
-from app.services.subagent_planning.contracts import QueryPlan, QueryPlanValidationError, normalize_query_plan
-from app.services.subagent_planning.planner import plan_query
 
 
 logger = logging.getLogger(__name__)
@@ -228,7 +226,7 @@ class CompileDslToSqlTool(DatalogueBIAtomicTool):
         self,
         *,
         dataset_id: int,
-        dsl: QueryPlan | dict[str, Any],
+        dsl: dict[str, Any],
         question: str | None = None,
         sql_generation_context: dict[str, Any] | None = None,
         dialect: str | None = "sqlite",
@@ -236,27 +234,16 @@ class CompileDslToSqlTool(DatalogueBIAtomicTool):
         query_constraints: dict[str, Any] | None = None,
         allowed_tables: list[str] | None = None,
     ) -> dict[str, Any]:
-        try:
-            query_plan = _coerce_query_plan(dsl)
-        except QueryPlanValidationError as exc:
-            query_plan = _fallback_query_plan_from_runtime_context(
-                db=self.context.db,
-                dataset_id=dataset_id,
-                question=question,
-                sql_generation_context=sql_generation_context,
-                validation_error=exc,
-            )
-            if query_plan is None:
-                return {
-                    "status": "blocked",
-                    "code": "DSL_INVALID",
-                    "error_summary": str(exc),
-                    "compiled_query_ref": None,
-                }
+        if not isinstance(dsl, dict):
+            return {
+                "status": "blocked",
+                "code": "DSL_INVALID",
+                "error_summary": "dsl must be a dict",
+                "compiled_query_ref": None,
+            }
 
-        query_plan_payload = query_plan.to_dict()
         compiled = compile_query_plan_to_sql(
-            query_plan=query_plan,
+            query_plan=dsl,
             sql_generation_context=sql_generation_context or {},
             dialect=dialect,
             current_datasource_dialect=current_datasource_dialect,
@@ -268,13 +255,14 @@ class CompileDslToSqlTool(DatalogueBIAtomicTool):
 
         compiled_query_ref = f"compiled_query:{uuid4().hex}"
         # SQL 和 query_plan 主体只进入 Datalogue 私有句柄，永不回填给 Agent/Workbench。
+        logger.debug("compile sql: %s", compiled.get("sql"))
         self.context.compiled_queries[compiled_query_ref] = {
             "dataset_id": dataset_id,
             "dialect": compiled.get("dialect"),
             "execution_source": compiled.get("execution_source"),
             "sql": compiled.get("sql"),
             "sql_list": compiled.get("sql_list") or [],
-            "query_plan": query_plan_payload,
+            "query_plan": dsl,
             "sql_generation_context": copy.deepcopy(sql_generation_context or {}),
             "current_datasource_dialect": current_datasource_dialect,
             "query_constraints": copy.deepcopy(query_constraints or {}),
@@ -545,106 +533,6 @@ def _blueprint_summary(blueprint: AnalysisBlueprint) -> dict[str, Any]:
         "trigger_keywords": blueprint.trigger_keywords or [],
         "when_to_use": blueprint.when_to_use,
     }
-
-
-def _coerce_query_plan(dsl: QueryPlan | dict[str, Any]) -> QueryPlan:
-    if isinstance(dsl, QueryPlan):
-        return dsl
-    if isinstance(dsl, dict):
-        # DatasetAgent 只提交结构化 DSL；任何不合法枚举/资产形状必须 fail closed。
-        return normalize_query_plan(dsl)
-    raise QueryPlanValidationError("dsl must be QueryPlan or object")
-
-
-def _fallback_query_plan_from_runtime_context(
-    *,
-    db: Session,
-    dataset_id: int,
-    question: str | None,
-    sql_generation_context: dict[str, Any] | None,
-    validation_error: QueryPlanValidationError,
-) -> QueryPlan | None:
-    """LLM 生成 DSL 不合格时，用受控 schema 上下文生成保守 QueryPlan。"""
-
-    assets = _candidate_assets_from_sql_context(sql_generation_context)
-    if not assets:
-        return None
-    try:
-        plan = plan_query(
-            db=db,
-            question=str(question or ""),
-            routing={"dataset_id": dataset_id},
-            candidate_assets={"assets": assets},
-        )
-    except Exception:  # pragma: no cover - planner 内部异常不应越过工具边界。
-        logger.exception("compile_dsl_to_sql fallback planner failed")
-        return None
-    if plan.execution_strategy not in {"query_graph", "blueprint_as_reference"}:
-        return None
-    plan.fallback_reason = plan.fallback_reason or f"dsl_invalid:{validation_error}"
-    return plan
-
-
-def _candidate_assets_from_sql_context(sql_generation_context: dict[str, Any] | None) -> list[dict[str, Any]]:
-    context = sql_generation_context if isinstance(sql_generation_context, dict) else {}
-    table_schema = _primary_table_schema(context.get("table_schemas") or [])
-    if table_schema is None:
-        return []
-    assets: list[dict[str, Any]] = []
-    table_name = str(table_schema.get("table_name") or table_schema.get("name") or "").strip()
-    if not table_name:
-        return []
-    assets.append(
-        {
-            "asset_type": "table",
-            "asset_id": table_name,
-            "name": table_name,
-            "display_name": table_schema.get("display_name") or table_name,
-            "source": "schema",
-            "confidence": 0.72,
-            "metadata": {"table_name": table_name},
-        }
-    )
-    for field_info in table_schema.get("fields") or table_schema.get("columns") or []:
-        if not isinstance(field_info, dict):
-            continue
-        column_name = str(field_info.get("column_name") or field_info.get("name") or "").strip()
-        if not column_name:
-            continue
-        display_name = str(field_info.get("display_name") or field_info.get("comment") or column_name)
-        assets.append(
-            {
-                "asset_type": "field",
-                "asset_id": f"{table_name}.{column_name}",
-                "name": column_name,
-                "display_name": display_name,
-                "source": "schema",
-                "confidence": 0.68,
-                "metadata": {"table_name": table_name, "column_name": column_name},
-            }
-        )
-    return assets
-
-
-def _primary_table_schema(table_schemas: Any) -> dict[str, Any] | None:
-    schemas = [schema for schema in table_schemas if isinstance(schema, dict)]
-    if not schemas:
-        return None
-    scored = sorted(
-        schemas,
-        key=lambda schema: (
-            _table_schema_penalty(str(schema.get("table_name") or schema.get("name") or "")),
-            -len(schema.get("fields") or schema.get("columns") or []),
-        ),
-    )
-    return scored[0]
-
-
-def _table_schema_penalty(table_name: str) -> int:
-    lowered = table_name.lower()
-    if lowered.startswith("sys_") or "dict" in lowered:
-        return 10
-    return 0
 
 
 def _safe_execution_guard(compiled: dict[str, Any]) -> dict[str, Any]:

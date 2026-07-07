@@ -74,8 +74,10 @@ async def test_execute_query_plan_returns_l4_validation_when_plan_uses_undisclos
         trace_id="trace-progressive-context-e2e",
     )
 
-    assert payload["datalogue_event_type"] == "bi_worker_l4_validation"
-    assert payload["support_status"] == "needs_more_context"
+    assert payload["datalogue_event_type"] == "dataset_query_result"
+    assert payload["status"] == "failed"
+    assert "failure_type" in payload
+    assert "safe_diagnosis" in payload
     serialized_payload = str(payload).lower()
     assert "select " not in serialized_payload
     assert "raw_rows" not in serialized_payload

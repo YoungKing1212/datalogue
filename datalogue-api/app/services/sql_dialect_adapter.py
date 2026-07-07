@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : sql_dialect_adapter.py
 # Description:
-#   QueryPlan Compiler 的 SQL 方言适配外壳。
+#   查询计划编译器的 SQL 方言适配外壳。
 #
 # Responsibilities:
 #   - 对工具编译器产出的 SQL 做当前阶段允许方言的 fail-closed 校验。
@@ -50,7 +50,7 @@ def quote_identifier(name: str | None, dialect: str | None) -> str:
 
 def _unsupported_dialect_result(dialect: str | None, current_datasource_dialect: str | None) -> dict[str, Any]:
     error = (
-        "QueryPlan 目标方言与当前数据源方言不一致或当前数据源方言未启用："
+        "查询计划目标方言与当前数据源方言不一致或当前数据源方言未启用："
         f"target={dialect or 'unknown'}, current={current_datasource_dialect or 'unknown'}"
     )
     return {
@@ -83,7 +83,7 @@ def adapt_sql_for_execution(
     """将工具编译 SQL 适配到执行层可接收形态，并强制经过 SQL Guard。
 
     这里不接受模型生成 SQL 的来源判断，只处理上游已确认为 tool compiler 的 SQL；
-    运行期只允许当前选中数据源 dialect；QueryPlan 目标方言与当前数据源不一致时 fail closed。
+    运行期只允许当前选中数据源 dialect；查询计划目标方言与当前数据源不一致时 fail closed。
     """
 
     supported = normalize_supported_dialect(dialect)

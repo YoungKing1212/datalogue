@@ -25,7 +25,6 @@ from agentscope.message import TextBlock, ToolCallBlock, ToolResultBlock, ToolRe
 from agentscope.permission import PermissionBehavior, PermissionContext, PermissionDecision
 from agentscope.tool import ToolBase
 
-from app.bi.toolchain import DatasetAgentToolCallRuntime
 from app.middlewares import DatasetRuntimeToolLoggingMiddleware
 from app.middlewares.lifecycle import log_lifecycle
 from app.bi.toolkit import DatalogueBIAtomicToolkit
@@ -60,6 +59,35 @@ _FORBIDDEN_DSL_INPUT_KEYS = {
     "repair_patch",
     "blueprint_body",
 }
+_FORBIDDEN_AGENT_ARGUMENT_KEYS = {
+    "sql",
+    "raw_sql",
+    "llm_sql",
+    "direct_sql",
+    "schema",
+    "schema_context",
+    "raw_rows",
+    "query_plan",
+    "repair_patch",
+    "blueprint_body",
+}
+
+
+def _contains_forbidden_agent_argument(value: Any) -> bool:
+    """检查工具入参中是否包含禁止的敏感字段或 SQL 文本片段。"""
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            key_text = str(key).lower()
+            if key_text in _FORBIDDEN_AGENT_ARGUMENT_KEYS or "sql" in key_text:
+                return True
+            if _contains_forbidden_agent_argument(nested):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_forbidden_agent_argument(item) for item in value)
+    elif isinstance(value, str):
+        lowered = value.lower()
+        return "select " in lowered or " from " in lowered or "drop table" in lowered
+    return False
 
 
 @dataclass
@@ -186,7 +214,7 @@ class DatasetAgentScopeExternalTool(ToolBase):
         elif isinstance(value, list):
             return bool(any(cls._contains_forbidden_tool_input(item) for item in value))
         elif isinstance(value, str):
-            return DatasetAgentToolCallRuntime._contains_forbidden_agent_argument(value)
+            return _contains_forbidden_agent_argument(value)
         return False
 
 
@@ -750,7 +778,7 @@ class AgentScopeDatasetRuntimeBridge:
                 for item in value
                 if (cleaned := cls._sanitize_dsl_tool_input(item)) not in (None, "", [], {})
             ]
-        if isinstance(value, str) and DatasetAgentToolCallRuntime._contains_forbidden_agent_argument(value):
+        if isinstance(value, str) and _contains_forbidden_agent_argument(value):
             return None
         return value
 

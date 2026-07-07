@@ -22,6 +22,10 @@ from app.agents.bi_agent.runtime_context import build_bi_runtime_context
 from app.agentscope_service.bi_worker_contracts import (
     BIWorkerQueryPlan,
     BIWorkerQueryResult,
+    FAILURE_DIAGNOSIS_MAP,
+    FieldTarget,
+    QueryFailureType,
+    QueryEntity,
     RepairRequest,
 )
 from app.agentscope_service.bi_worker_validator import (
@@ -47,10 +51,26 @@ class BIWorkerQueryRuntime:
         context_state: ProgressiveContextState,
         trace_id: str | None = None,
     ) -> dict[str, Any]:
+        # L4：内部校验 → 未通过时映射为失败类型
         validation = self.validator.validate(query_plan, context_state)
         if validation.support_status != "supported":
-            # L4 未确认支持时必须停在安全校验 payload，避免 Runtime 读取私有数据。
-            return validation.model_dump()
+            failure = self._map_validation_to_failure(validation, query_plan)
+            return failure.to_tool_payload()
+
+        # 筛选完整性预检：问题中有筛选线索但 QueryPlan 未在 filters 中体现
+        if not query_plan.filters and context_state.suggested_filters:
+            missing_count = len(context_state.suggested_filters)
+            diagnosis = FAILURE_DIAGNOSIS_MAP["FILTER_MISSING"]
+            return BIWorkerQueryResult(
+                answer_summary=f"查询计划缺少筛选条件：{missing_count} 个筛选线索未在 filters 中体现。",
+                artifact_ref=None,
+                checkpoint_ref=None,
+                row_count=None,
+                column_count=None,
+                failure_type="FILTER_MISSING",
+                safe_diagnosis=diagnosis["safe_diagnosis"],
+                recommended_action=diagnosis["recommended_action"],
+            ).to_tool_payload()
 
         try:
             result = await self._execute_supported_plan(
@@ -60,8 +80,102 @@ class BIWorkerQueryRuntime:
                 trace_id=trace_id,
             )
         except Exception as exc:
-            return self._safe_repair_request(exc, failure_stage="execute").model_dump()
+            failure = self._map_exception_to_failure(exc)
+            return failure.to_tool_payload()
+        # 空结果映射
+        if result.row_count is not None and result.row_count == 0:
+            empty_result = BIWorkerQueryResult(
+                answer_summary="查询执行成功但未返回数据。",
+                artifact_ref=result.artifact_ref,
+                checkpoint_ref=result.checkpoint_ref,
+                row_count=0,
+                column_count=result.column_count,
+                failure_type="EMPTY_RESULT",
+                safe_diagnosis=FAILURE_DIAGNOSIS_MAP["EMPTY_RESULT"]["safe_diagnosis"],
+                recommended_action=FAILURE_DIAGNOSIS_MAP["EMPTY_RESULT"]["recommended_action"],
+            )
+            return empty_result.to_tool_payload()
         return result.to_tool_payload()
+
+    def _map_validation_to_failure(self, validation, query_plan: BIWorkerQueryPlan) -> BIWorkerQueryResult:
+        missing_context = getattr(validation, "missing_context", None) or []
+        missing_types = {item.get("type") for item in missing_context}
+        if "missing_field" in missing_types and self._has_filter_refs(query_plan):
+            failure_type: QueryFailureType = "FILTER_MISSING"
+        elif "missing_field" in missing_types:
+            failure_type = "FIELD_NOT_FOUND"
+        elif "missing_relationship" in missing_types:
+            failure_type = "FIELD_NOT_FOUND"
+        else:
+            failure_type = "FIELD_NOT_FOUND"
+        diagnosis = FAILURE_DIAGNOSIS_MAP[failure_type]
+        return BIWorkerQueryResult(
+            answer_summary=f"查询计划缺少所需上下文：{validation.safe_reason}",
+            artifact_ref=None,
+            checkpoint_ref=None,
+            row_count=None,
+            column_count=None,
+            failure_type=failure_type,
+            safe_diagnosis=diagnosis["safe_diagnosis"],
+            recommended_action=diagnosis["recommended_action"],
+        )
+
+    def _has_filter_refs(self, query_plan: BIWorkerQueryPlan) -> bool:
+        if query_plan.filters:
+            return True
+        return any(
+            join.required for join in query_plan.join_requirements
+        )
+
+    def _map_exception_to_failure(self, exc: Exception) -> BIWorkerQueryResult:
+        _ = type(exc).__name__
+        exc_msg = str(exc).lower()
+        if "sql_guard" in exc_msg or "guard" in exc_msg or "not authorized" in exc_msg:
+            failure_type: QueryFailureType = "SQL_GUARD_BLOCKED"
+        elif "binding" in exc_msg or "bind" in exc_msg or "parameter" in exc_msg:
+            failure_type = "VALUE_BINDING_FAILED"
+        elif "aggregation" in exc_msg or "aggregate" in exc_msg:
+            failure_type = "AGGREGATION_WRONG"
+        else:
+            failure_type = "FIELD_NOT_FOUND"
+        diagnosis = FAILURE_DIAGNOSIS_MAP[failure_type]
+        return BIWorkerQueryResult(
+            answer_summary=f"查询执行失败（{failure_type}）。",
+            artifact_ref=None,
+            checkpoint_ref=None,
+            row_count=None,
+            column_count=None,
+            failure_type=failure_type,
+            safe_diagnosis=diagnosis["safe_diagnosis"],
+            recommended_action=diagnosis["recommended_action"],
+        )
+
+    async def execute_fallback(
+        self,
+        *,
+        dataset_id: int,
+        confirmed_question: str,
+        trace_id: str | None = None,
+    ) -> BIWorkerQueryResult:
+        """无 LLM 生成 QueryPlan 时的代码级兜底：基于表 schema 构造最小查询计划并执行。"""
+        toolkit = build_bi_atomic_toolkit(self.db)
+        bridge = AgentScopeDatasetRuntimeBridge(toolkit=toolkit)
+        runtime_context = build_bi_runtime_context(
+            self.db,
+            dataset_id=dataset_id,
+            question=confirmed_question,
+            bridge=bridge,
+        )
+        session_kwargs = runtime_context.get("session_kwargs") if isinstance(runtime_context, dict) else {}
+        dsl = _build_fallback_dsl(session_kwargs)
+        return await self._execute_plan(
+            bridge=bridge,
+            dataset_id=dataset_id,
+            question=confirmed_question,
+            session_kwargs=session_kwargs,
+            dsl=dsl,
+            trace_id=trace_id,
+        )
 
     async def _execute_supported_plan(
         self,
@@ -79,15 +193,34 @@ class BIWorkerQueryRuntime:
             question=confirmed_question,
             bridge=bridge,
         )
-        session = bridge.start_session(
+        session_kwargs = runtime_context.get("session_kwargs") if isinstance(runtime_context, dict) else {}
+        dsl = self._query_plan_to_legacy_query_plan(query_plan)
+        return await self._execute_plan(
+            bridge=bridge,
             dataset_id=dataset_id,
             question=confirmed_question,
+            session_kwargs=session_kwargs,
+            dsl=dsl,
+            trace_id=trace_id,
+        )
+
+    async def _execute_plan(
+        self,
+        *,
+        bridge: AgentScopeDatasetRuntimeBridge,
+        dataset_id: int,
+        question: str,
+        session_kwargs: dict[str, Any],
+        dsl: dict[str, Any],
+        trace_id: str | None,
+    ) -> BIWorkerQueryResult:
+        session = bridge.start_session(
+            dataset_id=dataset_id,
+            question=question,
             agent_name="bi_worker",
             trace_id=trace_id,
-            **(runtime_context.get("session_kwargs") or {}),
+            **session_kwargs,
         )
-        # QueryPlan 只以安全业务引用进入 bridge；SQL/schema/raw rows 继续由私有 session 和工具链托管。
-        dsl = self._query_plan_to_legacy_query_plan(query_plan)
         result = await bridge.run_direct_query(session=session, dsl=dsl)
         artifact_ref = _optional_str(result.get("artifact_ref"))
         checkpoint_ref = _optional_str(result.get("checkpoint_ref"))
@@ -107,6 +240,7 @@ class BIWorkerQueryRuntime:
         )
 
     def _query_plan_to_legacy_query_plan(self, query_plan: BIWorkerQueryPlan) -> dict[str, Any]:
+        alias_tables = _alias_table_names(query_plan)
         selected_assets = [
             {
                 "asset_type": "field",
@@ -116,10 +250,45 @@ class BIWorkerQueryRuntime:
                 "source": "bi_worker_query_plan",
                 "confidence": 0.9,
                 "usage": "selected",
+                # 编译器依赖 metadata 区分表名和字段名，避免把 field name 误当 FROM 表。
+                "metadata": _target_metadata(item.target, alias_tables=alias_tables),
             }
             for item in query_plan.selects
         ]
-        return {
+        # 将 filter 条件透传到编译器层，避免过滤条件在转换时丢失。
+        compiled_filters = [
+            {
+                "field": item.target.field,
+                "alias": item.target.alias,
+                "asset_ref": item.target.asset_ref,
+                "operator": item.operator,
+                "value": item.value,
+                "reason": item.reason,
+                "metadata": _target_metadata(item.target, alias_tables=alias_tables),
+            }
+            for item in query_plan.filters
+        ]
+        compiled_metrics = [
+            {
+                "field": item.target.field,
+                "alias": item.target.alias,
+                "asset_ref": item.target.asset_ref,
+                "aggregation": item.aggregation,
+                "display_name": item.display_name,
+                "metadata": _target_metadata(item.target, alias_tables=alias_tables),
+            }
+            for item in query_plan.metrics
+        ]
+        compiled_group_by = [
+            {
+                "field": item.field,
+                "alias": item.alias,
+                "asset_ref": item.asset_ref,
+                "metadata": _target_metadata(item, alias_tables=alias_tables),
+            }
+            for item in query_plan.group_by
+        ]
+        result: dict[str, Any] = {
             "query_type": query_plan.intent,
             "execution_strategy": "query_graph",
             "confidence": 0.9,
@@ -133,7 +302,30 @@ class BIWorkerQueryRuntime:
                 "summary": "BI Worker 已基于渐进式上下文生成受控查询计划。",
                 "assumptions": list(query_plan.assumptions),
             },
+            "debug": {
+                "selected_main_table": _entity_table_name(query_plan.data_graph.primary_entity),
+            },
         }
+        if compiled_filters:
+            result["filters"] = compiled_filters
+        if compiled_metrics:
+            result["metrics"] = compiled_metrics
+        if compiled_group_by:
+            result["group_by"] = compiled_group_by
+        if query_plan.ordering:
+            result["ordering"] = [
+                {
+                    "field": item.target.field,
+                    "alias": item.target.alias,
+                    "asset_ref": item.target.asset_ref,
+                    "direction": item.direction,
+                    "metadata": _target_metadata(item.target, alias_tables=alias_tables),
+                }
+                for item in query_plan.ordering
+            ]
+        if query_plan.result_shape:
+            result["limit"] = query_plan.result_shape.limit
+        return result
 
     def _safe_repair_request(
         self,
@@ -176,3 +368,106 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _asset_ref_value(asset_ref: str | None) -> str:
+    """去掉 asset_ref 的类型前缀，保留真实表/字段路径。"""
+
+    text = str(asset_ref or "").strip()
+    if ":" in text:
+        return text.split(":", 1)[1].strip()
+    return text
+
+
+def _table_from_field_ref(asset_ref: str | None, field_name: str | None) -> str | None:
+    """从 field/table ref 中提取表名，支持 schema.table.column 形态。"""
+
+    raw = _asset_ref_value(asset_ref)
+    field = str(field_name or "").strip()
+    if field and raw.endswith(f".{field}"):
+        table_name = raw[: -(len(field) + 1)].strip(".")
+        return table_name or None
+    if raw and "." not in raw:
+        return raw
+    return None
+
+
+def _entity_table_name(entity: QueryEntity) -> str | None:
+    return _table_from_field_ref(entity.asset_ref, None)
+
+
+def _alias_table_names(query_plan: BIWorkerQueryPlan) -> dict[str, str]:
+    """建立 QueryPlan entity alias 到物理表名的映射，供字段 ref 缺表名时兜底。"""
+
+    entities = [query_plan.data_graph.primary_entity, *query_plan.data_graph.supporting_entities]
+    aliases: dict[str, str] = {}
+    for entity in entities:
+        table_name = _entity_table_name(entity)
+        if table_name:
+            aliases[entity.alias] = table_name
+    return aliases
+
+
+def _target_metadata(target: FieldTarget, *, alias_tables: dict[str, str]) -> dict[str, str]:
+    """把 BIWorker FieldTarget 转成编译器可直接消费的表/列 metadata。"""
+
+    table_name = _table_from_field_ref(target.asset_ref, target.field) or alias_tables.get(target.alias)
+    metadata = {"column_name": target.field}
+    if table_name:
+        metadata["table_name"] = table_name
+    return metadata
+
+
+def _build_fallback_dsl(session_kwargs: dict[str, Any] | None) -> dict[str, Any]:
+    """从 Runtime 会话上下文中构造最小 query_graph DSL，让直接 fallback 可安全执行。"""
+
+    kwargs = session_kwargs if isinstance(session_kwargs, dict) else {}
+    sql_generation_context = kwargs.get("sql_generation_context") if isinstance(
+        kwargs.get("sql_generation_context"), dict
+    ) else {}
+    table_schemas = sql_generation_context.get("table_schemas")
+    if not isinstance(table_schemas, list) or not table_schemas:
+        return {
+            "execution_strategy": "query_graph",
+            "query_type": "detail_query",
+            "selected_assets": [],
+        }
+
+    primary = table_schemas[0]
+    main_table = str(primary.get("table_name") or primary.get("name") or "").strip()
+    if not main_table:
+        return {
+            "execution_strategy": "query_graph",
+            "query_type": "detail_query",
+            "selected_assets": [],
+        }
+
+    fields = primary.get("fields") if isinstance(primary.get("fields"), list) else []
+    selected_assets = []
+    for field_info in fields[:8]:
+        if not isinstance(field_info, dict):
+            continue
+        column_name = str(field_info.get("column_name") or field_info.get("name") or "").strip()
+        if not column_name:
+            continue
+        display_name = str(field_info.get("display_name") or field_info.get("comment") or column_name)
+        selected_assets.append(
+            {
+                "asset_type": "field",
+                "asset_id": f"{main_table}.{column_name}",
+                "name": column_name,
+                "display_name": display_name,
+                "source": "direct_fallback",
+                "confidence": 0.8,
+                "metadata": {"table_name": main_table, "column_name": column_name},
+            }
+        )
+
+    return {
+        "execution_strategy": "query_graph",
+        "query_type": "detail_query",
+        "selected_assets": selected_assets,
+        "limit": min(
+            int(kwargs.get("query_constraints", {}).get("default_limit", 100) or 100), 500
+        ),
+    }

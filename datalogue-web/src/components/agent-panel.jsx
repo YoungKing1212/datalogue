@@ -25,7 +25,6 @@ const BUSINESS_STEP_NAMES = {
   entry_intent_classification: '入口判断',
   analysis_blueprint_execute: '分析蓝图执行',
   candidate_assets: '数据资产匹配',
-  query_plan: '查询规划',
   schema_recall: '数据范围确认',
   term_normalize_node: '术语标准化',
   semantic_asset_resolution_node: '语义资产解析',
@@ -36,23 +35,6 @@ const BUSINESS_STEP_NAMES = {
   sql_execute: '查询执行',
   sql_audit: '结果诊断',
   report_generator: '结果整理',
-};
-
-const QUERY_TYPE_LABELS = {
-  detail_query: '明细查询',
-  metric_query: '指标查询',
-  blueprint_query: '蓝图查询',
-  knowledge_qa: '知识问答',
-  ambiguous: '需要澄清',
-  unsupported: '暂不支持',
-};
-
-const EXECUTION_STRATEGY_LABELS = {
-  blueprint_execute: '直接执行蓝图',
-  blueprint_as_reference: '参考蓝图生成查询',
-  query_graph: '普通查询生成',
-  clarify: '需要补充信息',
-  reject: '无法处理',
 };
 
 function enumLabel(labels, value) {
@@ -83,33 +65,6 @@ function resultRowCount(sqlResult) {
   if (!sqlResult) return null;
   if (Array.isArray(sqlResult.rows)) return sqlResult.rows.length;
   return sqlResult.rows ?? sqlResult.rowCount ?? sqlResult.row_count ?? null;
-}
-
-function formatQueryPlanDetails(queryPlan) {
-  if (!queryPlan || typeof queryPlan !== 'object') return [];
-  const explanation = queryPlan.explanation || {};
-  const queryType = enumLabel(QUERY_TYPE_LABELS, queryPlan.query_type);
-  const executionStrategy = enumLabel(EXECUTION_STRATEGY_LABELS, queryPlan.execution_strategy);
-  const decisionFactors = Array.isArray(queryPlan.decision_factors)
-    ? queryPlan.decision_factors
-    : [];
-  const plannerWarnings = Array.isArray(queryPlan.planner_warnings)
-    ? queryPlan.planner_warnings
-    : [];
-  const governanceSuggestions = Array.isArray(queryPlan.governance_suggestions)
-    ? queryPlan.governance_suggestions
-    : [];
-  const firstFactor = decisionFactors.find((item) => item?.message)?.message;
-  const firstWarning = plannerWarnings.find((item) => item?.message)?.message;
-  const firstSuggestion = governanceSuggestions.find((item) => item?.message)?.message;
-  return [
-    queryType ? `查询类型：${queryType}` : null,
-    executionStrategy ? `执行策略：${executionStrategy}` : null,
-    explanation.summary ? `说明：${explanation.summary}` : null,
-    firstFactor ? `依据：${firstFactor}` : null,
-    firstWarning ? `提示：${firstWarning}` : null,
-    firstSuggestion ? `治理建议：${firstSuggestion}` : null,
-  ].filter(Boolean);
 }
 
 function formatCandidateAssetSummary(candidateAssets) {
@@ -154,8 +109,6 @@ function StepDetail({ step }) {
           turnEvent.event_type === 'continue_query' ? '本轮延续上下文' : '已完成任务理解',
           queryTaskCapsule?.standalone_question ? `问题：${queryTaskCapsule.standalone_question}` : null,
         ].filter(Boolean)
-      : step.node === 'query_plan' && step.query_plan
-      ? formatQueryPlanDetails(step.query_plan)
       : step.node === 'candidate_assets' && step.candidate_assets
       ? formatCandidateAssetSummary(step.candidate_assets)
       : [];

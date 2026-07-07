@@ -478,7 +478,6 @@ async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_ses
     assert client.triggered_chats[0]["session_id"] == "session-1"
     assert "统计合同总金额" in client.triggered_chats[0]["text"]
     assert '"dataset_id":12' in client.triggered_chats[0]["text"]
-    assert "严禁再次调用 datalogue_select_candidate_datasets" in client.triggered_chats[0]["text"]
     assert client.stream_requests == [{"session_id": "session-1", "agent_id": "agent-leader-1"}]
     assert [event.event_type for event in events] == ["message.delta", "message.completed"]
     assert events[-1].payload["summary"] == "统计完成"
@@ -531,12 +530,10 @@ async def test_agentscope_service_task_runner_treats_selected_dataset_as_confirm
 
     trigger_text = client.triggered_chats[0]["text"]
     assert "confirmed_question" in trigger_text
-    assert "datalogue_describe_dataset_capability" in trigger_text
-    assert "datalogue_recall_query_assets" in trigger_text
-    assert "datalogue_execute_query_plan" in trigger_text
-    assert "dataset_id 必须为 10" in trigger_text
-    assert "严禁调用 datalogue_query_dataset" in trigger_text
-    assert "严禁再次调用 datalogue_select_candidate_datasets" in trigger_text
+    assert "datalogue_prepare_query_context" in trigger_text
+    assert "datalogue_execute_query_plan_bundle" in trigger_text
+    assert "dataset_id=10" in trigger_text
+    assert "用户问题=查询杨凯2025年工作日志" in trigger_text
     assert "clarification_response" not in trigger_text
 
 
@@ -634,6 +631,38 @@ class WorkerProgressFakeClient(TeamDelegationFakeClient):
         yield {"event_type": "ReplyEndEvent", "payload": {"summary": "等待 worker 返回结果"}}
         yield {"type": "message", "payload": {"content": "查询完成：共找到 8 条日志。"}}
         yield {"event_type": "ReplyEndEvent", "payload": {"summary": "查询完成：共找到 8 条日志。"}}
+
+
+class WorkerPendingToolCallFakeClient(TeamDelegationFakeClient):
+    async def stream_session(self, session_id, *, agent_id=None):
+        self.stream_requests.append({"session_id": session_id, "agent_id": agent_id})
+        yield {
+            "event_type": "message.completed",
+            "payload": {
+                "summary": "BI Worker 准备读取数据集能力摘要。",
+                "tool_calls": [
+                    {
+                        "id": "call-l0",
+                        "name": "datalogue_describe_dataset_capability",
+                        "state": "pending",
+                    }
+                ],
+            },
+        }
+        yield {
+            "type": "ToolCallStartEvent",
+            "tool_call_name": "datalogue_describe_dataset_capability",
+            "payload": {"tool_call_name": "datalogue_describe_dataset_capability"},
+        }
+        yield {
+            "type": "ToolResultEndEvent",
+            "tool_call_name": "datalogue_describe_dataset_capability",
+            "payload": {"summary": "L0 已完成"},
+        }
+        yield {"type": "message", "payload": {"content": "查询完成：共找到 8 条日志。"}}
+        yield {"event_type": "ReplyEndEvent", "payload": {"summary": "查询完成：共找到 8 条日志。"}}
+        self.post_final_event_consumed = True
+        yield {"type": "message", "payload": {"content": "不应消费最终完成后的长连接事件"}}
 
 
 class WorkerCandidateFallbackFakeClient(TeamDelegationFakeClient):
@@ -790,6 +819,50 @@ async def test_agentscope_service_task_runner_uses_worker_candidate_fallback_as_
     assert events[-1].payload["datalogue_event_type"] == "dataset_candidates"
     assert events[-1].payload["requires_user_confirmation"] is True
     assert events[-1].payload["route_decision"]["candidates"][0]["dataset_id"] == 10
+    assert client.post_final_event_consumed is False
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_task_runner_keeps_stream_open_for_pending_worker_tool_call():
+    from app.core.config import Settings
+    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+
+    client = WorkerPendingToolCallFakeClient()
+    runner = AgentScopeServiceTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(
+            OPENAI_API_KEY="sk-test",
+            OPENAI_BASE_URL="https://example.test/v1",
+            LLM_MODEL="test-model",
+        ),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询杨凯2025年日志",
+        dataset_id=10,
+    )
+    task = SimpleNamespace(
+        task_id="task-pending-tool",
+        trace_id="trace-pending-tool",
+        thread_id="thread-pending-tool",
+        message_id="message-pending-tool",
+        selected_agent="agent_team_leader",
+    )
+
+    events = [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    event_types = [event.event_type for event in events]
+    assert event_types == ["tool.result", "tool.result", "message.delta", "message.completed"]
+    assert events[-1].payload["summary"] == "查询完成：共找到 8 条日志。"
     assert client.post_final_event_consumed is False
 
 

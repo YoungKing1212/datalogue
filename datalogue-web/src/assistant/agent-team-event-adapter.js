@@ -1,6 +1,6 @@
 // Agent Team envelope 到旧 ChatModelAdapter 内部事件的迁移适配。
 
-const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_rows?|schema|query_plan|repairpatch|blueprint/i;
+const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_rows?|schema|repairpatch|blueprint/i;
 const PROGRESSIVE_EVENT_LABELS = {
   bi_worker_l0_capability: '数据集能力',
   bi_worker_l1_assets: '数据资产匹配',
@@ -9,7 +9,7 @@ const PROGRESSIVE_EVENT_LABELS = {
   bi_worker_l4_validation: '查询支持度',
   bi_worker_repair_request: '查询修复',
 };
-const PROGRESSIVE_INTERNAL_TEXT_PATTERN = /[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*|\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|raw_error|raw_rows?|schema|query_plan|filters?|selects?|entities|relationships/i;
+const PROGRESSIVE_INTERNAL_TEXT_PATTERN = /[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*|\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|raw_error|raw_rows?|schema|filters?|selects?|entities|relationships/i;
 
 function safeText(value, fallback = '') {
   if (value == null) return fallback;
