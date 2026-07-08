@@ -374,3 +374,31 @@
 - 关键改动：根据当前代码梳理 `datalogue_execute_query_plan_bundle` 从 Agent Team / BI Worker 上游工具顺序，到 wrapper 契约校验、`BIWorkerQueryRuntime.execute_query_plan` L4/L5 分界、`QueryPlan -> legacy query_plan dict` 投影、`AgentScopeDatasetRuntimeBridge.run_direct_query` 状态机、BI Atomic Toolkit compile/execute/artifact、失败与 repair 分支、TeamSay/message.completed/Workbench 消费的完整链路。文档补充两张 Mermaid 图：主流程图和 Bridge/Atomic Toolkit 时序图，并给出排障日志关键词索引。
 - 验证方式：基于 CodeGraph 读取 `tools.py`、`bi_worker_runtime.py`、`bi_worker_contracts.py`、`runtime_bridge.py`、`atomic.py`、`bi_worker_context.py` 和 `agent_team.py` 相关片段；新增文档后执行人工通读，确认 Mermaid 代码块、章节编号和关键代码入口路径完整。
 - 残留风险：本轮是只读链路文档生成，未运行后端/前端测试，也未做真实页面 smoke；若后续代码继续调整 `AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE`、`BIWorkerQueryPlan` 契约或 Workbench 投影，需要同步更新本文档。
+
+### 2026-07-08 18:32 · datalogue_execute_query_plan_bundle 工具设计图与 Obsidian 同步
+
+- 涉及文件：`docs/architecture/datalogue_execute_query_plan_bundle完整链路.md`、`docs/architecture/assets/datalogue_execute_query_plan_bundle_internal_chain.png`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/工具链路文档/datalogue_execute_query_plan_bundle/datalogue_execute_query_plan_bundle 工具设计.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/工具链路文档/datalogue_execute_query_plan_bundle/assets/datalogue_execute_query_plan_bundle_internal_chain.png`、`.codex/project-memory.md`。
+- 关键改动：按用户要求把 imagegen 生成的聚焦版工具内部执行链路图复制进项目文档 assets 和 Obsidian 知识库；在项目 markdown 顶部插入图片，并在 Obsidian 的“数语/工具链路文档/datalogue_execute_query_plan_bundle”下新建单独工具设计文档。Obsidian 文档不再按完整对话链路叙述，而是围绕工具设计展开：设计定位、输入契约、wrapper 校验层、Runtime L4、L5 受控执行、Bridge direct query、Atomic Toolkit、输出契约、失败/repair 策略、安全边界和排障索引。
+- 验证方式：执行 `view_image` 确认选用的是仅包含 `datalogue_execute_query_plan_bundle` tool 内部链路的聚焦版图片；复制后检查 Obsidian 目录、项目 assets、markdown 图片引用和文档正文均存在。
+- 残留风险：图片是 imagegen 生成的 raster infographic，局部英文/符号排版可能不如手工 Mermaid 精准；后续若作为正式设计评审材料，建议基于当前文档再补一版可维护 Mermaid 或 draw.io 源文件。
+
+### 2026-07-08 18:38 · 其他 BI Worker 工具设计文档与工具族图
+
+- 涉及文件：`docs/architecture/BI Worker工具族设计.md`、`docs/architecture/assets/bi_worker_tool_family_design.png`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/工具链路文档/BI Worker 工具族设计.md`、Obsidian 下 `datalogue_select_candidate_datasets`、`datalogue_search_assets`、`datalogue_prepare_query_context`、`datalogue_request_schema_slice`、`datalogue_describe_tables`、`datalogue_repair_query_plan` 六个工具目录与设计文档、`.codex/project-memory.md`。
+- 关键改动：根据当前 `tools.py` 与 `BIWorkerContextProvider` 真实实现，为 execute bundle 之外的 6 个 BI Worker 工具生成单独工具设计文档；每篇按设计定位、所在位置、输入契约、输出契约、内部执行、设计重点、安全边界、失败/降级和排障入口组织。使用 Image Gen 生成一张“BI Worker 工具族设计图（execute_query_plan_bundle 之外）”，并复制到项目文档 assets 和 Obsidian `工具链路文档/assets`。
+- 验证方式：使用 CodeGraph 读取 `build_datalogue_search_assets_tool`、`build_datalogue_progressive_bi_worker_tools`、`build_datalogue_select_candidate_datasets_tool` 的真实签名和工具注册；使用 `view_image` 检查生成图聚焦工具族设计而非完整对话链路；检查项目与 Obsidian 文件路径均存在。
+- 残留风险：本轮是文档与图片整理，未运行后端/前端测试；Image Gen 生成的图片属于 raster 资产，若后续要做精确版本管理，建议追加 Mermaid/draw.io 源文件。
+
+### 2026-07-08 18:59 · BI Worker 单工具内部执行链路图补齐
+
+- 涉及文件：Obsidian 下 `datalogue_select_candidate_datasets`、`datalogue_search_assets`、`datalogue_prepare_query_context`、`datalogue_request_schema_slice`、`datalogue_describe_tables`、`datalogue_repair_query_plan` 六份工具设计文档、`.codex/project-memory.md`。
+- 关键改动：针对用户指出“单工具文档没有内部执行链路图”的问题，为 6 份 Obsidian 工具设计文档逐一补充 Mermaid `内部执行链路图`。每张图按当前代码真实执行顺序展开，包括入参校验、SessionLocal/ContextProvider 调用、payload 组装、失败/降级分支、安全边界和后续工具约束。
+- 验证方式：执行 `rg -n "内部执行链路图" .../工具链路文档` 确认 6 个目标工具文档均已新增该章节，并抽查 `datalogue_describe_tables`、`datalogue_prepare_query_context` 文档内容。
+- 残留风险：本轮补的是 Obsidian Mermaid 可维护图，不是 Image Gen raster 图；若后续需要对外汇报版视觉图，可基于这些 Mermaid 再单独生成正式图片。
+
+### 2026-07-08 19:12 · BI Worker 单工具 Image Gen 内部链路图补齐
+
+- 涉及文件：Obsidian 下 `datalogue_select_candidate_datasets/assets/datalogue_select_candidate_datasets_internal_chain.png`、`datalogue_search_assets/assets/datalogue_search_assets_internal_chain.png`、`datalogue_prepare_query_context/assets/datalogue_prepare_query_context_internal_chain.png`、`datalogue_request_schema_slice/assets/datalogue_request_schema_slice_internal_chain.png`、`datalogue_describe_tables/assets/datalogue_describe_tables_internal_chain.png`、`datalogue_repair_query_plan/assets/datalogue_repair_query_plan_internal_chain.png`，以及对应 6 份工具设计文档、`.codex/project-memory.md`。
+- 关键改动：按用户明确要求，为 6 个 BI Worker 单工具分别使用 Image Gen 生成 raster 内部执行链路图，并复制到每个工具目录的 `assets/` 下；每份工具设计文档的“内部执行链路图”章节现在优先展示 Image Gen 图片，原 Mermaid 图仅保留为后续可维护的结构化补充。
+- 验证方式：复制后检查 6 张 PNG 均存在；使用 `rg -n "Image Gen 生成的工具内部执行链路图|internal_chain.png" .../工具链路文档/datalogue_*/*.md` 确认 6 份文档均引用对应图片。
+- 残留风险：Image Gen 图片是位图资产，文字和节点排版不可像 Mermaid 一样直接版本化编辑；后续如果代码链路变化，需要重新生成图片或同步维护下方 Mermaid。

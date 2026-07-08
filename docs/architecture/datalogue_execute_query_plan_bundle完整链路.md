@@ -2,6 +2,10 @@
 
 本文基于当前代码梳理 `datalogue_execute_query_plan_bundle` 从 Agent Team 调用到 Workbench 展示的完整链路。它是 BI Worker 的 L4+L5 合并执行工具：先校验 QueryPlan 契约和渐进式上下文支持度，再把受控计划编译、执行并落 artifact。
 
+> 设计图主视角：只看 `datalogue_execute_query_plan_bundle` tool 内部，不展开用户对话、Leader 编排或前端 Workbench 全链路。
+
+![datalogue_execute_query_plan_bundle 工具内部执行链路](assets/datalogue_execute_query_plan_bundle_internal_chain.png)
+
 ## 1. 链路定位
 
 `datalogue_execute_query_plan_bundle` 定义在 `datalogue-api/app/agentscope_service/tools.py`，注册为 BI Worker 可调用的非只读 `FunctionTool`。上游提示词要求 BI Worker 在有 `dataset_id` 后按以下骨架工作：
