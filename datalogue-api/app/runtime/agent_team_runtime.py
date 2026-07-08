@@ -137,7 +137,9 @@ def _collect_reasoning_summary_step(
     """从稳定事件协议里提取可公开的推理摘要，不读取内部执行体。"""
 
     if event_type == "dataset.selected":
-        route_decision = payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
+        route_decision = (
+            payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
+        )
         dataset_name = route_decision.get("dataset_name") or payload.get("dataset_name")
         dataset_id = route_decision.get("dataset_id") or payload.get("dataset_id")
         label = dataset_name or (f"数据集 {dataset_id}" if dataset_id else "候选数据集")
@@ -196,9 +198,18 @@ def _has_reasoning_step(steps: list[dict[str, Any]], title: str) -> bool:
 def _iter_candidate_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """从候选数据集协议中提取最多 5 条可见候选项。"""
 
-    route_decision = payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
-    clarification = payload.get("clarification") if isinstance(payload.get("clarification"), dict) else {}
-    candidates = route_decision.get("candidates") or clarification.get("candidates") or payload.get("candidates") or []
+    route_decision = (
+        payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
+    )
+    clarification = (
+        payload.get("clarification") if isinstance(payload.get("clarification"), dict) else {}
+    )
+    candidates = (
+        route_decision.get("candidates")
+        or clarification.get("candidates")
+        or payload.get("candidates")
+        or []
+    )
     if not isinstance(candidates, list):
         return []
     return [candidate for candidate in candidates[:5] if isinstance(candidate, dict)]
@@ -208,13 +219,21 @@ def _format_dataset_candidate(candidate: dict[str, Any], index: int) -> str:
     dataset_id = candidate.get("dataset_id")
     dataset_name = candidate.get("dataset_name") or candidate.get("name") or "未命名数据集"
     reason = str(candidate.get("reason") or "").strip()
-    prefix = f"{index}. 数据集 {dataset_id}：{dataset_name}" if dataset_id is not None else f"{index}. {dataset_name}"
+    prefix = (
+        f"{index}. 数据集 {dataset_id}：{dataset_name}"
+        if dataset_id is not None
+        else f"{index}. {dataset_name}"
+    )
     return f"{prefix}（{reason}）" if reason else prefix
 
 
 def _requires_dataset_confirmation(payload: dict[str, Any]) -> bool:
-    route_decision = payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
-    clarification = payload.get("clarification") if isinstance(payload.get("clarification"), dict) else {}
+    route_decision = (
+        payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
+    )
+    clarification = (
+        payload.get("clarification") if isinstance(payload.get("clarification"), dict) else {}
+    )
     return (
         payload.get("datalogue_event_type") == "dataset_candidates"
         or route_decision.get("decision") in {"ambiguous", "no_match"}
@@ -226,7 +245,10 @@ def _dataset_confirmation_answer(payload: dict[str, Any]) -> str:
     candidates = _iter_candidate_items(payload)
     if not candidates:
         return "候选数据集不唯一，需要你确认后继续。请回复要查询的数据集编号，或补充查询范围。"
-    candidate_lines = "\n".join(_format_dataset_candidate(candidate, index) for index, candidate in enumerate(candidates, start=1))
+    candidate_lines = "\n".join(
+        _format_dataset_candidate(candidate, index)
+        for index, candidate in enumerate(candidates, start=1)
+    )
     return (
         "已筛选出可能匹配的候选数据集，需要你确认后继续。\n\n"
         f"{candidate_lines}\n\n"
@@ -235,8 +257,12 @@ def _dataset_confirmation_answer(payload: dict[str, Any]) -> str:
 
 
 def _artifact_completion_answer(payload: dict[str, Any], summary: str) -> str:
-    artifact_card = payload.get("artifact_card") if isinstance(payload.get("artifact_card"), dict) else {}
-    card_summary = str(artifact_card.get("summary_for_chat") or artifact_card.get("summary") or "").strip()
+    artifact_card = (
+        payload.get("artifact_card") if isinstance(payload.get("artifact_card"), dict) else {}
+    )
+    card_summary = str(
+        artifact_card.get("summary_for_chat") or artifact_card.get("summary") or ""
+    ).strip()
     for candidate in (card_summary, summary):
         if candidate and not _looks_like_internal_planning_text(candidate):
             return candidate
@@ -269,8 +295,7 @@ class AgentTeamTaskRunner(Protocol):
         request: AgentTeamTaskRequest,
         task: AgentTeamTask,
         user_msg: UserMsg,
-    ) -> AsyncIterator[Any]:
-        ...
+    ) -> AsyncIterator[Any]: ...
 
 
 class AgentTeamTaskRuntime:
@@ -310,7 +335,11 @@ class AgentTeamTaskRuntime:
             self.db,
             thread_id=session.thread_id,
             content_summary=request.question,
-            payload={"task_id": task.task_id, "question": request.question, "dataset_id": request.dataset_id},
+            payload={
+                "task_id": task.task_id,
+                "question": request.question,
+                "dataset_id": request.dataset_id,
+            },
         )
         assistant_message = create_running_assistant_message(
             self.db,
@@ -387,12 +416,16 @@ class AgentTeamTaskRuntime:
                     message_completed_emitted = True
                     accumulated_text = _visible_final_answer(envelope.payload, accumulated_text)
                     envelope.payload["summary"] = accumulated_text
-                    if _requires_dataset_confirmation(envelope.payload) and not envelope.payload.get("original_question"):
+                    if _requires_dataset_confirmation(
+                        envelope.payload
+                    ) and not envelope.payload.get("original_question"):
                         # 候选数据集确认后，前端需要用原始问题续跑；确认文案本身不能变成新的 BI 问题。
                         envelope.payload["original_question"] = request.question
                     envelope.legacy_payload = {"type": "final", "answer": accumulated_text}
                     final_artifact_ref = _artifact_ref_from_final_payload(envelope.payload)
-                    if final_artifact_ref and not _has_reasoning_step(reasoning_summary_steps, "生成结果"):
+                    if final_artifact_ref and not _has_reasoning_step(
+                        reasoning_summary_steps, "生成结果"
+                    ):
                         _append_reasoning_summary_step(
                             reasoning_summary_steps,
                             title="生成结果",
@@ -426,8 +459,18 @@ class AgentTeamTaskRuntime:
                         artifact_ref=envelope.payload.get("artifact_ref"),
                     )
                 if envelope.event_type in {"artifact.created", "message.completed"}:
-                    primary_artifact_ref = str(envelope.payload.get("artifact_ref") or primary_artifact_ref or "").strip() or None
-                    latest_checkpoint_ref = str(envelope.payload.get("checkpoint_ref") or latest_checkpoint_ref or "").strip() or None
+                    primary_artifact_ref = (
+                        str(
+                            envelope.payload.get("artifact_ref") or primary_artifact_ref or ""
+                        ).strip()
+                        or None
+                    )
+                    latest_checkpoint_ref = (
+                        str(
+                            envelope.payload.get("checkpoint_ref") or latest_checkpoint_ref or ""
+                        ).strip()
+                        or None
+                    )
                 log_lifecycle(
                     "agent_team.task.event",
                     task_id=task.task_id,
@@ -460,6 +503,23 @@ class AgentTeamTaskRuntime:
                     "checkpoint_ref": latest_checkpoint_ref,
                 },
             )
+            # 自动生成会话标题（在后台线程执行，不阻塞主链路）
+            if not getattr(task, "_title_generated", False):
+                try:
+                    from app.services.title_generator import maybe_auto_title_async
+
+                    maybe_auto_title_async(
+                        self.db,
+                        session.thread_id,
+                        request.question,
+                        final_answer,
+                        legacy_conversation_id=request.conversation_id,
+                    )
+                    task._title_generated = True  # type: ignore[attr-defined]
+                    self.db.add(task)
+                    self.db.commit()
+                except Exception:
+                    pass
             self._record_completion_refs(
                 thread_id=session.thread_id,
                 message_id=assistant_message.message_id,
@@ -474,7 +534,9 @@ class AgentTeamTaskRuntime:
                 "checkpoint_ref": latest_checkpoint_ref,
             }
             task.artifact_refs_json = _append_unique(task.artifact_refs_json, primary_artifact_ref)
-            task.checkpoint_refs_json = _append_unique(task.checkpoint_refs_json, latest_checkpoint_ref)
+            task.checkpoint_refs_json = _append_unique(
+                task.checkpoint_refs_json, latest_checkpoint_ref
+            )
             self.db.add(task)
             self.db.commit()
             log_lifecycle(
@@ -512,7 +574,11 @@ class AgentTeamTaskRuntime:
                         "summary": accumulated_text or "任务已完成。",
                         "reasoning_summary": reasoning_summary_steps[:6],
                         "timing": {
-                            "ttft_ms": round((first_delta_at - task_started_at) * 1000) if first_delta_at else 0,
+                            "ttft_ms": (
+                                round((first_delta_at - task_started_at) * 1000)
+                                if first_delta_at
+                                else 0
+                            ),
                             "total_duration_ms": round((time.time() - task_started_at) * 1000),
                             "token_count": len(accumulated_text),
                         },
@@ -600,7 +666,9 @@ class AgentTeamTaskRuntime:
             thread_id=thread_id,
             trace_id=trace_id,
             artifact_refs_json=[request.artifact_ref] if request.artifact_ref else [],
-            checkpoint_refs_json=[request.retry_checkpoint_ref] if request.retry_checkpoint_ref else [],
+            checkpoint_refs_json=(
+                [request.retry_checkpoint_ref] if request.retry_checkpoint_ref else []
+            ),
             request_payload_json=request.model_dump(),
         )
         self.db.add(task)

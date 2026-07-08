@@ -46,7 +46,9 @@ _FORBIDDEN_KEY_FRAGMENTS = (
     "table_name",
     "column_name",
 )
-_SQL_TEXT_RE = re.compile(r"\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b", re.IGNORECASE)
+_SQL_TEXT_RE = re.compile(
+    r"\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b", re.IGNORECASE
+)
 _INTERNAL_TEXT_RE = re.compile(
     r"(\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b)"
     r"|(\b(psycopg2|sqlalchemy|traceback|undefinedcolumn|undefinedtable|programmingerror|operationalerror)\b)"
@@ -124,7 +126,9 @@ def create_agentscope_session(
     if normalized is None or not normalized.startswith("as_"):
         raise ValueError("AGENTSCOPE_SESSION_REQUIRES_AS_THREAD")
 
-    existing = db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == normalized).one_or_none()
+    existing = (
+        db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == normalized).one_or_none()
+    )
     if existing:
         changed = False
         if legacy_conversation_id is not None and existing.legacy_conversation_id is None:
@@ -169,7 +173,9 @@ def append_user_message(
         role="user",
         status=AgentScopeMessageStatus.COMPLETED.value,
         content_summary=content_summary,
-        business_payload_json=_sanitize_business_payload(payload),  # mirror 层兜底阻断内部执行细节落库。
+        business_payload_json=_sanitize_business_payload(
+            payload
+        ),  # mirror 层兜底阻断内部执行细节落库。
         completed_at=_utcnow(),
     )
     db.add(message)
@@ -178,7 +184,9 @@ def append_user_message(
     return message
 
 
-def create_running_assistant_message(db: Session, *, thread_id: str, lease_seconds: int) -> AgentScopeMessage:
+def create_running_assistant_message(
+    db: Session, *, thread_id: str, lease_seconds: int
+) -> AgentScopeMessage:
     now = _utcnow()
     message = AgentScopeMessage(
         message_id=_message_id(),
@@ -234,7 +242,9 @@ def mark_message_failed(
     )
     message.business_payload_json = _sanitize_business_payload(payload)
     message.completed_at = _utcnow()
-    message.lease_expires_at = None  # 失败态只能通过 checkpoint/ref 受控 retry，不保留 running lease。
+    message.lease_expires_at = (
+        None  # 失败态只能通过 checkpoint/ref 受控 retry，不保留 running lease。
+    )
     db.commit()
     db.refresh(message)
     return message
@@ -274,7 +284,9 @@ def record_agentscope_event(
         event_type=event_type,
         task_id=task_id,
         trace_id=trace_id,
-        payload_json=_sanitize_business_payload(payload),  # event 是 Workbench 产品素材，字段级调试细节不应写入 user visibility。
+        payload_json=_sanitize_business_payload(
+            payload
+        ),  # event 是 Workbench 产品素材，字段级调试细节不应写入 user visibility。
         visibility=visibility,
     )
     db.add(event)
@@ -296,14 +308,20 @@ def record_agentscope_ref(
     existing = (
         db.query(AgentScopeRef)
         .filter(AgentScopeRef.thread_id == normalized_thread_id)
-        .filter(AgentScopeRef.message_id.is_(None) if message_id is None else AgentScopeRef.message_id == message_id)
+        .filter(
+            AgentScopeRef.message_id.is_(None)
+            if message_id is None
+            else AgentScopeRef.message_id == message_id
+        )
         .filter(AgentScopeRef.ref_type == ref_type)
         .filter(AgentScopeRef.ref_value == ref_value)
         .filter(AgentScopeRef.relation == relation)
         .one_or_none()
     )
     if existing is not None:
-        raise ValueError("AGENTSCOPE_REF_ALREADY_EXISTS")  # DB 唯一约束覆盖非空 message_id；None 场景由服务层兜底。
+        raise ValueError(
+            "AGENTSCOPE_REF_ALREADY_EXISTS"
+        )  # DB 唯一约束覆盖非空 message_id；None 场景由服务层兜底。
     ref = AgentScopeRef(
         thread_id=normalized_thread_id,
         message_id=message_id,
@@ -328,8 +346,20 @@ def find_expired_running_messages(db: Session, *, now: datetime) -> list[AgentSc
     )
 
 
+def update_session_title(db: Session, *, thread_id: str, title: str) -> None:
+    """更新 AgentScope 工作台会话标题。"""
+    session = (
+        db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == thread_id).one_or_none()
+    )
+    if session and (session.title is None or session.title == "" or len(session.title) <= 80):
+        session.title = title[:200]
+        db.commit()
+
+
 def _get_message(db: Session, message_id: str) -> AgentScopeMessage:
-    message = db.query(AgentScopeMessage).filter(AgentScopeMessage.message_id == message_id).one_or_none()
+    message = (
+        db.query(AgentScopeMessage).filter(AgentScopeMessage.message_id == message_id).one_or_none()
+    )
     if message is None:
         raise ValueError("AGENTSCOPE_MESSAGE_NOT_FOUND")
     return message
