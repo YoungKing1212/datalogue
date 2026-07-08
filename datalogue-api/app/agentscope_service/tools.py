@@ -493,6 +493,28 @@ def build_datalogue_progressive_bi_worker_tools(
             )
         return _tool_success_chunk(payload)
 
+    def datalogue_describe_tables(
+        dataset_id: int,
+        table_names: list[str],
+    ) -> ToolChunk:
+        """Describe specified tables with fields, comments, and top 3 sample values."""
+
+        # table_names 必填、必须为非空 list;fail-closed 返回错误 payload
+        if not isinstance(table_names, list) or not table_names:
+            return _tool_success_chunk(
+                {
+                    "status": "failed",
+                    "code": "TABLE_NAMES_REQUIRED",
+                    "message": "table_names 必须是非空 list,一次可传多张表。",
+                }
+            )
+        with SessionLocal() as db:
+            payload = BIWorkerContextProvider(db).describe_tables(
+                dataset_id=dataset_id,
+                table_names=table_names,
+            )
+        return _tool_success_chunk(payload)
+
     async def datalogue_execute_query_plan_bundle(
         dataset_id: int,
         confirmed_question: str,
@@ -592,7 +614,13 @@ def build_datalogue_progressive_bi_worker_tools(
         ),
         FunctionTool(
             datalogue_request_schema_slice,
-            description="BI Worker L2：按问题焦点返回受控 schema 切片，用于后续查询计划。",
+            description="BI Worker L2a:返回数据集全部表清单和跨表关系(含蓝图 SQL 解析的真实 join keys),字段详情走 datalogue_describe_tables。",
+            is_concurrency_safe=True,
+            is_read_only=True,
+        ),
+        FunctionTool(
+            datalogue_describe_tables,
+            description="BI Worker L2b:按 table_names 精确返回指定表的字段清单/注释/前 3 条样例值,一次可查多张表。",
             is_concurrency_safe=True,
             is_read_only=True,
         ),

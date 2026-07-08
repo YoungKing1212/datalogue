@@ -140,7 +140,20 @@ def test_l2_returns_relevant_schema_slice_without_raw_rows(db_session, employee_
 
     assert payload["datalogue_event_type"] == "bi_worker_l2_schema_slice"
     assert payload["entities"]
-    assert "employee_name" in payload_text
+    # 新契约:entities 只返回表清单元数据,不再暴露 fields 详情。
+    required_keys = {
+        "asset_ref",
+        "table",
+        "schema",
+        "description",
+        "row_count_approx",
+        "column_count",
+    }
+    for entity in payload["entities"]:
+        assert required_keys.issubset(
+            entity.keys()
+        ), f"实体应包含 {required_keys},实际:{set(entity.keys())}"
+        assert "fields" not in entity, "request_schema_slice 不应再返回 fields"
     assert "employee_work_log" in payload_text
     assert "raw_rows" not in payload_text
     assert "select " not in payload_text
@@ -152,18 +165,10 @@ def test_l2_returns_context_state_patch_for_worker_passthrough(db_session, emplo
     context = provider.request_schema_slice(employee_dataset.id, "按员工姓名查询工作日志")
     payload = context.model_dump()
 
-    assert payload["context_state_patch"]["asset_refs"] == [
-        "table:public.employee_work_log",
-        "table:public.employee_dim",
-    ]
-    assert "table:public.employee_work_log.log_date" in payload["context_state_patch"]["field_refs"]
-    assert "table:public.employee_dim.employee_name" in payload["context_state_patch"]["field_refs"]
-    assert payload["context_state_patch"]["relationship_refs"] == [
-        "dataset_selected:table:public.employee_work_log->table:public.employee_dim"
-    ]
-    assert payload["context_state_usage"] == (
-        "将 context_state_patch 合并进后续 L4/L5 的 context_state；不要从自然语言摘要手写 context_state。"
-    )
+    # 新契约:asset_refs 非空(全量表清单),field_refs 为空(fields 已剥离)。
+    assert payload["context_state_patch"]["asset_refs"], "asset_refs 应非空"
+    assert payload["context_state_patch"]["field_refs"] == []
+    assert payload["context_state_usage"], "context_state_usage 应非空"
 
 
 def test_l3_profiles_candidate_values_without_returning_rows(db_session, employee_dataset):
@@ -292,107 +297,6 @@ def _make_wide_table(
     db_session.add(DatasetSourceTable(dataset_id=dataset.id, source_table_id=table.id))
     db_session.flush()
     return table
-
-
-def test_l2_returns_exact_fields_when_focus_lists_column_names(db_session, sample_datasource):
-    """focus["fields"] 点名字段应精确返回，即使在 32 列以内的宽表中处于末端。"""
-
-    from app.models.dataset import AnalysisBlueprint  # noqa: F401  # 保持导入一致
-
-    dataset = SemanticDataset(
-        name="精确字段测试集",
-        datasource_id=sample_datasource.id,
-        tables_json={"tables": [{"name": "wide_table"}]},
-        description="用于验证 focus.fields 精确通道",
-        status="active",
-    )
-    db_session.add(dataset)
-    db_session.flush()
-
-    # 30 列，account 在第 20 位、deptcode 在第 25 位（1-based）
-    columns = [f"col_{i:02d}" for i in range(1, 31)]
-    columns[19] = "account"  # 第 20 列
-    columns[24] = "deptcode"  # 第 25 列
-    _make_wide_table(
-        db_session,
-        sample_datasource,
-        dataset,
-        schema_name="pm_tenant",
-        table_name="wide_table",
-        column_names=columns,
-        table_comment="精确字段宽表",
-    )
-    db_session.commit()
-    db_session.refresh(dataset)
-
-    provider = BIWorkerContextProvider(db_session)
-    context = provider.request_schema_slice(
-        dataset.id,
-        "查询数据",
-        focus={"fields": ["account", "deptcode"]},
-    )
-    payload = context.model_dump()
-
-    assert payload["entities"], "至少应返回一个实体"
-    fields = payload["entities"][0]["fields"]
-    field_names = {f["name"] for f in fields}
-    # 精确通道：只返回点名的列
-    assert field_names == {"account", "deptcode"}
-
-
-def test_l2_returns_up_to_32_columns_when_all_match(db_session, sample_datasource):
-    """字段上限从 8 提升到 32：20 列表全返回；40 列表被截到 32。"""
-
-    dataset = SemanticDataset(
-        name="宽表字段上限测试集",
-        datasource_id=sample_datasource.id,
-        tables_json={"tables": [{"name": "twenty_col"}, {"name": "forty_col"}]},
-        description="验证字段上限提升至 32",
-        status="active",
-    )
-    db_session.add(dataset)
-    db_session.flush()
-
-    # 20 列：都用 "keyword" 前缀，保证与 question 模糊匹配命中
-    twenty_cols = [f"keyword_col_{i:02d}" for i in range(1, 21)]
-    _make_wide_table(
-        db_session,
-        sample_datasource,
-        dataset,
-        schema_name="pm_tenant",
-        table_name="twenty_col",
-        column_names=twenty_cols,
-        table_comment="20 列宽表",
-        effective_desc="keyword 命中",
-        column_effective_desc="keyword",
-    )
-    # 40 列：同上
-    forty_cols = [f"keyword_col_{i:02d}" for i in range(1, 41)]
-    _make_wide_table(
-        db_session,
-        sample_datasource,
-        dataset,
-        schema_name="pm_tenant",
-        table_name="forty_col",
-        column_names=forty_cols,
-        table_comment="40 列宽表",
-        effective_desc="keyword 命中",
-        column_effective_desc="keyword",
-    )
-    db_session.commit()
-    db_session.refresh(dataset)
-
-    provider = BIWorkerContextProvider(db_session)
-    context = provider.request_schema_slice(dataset.id, "keyword 查询")
-    payload = context.model_dump()
-
-    entities_by_table = {e["table"]: e for e in payload["entities"]}
-    assert "twenty_col" in entities_by_table
-    assert "forty_col" in entities_by_table
-    # 20 列表全部命中：返回 20 条
-    assert len(entities_by_table["twenty_col"]["fields"]) == 20
-    # 40 列表被硬上限截断至 32
-    assert len(entities_by_table["forty_col"]["fields"]) == 32
 
 
 def test_l2_returns_blueprint_join_relationships_from_call_template(db_session, sample_datasource):
@@ -639,3 +543,250 @@ def test_l2_multi_join_and_inner_join(db_session, sample_datasource):
     assert left_rel["join_type"] == "left"
     assert left_rel["left_asset_ref"] == "table:pm_tenant.t1"
     assert left_rel["join_keys"] == [{"left_field": "x", "right_field": "y"}]
+
+
+# ============================================================
+# request_schema_slice 全量表清单 + describe_tables 精确点名详情。
+# ============================================================
+
+
+def test_l2_returns_all_tables_without_question_matching(db_session, sample_datasource):
+    """request_schema_slice 不再模糊过滤,应返回 dataset 全量表清单。"""
+
+    dataset = SemanticDataset(
+        name="全量表清单测试集",
+        datasource_id=sample_datasource.id,
+        tables_json={"tables": [{"name": f"tab_{i}"} for i in range(5)]},
+        description="用于验证全量返回",
+        status="active",
+    )
+    db_session.add(dataset)
+    db_session.flush()
+
+    for index in range(5):
+        _make_wide_table(
+            db_session,
+            sample_datasource,
+            dataset,
+            schema_name="pm_tenant",
+            table_name=f"tab_{index}",
+            column_names=["c1", "c2"],
+            table_comment=f"表 {index} 描述",
+        )
+    db_session.commit()
+    db_session.refresh(dataset)
+
+    provider = BIWorkerContextProvider(db_session)
+    context = provider.request_schema_slice(dataset.id, "完全不相关的内容")
+    payload = context.model_dump()
+
+    assert len(payload["entities"]) == 5, "应返回 dataset 全量 5 张表"
+    for entity in payload["entities"]:
+        assert "fields" not in entity, "新契约:entities 不再含 fields"
+
+
+def test_l2_entities_include_row_count_and_column_count(db_session, sample_datasource):
+    """entities 元素需暴露 row_count_approx 与 column_count 两个新增指标。"""
+
+    dataset = SemanticDataset(
+        name="行数列数元数据测试集",
+        datasource_id=sample_datasource.id,
+        tables_json={"tables": [{"name": "row_col_meta"}]},
+        description="验证 row_count_approx / column_count",
+        status="active",
+    )
+    db_session.add(dataset)
+    db_session.flush()
+
+    table = SourceTable(
+        datasource_id=sample_datasource.id,
+        schema_name="pm_tenant",
+        table_name="row_col_meta",
+        table_comment="行数列数元数据表",
+        row_count_approx=1234,
+    )
+    db_session.add(table)
+    db_session.flush()
+    for index, name in enumerate(("c1", "c2", "c3"), start=1):
+        db_session.add(
+            SourceColumn(
+                table_id=table.id,
+                column_name=name,
+                data_type="varchar",
+                ordinal_position=index,
+            )
+        )
+    db_session.add(DatasetSourceTable(dataset_id=dataset.id, source_table_id=table.id))
+    db_session.commit()
+    db_session.refresh(dataset)
+
+    provider = BIWorkerContextProvider(db_session)
+    context = provider.request_schema_slice(dataset.id, "任意问题")
+    payload = context.model_dump()
+
+    entity = payload["entities"][0]
+    assert entity["row_count_approx"] == 1234
+    assert entity["column_count"] == 3
+
+
+def test_describe_tables_returns_fields_with_sample_values(db_session, sample_datasource):
+    """describe_tables 精确点名返回字段清单和前 3 条样例值(字符串化)。"""
+
+    dataset = SemanticDataset(
+        name="样例值测试集",
+        datasource_id=sample_datasource.id,
+        tables_json={"tables": [{"name": "sample_table"}]},
+        description="验证 sample_values 前 3 条",
+        status="active",
+    )
+    db_session.add(dataset)
+    db_session.flush()
+
+    table = SourceTable(
+        datasource_id=sample_datasource.id,
+        schema_name="pm_tenant",
+        table_name="sample_table",
+        table_comment="样例值表",
+        row_count_approx=100,
+    )
+    db_session.add(table)
+    db_session.flush()
+    column_defs = [
+        ("col_a", None),
+        ("col_b", None),
+        ("col_c", None),
+        ("col_d", None),
+        ("col_with_samples", [1, 2, 3, 4, 5]),
+    ]
+    for index, (name, samples) in enumerate(column_defs, start=1):
+        db_session.add(
+            SourceColumn(
+                table_id=table.id,
+                column_name=name,
+                data_type="varchar",
+                ordinal_position=index,
+                sample_values=samples,
+            )
+        )
+    db_session.add(DatasetSourceTable(dataset_id=dataset.id, source_table_id=table.id))
+    db_session.commit()
+    db_session.refresh(dataset)
+
+    provider = BIWorkerContextProvider(db_session)
+    payload = provider.describe_tables(dataset.id, ["sample_table"])
+
+    assert payload["datalogue_event_type"] == "bi_worker_l2_table_detail"
+    entity = payload["entities"][0]
+    assert entity["status"] == "ok"
+    assert len(entity["fields"]) == 5
+    sample_field = next(f for f in entity["fields"] if f["name"] == "col_with_samples")
+    assert sample_field["sample_values"] == ["1", "2", "3"]
+    assert sample_field["sample_source"] == "metadata"
+
+
+def test_describe_tables_marks_unavailable_when_no_samples(db_session, sample_datasource):
+    """无 sample_values 时,sample_values 应为空列表并标记 sample_source=unavailable。"""
+
+    dataset = SemanticDataset(
+        name="无样例值测试集",
+        datasource_id=sample_datasource.id,
+        tables_json={"tables": [{"name": "empty_sample"}]},
+        description="验证无样例值降级",
+        status="active",
+    )
+    db_session.add(dataset)
+    db_session.flush()
+
+    table = SourceTable(
+        datasource_id=sample_datasource.id,
+        schema_name="pm_tenant",
+        table_name="empty_sample",
+        table_comment="无样例值表",
+    )
+    db_session.add(table)
+    db_session.flush()
+    db_session.add(
+        SourceColumn(
+            table_id=table.id,
+            column_name="col_none",
+            data_type="varchar",
+            ordinal_position=1,
+            sample_values=None,
+        )
+    )
+    db_session.add(DatasetSourceTable(dataset_id=dataset.id, source_table_id=table.id))
+    db_session.commit()
+    db_session.refresh(dataset)
+
+    provider = BIWorkerContextProvider(db_session)
+    payload = provider.describe_tables(dataset.id, ["empty_sample"])
+
+    field = payload["entities"][0]["fields"][0]
+    assert field["sample_values"] == []
+    assert field["sample_source"] == "unavailable"
+
+
+def test_describe_tables_returns_not_found_for_missing_table(db_session, sample_datasource):
+    """未包含在 dataset 内的表名应返回 status=not_found 占位实体。"""
+
+    dataset = SemanticDataset(
+        name="不存在表测试集",
+        datasource_id=sample_datasource.id,
+        tables_json={"tables": [{"name": "t1"}, {"name": "t2"}]},
+        description="验证 not_found 处理",
+        status="active",
+    )
+    db_session.add(dataset)
+    db_session.flush()
+
+    for name in ("t1", "t2"):
+        _make_wide_table(
+            db_session,
+            sample_datasource,
+            dataset,
+            schema_name="pm_tenant",
+            table_name=name,
+            column_names=["c"],
+        )
+    db_session.commit()
+    db_session.refresh(dataset)
+
+    provider = BIWorkerContextProvider(db_session)
+    payload = provider.describe_tables(dataset.id, ["t1", "not_exist_table"])
+
+    assert len(payload["entities"]) == 2
+    assert payload["entities"][0]["status"] == "ok"
+    assert payload["entities"][0]["table"] == "t1"
+    assert payload["entities"][1]["status"] == "not_found"
+    assert payload["entities"][1]["table"] == "not_exist_table"
+
+
+def test_describe_tables_supports_multi_table_batch(db_session, sample_datasource):
+    """多表点名应保持入参顺序返回。"""
+
+    dataset = SemanticDataset(
+        name="多表批量测试集",
+        datasource_id=sample_datasource.id,
+        tables_json={"tables": [{"name": "a"}, {"name": "b"}, {"name": "c"}]},
+        description="验证多表顺序",
+        status="active",
+    )
+    db_session.add(dataset)
+    db_session.flush()
+
+    for name in ("a", "b", "c"):
+        _make_wide_table(
+            db_session,
+            sample_datasource,
+            dataset,
+            schema_name="pm_tenant",
+            table_name=name,
+            column_names=["c"],
+        )
+    db_session.commit()
+    db_session.refresh(dataset)
+
+    provider = BIWorkerContextProvider(db_session)
+    payload = provider.describe_tables(dataset.id, ["a", "b", "c"])
+
+    assert [entity["table"] for entity in payload["entities"]] == ["a", "b", "c"]

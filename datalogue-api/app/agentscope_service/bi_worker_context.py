@@ -80,6 +80,25 @@ def _json_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _focus_field_names(focus: dict[str, Any] | None) -> set[str]:
+    """提取 L2 focus 中显式点名的字段名，兼容调试期多种入参 key。"""
+
+    if not isinstance(focus, dict):
+        return set()
+    names: set[str] = set()
+    for key in ("fields", "missing_fields", "target_fields"):
+        raw_items = focus.get(key)
+        if not isinstance(raw_items, list):
+            continue
+        for item in raw_items:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            # 支持 "table.column" / "schema.table.column"；L2 精确通道只按列名匹配。
+            names.add(text.split(".")[-1].lower())
+    return names
+
+
 def _safe_parse_sql(sql: str) -> exp.Expression | None:
     """依次尝试 mysql/sqlite/postgres 方言解析，全部失败返回 None。"""
 
@@ -323,38 +342,26 @@ class BIWorkerContextProvider:
     def request_schema_slice(
         self,
         dataset_id: int,
-        question: str,
+        question: str | None = None,
         focus: dict[str, Any] | None = None,
     ) -> SchemaSliceContext:
+        """L2 表清单通道：只返回 dataset 内全部表 + 关系，不再返回 fields。
+
+        本轮把 L2 拆成两个正交工具：
+        - request_schema_slice：给 LLM 一个稳定的“表目录”视图，避免后端猜表；
+        - describe_tables：由 LLM 点名后按需拉取字段详情/样例值。
+
+        为保证外部签名兼容，仍接受 question/focus，但内部一律忽略。
+        """
+
+        # question/focus 已废弃，显式丢弃以让静态检查/调试期一眼看出不再使用。
+        del question, focus
+
         dataset = self._get_dataset(dataset_id)
-        focus = focus or {}
-        tables = self._matched_tables(dataset, question, focus)
-        # focus["fields"] 是精确通道：LLM 点名要的列按名称精确返回，
-        # 不做模糊匹配、不受 32 列硬上限截断（但仍受表实际列数上限）。
-        raw_focus_fields = focus.get("fields") if isinstance(focus, dict) else None
-        focus_field_names: set[str] = set()
-        if isinstance(raw_focus_fields, list):
-            for item in raw_focus_fields:
-                if isinstance(item, str) and item.strip():
-                    focus_field_names.add(item.strip().lower())
-        entities = []
+        # 直接列全量物理表，不做模糊过滤：让 LLM 自己按点名走 describe_tables。
+        tables = self._source_tables(dataset)
+        entities: list[dict[str, Any]] = []
         for table in tables:
-            columns = self._matched_columns(table, question, focus)
-            if not columns:
-                columns = list(table.columns[: min(len(table.columns), 5)])
-            # L2 允许暴露相关物理表/字段名，但只返回切片，不返回完整建表语句或数据内容。
-            # 硬编码上限从 8 提升到 32：旧上限会把蓝图 SQL 依赖的 join key 列挤掉，
-            # 导致后续 QueryPlan 拿不到真实的关联字段。仍受表实际列数上限约束。
-            sliced_columns = list(columns[:32])
-            if focus_field_names:
-                # focus 精确命中：把未在 sliced_columns 中的点名列补齐，
-                # 不受 32 列上限约束，但仅限于该表实际存在的物理列。
-                existing_names = {col.column_name.lower() for col in sliced_columns}
-                for column in table.columns:
-                    name_lower = column.column_name.lower()
-                    if name_lower in focus_field_names and name_lower not in existing_names:
-                        sliced_columns.append(column)
-                        existing_names.add(name_lower)
             entities.append(
                 {
                     "asset_ref": f"table:{table.schema_name}.{table.table_name}",
@@ -367,23 +374,9 @@ class BIWorkerContextProvider:
                         table.table_comment,
                         table.business_desc,
                     ),
-                    "fields": [
-                        {
-                            "name": column.column_name,
-                            "data_type": column.data_type,
-                            "description": _first_text(
-                                column.effective_desc,
-                                column.user_description,
-                                column.ai_description,
-                                column.column_comment,
-                                column.business_desc,
-                            ),
-                            "semantic_role": column.user_semantic_role
-                            or column.ai_semantic_role
-                            or column.semantic_role,
-                        }
-                        for column in sliced_columns
-                    ],
+                    # 让 LLM 在无字段视图下也能粗略评估表规模，用于决定是否 describe。
+                    "row_count_approx": table.row_count_approx,
+                    "column_count": len(table.columns),
                 }
             )
 
@@ -392,12 +385,97 @@ class BIWorkerContextProvider:
             dataset_id=dataset.id,
             entities=entities,
             relationships=relationships,
-            # L2 已经拿到实体、字段和关系 ref，这里同步生成机器可合并状态，
-            # 避免 Worker 从自然语言摘要反推 context_state 时写错结构。
+            # entities 里没有 fields，_context_state_patch 会派生出空 field_refs，
+            # 待 describe_tables 阶段再补齐真实的 field_refs。
             context_state_patch=self._context_state_patch(entities, relationships),
-            context_state_usage="将 context_state_patch 合并进后续 L4/L5 的 context_state；不要从自然语言摘要手写 context_state。",
-            summary=f"已返回 {len(entities)} 个实体的相关 schema 切片。",
+            context_state_usage=(
+                "将 context_state_patch 合并进后续 L4/L5 的 context_state；"
+                "需要字段详情/样例值时，调用 datalogue_describe_tables 按表名点选。"
+            ),
+            summary=f"数据集内共 {len(entities)} 张表，已列出全部表和关系。",
         )
+
+    def describe_tables(self, dataset_id: int, table_names: list[str]) -> dict[str, Any]:
+        """按点名返回 dataset 内多张表的字段详情/注释/样例值。
+
+        - table_names 中不存在的表返回 status="not_found" 占位，不影响其他表；
+        - 每张表所有列全部返回，不截断；样例值仅取前 3 条。
+        """
+
+        dataset = self._get_dataset(dataset_id)
+        # dataset 内表名（小写）→ SourceTable 映射，保证按名查找 O(1)。
+        all_tables = {table.table_name.lower(): table for table in self._source_tables(dataset)}
+        entities: list[dict[str, Any]] = []
+        for raw_name in table_names or []:
+            name = str(raw_name).strip()
+            if not name:
+                # 跳过空字符串输入，不算错误。
+                continue
+            table = all_tables.get(name.lower())
+            if table is None:
+                # 表不存在：返回 not_found 占位，让 LLM 感知未命中，其他表照常返回。
+                entities.append(
+                    {
+                        "asset_ref": f"table:unknown.{name}",
+                        "table": name,
+                        "status": "not_found",
+                        "reason": "table not in dataset",
+                    }
+                )
+                continue
+            entities.append(self._describe_table(table))
+        return {
+            "datalogue_event_type": "bi_worker_l2_table_detail",
+            "dataset_id": dataset.id,
+            "entities": entities,
+            "summary": f"已返回 {len(entities)} 张表的字段详情。",
+        }
+
+    def _describe_table(self, table: SourceTable) -> dict[str, Any]:
+        """把单张 SourceTable 转换为 describe_tables 的字段详情结构。"""
+
+        fields: list[dict[str, Any]] = []
+        for column in table.columns:
+            # 元数据同步阶段已把样例值写入 SourceColumn.sample_values（JSON list），
+            # 这里只做类型收敛并截取前 3 条，避免把大 list 灌进 LLM 上下文。
+            raw_samples = _json_list(column.sample_values)
+            sample_values = [str(value) for value in raw_samples[:3]]
+            fields.append(
+                {
+                    "name": column.column_name,
+                    "data_type": column.data_type,
+                    "description": _first_text(
+                        column.effective_desc,
+                        column.user_description,
+                        column.ai_description,
+                        column.column_comment,
+                        column.business_desc,
+                    ),
+                    "semantic_role": (
+                        column.user_semantic_role or column.ai_semantic_role or column.semantic_role
+                    ),
+                    "sample_values": sample_values,
+                    # metadata=元数据已采集；unavailable=元数据侧无样例可用，
+                    # 让 LLM 知道“空样例”是数据缺失而不是被人为截断。
+                    "sample_source": "metadata" if raw_samples else "unavailable",
+                }
+            )
+        return {
+            "asset_ref": f"table:{table.schema_name}.{table.table_name}",
+            "table": table.table_name,
+            "schema": table.schema_name,
+            "description": _first_text(
+                table.effective_desc,
+                table.user_description,
+                table.ai_description,
+                table.table_comment,
+                table.business_desc,
+            ),
+            "row_count_approx": table.row_count_approx,
+            "column_count": len(table.columns),
+            "fields": fields,
+            "status": "ok",
+        }
 
     def profile_candidate_values(
         self,
@@ -722,11 +800,10 @@ class BIWorkerContextProvider:
         question: str,
         focus: dict[str, Any],
     ) -> list[SourceColumn]:
-        # 精确通道：LLM 通过 focus["fields"] 点名要的列，直接按名称返回，
-        # 不做模糊匹配，也不受后续 columns[:N] 截断影响（仍受表实际列数上限）。
-        explicit_fields = focus.get("fields") if isinstance(focus, dict) else None
-        if isinstance(explicit_fields, list) and explicit_fields:
-            wanted = {str(field).strip().lower() for field in explicit_fields if field}
+        # 精确通道：兼容 fields/missing_fields/target_fields。字段可写成 "table.column"，
+        # 匹配时只取最后一段列名，保证蓝图输出字段补切片稳定命中。
+        wanted = _focus_field_names(focus)
+        if wanted:
             exact = [
                 column
                 for column in table.columns
@@ -735,7 +812,11 @@ class BIWorkerContextProvider:
             if exact:
                 return exact
         # 兜底：保留原模糊匹配，让不显式点名字段的 focus（tables/relationships/reason）依然能命中。
-        focus_text = " ".join(str(value) for key, value in focus.items() if key != "fields")
+        focus_text = " ".join(
+            str(value)
+            for key, value in focus.items()
+            if key not in {"fields", "missing_fields", "target_fields"}
+        )
         matched = []
         for column in table.columns:
             if _matches(
@@ -827,7 +908,12 @@ class BIWorkerContextProvider:
     def _context_state_patch(
         self, entities: list[dict[str, Any]], relationships: list[dict[str, Any]]
     ) -> dict[str, Any]:
-        """把 L2 schema 切片转换成 ProgressiveContextState 可直接合并的安全 ref 集合。"""
+        """把 L2 schema 切片转换成 ProgressiveContextState 可直接合并的安全 ref 集合。
+
+        - entities 来自 request_schema_slice 时 fields 缺席，field_refs 会为空；
+        - describe_tables 侧的 entities 才会派生 field_refs。
+        遍历 ``entity.get("fields") or []`` 已经天然 fail-safe，无需额外分支。
+        """
 
         field_refs: list[str] = []
         for entity in entities:

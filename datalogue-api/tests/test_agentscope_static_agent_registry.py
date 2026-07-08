@@ -121,13 +121,16 @@ async def test_extra_agent_tools_registers_progressive_tools_without_legacy_data
             return SimpleNamespace(source="team", data=SimpleNamespace(name="bi-worker"))
 
     factory = datalogue_tools.build_datalogue_extra_agent_tools(storage=FakeStorage())
-    registered_tools = await factory(user_id="user-1", agent_id="agent-created-by-agentcreate", session_id="session-1")
+    registered_tools = await factory(
+        user_id="user-1", agent_id="agent-created-by-agentcreate", session_id="session-1"
+    )
 
     assert [tool.name for tool in registered_tools] == [
         "datalogue_search_assets",
         "datalogue_select_candidate_datasets",
         "datalogue_prepare_query_context",
         "datalogue_request_schema_slice",
+        "datalogue_describe_tables",
         "datalogue_execute_query_plan_bundle",
         "datalogue_repair_query_plan",
     ]
@@ -177,9 +180,7 @@ def test_prompt_and_tool_boundary_forbid_private_tokens():
         "AgentScopeBIHandoffAdapter",
     ):
         assert forbidden not in source
-    for expected in (
-        "BIWorkerQueryRuntime",
-    ):
+    for expected in ("BIWorkerQueryRuntime",):
         assert expected in source
 
 

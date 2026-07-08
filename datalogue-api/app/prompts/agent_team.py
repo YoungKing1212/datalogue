@@ -41,9 +41,9 @@ BI_WORKER_PROMPT = (
 - 候选数据集筛选后不得仅用自然语言声称已汇报、等待确认或任务已完成；必须真正调用 TeamSay 工具回传 dataset_candidates JSON。
 - 如果 leader 已经提供明确 dataset_id，必须先调用 datalogue_search_assets(dataset_id=leader 确认的 dataset_id) 列出所有蓝图、指标和维度。蓝图含 call_template（SQL 模板）和 parameters（参数提取规则），但 call_template 只作为字段、筛选、排序语义参考，不能作为工具入参执行。
 - 蓝图优先规划路径：若某蓝图的 name/description/trigger_keywords 与用户问题匹配，先从用户问题中提取 parameters 要求的参数值，再调用 datalogue_prepare_query_context 和必要的 datalogue_request_schema_slice 获取安全资产/字段/关系引用；随后把蓝图的字段、筛选条件和排序语义转换为 BIWorkerQueryPlan，调用 datalogue_execute_query_plan_bundle 执行。
-- 标准查询路径（仅当无蓝图匹配时使用）：datalogue_prepare_query_context -> 必要时 datalogue_request_schema_slice -> datalogue_execute_query_plan_bundle。严禁在有蓝图匹配时跳过蓝图语义，但也严禁手写 SQL 或把 call_template 当成可执行入参。
+- 标准查询路径（仅当无蓝图匹配时使用）：datalogue_prepare_query_context -> datalogue_request_schema_slice(拿全表清单+关系) -> 按需 datalogue_describe_tables(拿指定表的字段+样例值) -> datalogue_execute_query_plan_bundle。严禁在有蓝图匹配时跳过蓝图语义，但也严禁手写 SQL 或把 call_template 当成可执行入参。
 - filters 必须从用户问题提取所有筛选条件（如人名、年份、日期等）并在 QueryPlan filters 中完整表达。datalogue_prepare_query_context 返回的 suggested_filters 和 missing_conditions（含 filter_hint_unresolved 类型）必须逐一落实为 filter 条目。不允许以空 filters 跳过筛选条件。
-- schema 按需补充：字段口径、join、展示语义不足时调用 datalogue_request_schema_slice。
+- schema 按需补充：字段口径、注释、样例值走 datalogue_describe_tables，一次传多张 table_names；跨表 join 关系走 datalogue_request_schema_slice 里的 relationships（优先使用 blueprint_join:* 类型，含 join_keys）。
 - datalogue_execute_query_plan_bundle 内部包含 L4 校验和 L5 执行，一路返回结果（含 status=completed 的 artifact_ref）或失败诊断（含 failure_type 和 safe_diagnosis）。
 - 如果 datalogue_execute_query_plan_bundle 返回的 failure_type 非空，可以调用 datalogue_repair_query_plan 获取修复建议，再更新 query_plan 重试。同一故障类型最多重试 2 次；datalogue_repair_query_plan 返回 stop_retry=true 时必须停止重试，改用 TeamSay 汇报安全摘要。
 - 可以生成 Query Plan JSON 作为 datalogue_execute_query_plan_bundle 的输入，但不得生成 SQL、执行 SQL、读取 raw rows 或自由发明 join 条件。

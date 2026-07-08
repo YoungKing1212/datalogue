@@ -73,6 +73,7 @@ async def test_extra_agent_tools_returns_dataset_tool_for_team_worker_only():
         "datalogue_select_candidate_datasets",
         "datalogue_prepare_query_context",
         "datalogue_request_schema_slice",
+        "datalogue_describe_tables",
         "datalogue_execute_query_plan_bundle",
         "datalogue_repair_query_plan",
     ]
@@ -111,6 +112,7 @@ def test_bi_worker_progressive_tools_are_registered_for_team_worker():
     assert names == [
         "datalogue_prepare_query_context",
         "datalogue_request_schema_slice",
+        "datalogue_describe_tables",
         "datalogue_execute_query_plan_bundle",
         "datalogue_repair_query_plan",
     ]
@@ -665,3 +667,35 @@ async def test_execute_query_plan_bundle_accepts_join_keys_field():
         assert "completed" in payload_text
     finally:
         BIWorkerQueryRuntime.execute_query_plan = original  # type: ignore[assignment]
+
+
+@pytest.mark.asyncio
+async def test_describe_tables_tool_rejects_empty_table_names():
+    """describe_tables 工具要求 table_names 为非空 list,否则拒绝并返回 code。"""
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+    describe_tool = next(tool for tool in tools if tool.name == "datalogue_describe_tables")
+
+    result_chunk = await describe_tool(dataset_id=1, table_names=[])
+    payload = json.loads(result_chunk.content[0].text)
+    assert payload["status"] == "failed"
+    assert payload["code"] == "TABLE_NAMES_REQUIRED"
+
+    # 非 list 类型也应被拒绝,防止 LLM 传入单字符串。
+    result_chunk = await describe_tool(dataset_id=1, table_names="not_a_list")
+    payload = json.loads(result_chunk.content[0].text)
+    assert payload["code"] == "TABLE_NAMES_REQUIRED"
+
+
+def test_progressive_bi_worker_tools_include_describe_tables():
+    """describe_tables 工具应注册并紧跟 request_schema_slice 之后。"""
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+    names = [tool.name for tool in tools]
+
+    assert "datalogue_describe_tables" in names
+    idx_slice = names.index("datalogue_request_schema_slice")
+    idx_describe = names.index("datalogue_describe_tables")
+    assert idx_describe == idx_slice + 1

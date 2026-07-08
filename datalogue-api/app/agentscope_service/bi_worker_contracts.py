@@ -173,6 +173,15 @@ class SchemaSliceContext(StrictModel):
     summary: str
 
 
+class TableDetailContext(StrictModel):
+    """L2b describe_tables 工具的返回契约:精确点名表的字段/样例详情。"""
+
+    datalogue_event_type: Literal["bi_worker_l2_table_detail"] = "bi_worker_l2_table_detail"
+    dataset_id: int
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str
+
+
 class ValueProfileContext(StrictModel):
     datalogue_event_type: Literal["bi_worker_l3_value_profile"] = "bi_worker_l3_value_profile"
     dataset_id: int
