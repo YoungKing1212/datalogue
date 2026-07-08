@@ -388,7 +388,9 @@ async def test_bi_worker_raw_debug_log_requires_debug_flag(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug_level(monkeypatch, caplog):
+async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug_level(
+    monkeypatch, caplog
+):
     from agentscope.event import (
         ReplyStartEvent,
         TextBlockDeltaEvent,
@@ -468,7 +470,9 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
             tool_call_id="call-1",
             delta='{"status":"completed","rows":[{"name":"原始出参"}]}',
         )
-        yield ToolResultEndEvent(reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS)
+        yield ToolResultEndEvent(
+            reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS
+        )
 
     with caplog.at_level(logging.DEBUG, logger="app.agentscope_service.worker_logging"):
         async for _event in middleware.on_reply(
@@ -483,7 +487,9 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
     assert "[agentscope.bi_worker.raw_tool_io]" not in logs
     assert "[agentscope.bi_worker.raw_blocks]" not in logs
     assert "[agentscope.bi_worker.raw_delta]" not in logs
-    raw_line = next(line for line in logs.splitlines() if "[agentscope.bi_worker.raw_debug]" in line)
+    raw_line = next(
+        line for line in logs.splitlines() if "[agentscope.bi_worker.raw_debug]" in line
+    )
     assert '"delta":' not in logs
     assert '"timeline"' in raw_line
     assert '"step": 1' in raw_line
@@ -509,7 +515,12 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
 
 @pytest.mark.asyncio
 async def test_leader_raw_debug_log_prints_thinking_when_debug_enabled(monkeypatch, caplog):
-    from agentscope.event import ReplyStartEvent, ThinkingBlockDeltaEvent, ThinkingBlockEndEvent, ThinkingBlockStartEvent
+    from agentscope.event import (
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+    )
 
     from app.agentscope_service.worker_logging import LeaderRawDebugMiddleware
 
@@ -518,7 +529,9 @@ async def test_leader_raw_debug_log_prints_thinking_when_debug_enabled(monkeypat
     agent = SimpleNamespace(name="Datalogue Agent Team Leader")
 
     async def next_handler(**_kwargs):
-        yield ReplyStartEvent(session_id="session-leader-1", reply_id="reply-leader-1", name="leader")
+        yield ReplyStartEvent(
+            session_id="session-leader-1", reply_id="reply-leader-1", name="leader"
+        )
         yield ThinkingBlockStartEvent(reply_id="reply-leader-1", block_id="think-leader-1")
         yield ThinkingBlockDeltaEvent(
             reply_id="reply-leader-1",
@@ -554,7 +567,9 @@ def test_raw_debug_blocks_outputs_timeline_in_msg_content_order():
             SimpleNamespace(type="text", text="最终回复文本"),
             SimpleNamespace(type="tool_call", name="query_db", input='{"sql":"SELECT 1"}'),
             SimpleNamespace(
-                type="tool_result", name="query_db", state="success",
+                type="tool_result",
+                name="query_db",
+                state="success",
                 output='{"rows": [{"a": 1}]}',
             ),
         ]
@@ -564,10 +579,16 @@ def test_raw_debug_blocks_outputs_timeline_in_msg_content_order():
     assert timeline[0] == {"step": 1, "type": "thinking", "thinking": "第一步思考"}
     assert timeline[1] == {"step": 2, "type": "text", "text": "最终回复文本"}
     assert timeline[2] == {
-        "step": 3, "type": "tool_call", "tool_name": "query_db", "input": '{"sql":"SELECT 1"}',
+        "step": 3,
+        "type": "tool_call",
+        "tool_name": "query_db",
+        "input": '{"sql":"SELECT 1"}',
     }
     assert timeline[3] == {
-        "step": 4, "type": "tool_result", "tool_name": "query_db", "state": "success",
+        "step": 4,
+        "type": "tool_result",
+        "tool_name": "query_db",
+        "state": "success",
         "output": '{"rows": [{"a": 1}]}',
     }
 
@@ -623,8 +644,12 @@ async def test_bi_worker_reply_blocks_log_safe_tool_result_and_thinking_path(mon
             tool_call_id="call-1",
             tool_call_name="datalogue_execute_query_plan",
         )
-        yield ToolResultTextDeltaEvent(reply_id="reply-1", tool_call_id="call-1", delta=safe_tool_result)
-        yield ToolResultEndEvent(reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS)
+        yield ToolResultTextDeltaEvent(
+            reply_id="reply-1", tool_call_id="call-1", delta=safe_tool_result
+        )
+        yield ToolResultEndEvent(
+            reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS
+        )
         yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
 
     with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
@@ -640,10 +665,13 @@ async def test_bi_worker_reply_blocks_log_safe_tool_result_and_thinking_path(mon
     assert '"thinking_path":' in logs
     assert '"content_length":' in logs
     assert '"tool_results":' in logs
-# removed: tool_name may not appear for progressive tools in log output
+    # removed: tool_name may not appear for progressive tools in log output
     assert '"result_ref": "artifact:result-1"' in logs
     assert '"row_count": 5' in logs
-    assert '"primary_ref": {"label": "结果表", "ref": "artifact:result-1", "ref_type": "query_result"}' in logs
+    assert (
+        '"primary_ref": {"label": "结果表", "ref": "artifact:result-1", "ref_type": "query_result"}'
+        in logs
+    )
     assert "先分析用户问题" not in logs
     assert "SELECT" not in logs
     assert "users" not in logs
@@ -999,3 +1027,135 @@ def test_otel_span_log_payload_only_keeps_usage_and_drops_model_messages(monkeyp
     assert "output.messages" not in str(payload)
     assert "input.messages" not in str(payload)
     assert "tool_calls" not in str(payload)
+
+
+# ---- BI worker timeline Redis 临时调试缓存（TODO 后期删除）----
+
+
+@pytest.mark.asyncio
+async def test_cache_bi_worker_timeline_stores_when_debug_enabled(monkeypatch):
+    """raw debug 开启时，BI worker reply 的 timeline 被暂存 Redis。"""
+    import json
+    from types import SimpleNamespace
+
+    from app.agentscope_service.worker_logging import _cache_bi_worker_timeline_if_enabled
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+
+    class _Redis:
+        def __init__(self):
+            self.set_calls = []
+
+        async def set(self, key, value, ex=None):
+            self.set_calls.append((key, value, ex))
+
+        async def get(self, key):
+            return None
+
+    fake_redis = _Redis()
+    storage = SimpleNamespace(get_client=lambda: fake_redis)
+    msg = SimpleNamespace(
+        id="reply-cache-1",
+        content=[
+            SimpleNamespace(type="thinking", thinking="原始思考链"),
+            SimpleNamespace(type="text", text="最终回答"),
+        ],
+    )
+
+    await _cache_bi_worker_timeline_if_enabled(
+        storage=storage,
+        worker_context={"session_id": "session-bi-1"},
+        msg=msg,
+    )
+
+    assert len(fake_redis.set_calls) == 1
+    key, value, ex = fake_redis.set_calls[0]
+    assert key == "datalogue:bi_worker_timeline:session-bi-1:reply-cache-1"
+    assert ex == 3600
+    payload = json.loads(value)
+    assert payload["worker_session_id"] == "session-bi-1"
+    assert payload["reply_id"] == "reply-cache-1"
+    assert payload["timeline"][0]["type"] == "thinking"
+    assert payload["timeline"][1]["type"] == "text"
+
+
+@pytest.mark.asyncio
+async def test_cache_bi_worker_timeline_skips_when_debug_disabled(monkeypatch):
+    """raw debug 关闭时，不向 Redis 写入 timeline。"""
+    from types import SimpleNamespace
+
+    from app.agentscope_service.worker_logging import _cache_bi_worker_timeline_if_enabled
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
+
+    class _Redis:
+        def __init__(self):
+            self.set_calls = []
+
+        async def set(self, key, value, ex=None):
+            self.set_calls.append((key, value, ex))
+
+        async def get(self, key):
+            return None
+
+    fake_redis = _Redis()
+    storage = SimpleNamespace(get_client=lambda: fake_redis)
+    msg = SimpleNamespace(id="reply-1", content=[SimpleNamespace(type="text", text="x")])
+
+    await _cache_bi_worker_timeline_if_enabled(
+        storage=storage,
+        worker_context={"session_id": "session-bi-1"},
+        msg=msg,
+    )
+
+    assert fake_redis.set_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cache_bi_worker_timeline_skips_when_storage_none(monkeypatch):
+    """storage 为 None 时（worker 未注入 storage），安全跳过不抛异常。"""
+    from types import SimpleNamespace
+
+    from app.agentscope_service.worker_logging import _cache_bi_worker_timeline_if_enabled
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+    msg = SimpleNamespace(id="reply-1", content=[SimpleNamespace(type="text", text="x")])
+
+    await _cache_bi_worker_timeline_if_enabled(
+        storage=None,
+        worker_context={"session_id": "session-bi-1"},
+        msg=msg,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_bi_worker_timeline_skips_when_msg_has_no_timeline(monkeypatch):
+    """msg 无可识别 content 块时，timeline 为空，不写入 Redis。"""
+    from types import SimpleNamespace
+
+    from app.agentscope_service.worker_logging import _cache_bi_worker_timeline_if_enabled
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+
+    class _Redis:
+        def __init__(self):
+            self.set_calls = []
+
+        async def set(self, key, value, ex=None):
+            self.set_calls.append((key, value, ex))
+
+        async def get(self, key):
+            return None
+
+    fake_redis = _Redis()
+    storage = SimpleNamespace(get_client=lambda: fake_redis)
+    # content 为空列表 → _raw_debug_blocks_from_msg 返回 []。
+    msg = SimpleNamespace(id="reply-1", content=[])
+
+    await _cache_bi_worker_timeline_if_enabled(
+        storage=storage,
+        worker_context={"session_id": "session-bi-1"},
+        msg=msg,
+    )
+
+    assert fake_redis.set_calls == []

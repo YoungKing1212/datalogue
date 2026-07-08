@@ -111,10 +111,9 @@ class BIWorkerQueryValidator:
                 self._append_missing(missing, seen, "missing_field", target.asset_ref)
 
         for select in plan.selects:
-            if (
-                (select.requires_decoding or select.display_semantic)
-                and select.target.asset_ref not in context_state.lookup_dependencies
-            ):
+            # display_semantic 只是展示层业务含义，不代表字段需要字典/枚举解码；
+            # 只有明确 requires_decoding=true 时才强制要求 lookup dependency。
+            if select.requires_decoding and select.target.asset_ref not in context_state.lookup_dependencies:
                 self._append_missing(missing, seen, "lookup_dependency", select.target.asset_ref)
 
         return missing

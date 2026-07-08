@@ -230,7 +230,11 @@ async def test_empty_filters_with_suggested_filters_returns_filter_missing(monke
         asset_refs={"asset:employee_work_log"},
         field_refs={"field:employee_work_log.log_content"},
         suggested_filters=[
-            {"clue_type": "person_name", "value": "杨凯", "reason": "用户输入的人名应从员工姓名字段筛选"},
+            {
+                "clue_type": "person_name",
+                "value": "杨凯",
+                "reason": "用户输入的人名应从员工姓名字段筛选",
+            },
         ],
     )
 
@@ -301,15 +305,34 @@ async def test_empty_filters_without_suggested_filters_executes_normally(monkeyp
 
 
 def test_query_plan_conversion_preserves_table_name_for_detail_sql():
+    from app.agentscope_service.bi_worker_contracts import JoinKey
+
     runtime = BIWorkerQueryRuntime(db=None)
 
-    dsl = runtime._query_plan_to_legacy_query_plan(_plan())
+    plan = _plan()
+    # 编译器要求 join_requirements 显式声明 join_keys，否则 fail-closed；
+    # 本用例聚焦 FROM/SELECT/WHERE/ORDER BY 生成，此处补齐 join_keys 让编译走通。
+    plan.join_requirements[0].join_keys = [
+        JoinKey(left_field="dept_id", right_field="id"),
+    ]
+
+    dsl = runtime._query_plan_to_legacy_query_plan(plan)
     compiled = compile_query_plan_to_sql(
         query_plan=dsl,
         sql_generation_context={
             "table_schemas": [
-                {"table_name": "orders", "fields": [{"column_name": "order_id"}, {"column_name": "order_date"}]},
-                {"table_name": "departments", "fields": [{"column_name": "name"}]},
+                {
+                    "table_name": "orders",
+                    "fields": [
+                        {"column_name": "order_id"},
+                        {"column_name": "order_date"},
+                        {"column_name": "dept_id"},
+                    ],
+                },
+                {
+                    "table_name": "departments",
+                    "fields": [{"column_name": "id"}, {"column_name": "name"}],
+                },
             ],
         },
         dialect="sqlite",
@@ -363,3 +386,127 @@ def test_metric_query_plan_conversion_compiles_aggregation_and_group_by():
     assert 'SUM("orders"."amount") AS "销售额"' in compiled["sql"]
     assert '"departments"."name" AS "name"' in compiled["sql"]
     assert 'GROUP BY "departments"."name"' in compiled["sql"]
+
+
+# ---- Repair 链路修复：bridge status/code + 空结果映射 + join_keys 契约扩展 ----
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_maps_null_row_count_to_empty_result(monkeypatch):
+    """bridge 返回 status=completed 但 artifact_ref=None、row_count=None 时，应兜底为 EMPTY_RESULT。
+
+    修复前 execute_query_plan 空结果映射用 row_count == 0 判定，None 会掉进 completed
+    默认分支，导致 LLM 拿不到 failure_type，repair 链路 B 不触发。
+    """
+    runtime = BIWorkerQueryRuntime(db=None)
+
+    async def _return_null_result(*args, **kwargs):
+        return BIWorkerQueryResult(
+            answer_summary="查询未完成，未生成可展示结果。",
+            artifact_ref=None,
+            checkpoint_ref=None,
+            row_count=None,
+            column_count=None,
+        )
+
+    monkeypatch.setattr(runtime, "_execute_supported_plan", _return_null_result)
+
+    payload = await runtime.execute_query_plan(
+        dataset_id=1,
+        confirmed_question="查看订单所属部门和金额",
+        query_plan=_plan(),
+        context_state=_known_context(),
+    )
+
+    assert payload["status"] == "failed"
+    assert payload["failure_type"] == "EMPTY_RESULT"
+    assert payload["safe_diagnosis"]
+    assert payload["recommended_action"]
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_passes_through_bridge_blocked_failure_type(monkeypatch):
+    """_execute_plan 直接写入的 failure_type（bridge blocked）在 execute_query_plan 主链应透传。"""
+    runtime = BIWorkerQueryRuntime(db=None)
+
+    async def _return_blocked_result(*args, **kwargs):
+        from app.agentscope_service.bi_worker_contracts import FAILURE_DIAGNOSIS_MAP
+
+        diagnosis = FAILURE_DIAGNOSIS_MAP["FIELD_NOT_FOUND"]
+        return BIWorkerQueryResult(
+            answer_summary="查询执行未完成（FIELD_NOT_FOUND）。",
+            artifact_ref=None,
+            checkpoint_ref=None,
+            row_count=None,
+            column_count=None,
+            failure_type="FIELD_NOT_FOUND",
+            safe_diagnosis=diagnosis["safe_diagnosis"],
+            recommended_action=diagnosis["recommended_action"],
+        )
+
+    monkeypatch.setattr(runtime, "_execute_supported_plan", _return_blocked_result)
+
+    payload = await runtime.execute_query_plan(
+        dataset_id=1,
+        confirmed_question="查看订单所属部门和金额",
+        query_plan=_plan(),
+        context_state=_known_context(),
+    )
+    # 失败结果原样透传，不会被 EMPTY_RESULT 覆盖。
+    assert payload["status"] == "failed"
+    assert payload["failure_type"] == "FIELD_NOT_FOUND"
+
+
+def test_map_bridge_code_to_failure_maps_execute_blocked_by_keywords():
+    """_map_bridge_code_to_failure 复用 _map_exception 的关键字表；EXECUTE_BLOCKED 默认落回 FIELD_NOT_FOUND。"""
+    from app.agentscope_service.bi_worker_runtime import _map_bridge_code_to_failure
+
+    assert (
+        _map_bridge_code_to_failure(code="EXECUTE_BLOCKED", error_summary="") == "FIELD_NOT_FOUND"
+    )
+    assert (
+        _map_bridge_code_to_failure(code="EXECUTE_BLOCKED", error_summary="bind parameter")
+        == "VALUE_BINDING_FAILED"
+    )
+    assert (
+        _map_bridge_code_to_failure(code="SQL_GUARD_BLOCKED", error_summary="")
+        == "SQL_GUARD_BLOCKED"
+    )
+    assert (
+        _map_bridge_code_to_failure(code="TOOL_SEQUENCE_EXHAUSTED", error_summary="")
+        == "FIELD_NOT_FOUND"
+    )
+    assert (
+        _map_bridge_code_to_failure(code="RUNTIME_BLOCKED", error_summary="aggregation mismatch")
+        == "AGGREGATION_WRONG"
+    )
+
+
+def test_query_plan_supports_join_keys_and_legacy_dsl_includes_join_requirements():
+    """JoinRequirement 支持 join_keys 声明字段，legacy DSL 透传给下游编译器。"""
+    from app.agentscope_service.bi_worker_contracts import JoinKey
+
+    runtime = BIWorkerQueryRuntime(db=None)
+    plan = _plan()
+    plan.join_requirements[0].join_keys = [
+        JoinKey(left_field="account", right_field="person_card"),
+    ]
+
+    dsl = runtime._query_plan_to_legacy_query_plan(plan)
+    assert "join_requirements" in dsl
+    assert dsl["join_requirements"][0]["join_keys"] == [
+        {"left_field": "account", "right_field": "person_card"},
+    ]
+    assert dsl["join_requirements"][0]["left_alias"] == "o"
+    assert dsl["join_requirements"][0]["right_alias"] == "d"
+
+
+def test_query_plan_join_keys_default_empty_list():
+    """未显式声明 join_keys 时，legacy DSL 里应为空列表（不遗漏 key）。"""
+    runtime = BIWorkerQueryRuntime(db=None)
+    plan = _plan()
+    dsl = runtime._query_plan_to_legacy_query_plan(plan)
+    assert dsl["join_requirements"][0]["join_keys"] == []
+
+
+

@@ -243,7 +243,7 @@ class BIWorkerContextProvider:
     def search_assets(self, dataset_id: int) -> dict[str, Any]:
         """列出数据集下所有候选蓝图、指标和维度。
 
-        蓝图命中时可直接用 call_template（SQL 模板）构造查询，跳过渐进式探索。
+        蓝图命中时只作为 QueryPlan 生成参考，不要求 worker 直接生成或执行 SQL。
         """
         dataset = self._get_dataset(dataset_id)
         blueprints = self._list_blueprints(dataset)
@@ -260,8 +260,9 @@ class BIWorkerContextProvider:
             "dimension_count": len(dimensions),
             "usage_hint": (
                 "优先匹配蓝图：若某蓝图的 name/description/trigger_keywords 与用户问题相关，"
-                "按其 call_template 构造 SQL，填入 parameters 要求的参数值后调用 datalogue_execute_query_plan_bundle 执行。"
-                "若无蓝图匹配，再使用 datalogue_prepare_query_context → datalogue_execute_query_plan_bundle。"
+                "先提取 parameters，再调用 datalogue_prepare_query_context 和必要的 datalogue_request_schema_slice；"
+                "将蓝图的输出字段、筛选条件和排序语义转换为 BIWorkerQueryPlan 后交给 datalogue_execute_query_plan_bundle。"
+                "禁止把 call_template 当作可直接传入工具的 SQL。"
                 if blueprints
                 else "无可用蓝图，请走 datalogue_prepare_query_context → datalogue_request_schema_slice → datalogue_execute_query_plan_bundle。"
             ),
@@ -323,7 +324,10 @@ class BIWorkerContextProvider:
             "next_step_suggestion": next_step,
             "suggested_filters": suggested_filters,
             "context_state": {
-                "asset_refs": [item["asset_type"] + ":" + item["name"] for item in matched_assets],
+                "asset_refs": [
+                    self._asset_ref_from_matched_asset(item)
+                    for item in matched_assets
+                ],
                 "relationship_refs": [],
                 "field_refs": [],
                 "dataset_summary": capability.summary,
@@ -334,6 +338,16 @@ class BIWorkerContextProvider:
                 f"建议{'生成查询计划' if next_step == 'generate_query_plan' else '补充数据上下文'}。"
             ),
         }
+
+    @staticmethod
+    def _asset_ref_from_matched_asset(item: dict[str, Any]) -> str:
+        """把 prepare 阶段资产摘要转换为后续 QueryPlan 可复用的安全 asset_ref。"""
+
+        asset_type = str(item.get("asset_type") or "").strip()
+        schema = str(item.get("schema") or "").strip()
+        name = str(item.get("name") or "").strip()
+        qualified_name = f"{schema}.{name}" if schema and name else name
+        return f"{asset_type}:{qualified_name}" if asset_type else qualified_name
 
     @staticmethod
     def _extract_filter_clues(question: str) -> list[dict[str, Any]]:

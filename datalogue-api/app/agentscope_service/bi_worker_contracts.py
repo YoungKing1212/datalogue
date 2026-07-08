@@ -98,6 +98,18 @@ class QueryDataGraph(StrictModel):
     supporting_entities: list[QueryEntity] = Field(default_factory=list)
 
 
+class JoinKey(StrictModel):
+    """显式声明 join 键，避免 LLM 靠 relationship_ref 语义猜关联字段。
+
+    LLM 从蓝图 call_template 或 L2 schema slice 推断出 join 条件时，通过 join_keys
+    把左右字段名精确传出。后端不做 SQL 解析，仅在 legacy DSL 里透传，供上层编译器
+    未来消费；本字段不参与 L4 relationship_ref 校验，只承担声明性通道。
+    """
+
+    left_field: str = Field(min_length=1)
+    right_field: str = Field(min_length=1)
+
+
 class JoinRequirement(StrictModel):
     left_alias: str = Field(min_length=1)
     right_alias: str = Field(min_length=1)
@@ -105,6 +117,9 @@ class JoinRequirement(StrictModel):
     join_type: JoinType = "inner"
     required: bool = True
     reason: str = Field(min_length=1)
+    # join_keys 用于把蓝图 SQL 里的物理 join 条件（如 p.account=ep.person_card）
+    # 从 LLM 侧显式传给后端；旧编译器暂不消费，后续可平滑接入。
+    join_keys: list[JoinKey] = Field(default_factory=list)
 
 
 class BIWorkerQueryPlan(StrictModel):
@@ -288,8 +303,14 @@ class BIWorkerQueryResult(StrictModel):
             return {
                 "status": "failed",
                 "failure_type": self.failure_type,
-                "safe_diagnosis": self.safe_diagnosis or FAILURE_DIAGNOSIS_MAP.get(self.failure_type, {}).get("safe_diagnosis", "未知错误"),
-                "recommended_action": self.recommended_action or FAILURE_DIAGNOSIS_MAP.get(self.failure_type, {}).get("recommended_action", "重试或联系管理员。"),
+                "safe_diagnosis": self.safe_diagnosis
+                or FAILURE_DIAGNOSIS_MAP.get(self.failure_type, {}).get(
+                    "safe_diagnosis", "未知错误"
+                ),
+                "recommended_action": self.recommended_action
+                or FAILURE_DIAGNOSIS_MAP.get(self.failure_type, {}).get(
+                    "recommended_action", "重试或联系管理员。"
+                ),
                 "datalogue_event_type": "dataset_query_result",
                 "summary": self.answer_summary,
             }
@@ -311,8 +332,18 @@ class BIWorkerQueryResult(StrictModel):
                 },
                 "related_refs": [],
                 "actions": [
-                    {"action_type": "view", "label": "查看详情", "ref": self.artifact_ref, "disabled": False},
-                    {"action_type": "export", "label": "导出", "ref": self.artifact_ref, "disabled": True},
+                    {
+                        "action_type": "view",
+                        "label": "查看详情",
+                        "ref": self.artifact_ref,
+                        "disabled": False,
+                    },
+                    {
+                        "action_type": "export",
+                        "label": "导出",
+                        "ref": self.artifact_ref,
+                        "disabled": True,
+                    },
                 ],
             }
         return {

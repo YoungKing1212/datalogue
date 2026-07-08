@@ -82,13 +82,17 @@ class BIWorkerQueryRuntime:
         except Exception as exc:
             failure = self._map_exception_to_failure(exc)
             return failure.to_tool_payload()
-        # 空结果映射
-        if result.row_count is not None and result.row_count == 0:
+        # _execute_plan 已经把 bridge blocked 场景写成 failure_type，这里直接透传给 LLM。
+        if result.failure_type is not None:
+            return result.to_tool_payload()
+        # 空结果映射：row_count=0 是明确空，row_count is None 且没有 artifact 也当作空结果，
+        # 避免出现 status=completed 但 answer_summary="查询未完成" 的自相矛盾 payload。
+        if result.row_count == 0 or (result.row_count is None and not result.artifact_ref):
             empty_result = BIWorkerQueryResult(
                 answer_summary="查询执行成功但未返回数据。",
                 artifact_ref=result.artifact_ref,
                 checkpoint_ref=result.checkpoint_ref,
-                row_count=0,
+                row_count=result.row_count if result.row_count is not None else 0,
                 column_count=result.column_count,
                 failure_type="EMPTY_RESULT",
                 safe_diagnosis=FAILURE_DIAGNOSIS_MAP["EMPTY_RESULT"]["safe_diagnosis"],
@@ -97,7 +101,9 @@ class BIWorkerQueryRuntime:
             return empty_result.to_tool_payload()
         return result.to_tool_payload()
 
-    def _map_validation_to_failure(self, validation, query_plan: BIWorkerQueryPlan) -> BIWorkerQueryResult:
+    def _map_validation_to_failure(
+        self, validation, query_plan: BIWorkerQueryPlan
+    ) -> BIWorkerQueryResult:
         missing_context = getattr(validation, "missing_context", None) or []
         missing_types = {item.get("type") for item in missing_context}
         if "missing_field" in missing_types and self._has_filter_refs(query_plan):
@@ -123,9 +129,7 @@ class BIWorkerQueryRuntime:
     def _has_filter_refs(self, query_plan: BIWorkerQueryPlan) -> bool:
         if query_plan.filters:
             return True
-        return any(
-            join.required for join in query_plan.join_requirements
-        )
+        return any(join.required for join in query_plan.join_requirements)
 
     def _map_exception_to_failure(self, exc: Exception) -> BIWorkerQueryResult:
         _ = type(exc).__name__
@@ -166,7 +170,9 @@ class BIWorkerQueryRuntime:
             question=confirmed_question,
             bridge=bridge,
         )
-        session_kwargs = runtime_context.get("session_kwargs") if isinstance(runtime_context, dict) else {}
+        session_kwargs = (
+            runtime_context.get("session_kwargs") if isinstance(runtime_context, dict) else {}
+        )
         dsl = _build_fallback_dsl(session_kwargs)
         return await self._execute_plan(
             bridge=bridge,
@@ -193,7 +199,9 @@ class BIWorkerQueryRuntime:
             question=confirmed_question,
             bridge=bridge,
         )
-        session_kwargs = runtime_context.get("session_kwargs") if isinstance(runtime_context, dict) else {}
+        session_kwargs = (
+            runtime_context.get("session_kwargs") if isinstance(runtime_context, dict) else {}
+        )
         dsl = self._query_plan_to_legacy_query_plan(query_plan)
         return await self._execute_plan(
             bridge=bridge,
@@ -226,9 +234,28 @@ class BIWorkerQueryRuntime:
         checkpoint_ref = _optional_str(result.get("checkpoint_ref"))
         row_count = _optional_int(result.get("row_count"))
         column_count = _optional_int(result.get("column_count"))
+        bridge_status = _optional_str(result.get("status"))
+        # bridge 明确 blocked / 缺 artifact 时，把 code 映射为 failure_type，避免上层
+        # 误判为 completed；如果只是空结果由 execute_query_plan 主链再兜底为 EMPTY_RESULT。
+        if bridge_status == "blocked" or (bridge_status != "completed" and not artifact_ref):
+            failure_type = _map_bridge_code_to_failure(
+                code=str(result.get("code") or "RUNTIME_BLOCKED"),
+                error_summary=str(result.get("error_summary") or ""),
+            )
+            diagnosis = FAILURE_DIAGNOSIS_MAP[failure_type]
+            return BIWorkerQueryResult(
+                answer_summary=f"查询执行未完成（{failure_type}）。",
+                artifact_ref=None,
+                checkpoint_ref=None,
+                row_count=None,
+                column_count=None,
+                failure_type=failure_type,
+                safe_diagnosis=diagnosis["safe_diagnosis"],
+                recommended_action=diagnosis["recommended_action"],
+            )
         return BIWorkerQueryResult(
             answer_summary=_answer_summary(
-                status=_optional_str(result.get("status")),
+                status=bridge_status,
                 artifact_ref=artifact_ref,
                 row_count=row_count,
                 column_count=column_count,
@@ -312,6 +339,28 @@ class BIWorkerQueryRuntime:
             result["metrics"] = compiled_metrics
         if compiled_group_by:
             result["group_by"] = compiled_group_by
+        # 透传 join_requirements 里的显式 join_keys；旧编译器目前不消费，仅保留
+        # 结构化通道供后续升级消费（避免 LLM 再次把 SQL 片段塞回非法字段）。
+        compiled_joins = [
+            {
+                "left_alias": join.left_alias,
+                "right_alias": join.right_alias,
+                # 通过 alias 反查真实表名；找不到映射时返回空串（fail-closed 由下游编译器判断）。
+                "left_table": alias_tables.get(join.left_alias, ""),
+                "right_table": alias_tables.get(join.right_alias, ""),
+                "relationship_ref": join.relationship_ref,
+                "join_type": join.join_type,
+                "required": join.required,
+                "reason": join.reason,
+                "join_keys": [
+                    {"left_field": key.left_field, "right_field": key.right_field}
+                    for key in join.join_keys
+                ],
+            }
+            for join in query_plan.join_requirements
+        ]
+        if compiled_joins:
+            result["join_requirements"] = compiled_joins
         if query_plan.ordering:
             result["ordering"] = [
                 {
@@ -354,6 +403,23 @@ def _answer_summary(
     if status != "completed" or not artifact_ref:
         return "查询未完成，未生成可展示结果。"
     return f"查询已完成，结果已生成 artifact_ref={artifact_ref}，共 {row_count or 0} 行、{column_count or 0} 列。"
+
+
+def _map_bridge_code_to_failure(*, code: str, error_summary: str) -> QueryFailureType:
+    """把 bridge.run_direct_query 返回的 blocked code 映射为 QueryFailureType。
+
+    使用 code + 可选 error_summary 关键字组合判断；与 _map_exception_to_failure 对齐，
+    确保 EXECUTE_BLOCKED/COMPILE_BLOCKED 等场景也能触发 LLM 侧 repair 链路 B。
+    """
+
+    signal = f"{code} {error_summary}".lower()
+    if "sql_guard" in signal or "guard" in signal or "not_authorized" in signal:
+        return "SQL_GUARD_BLOCKED"
+    if "bind" in signal or "parameter" in signal or "value_binding" in signal:
+        return "VALUE_BINDING_FAILED"
+    if "aggregation" in signal or "aggregate" in signal:
+        return "AGGREGATION_WRONG"
+    return "FIELD_NOT_FOUND"
 
 
 def _optional_str(value: Any) -> str | None:
@@ -411,7 +477,9 @@ def _alias_table_names(query_plan: BIWorkerQueryPlan) -> dict[str, str]:
 def _target_metadata(target: FieldTarget, *, alias_tables: dict[str, str]) -> dict[str, str]:
     """把 BIWorker FieldTarget 转成编译器可直接消费的表/列 metadata。"""
 
-    table_name = _table_from_field_ref(target.asset_ref, target.field) or alias_tables.get(target.alias)
+    table_name = _table_from_field_ref(target.asset_ref, target.field) or alias_tables.get(
+        target.alias
+    )
     metadata = {"column_name": target.field}
     if table_name:
         metadata["table_name"] = table_name
@@ -422,9 +490,11 @@ def _build_fallback_dsl(session_kwargs: dict[str, Any] | None) -> dict[str, Any]
     """从 Runtime 会话上下文中构造最小 query_graph DSL，让直接 fallback 可安全执行。"""
 
     kwargs = session_kwargs if isinstance(session_kwargs, dict) else {}
-    sql_generation_context = kwargs.get("sql_generation_context") if isinstance(
-        kwargs.get("sql_generation_context"), dict
-    ) else {}
+    sql_generation_context = (
+        kwargs.get("sql_generation_context")
+        if isinstance(kwargs.get("sql_generation_context"), dict)
+        else {}
+    )
     table_schemas = sql_generation_context.get("table_schemas")
     if not isinstance(table_schemas, list) or not table_schemas:
         return {
@@ -450,7 +520,9 @@ def _build_fallback_dsl(session_kwargs: dict[str, Any] | None) -> dict[str, Any]
         column_name = str(field_info.get("column_name") or field_info.get("name") or "").strip()
         if not column_name:
             continue
-        display_name = str(field_info.get("display_name") or field_info.get("comment") or column_name)
+        display_name = str(
+            field_info.get("display_name") or field_info.get("comment") or column_name
+        )
         selected_assets.append(
             {
                 "asset_type": "field",

@@ -21,7 +21,11 @@ from typing import Any
 
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.app.storage import StorageBase
-from agentscope.permission import PermissionBehavior, PermissionDecision
+from agentscope.permission import (
+    PermissionBehavior,
+    PermissionContext,
+    PermissionDecision,
+)
 from agentscope.tool import FunctionTool, ToolBase, ToolChunk
 from pydantic import ValidationError
 
@@ -62,7 +66,11 @@ BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
     "detail_query_required_field": "selects",
     "metric_query_required_field": "metrics",
     "allowed_filter_operators": ["=", "!=", ">", ">=", "<", "<=", "between", "in", "contains"],
-    "target_shape": {"asset_ref": "asset_or_field_ref_from_L1_or_L2", "alias": "entity_alias", "field": "field_name"},
+    "target_shape": {
+        "asset_ref": "asset_or_field_ref_from_L1_or_L2",
+        "alias": "entity_alias",
+        "field": "field_name",
+    },
     "join_requirement_shape": {
         "left_alias": "primary_entity_alias",
         "right_alias": "supporting_entity_alias",
@@ -70,6 +78,11 @@ BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
         "join_type": "inner",
         "required": True,
         "reason": "为什么必须关联该实体",
+        # join_keys 用来显式声明真实 join 字段（例如蓝图 SQL 中的 p.account=ep.person_card）；
+        # 不需要时留空列表；禁止把 SQL 片段作为字符串塞进来。
+        "join_keys": [
+            {"left_field": "left_table_field_name", "right_field": "right_table_field_name"}
+        ],
     },
     "context_state_shape": {
         "asset_refs": ["asset_ref_from_L2"],
@@ -93,7 +106,11 @@ BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
         "join_requirements": [],
         "filters": [
             {
-                "target": {"asset_ref": "asset:primary.date", "alias": "main", "field": "date_field"},
+                "target": {
+                    "asset_ref": "asset:primary.date",
+                    "alias": "main",
+                    "field": "date_field",
+                },
                 "operator": "between",
                 "value": ["2025-01-01", "2025-12-31"],
                 "reason": "限定用户指定时间范围",
@@ -101,7 +118,11 @@ BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
         ],
         "selects": [
             {
-                "target": {"asset_ref": "asset:primary.content", "alias": "main", "field": "content_field"},
+                "target": {
+                    "asset_ref": "asset:primary.content",
+                    "alias": "main",
+                    "field": "content_field",
+                },
                 "display_name": "展示名称",
                 "display_semantic": "业务含义",
                 "requires_decoding": False,
@@ -125,7 +146,11 @@ BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
         "selects": [],
         "metrics": [
             {
-                "target": {"asset_ref": "asset:primary.metric", "alias": "main", "field": "metric_field"},
+                "target": {
+                    "asset_ref": "asset:primary.metric",
+                    "alias": "main",
+                    "field": "metric_field",
+                },
                 "aggregation": "sum",
                 "display_name": "指标名称",
             }
@@ -154,7 +179,9 @@ def build_datalogue_extra_agent_tools(*, storage: StorageBase | None = None) -> 
             session_id=session_id,
         )
         if worker_context is None:
-            return []  # Dataset 查询只能由 Team worker 调用；拿不到身份时 fail-closed，避免 Leader 直接查数。
+            return (
+                []
+            )  # Dataset 查询只能由 Team worker 调用；拿不到身份时 fail-closed，避免 Leader 直接查数。
         return [
             build_datalogue_search_assets_tool(worker_context=worker_context),
             build_datalogue_select_candidate_datasets_tool(worker_context=worker_context),
@@ -199,7 +226,123 @@ def _safe_plan_contract_error_summary(exc: Exception) -> list[str]:
     return [f"{type(exc).__name__}: {exc}"]
 
 
-def _bi_worker_plan_contract_repair_payload(*, failure_counts: dict[str, int], exc: Exception) -> dict[str, Any]:
+def _safe_plan_contract_error_details(exc: Exception) -> list[dict[str, Any]]:
+    """生成面向 BI Worker 的中文契约诊断，不回显原始输入值。"""
+
+    if isinstance(exc, ValidationError):
+        details = []
+        for item in exc.errors(include_url=False, include_context=False, include_input=False):
+            code = str(item.get("type") or "validation_error")
+            loc = tuple(item.get("loc") or ("root",))
+            path = _safe_plan_contract_detail_path(code=code, loc=loc)
+            details.append(
+                {
+                    "code": code,
+                    "path": path,
+                    "message": _plan_contract_error_message(code=code, loc=loc),
+                    "expected": _plan_contract_error_expected(code=code, loc=loc),
+                }
+            )
+        return sorted(details, key=lambda item: (item["path"], item["code"])) or [
+            {
+                "code": "validation_error",
+                "path": "root",
+                "message": "Query Plan 未通过 BI Worker 契约校验。",
+                "expected": "按 query_plan_contract_hint 重新生成完整 Query Plan。",
+            }
+        ]
+    return [
+        {
+            "code": type(exc).__name__,
+            "path": "context_state",
+            "message": "context_state 形状不符合 BI Worker 渐进式上下文契约。",
+            "expected": BI_WORKER_QUERY_PLAN_CONTRACT_HINT["context_state_usage"],
+        }
+    ]
+
+
+def _safe_plan_contract_detail_path(*, code: str, loc: tuple[Any, ...]) -> str:
+    """详情 path 只暴露契约位置；顶层额外字段名可能来自模型臆造，统一收敛。"""
+
+    if code == "extra_forbidden" and len(loc) == 1:
+        return "root.extra_field"
+    return ".".join(str(part) for part in loc)
+
+
+def _plan_contract_error_message(*, code: str, loc: tuple[Any, ...]) -> str:
+    path = _safe_plan_contract_detail_path(code=code, loc=loc)
+    field_name = str(loc[-1]) if loc else "root"
+    if code == "missing":
+        if _is_join_requirement_path(loc):
+            return f"`{path}` 缺失，关联关系必须声明左右实体 alias 和关系引用。"
+        return f"`{path}` 缺失，Query Plan 必须补齐该必填字段。"
+    if code == "extra_forbidden":
+        if _is_join_requirement_path(loc):
+            return f"`{path}` 是额外字段，BI Worker JoinRequirement 不接收 `{field_name}`。"
+        return f"`{path}` 是额外字段，BI Worker 安全契约默认拒绝未声明字段。"
+    if code == "literal_error":
+        if path.endswith(".operator"):
+            return "`filters.*.operator` 使用了不被允许的操作符。"
+        if path.endswith(".join_type"):
+            return "`join_requirements.*.join_type` 使用了不被允许的关联类型。"
+        return f"`{path}` 的枚举值不在契约允许范围内。"
+    if code == "value_error":
+        return (
+            "Query Plan 的业务形状不完整，例如 detail_query 缺 selects 或 metric_query 缺 metrics。"
+        )
+    return f"`{path}` 未通过 `{code}` 校验。"
+
+
+def _plan_contract_error_expected(*, code: str, loc: tuple[Any, ...]) -> str:
+    path = _safe_plan_contract_detail_path(code=code, loc=loc)
+    field_name = str(loc[-1]) if loc else "root"
+    if _is_join_requirement_path(loc):
+        replacement = {
+            "left": "删除 left，改用 left_alias，值必须来自 data_graph.primary_entity/supporting_entities 的 alias。",
+            "right": "删除 right，改用 right_alias，值必须来自 data_graph.primary_entity/supporting_entities 的 alias。",
+            "type": "删除 type，改用 join_type，通常填写 inner 或 left。",
+            "left_asset_ref": "删除 left_asset_ref，关联两端用 left_alias/right_alias 表达，真实关系用 relationship_ref 表达。",
+            "right_asset_ref": "删除 right_asset_ref，关联两端用 left_alias/right_alias 表达，真实关系用 relationship_ref 表达。",
+            "left_alias": "补充 left_alias，值必须是 data_graph 中左侧实体的 alias，例如 main。",
+            "right_alias": "补充 right_alias，值必须是 data_graph 中右侧实体的 alias，例如 person。",
+            "relationship_ref": "补充 relationship_ref，值必须来自 L2 schema slice 返回的 relationship_ref。",
+            "reason": "补充 reason，用一句业务话说明为什么必须关联该实体。",
+            # LLM 常见错误：把 SQL 片段塞进 join_condition 字符串。正确做法是使用结构化 join_keys。
+            "join_condition": (
+                "删除 join_condition，禁止把 SQL 片段作为字符串传入。若需要显式声明 join 键，"
+                '改用 join_keys=[{"left_field": "左表字段名", "right_field": "右表字段名"}]，'
+                "字段名必须来自 L2 schema slice 返回的物理列。"
+            ),
+        }.get(field_name)
+        if replacement:
+            return replacement
+        return (
+            "join_requirements 的合法形状是 left_alias/right_alias/relationship_ref/"
+            "join_type/required/reason/join_keys。"
+        )
+    if path.endswith(".operator"):
+        allowed = ", ".join(BI_WORKER_QUERY_PLAN_CONTRACT_HINT["allowed_filter_operators"])
+        return f"把 operator 改为允许值之一：{allowed}。例如等值筛选使用 `=`，不要使用 `eq`。"
+    if path.endswith(".target"):
+        return "target 必须包含 asset_ref、alias、field，且引用来自 L1/L2 返回的资产或字段。"
+    if code == "extra_forbidden":
+        return "删除该字段；只保留 query_plan_contract_hint 中列出的字段。"
+    if code == "missing":
+        return (
+            "补齐该字段；顶层和嵌套结构以 query_plan_contract_hint 的 minimal_*_query_plan 为准。"
+        )
+    if code == "value_error":
+        return "detail_query 至少提供 selects；metric_query 至少提供 metrics。"
+    return "按 query_plan_contract_hint 重新生成对应位置的结构。"
+
+
+def _is_join_requirement_path(loc: tuple[Any, ...]) -> bool:
+    return len(loc) >= 2 and loc[0] == "join_requirements"
+
+
+def _bi_worker_plan_contract_repair_payload(
+    *, failure_counts: dict[str, int], exc: Exception
+) -> dict[str, Any]:
     """生成可回传给 Agent 的安全修复提示，避免同类契约错误耗满 ReAct 轮次。"""
 
     signature = _safe_plan_contract_signature(exc)
@@ -231,14 +374,22 @@ def _bi_worker_plan_contract_repair_payload(*, failure_counts: dict[str, int], e
             "stop_retry": stop_retry,
         },
         "validation_error_summary": _safe_plan_contract_error_summary(exc),
+        "validation_error_details": _safe_plan_contract_error_details(exc),
         "query_plan_contract_hint": BI_WORKER_QUERY_PLAN_CONTRACT_HINT,
     }
 
 
-async def _is_team_worker(*, storage: StorageBase | None, user_id: str | None, agent_id: str | None) -> bool:
+async def _is_team_worker(
+    *, storage: StorageBase | None, user_id: str | None, agent_id: str | None
+) -> bool:
     """判断当前工具装配对象是否是 AgentScope Team worker。"""
 
-    return await _team_worker_context(storage=storage, user_id=user_id, agent_id=agent_id, session_id=None) is not None
+    return (
+        await _team_worker_context(
+            storage=storage, user_id=user_id, agent_id=agent_id, session_id=None
+        )
+        is not None
+    )
 
 
 async def _team_worker_context(
@@ -269,7 +420,11 @@ class DatalogueSearchAssetsTool(FunctionTool):
     """datalogue_search_assets 的自定义 FunctionTool，绕过 AgentScope 2.0.3 DONT_ASK
     权限引擎在 SubAgentTemplate 场景下对 FunctionTool 的误拦截。"""
 
-    async def check_permissions(self, **kwargs: Any) -> PermissionDecision:
+    async def check_permissions(
+        self,
+        tool_input: dict[str, Any],
+        context: PermissionContext,
+    ) -> PermissionDecision:
         return PermissionDecision(
             behavior=PermissionBehavior.ALLOW,
             message="datalogue_search_assets is always allowed for BI workers.",
@@ -280,13 +435,13 @@ class DatalogueSearchAssetsTool(FunctionTool):
 def build_datalogue_search_assets_tool(
     *, worker_context: dict[str, str | None] | None = None
 ) -> DatalogueSearchAssetsTool:
-    """列出数据集下所有候选蓝图、指标、维度，命中蓝图时可走 SQL 模板快速路径。"""
+    """列出数据集下所有候选蓝图、指标、维度；蓝图只作为 QueryPlan 生成参考。"""
 
     def datalogue_search_assets(dataset_id: int) -> ToolChunk:
         """List all blueprints, metrics and dimensions for the confirmed dataset.
 
         蓝图含 call_template（SQL 模板）和 parameters（参数提取规则），
-        命中后直接填参构造 SQL 执行，跳过 L0/L1/L2/L5 渐进式探索。
+        命中后用于提取筛选参数和选择字段；真实执行仍必须走 QueryPlan bundle。
         """
         _ = worker_context
         with SessionLocal() as db:
@@ -296,7 +451,7 @@ def build_datalogue_search_assets_tool(
     return DatalogueSearchAssetsTool(
         datalogue_search_assets,
         name="datalogue_search_assets",
-        description="列出数据集下所有蓝图（含SQL模板）、指标和维度，优先用蓝图快速路径。",
+        description="列出数据集下所有蓝图、指标和维度；蓝图命中时作为 QueryPlan 生成参考，不直接执行 SQL。",
         is_concurrency_safe=True,
         is_read_only=True,
     )
@@ -327,11 +482,15 @@ def build_datalogue_progressive_bi_worker_tools(
         """Request a focused schema slice for query planning."""
 
         with SessionLocal() as db:
-            payload = BIWorkerContextProvider(db).request_schema_slice(
-                dataset_id=dataset_id,
-                question=confirmed_question,
-                focus=focus,
-            ).model_dump()
+            payload = (
+                BIWorkerContextProvider(db)
+                .request_schema_slice(
+                    dataset_id=dataset_id,
+                    question=confirmed_question,
+                    focus=focus,
+                )
+                .model_dump()
+            )
         return _tool_success_chunk(payload)
 
     async def datalogue_execute_query_plan_bundle(
@@ -349,8 +508,7 @@ def build_datalogue_progressive_bi_worker_tools(
             # LLM 可能把 prepare_query_context 返回的 dataset_summary 等额外字段一并传入。
             valid_keys = ProgressiveContextState.field_names()
             filtered_state = {
-                key: value for key, value in context_state.items()
-                if key in valid_keys
+                key: value for key, value in context_state.items() if key in valid_keys
             }
             state = ProgressiveContextState(**filtered_state)
         except (TypeError, ValidationError) as exc:
@@ -370,7 +528,10 @@ def build_datalogue_progressive_bi_worker_tools(
                 trace_id=trace_id,
             )
             db.commit()
-        if payload.get("datalogue_event_type") == "dataset_query_result" and payload.get("status") == "completed":
+        if (
+            payload.get("datalogue_event_type") == "dataset_query_result"
+            and payload.get("status") == "completed"
+        ):
             _publish_worker_business_final(worker_context=worker_context, payload=payload)
         return _tool_success_chunk(payload)
 
@@ -391,8 +552,14 @@ def build_datalogue_progressive_bi_worker_tools(
             retry_attempt > _BI_WORKER_REPAIR_MAX_RETRIES
             or total_repair > _BI_WORKER_REPAIR_MAX_RETRIES
         )
-        valid_failure_types = {"FIELD_NOT_FOUND", "FILTER_MISSING", "AGGREGATION_WRONG",
-                               "VALUE_BINDING_FAILED", "SQL_GUARD_BLOCKED", "EMPTY_RESULT"}
+        valid_failure_types = {
+            "FIELD_NOT_FOUND",
+            "FILTER_MISSING",
+            "AGGREGATION_WRONG",
+            "VALUE_BINDING_FAILED",
+            "SQL_GUARD_BLOCKED",
+            "EMPTY_RESULT",
+        }
         resolved_type = failure_type if failure_type in valid_failure_types else "FIELD_NOT_FOUND"
         repair = RepairRequest.from_failure_type(
             resolved_type,  # type: ignore[arg-type]
@@ -509,7 +676,9 @@ def select_candidate_datasets_for_agent_team(*, question: str, limit: int = 5) -
         for score, dataset in selected
     ]
     decision = "ambiguous" if candidates else "no_match"
-    summary = "BI worker 已筛选候选数据集，请用户确认。" if candidates else "未找到可供选择的数据集。"
+    summary = (
+        "BI worker 已筛选候选数据集，请用户确认。" if candidates else "未找到可供选择的数据集。"
+    )
     route_decision = {
         "decision": decision,
         "dataset_id": None,
@@ -565,7 +734,9 @@ def _normalize_dataset_match_text(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "").lower())
 
 
-def _dataset_candidate_payload(*, dataset: SemanticDataset, score: int, matched: bool) -> dict[str, Any]:
+def _dataset_candidate_payload(
+    *, dataset: SemanticDataset, score: int, matched: bool
+) -> dict[str, Any]:
     dataset_name = str(dataset.name or f"数据集 {dataset.id}")[:100]
     reason = "名称或描述与本轮问题匹配。" if matched and score > 0 else "可供用户确认选择。"
     return {

@@ -121,7 +121,9 @@ async def test_execute_query_plan_returns_repair_payload_after_repeated_contract
     from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
-    execute_tool = next(tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle")
+    execute_tool = next(
+        tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle"
+    )
     invalid_plan = {
         "intent": "detail_query",
         "question": "查询杨凯2025年日志",
@@ -191,15 +193,25 @@ async def test_query_plan_contract_hint_points_to_real_operator_and_join_shape()
     from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
-    execute_tool = next(tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle")
+    execute_tool = next(
+        tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle"
+    )
     invalid_plan = {
         "intent": "detail_query",
         "question": "查询杨凯2025年日志",
         "result_shape": {"type": "table", "grain": "detail"},
         "data_graph": {
-            "primary_entity": {"asset_ref": "table:pm_tenant.plan_task_daily_record", "alias": "log", "role": "fact"},
+            "primary_entity": {
+                "asset_ref": "table:pm_tenant.plan_task_daily_record",
+                "alias": "log",
+                "role": "fact",
+            },
             "supporting_entities": [
-                {"asset_ref": "table:pm_tenant.eas_personofile", "alias": "person", "role": "dimension"}
+                {
+                    "asset_ref": "table:pm_tenant.eas_personofile",
+                    "alias": "person",
+                    "role": "dimension",
+                }
             ],
         },
         "join_requirements": [
@@ -265,10 +277,107 @@ async def test_query_plan_contract_hint_points_to_real_operator_and_join_shape()
         "join_type": "inner",
         "required": True,
         "reason": "为什么必须关联该实体",
+        "join_keys": [
+            {"left_field": "left_table_field_name", "right_field": "right_table_field_name"},
+        ],
     }
     assert "literal_error:filters.0.operator" in payload["validation_error_summary"]
     assert "missing:join_requirements.0.left_alias" in payload["validation_error_summary"]
-    assert "extra_forbidden:join_requirements.0.left_asset_ref" in payload["validation_error_summary"]
+    assert (
+        "extra_forbidden:join_requirements.0.left_asset_ref" in payload["validation_error_summary"]
+    )
+    details = {item["path"]: item for item in payload["validation_error_details"]}
+    assert details["filters.0.operator"]["expected"].startswith("把 operator 改为允许值之一")
+    assert "`=`" in details["filters.0.operator"]["expected"]
+    assert "left_alias" in details["join_requirements.0.left_asset_ref"]["expected"]
+    assert "relationship_ref" in details["join_requirements.0.right_asset_ref"]["expected"]
+    assert "left_alias" in details["join_requirements.0.left_alias"]["expected"]
+    assert "right_alias" in details["join_requirements.0.right_alias"]["expected"]
+
+
+@pytest.mark.asyncio
+async def test_query_plan_contract_details_explain_legacy_join_fields():
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+    execute_tool = next(
+        tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle"
+    )
+    invalid_plan = {
+        "intent": "detail_query",
+        "question": "统计合同总金额",
+        "result_shape": {"type": "table", "grain": "detail"},
+        "data_graph": {
+            "primary_entity": {"asset_ref": "asset:contract", "alias": "contract", "role": "fact"},
+            "supporting_entities": [
+                {"asset_ref": "asset:customer", "alias": "customer", "role": "dimension"},
+                {"asset_ref": "asset:org", "alias": "org", "role": "dimension"},
+                {"asset_ref": "asset:person", "alias": "person", "role": "dimension"},
+            ],
+        },
+        "join_requirements": [
+            {
+                "left": "contract",
+                "right": "customer",
+                "type": "inner",
+                "relationship_ref": "rel:contract_customer",
+                "reason": "关联客户",
+            },
+            {
+                "left": "contract",
+                "right": "org",
+                "type": "left",
+                "relationship_ref": "rel:contract_org",
+                "reason": "关联组织",
+            },
+            {
+                "left": "contract",
+                "right": "person",
+                "type": "left",
+                "relationship_ref": "rel:contract_person",
+                "reason": "关联人员",
+            },
+        ],
+        "filters": [],
+        "selects": [
+            {
+                "target": {
+                    "asset_ref": "field:contract.name",
+                    "alias": "contract",
+                    "field": "name",
+                },
+                "display_name": "合同名称",
+            }
+        ],
+        "metrics": [],
+        "group_by": [],
+        "ordering": [],
+        "assumptions": [],
+    }
+
+    chunk = await execute_tool(
+        dataset_id=10,
+        confirmed_question="统计合同总金额",
+        query_plan=invalid_plan,
+        context_state={},
+    )
+
+    payload = json.loads(chunk.content[0].text)
+    details = {item["path"]: item for item in payload["validation_error_details"]}
+
+    assert "extra_forbidden:join_requirements.0.left" in payload["validation_error_summary"]
+    assert "missing:join_requirements.0.left_alias" in payload["validation_error_summary"]
+    assert details["join_requirements.0.left"]["expected"].startswith("删除 left，改用 left_alias")
+    assert details["join_requirements.0.right"]["expected"].startswith(
+        "删除 right，改用 right_alias"
+    )
+    assert details["join_requirements.0.type"]["expected"].startswith("删除 type，改用 join_type")
+    assert details["join_requirements.0.left_alias"]["message"].endswith(
+        "关联关系必须声明左右实体 alias 和关系引用。"
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert '"left": "contract"' not in serialized
+    assert '"right": "customer"' not in serialized
 
 
 @pytest.mark.asyncio
@@ -276,14 +385,20 @@ async def test_query_plan_contract_total_attempts_stop_retry_across_changed_erro
     from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
-    execute_tool = next(tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle")
+    execute_tool = next(
+        tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle"
+    )
     first_invalid_plan = {"intent": "detail_query"}
     second_invalid_plan = {
         "intent": "detail_query",
         "question": "查询杨凯2025年日志",
         "result_shape": {"type": "table", "grain": "detail"},
         "data_graph": {
-            "primary_entity": {"asset_ref": "table:pm_tenant.plan_task_daily_record", "alias": "main", "role": "fact"}
+            "primary_entity": {
+                "asset_ref": "table:pm_tenant.plan_task_daily_record",
+                "alias": "main",
+                "role": "fact",
+            }
         },
         "join_requirements": [],
         "filters": [
@@ -459,3 +574,94 @@ async def test_bi_worker_candidate_dataset_tool_publishes_safe_final_event(monke
     assert event["payload"]["datalogue_event_type"] == "dataset_candidates"
     assert event["payload"]["requires_user_confirmation"] is True
     assert event["payload"]["route_decision"]["candidates"][0]["dataset_id"] == 10
+
+
+def test_plan_contract_error_expected_guides_join_condition_to_join_keys():
+    """LLM 常见错误：塞 join_condition SQL 片段。hint 需引导改用 join_keys。"""
+    from app.agentscope_service.tools import _plan_contract_error_expected
+
+    expected = _plan_contract_error_expected(
+        code="extra_forbidden",
+        loc=("join_requirements", 0, "join_condition"),
+    )
+    assert "join_keys" in expected
+    assert "SQL 片段" in expected
+    assert "left_field" in expected and "right_field" in expected
+
+
+@pytest.mark.asyncio
+async def test_execute_query_plan_bundle_accepts_join_keys_field():
+    """契约扩展后，join_requirements 允许携带 join_keys；不再报 extra_forbidden。"""
+    from app.agentscope_service import tools as tools_module
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    async def fake_execute(*args, **kwargs):
+        return {
+            "datalogue_event_type": "dataset_query_result",
+            "status": "completed",
+            "artifact_ref": "artifact:test-1",
+            "row_count": 1,
+            "column_count": 1,
+            "summary": "OK",
+        }
+
+    from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
+
+    # monkeypatch execute_query_plan：只验证契约 model_validate 通过、能进入执行分支。
+    original = BIWorkerQueryRuntime.execute_query_plan
+    BIWorkerQueryRuntime.execute_query_plan = fake_execute  # type: ignore[assignment]
+    try:
+        tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+        execute_tool = next(
+            tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle"
+        )
+        plan_with_join_keys = {
+            "intent": "detail_query",
+            "question": "查询日志",
+            "result_shape": {"type": "table", "grain": "detail", "limit": 100},
+            "data_graph": {
+                "primary_entity": {"asset_ref": "asset:log", "alias": "main", "role": "primary"},
+                "supporting_entities": [
+                    {"asset_ref": "asset:person", "alias": "person", "role": "supporting"},
+                ],
+            },
+            "join_requirements": [
+                {
+                    "left_alias": "main",
+                    "right_alias": "person",
+                    "relationship_ref": "rel:log_person",
+                    "join_type": "left",
+                    "required": True,
+                    "reason": "按人员姓名筛选",
+                    "join_keys": [
+                        {"left_field": "account", "right_field": "person_card"},
+                    ],
+                }
+            ],
+            "filters": [],
+            "selects": [
+                {
+                    "target": {"asset_ref": "asset:log.id", "alias": "main", "field": "id"},
+                    "display_name": "ID",
+                    "requires_decoding": False,
+                }
+            ],
+            "metrics": [],
+            "group_by": [],
+            "ordering": [],
+            "assumptions": [],
+        }
+        result_chunk = await execute_tool(
+            dataset_id=1,
+            confirmed_question="查询日志",
+            query_plan=plan_with_join_keys,
+            context_state={},
+        )
+        # 契约通过 → 走到 fake_execute → payload.status=completed，不含 repair_request。
+        payload_text = tools_module.json.dumps(
+            [block.text for block in result_chunk.content], ensure_ascii=False
+        )
+        assert "bi_worker_repair_request" not in payload_text
+        assert "completed" in payload_text
+    finally:
+        BIWorkerQueryRuntime.execute_query_plan = original  # type: ignore[assignment]

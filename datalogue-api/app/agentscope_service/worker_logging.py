@@ -25,11 +25,14 @@ from agentscope.app.storage import StorageBase
 from agentscope.message import AssistantMsg
 from agentscope.middleware import MiddlewareBase, TracingMiddleware
 
+from app.agentscope_service.bi_worker_timeline_cache import store_bi_worker_timeline
 from app.agentscope_service.progress_bridge import publish_agent_progress
 from app.agentscope_service.task_context import resolve_task_context
 from app.middlewares.lifecycle import raw_agent_logs_enabled
 
-AgentMiddlewareFactory = Callable[[str | None, str | None, str | None], Awaitable[list[MiddlewareBase]]]
+AgentMiddlewareFactory = Callable[
+    [str | None, str | None, str | None], Awaitable[list[MiddlewareBase]]
+]
 _BI_WORKER_MARKERS = ("Datalogue BI Worker", "Dataset Query")
 _LEADER_MARKERS = ("Datalogue Agent Team Leader", "Agent Team Leader", "智能问数主链")
 logger = logging.getLogger(__name__)
@@ -59,7 +62,9 @@ _PROGRESSIVE_TOOL_SUMMARIES = {
 }
 
 
-def build_datalogue_extra_agent_middlewares(*, storage: StorageBase | None = None) -> AgentMiddlewareFactory:
+def build_datalogue_extra_agent_middlewares(
+    *, storage: StorageBase | None = None
+) -> AgentMiddlewareFactory:
     """构建 AgentScope create_app(extra_agent_middlewares=...) 使用的中间件工厂。"""
 
     async def _extra_agent_middlewares(
@@ -85,7 +90,9 @@ def build_datalogue_extra_agent_middlewares(*, storage: StorageBase | None = Non
         # BIWorkerProgressMiddleware 只记录 thinking 路径摘要、工具结果摘要与用户可见进度，不接管原始模型 I/O 日志。
         middlewares: list[MiddlewareBase] = [TracingMiddleware()]
         if worker_context is not None:
-            middlewares.append(BIWorkerProgressMiddleware(worker_context=worker_context))
+            middlewares.append(
+                BIWorkerProgressMiddleware(worker_context=worker_context, storage=storage)
+            )
         elif leader_context is not None:
             middlewares.append(LeaderRawDebugMiddleware())
         return middlewares
@@ -104,7 +111,9 @@ class LeaderRawDebugMiddleware(MiddlewareBase):
     ) -> AsyncGenerator:
         """透传 Leader reply 事件，并在本地 DEBUG 开关开启时输出原始思考链。"""
 
-        agent_name = _safe_context_text(_safe_getattr(agent, "name")) or "Datalogue Agent Team Leader"
+        agent_name = (
+            _safe_context_text(_safe_getattr(agent, "name")) or "Datalogue Agent Team Leader"
+        )
         reply_msg = None
         async for event in next_handler(**input_kwargs):
             reply_msg = _append_event_to_reply_msg(reply_msg, event, agent_name=agent_name)
@@ -115,8 +124,14 @@ class LeaderRawDebugMiddleware(MiddlewareBase):
 class BIWorkerProgressMiddleware(MiddlewareBase):
     """AgentScope Middleware：发布 BI worker 安全进度，并提取受控的 reply 结果日志。"""
 
-    def __init__(self, *, worker_context: dict[str, str | None]) -> None:
+    def __init__(
+        self,
+        *,
+        worker_context: dict[str, str | None],
+        storage: StorageBase | None = None,
+    ) -> None:
         self.worker_context = worker_context
+        self.storage = storage
 
     async def on_reply(
         self,
@@ -160,6 +175,11 @@ class BIWorkerProgressMiddleware(MiddlewareBase):
             )
             raise
         _log_raw_debug_blocks_if_enabled(msg=reply_msg, log_name="agentscope.bi_worker.raw_debug")
+        await _cache_bi_worker_timeline_if_enabled(
+            storage=self.storage,
+            worker_context=self.worker_context,
+            msg=reply_msg,
+        )
         _log_reply_content_blocks(worker_context=self.worker_context, msg=reply_msg)
         _log_worker_lifecycle(
             worker_context=self.worker_context,
@@ -273,7 +293,9 @@ def _event_summary(event: Any) -> dict[str, Any]:
     pending_tool_calls = _pending_tool_calls(event)
     if pending_tool_calls:
         summary["pending_tool_calls"] = pending_tool_calls
-        summary["pending_tool_names"] = [item["name"] for item in pending_tool_calls if item.get("name")]
+        summary["pending_tool_names"] = [
+            item["name"] for item in pending_tool_calls if item.get("name")
+        ]
     return {key: value for key, value in summary.items() if value is not None}
 
 
@@ -305,6 +327,34 @@ def _log_raw_debug_blocks_if_enabled(*, msg: Any, log_name: str) -> None:
     logger.info("[%s] %s", log_name, _json_raw_log({"timeline": timeline}))
 
 
+async def _cache_bi_worker_timeline_if_enabled(
+    *,
+    storage: StorageBase | None,
+    worker_context: dict[str, str | None],
+    msg: Any,
+) -> None:
+    """TODO(后期删除): raw debug 开启时把 BI worker reply 的原始 timeline 暂存 Redis，供跨进程调试排查。
+
+    后期由 AgentScope TracingMiddleware / OpenTelemetry 统一观测取代，届时删除本函数与
+    bi_worker_timeline_cache 模块。
+    """
+    if storage is None or msg is None or not raw_agent_logs_enabled():
+        return
+    timeline = _raw_debug_blocks_from_msg(msg)
+    if not timeline:
+        return
+    worker_session_id = _safe_context_text(worker_context.get("session_id"))
+    reply_id = _safe_context_text(_safe_getattr(msg, "id"))
+    if not worker_session_id or not reply_id:
+        return
+    await store_bi_worker_timeline(
+        storage,
+        worker_session_id=worker_session_id,
+        reply_id=reply_id,
+        timeline=timeline,
+    )
+
+
 def _raw_debug_blocks_from_msg(msg: Any) -> list[dict[str, Any]]:
     """按 msg.content 原始顺序输出所有内容块，还原 ReAct 思考→调工具→结果的先后顺序。"""
     timeline: list[dict[str, Any]] = []
@@ -333,8 +383,6 @@ def _raw_debug_blocks_from_msg(msg: Any) -> list[dict[str, Any]]:
             continue
         timeline.append(entry)
     return timeline
-
-
 
 
 def _append_event_to_reply_msg(msg: Any, event: Any, *, agent_name: str) -> Any:
@@ -404,7 +452,9 @@ def _tool_results_from_msg(msg: Any) -> list[dict[str, Any]]:
             "output_length": len(output_text),
             "output": _safe_tool_result_output(output_text),
         }
-        results.append({key: value for key, value in result.items() if value not in (None, "", [], {})})
+        results.append(
+            {key: value for key, value in result.items() if value not in (None, "", [], {})}
+        )
     return results
 
 
@@ -459,7 +509,10 @@ def _safe_tool_result_output(output_text: str) -> dict[str, Any]:
         return {"text": safe_text} if safe_text else {"content_type": "text"}
     if isinstance(parsed, dict):
         return _safe_tool_result_dict(parsed)
-    return {"content_type": type(parsed).__name__, "item_count": len(parsed) if isinstance(parsed, list) else None}
+    return {
+        "content_type": type(parsed).__name__,
+        "item_count": len(parsed) if isinstance(parsed, list) else None,
+    }
 
 
 def _safe_tool_result_dict(value: dict[str, Any]) -> dict[str, Any]:
@@ -503,7 +556,9 @@ def _safe_artifact_card_for_log(card: Any) -> dict[str, Any] | None:
             "disabled": bool(action.get("disabled")),
             "disabled_reason": _safe_result_text(action.get("disabled_reason")),
         }
-        safe_action = {key: value for key, value in safe_action.items() if value not in (None, "", [], {})}
+        safe_action = {
+            key: value for key, value in safe_action.items() if value not in (None, "", [], {})
+        }
         if safe_action:
             actions.append(safe_action)
     if actions:
@@ -564,11 +619,15 @@ def _worker_context_log_fields(worker_context: dict[str, str | None]) -> dict[st
 
 
 def _json_log(payload: dict[str, Any]) -> str:
-    return json.dumps(_to_json_safe(payload, raw=False), ensure_ascii=False, sort_keys=True, default=str)
+    return json.dumps(
+        _to_json_safe(payload, raw=False), ensure_ascii=False, sort_keys=True, default=str
+    )
 
 
 def _json_raw_log(payload: dict[str, Any]) -> str:
-    return json.dumps(_to_json_safe(payload, raw=True), ensure_ascii=False, sort_keys=True, default=str)
+    return json.dumps(
+        _to_json_safe(payload, raw=True), ensure_ascii=False, sort_keys=True, default=str
+    )
 
 
 def _event_category(event_type: str) -> str:
@@ -625,9 +684,7 @@ def summarize_tool_progress(tool_name: str) -> dict[str, str]:
     if tool_name in _PROGRESSIVE_TOOL_SUMMARIES:
         return {"summary": _PROGRESSIVE_TOOL_SUMMARIES[tool_name]}
     safe_tool_name = _safe_context_text(tool_name) or "受控工具"
-    return {
-        "summary": f"BI Worker 正在调用 {safe_tool_name}。"
-    }
+    return {"summary": f"BI Worker 正在调用 {safe_tool_name}。"}
 
 
 def _publish_worker_progress(
@@ -691,9 +748,7 @@ def _pending_tool_calls(event: Any) -> list[dict[str, Any]]:
             }
         )
     return [
-        {key: value for key, value in item.items() if value is not None}
-        for item in pending
-        if item
+        {key: value for key, value in item.items() if value is not None} for item in pending if item
     ]
 
 
@@ -720,7 +775,9 @@ def _model_output_summary(
     duration_ms: int | None = None,
 ) -> dict[str, Any]:
     content = _safe_getattr(response, "content")
-    finish_reason = _safe_getattr(response, "finish_reason") or _safe_getattr(response, "stop_reason")
+    finish_reason = _safe_getattr(response, "finish_reason") or _safe_getattr(
+        response, "stop_reason"
+    )
     return {
         "response_type": type(response).__name__,
         "is_last": _safe_getattr(response, "is_last"),

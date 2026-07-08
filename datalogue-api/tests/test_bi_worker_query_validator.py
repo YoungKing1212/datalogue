@@ -150,6 +150,23 @@ def test_decoding_select_without_lookup_dependency_needs_more_context():
     assert result.recommended_next_tool == "datalogue_request_schema_slice"
 
 
+def test_display_semantic_without_decoding_does_not_require_lookup_dependency():
+    result = BIWorkerQueryValidator().validate(
+        _plan(
+            department_select=QuerySelect(
+                target=_target("field:departments.name", "name", alias="d"),
+                display_name="部门名称",
+                display_semantic="department_name",
+                requires_decoding=False,
+            )
+        ),
+        _known_context(lookup_dependencies={}),
+    )
+
+    assert result.support_status == "supported"
+    assert result.missing_context == []
+
+
 def test_missing_relationship_after_context_limit_stops_auto_expansion():
     result = BIWorkerQueryValidator().validate(
         _plan(relationship_ref="relationship:orders.region"),

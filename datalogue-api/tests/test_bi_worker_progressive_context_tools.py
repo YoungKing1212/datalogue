@@ -222,6 +222,8 @@ def test_prepare_query_context_extracts_filter_clues(db_session, employee_datase
     # 确认 context_state 中也包含了 suggested_filters
     assert "suggested_filters" in result["context_state"]
     assert len(result["context_state"]["suggested_filters"]) >= 2
+    assert result["context_state"]["asset_refs"]
+    assert all(ref.startswith("table:public.") for ref in result["context_state"]["asset_refs"])
 
 
 def test_prepare_query_context_without_filter_clues_returns_empty(db_session, employee_dataset):
