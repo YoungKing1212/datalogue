@@ -48,6 +48,8 @@ const NODE_STEP_NAMES = {
   live_thinking: '推理过程',
   multi_agent_handoff: 'Agent 协作',
   confirmation: '待确认',
+  'agent-worker-thinking': 'BI Worker 思考',
+  'agent-worker-raw-thinking': 'BI Worker 调试原文',
 };
 
 const NODE_ICONS = {
@@ -73,7 +75,14 @@ function safeReasoningLabelText(value) {
 }
 
 function reasoningStepLabel(part, node) {
+  if (part.reasoningKind === 'bi_worker_thinking_summary') return 'BI Worker 思考';
+  if (part.reasoningKind === 'bi_worker_raw_thinking_delta' || part.debugRaw === true) {
+    return 'BI Worker 调试原文';
+  }
   if (node && String(node).startsWith('agent-')) {
+    if (NODE_STEP_NAMES[String(node).split(':')[0]]) {
+      return NODE_STEP_NAMES[String(node).split(':')[0]];
+    }
     return part.agentName || (part.agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
   }
   if (node === 'reasoning_summary') {

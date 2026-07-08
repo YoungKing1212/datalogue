@@ -367,3 +367,10 @@
 - 关键改动: 用户报告排查 FIELD_NOT_FOUND 时后端日志缺少上下文——原代码只在抛异常时 logger.exception, 但 90% 的失败(L4 校验/FILTER_MISSING/bridge blocked/EMPTY_RESULT)都是正常返回 payload, 不进 except, 日志空白。本轮:(A) bi_worker_runtime.py 顶部初始化 logger, execute_query_plan 每个分支加结构化日志:START 摘要(dataset_id/trace_id/intent/primary_asset/dimension counts)、dataset ref 兜底前后 counts、L4 每条 missing_context 逐条 warning + L4 FAILED 汇总、FILTER_MISSING、EXECUTE EXCEPTION 用 logger.exception 保留 traceback、BRIDGE FAILED、EMPTY_RESULT、SUCCESS。(B) tools.py wrapper 加 REQUEST 摘要、context_state 过滤后 dropped_keys、CONTRACT ERROR 摘要、结尾按 status/failure_type 分类打 RESPONSE OK/RESPONSE FAILED。所有日志避免 raw SQL / raw values, 只打安全 dimension(count/failure_type/asset_ref 前缀/missing_context 列表)。
 - 验证方式: cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_query_runtime.py tests/test_agentscope_service_tools.py tests/test_bi_worker_progressive_context_contracts.py tests/test_bi_worker_progressive_context_e2e.py tests/test_query_plan_compiler.py --tb=short 为 71 passed; --log-cli-level=INFO 实测输出确认 START/dataset ref 兜底/SUCCESS 三行结构化日志。black/ruff 通过。
 - 残留风险: 异常路径的 logger.exception 会包含完整 traceback(可能含 SQL 片段), 只写文件日志不进用户可见通道, 但生产环境如果 log 采集到 SIEM 需注意脱敏。若后续有必要, 可用 hash 或 sanitize 替换 exc_msg。
+
+### 2026-07-08 17:57 · datalogue_execute_query_plan_bundle 完整链路文档
+
+- 涉及文件：`docs/architecture/datalogue_execute_query_plan_bundle完整链路.md`、`.codex/project-memory.md`。
+- 关键改动：根据当前代码梳理 `datalogue_execute_query_plan_bundle` 从 Agent Team / BI Worker 上游工具顺序，到 wrapper 契约校验、`BIWorkerQueryRuntime.execute_query_plan` L4/L5 分界、`QueryPlan -> legacy query_plan dict` 投影、`AgentScopeDatasetRuntimeBridge.run_direct_query` 状态机、BI Atomic Toolkit compile/execute/artifact、失败与 repair 分支、TeamSay/message.completed/Workbench 消费的完整链路。文档补充两张 Mermaid 图：主流程图和 Bridge/Atomic Toolkit 时序图，并给出排障日志关键词索引。
+- 验证方式：基于 CodeGraph 读取 `tools.py`、`bi_worker_runtime.py`、`bi_worker_contracts.py`、`runtime_bridge.py`、`atomic.py`、`bi_worker_context.py` 和 `agent_team.py` 相关片段；新增文档后执行人工通读，确认 Mermaid 代码块、章节编号和关键代码入口路径完整。
+- 残留风险：本轮是只读链路文档生成，未运行后端/前端测试，也未做真实页面 smoke；若后续代码继续调整 `AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE`、`BIWorkerQueryPlan` 契约或 Workbench 投影，需要同步更新本文档。

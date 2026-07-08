@@ -92,7 +92,7 @@ class QueryFilter(StrictModel):
     target: FieldTarget
     operator: Literal["=", "!=", ">", ">=", "<", "<=", "between", "in", "contains"]
     value: Any
-    reason: str = Field(min_length=1)
+    reason: str | None = None
 
 
 class QuerySelect(StrictModel):
@@ -149,7 +149,7 @@ class JoinRequirement(StrictModel):
     relationship_ref: str = Field(min_length=1)
     join_type: JoinType = "inner"
     required: bool = True
-    reason: str = Field(min_length=1)
+    reason: str | None = None
     # join_keys 用于把蓝图 SQL 里的物理 join 条件（如 p.account=ep.person_card）
     # 从 LLM 侧显式传给后端；旧编译器暂不消费，后续可平滑接入。
     join_keys: list[JoinKey] = Field(default_factory=list)
@@ -234,7 +234,7 @@ class QuerySupportValidation(StrictModel):
 REPAIR_HINTS: dict[QueryFailureType, dict[str, str]] = {
     "FIELD_NOT_FOUND": {
         "safe_reason": "查询计划中引用了未在上下文中发现的字段，需要补充数据资产信息。",
-        "recommended_action": "使用 datalogue_request_schema_slice 补充缺失字段的 schema 切片，然后基于新上下文重新生成查询计划。",
+        "recommended_action": "使用 datalogue_describe_tables 补充缺失字段的 schema 切片，然后基于新上下文重新生成查询计划。",
     },
     "FILTER_MISSING": {
         "safe_reason": "查询计划缺少必要的过滤条件，可能导致结果不准确或执行失败。",

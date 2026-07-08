@@ -163,7 +163,7 @@ class AgentScopeNativeBIHandoff:
             session = self.bridge.start_session(
                 dataset_id=request.dataset_id,
                 question=request.confirmed_question,
-                agent_name="bi_agent",
+                agent_name="bi_worker",
                 trace_id=request.trace_id,
                 **session_kwargs,
             )  # AgentScope session 是执行态；Datalogue handoff 表仍是业务审计真相源。

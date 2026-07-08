@@ -71,6 +71,17 @@ def _payload_from_event(event: dict[str, Any]) -> dict[str, Any]:
             "worker_session_id": _safe_text(value.get("worker_session_id")),
             "reply_id": _safe_text(value.get("reply_id")),
         }
+    raw_type = str(event.get("event_type") or event.get("type") or "")
+    if _is_thinking_event_type(raw_type):
+        # ThinkingBlockDeltaEvent.delta 是模型原始思维链；这里必须 fail-closed，
+        # 只能发布安全阶段摘要，调试原文统一由 worker_logging 的 debug agent.progress 通道输出。
+        return {
+            "summary": "BI Worker thinking 事件已隐藏，调试原文仅在 debug 开关下通过受控通道输出。",
+            "phase": "thinking",
+            "status": "running" if "delta" in raw_type.lower() else "completed",
+            "reply_id": _safe_text(event.get("reply_id")),
+            "block_id": _safe_text(event.get("block_id")),
+        }
     payload = event.get("payload")
     if isinstance(payload, dict):
         return payload
@@ -93,6 +104,10 @@ def _event_type(event: dict[str, Any]) -> DatalogueEventType:
         return "agent.progress"
     if raw_type == "message.completed":
         return "message.completed"
+    if _is_thinking_event_type(raw_type):
+        # AgentScope thinking start/delta/end 不是用户可见正文；尤其 delta 不能被通用
+        # “包含 delta/token/chunk 就是 message.delta” 规则误投到聊天正文或 live_thinking。
+        return "trace.updated"
     # AgentScope 原生事件里 TextBlockEnd/ThinkingBlockEnd/ModelCallEnd 只是分段结束；
     # 只有 ReplyEnd/final/finish 才代表本轮助手回复完成，避免重复投成 message.completed。
     if any(marker in raw_type for marker in ("replyendevent", "reply.end", "reply_end", "final", "finish")):
@@ -104,6 +119,11 @@ def _event_type(event: dict[str, Any]) -> DatalogueEventType:
     if "error" in raw_type or "fail" in raw_type:
         return "error.blocked"
     return "trace.updated"
+
+
+def _is_thinking_event_type(raw_type: str) -> bool:
+    normalized = raw_type.replace("-", "_").lower()
+    return "thinkingblock" in normalized or "thinking_block" in normalized
 
 
 def _is_subagent_hitl_require_event(event: dict[str, Any]) -> bool:

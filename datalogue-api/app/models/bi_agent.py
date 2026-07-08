@@ -110,7 +110,7 @@ class BIAgentHandoff(Base):
     id = Column(Integer, primary_key=True)
     run_id = Column(Integer, ForeignKey("bi_lead_agent_run.id", ondelete="CASCADE"), nullable=False)
     handoff_id = Column(String(120), nullable=False)
-    parent_agent = Column(String(80), nullable=False, default="bi_agent", server_default="bi_agent", index=True)
+    parent_agent = Column(String(80), nullable=False, default="bi_worker", server_default="bi_worker", index=True)
     child_agent = Column(
         String(80),
         nullable=False,

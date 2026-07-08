@@ -670,6 +670,72 @@ async def test_execute_query_plan_bundle_accepts_join_keys_field():
 
 
 @pytest.mark.asyncio
+async def test_execute_query_plan_bundle_logs_runtime_exception(caplog):
+    """运行时未预期异常要进入后端日志,并转成结构化失败 payload 给 Worker。"""
+    import json
+    import logging
+
+    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+
+    async def fake_execute(*args, **kwargs):
+        raise TypeError("unsupported operand type(s) for |: 'list' and 'set'")
+
+    from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
+
+    original = BIWorkerQueryRuntime.execute_query_plan
+    BIWorkerQueryRuntime.execute_query_plan = fake_execute  # type: ignore[assignment]
+    try:
+        tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+        execute_tool = next(
+            tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle"
+        )
+        with caplog.at_level(logging.ERROR, logger="app.agentscope_service.tools"):
+            result_chunk = await execute_tool(
+                dataset_id=1,
+                confirmed_question="查询日志",
+                query_plan={
+                    "intent": "detail_query",
+                    "question": "查询日志",
+                    "result_shape": {"type": "table", "grain": "detail", "limit": 100},
+                    "data_graph": {
+                        "primary_entity": {
+                            "asset_ref": "asset:log",
+                            "alias": "main",
+                            "role": "primary",
+                        },
+                        "supporting_entities": [],
+                    },
+                    "join_requirements": [],
+                    "filters": [],
+                    "selects": [
+                        {
+                            "target": {
+                                "asset_ref": "asset:log.id",
+                                "alias": "main",
+                                "field": "id",
+                            },
+                            "display_name": "ID",
+                            "requires_decoding": False,
+                        }
+                    ],
+                    "metrics": [],
+                    "group_by": [],
+                    "ordering": [],
+                    "assumptions": [],
+                },
+                context_state={"asset_refs": ["asset:log"], "field_refs": ["asset:log.id"]},
+            )
+        payload = json.loads(result_chunk.content[0].text)
+        assert payload["status"] == "failed"
+        assert payload["datalogue_event_type"] == "dataset_query_result"
+        assert payload["failure_type"] == "FIELD_NOT_FOUND"
+        assert "BI Worker query plan execution failed" in caplog.text
+        assert "unsupported operand type" in caplog.text
+    finally:
+        BIWorkerQueryRuntime.execute_query_plan = original  # type: ignore[assignment]
+
+
+@pytest.mark.asyncio
 async def test_describe_tables_tool_rejects_empty_table_names():
     """describe_tables 工具要求 table_names 为非空 list,否则拒绝并返回 code。"""
     from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools

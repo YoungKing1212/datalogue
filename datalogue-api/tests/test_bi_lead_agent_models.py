@@ -52,7 +52,7 @@ def test_bi_lead_agent_models_persist_k1_contract(db_session):
     handoff = BIAgentHandoff(
         run_id=run.id,
         handoff_id="handoff-001",
-        parent_agent="bi_agent",
+        parent_agent="bi_worker",
         child_run_id="dataset-run-001",
         dataset_id=12,
         task_id="task-bi-001",

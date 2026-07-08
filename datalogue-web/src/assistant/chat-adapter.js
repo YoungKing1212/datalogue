@@ -49,10 +49,6 @@ function safeStepLabel(node, displayName) {
 
 
 
-function enumLabel(labels, value) {
-  return value ? labels[value] || value : null;
-}
-
 function safeRepairPlanFromPayload(payload = {}, finalPayload = {}) {
   const patchSummary =
     payload.repair_patch_summary
@@ -337,6 +333,10 @@ const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
   'replacementFieldRef',
   'raw_rows',
   'rawRows',
+  'debug_raw',
+  'debugRaw',
+  'raw_delta',
+  'rawDelta',
   'blueprint',
   'blueprints',
 ]);
@@ -437,6 +437,17 @@ function sanitizeLiveThinkingText(text) {
   const value = String(text || '').trim();
   if (!value || LIVE_THINKING_SQL_RE.test(value)) return '';
   return value.slice(0, 4000);
+}
+
+function appendRawThinkingDelta(previous = '', delta = '') {
+  const next = String(delta || '');
+  if (!previous || !next) return `${previous}${next}`;
+  // AgentScope raw thinking 有时按英文词片段吐出且不带前导空格；调试视图按可读文本恢复词边界。
+  if (/\s$/.test(previous) || /^\s/.test(next)) return `${previous}${next}`;
+  if (/[A-Za-z0-9]$/.test(previous) && /^[A-Za-z0-9]/.test(next)) {
+    return `${previous} ${next}`;
+  }
+  return `${previous}${next}`;
 }
 
 function safeReasoningSummary(reasoningSummary) {
@@ -814,6 +825,14 @@ function structuredEventSummary(event = {}) {
     replyId: safeDisplayText(event.replyId || event.reply_id) || null,
     workerSessionId: safeDisplayText(event.workerSessionId || event.worker_session_id) || null,
     workerAgentId: safeDisplayText(event.workerAgentId || event.worker_agent_id) || null,
+    reasoningKind: safeDisplayText(event.reasoningKind || event.reasoning_kind) || null,
+    streamGroupId: safeDisplayText(event.streamGroupId || event.stream_group_id) || null,
+    sequence: Number.isInteger(event.sequence) && event.sequence >= 0 ? event.sequence : null,
+    blockId: safeDisplayText(event.blockId || event.block_id) || null,
+    debugRaw: event.debugRaw === true || event.debug_raw === true ? true : null,
+    rawDelta: event.debugRaw === true || event.debug_raw === true
+      ? String(event.rawDelta ?? event.raw_delta ?? '').slice(0, 4000)
+      : null,
     toolCalls: safeToolCalls(event.toolCalls || event.tool_calls),
     timing: safeTiming(event.timing),
     refs: safeRefs(event.refs),
@@ -823,12 +842,18 @@ function structuredEventSummary(event = {}) {
 
 function buildStructuredReasoningPart(event = {}) {
   const summary = structuredEventSummary(event);
-  const text = summary.summary
+  let text = summary.summary
     ? `${summary.title || '执行进展'}：${summary.summary}`
     : (summary.title || '执行进展');
-  const parentId = event.kind === 'agent_progress' && summary.agentRole
+  let parentId = event.kind === 'agent_progress' && summary.agentRole
     ? `agent-${summary.agentRole}`
     : event.kind === 'handoff' ? 'multi_agent_handoff' : event.kind;
+  if (summary.reasoningKind === 'bi_worker_thinking_summary') {
+    parentId = `agent-worker-thinking${summary.streamGroupId ? `:${summary.streamGroupId}` : ''}`;
+  } else if (summary.reasoningKind === 'bi_worker_raw_thinking_delta') {
+    parentId = `agent-worker-raw-thinking${summary.streamGroupId ? `:${summary.streamGroupId}` : ''}`;
+    text = `BI Worker 调试原文：${summary.rawDelta || ''}`;
+  }
   return compactObject({
     type: 'reasoning',
     text,
@@ -842,7 +867,10 @@ function buildStructuredReasoningPart(event = {}) {
 function isPreservedStreamingReasoning(part = {}) {
   if (part.type !== 'reasoning') return false;
   const parentId = String(part.parentId || '');
-  return parentId.startsWith('agent-') || parentId === 'live_thinking';
+  return parentId.startsWith('agent-')
+    || parentId === 'live_thinking'
+    || part.reasoningKind === 'bi_worker_thinking_summary'
+    || part.reasoningKind === 'bi_worker_raw_thinking_delta';
 }
 
 function upsertToolCallPart(toolParts, event = {}) {
@@ -1054,6 +1082,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
       let finalPayload = null;
       const repairTimeline = [];
       let repairPlan = null;
+      const rawThinkingDeltas = new Map();
 
       // C-ready 业务时间线累加器：从 SSE 事件推断五类节点
       const taskTimeline = [];
@@ -1114,7 +1143,14 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           yield { content: buildContent() };
         } else if (ev.type === 'agent_progress') {
           emitTrace(ev);
-          upsertReasoningPart(reasonings, buildStructuredReasoningPart(ev));
+          let progressEvent = ev;
+          if (ev.reasoningKind === 'bi_worker_raw_thinking_delta' && ev.debugRaw === true) {
+            const key = ev.streamGroupId || ev.replyId || 'default';
+            const nextRaw = appendRawThinkingDelta(rawThinkingDeltas.get(key) || '', ev.rawDelta || '');
+            rawThinkingDeltas.set(key, nextRaw);
+            progressEvent = { ...ev, rawDelta: nextRaw };
+          }
+          upsertReasoningPart(reasonings, buildStructuredReasoningPart(progressEvent));
           upsertTaskTimelineEvent(taskTimeline, {
             type: ev.agentRole === 'worker' ? 'bi_execution' : 'task_understood',
             label: ev.agentRole === 'worker' ? 'BI 执行' : '任务理解',

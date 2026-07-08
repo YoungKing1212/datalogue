@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Callable
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -60,6 +61,7 @@ _PROGRESSIVE_TOOL_SUMMARIES = {
     "datalogue_execute_query_plan_bundle": "BI Worker 正在校验并执行受控查询计划。",
     "datalogue_repair_query_plan": "BI Worker 正在生成查询修复建议。",
 }
+_RAW_THINKING_TRUE_VALUES = {"1", "true", "yes", "on", "debug"}
 
 
 def build_datalogue_extra_agent_middlewares(
@@ -155,9 +157,15 @@ class BIWorkerProgressMiddleware(MiddlewareBase):
         )
         agent_name = _safe_context_text(_safe_getattr(agent, "name")) or "BI Worker"
         reply_msg = None
+        thinking_state: dict[str, int] = {}
         try:
             async for event in next_handler(**input_kwargs):
                 reply_msg = _append_event_to_reply_msg(reply_msg, event, agent_name=agent_name)
+                _publish_thinking_progress(
+                    worker_context=self.worker_context,
+                    event=event,
+                    state=thinking_state,
+                )
                 _publish_tool_progress(worker_context=self.worker_context, event=event)
                 yield event
         except Exception:
@@ -673,9 +681,99 @@ def _publish_tool_progress(*, worker_context: dict[str, str | None], event: Any)
         status="running",
         title="工具调用",
         summary=progress["summary"],
-        tool_name=str(tool_name),
+        tool_name=_safe_context_text(tool_name),
         tool_call_id=_safe_context_text(summary.get("tool_call_id")),
     )
+
+
+def _publish_thinking_progress(
+    *,
+    worker_context: dict[str, str | None],
+    event: Any,
+    state: dict[str, int],
+) -> None:
+    """把 AgentScope thinking 事件投影为前端可消费的安全推理摘要进度。"""
+
+    summary = _event_summary(event)
+    if summary.get("category") != "thinking":
+        return
+    phase = str(summary.get("phase") or "")
+    reply_id = _safe_context_text(summary.get("reply_id"))
+    block_id = _safe_context_text(summary.get("block_id"))
+    stream_group_id = _stream_group_id(reply_id=reply_id, block_id=block_id)
+    if phase == "start":
+        sequence = _next_thinking_sequence(state, stream_group_id)
+        _publish_worker_progress(
+            worker_context=worker_context,
+            phase="thinking",
+            status="running",
+            title="BI Worker 思考中",
+            summary="正在分析问题与可用数据证据。",
+            reasoning_kind="bi_worker_thinking_summary",
+            stream_group_id=stream_group_id,
+            sequence=sequence,
+            block_id=block_id,
+        )
+        return
+    if phase == "end":
+        sequence = _next_thinking_sequence(state, stream_group_id)
+        _publish_worker_progress(
+            worker_context=worker_context,
+            phase="thinking",
+            status="completed",
+            title="BI Worker 完成思考",
+            summary="已完成一段安全推理摘要。",
+            reasoning_kind="bi_worker_thinking_summary",
+            stream_group_id=stream_group_id,
+            sequence=sequence,
+            block_id=block_id,
+        )
+        return
+    if phase != "delta" or not _debug_stream_raw_thinking_enabled():
+        return
+    raw_delta = _safe_getattr(event, "delta")
+    if raw_delta in (None, ""):
+        return
+    sequence = _next_thinking_sequence(state, stream_group_id)
+    _publish_worker_progress(
+        worker_context=worker_context,
+        phase="thinking",
+        status="running",
+        title="BI Worker 调试原文",
+        summary="调试原文流式更新。",
+        reasoning_kind="bi_worker_raw_thinking_delta",
+        stream_group_id=stream_group_id,
+        sequence=sequence,
+        block_id=block_id,
+        debug_raw=True,
+        raw_delta=str(raw_delta),
+    )
+
+
+def _stream_group_id(*, reply_id: str | None, block_id: str | None) -> str:
+    reply_part = reply_id or "reply"
+    block_part = block_id or "thinking"
+    return f"agent-worker-thinking:{reply_part}:{block_part}"
+
+
+def _next_thinking_sequence(state: dict[str, int], stream_group_id: str) -> int:
+    sequence = state.get(stream_group_id, 0) + 1
+    state[stream_group_id] = sequence
+    return sequence
+
+
+def _debug_stream_raw_thinking_enabled() -> bool:
+    raw_env = os.getenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING")
+    if raw_env is not None:
+        return raw_env.strip().lower() in _RAW_THINKING_TRUE_VALUES
+    try:
+        from app.core.config import get_settings
+
+        # 兼容写在 datalogue-api/.env 的配置：BaseSettings 会读取 env_file，
+        # 但不会保证把值同步回 os.environ，所以这里必须走 Settings fallback。
+        return bool(get_settings().DATALOGUE_DEBUG_STREAM_RAW_THINKING)
+    except Exception:
+        return False
 
 
 def summarize_tool_progress(tool_name: str) -> dict[str, str]:
@@ -696,6 +794,12 @@ def _publish_worker_progress(
     summary: str,
     tool_name: str | None = None,
     tool_call_id: str | None = None,
+    reasoning_kind: str | None = None,
+    stream_group_id: str | None = None,
+    sequence: int | None = None,
+    block_id: str | None = None,
+    debug_raw: bool = False,
+    raw_delta: str | None = None,
 ) -> None:
     """发布用户可见实时摘要；禁止把 inputs、tool input、raw LLM I/O 写入 payload。"""
 
@@ -708,16 +812,51 @@ def _publish_worker_progress(
         "summary": summary,
         "tool_name": tool_name,
         "tool_call_id": tool_call_id,
+        "reasoning_kind": _safe_context_text(reasoning_kind),
+        "stream_group_id": _safe_context_text(stream_group_id),
+        "sequence": sequence if isinstance(sequence, int) and sequence > 0 else None,
+        "block_id": _safe_context_text(block_id),
+        "debug_raw": True if debug_raw else None,
+        "raw_delta": str(raw_delta) if debug_raw and raw_delta is not None else None,
         "worker_agent_id": _safe_context_text(worker_context.get("agent_id")),
         "worker_session_id": _safe_context_text(worker_context.get("session_id")),
         "task_id": _safe_context_text(worker_context.get("task_id")),
         "thread_id": _safe_context_text(worker_context.get("thread_id")),
         "message_id": _safe_context_text(worker_context.get("message_id")),
     }
+    payload = {key: value for key, value in payload.items() if value}
+    try:
+        _assert_worker_progress_safe(payload)
+    except ValueError as exc:
+        # 进度事件只是前端可视化增强；一旦命中泄露风险必须丢弃该 progress，
+        # 但不能打断 AgentScope 主事件流，否则调试防线会反过来影响 BI Worker 执行。
+        logger.warning(
+            "[agentscope.bi_worker.progress_drop] unsafe progress payload dropped: %s",
+            exc,
+        )
+        return
     publish_agent_progress(
         user_id=worker_context.get("user_id"),
-        payload={key: value for key, value in payload.items() if value},
+        payload=payload,
     )
+
+
+def _assert_worker_progress_safe(payload: dict[str, Any]) -> None:
+    """防止默认进度误带 raw thinking / SQL / schema / QueryPlan 等内部细节。"""
+
+    debug_raw = payload.get("debug_raw") is True
+    raw_delta = payload.get("raw_delta")
+    if raw_delta is not None and not debug_raw:
+        raise ValueError("raw_delta requires debug_raw=true")
+    if debug_raw and payload.get("reasoning_kind") != "bi_worker_raw_thinking_delta":
+        raise ValueError("debug raw thinking progress requires raw reasoning kind")
+    for key, value in payload.items():
+        if key == "raw_delta" and debug_raw:
+            continue
+        if key in {"delta", "thinking"}:
+            raise ValueError(f"unsafe worker progress key: {key}")
+        if isinstance(value, str) and _SENSITIVE_TEXT_PATTERN.search(value):
+            raise ValueError(f"unsafe worker progress value for {key}")
 
 
 def _safe_context_text(value: Any) -> str | None:

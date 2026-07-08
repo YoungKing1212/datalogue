@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     LOG_BACKUP_COUNT: int = 7
     # 本地调试开关：打开后打印 Agent 原始 prompt 和返回值。
     AGENT_DEBUG_RAW_LOGS: bool = False
+    # 本地调试开关：打开后允许 BI Worker thinking delta 原文进入前端推理摘要；仅限短时排障。
+    DATALOGUE_DEBUG_STREAM_RAW_THINKING: bool = False
 
     # ---- AgentScope OpenTelemetry 配置 ----
     # WARNING: TracingMiddleware 会将模型请求/响应内容（messages、tools schema、

@@ -44,7 +44,6 @@ from app.core.database import SessionLocal
 from app.models.dataset import SemanticDataset
 from app.schemas.bi_workbench import sanitize_event_payload
 
-
 AgentToolFactory = Callable[[str | None, str | None, str | None], Awaitable[list[ToolBase]]]
 logger = logging.getLogger(__name__)
 
@@ -455,10 +454,13 @@ def build_datalogue_search_assets_tool(
     """列出数据集下所有候选蓝图、指标、维度；蓝图只作为 QueryPlan 生成参考。"""
 
     def datalogue_search_assets(dataset_id: int) -> ToolChunk:
-        """List all blueprints, metrics and dimensions for the confirmed dataset.
+        """列出已确认数据集的所有蓝图、指标和维度候选清单。
 
         蓝图含 call_template（SQL 模板）和 parameters（参数提取规则），
         命中后用于提取筛选参数和选择字段；真实执行仍必须走 QueryPlan bundle。
+
+        Args:
+            dataset_id: 已被用户确认的数据集 ID；工具会返回该数据集下所有可选蓝图、指标、维度。
         """
         _ = worker_context
         with SessionLocal() as db:
@@ -482,7 +484,15 @@ def build_datalogue_progressive_bi_worker_tools(
     plan_contract_failure_counts: dict[str, int] = {}
 
     def datalogue_prepare_query_context(dataset_id: int, confirmed_question: str) -> ToolChunk:
-        """Describe dataset capability and recall query assets in one step (merged L0+L1)."""
+        """描述数据集能力并召回本轮问题相关的查询资产（合并 L0+L1）。
+
+        返回统一的查询上下文摘要：数据集能力概况、可用蓝图/指标/维度候选，
+        为后续 request_schema_slice 与 execute_query_plan_bundle 提供入口线索。
+
+        Args:
+            dataset_id: 已被用户确认的数据集 ID。
+            confirmed_question: 用户已经确认的自然语言查询问题；用于按问题语义召回相关资产。
+        """
 
         with SessionLocal() as db:
             payload = BIWorkerContextProvider(db).prepare_query_context(
@@ -496,7 +506,17 @@ def build_datalogue_progressive_bi_worker_tools(
         confirmed_question: str,
         focus: dict[str, Any] | None = None,
     ) -> ToolChunk:
-        """Request a focused schema slice for query planning."""
+        """请求数据集全部表清单与跨表关系（含真实 join keys），面向 QueryPlan 生成。
+
+        字段级细节请改用 datalogue_describe_tables 逐表按需拉取，
+        本工具只返回 asset 级形状：table_refs / relationship_refs 等。
+
+        Args:
+            dataset_id: 已确认的数据集 ID。
+            confirmed_question: 用户确认的问题文本；用于按语义收敛 schema slice 输出。
+            focus: 可选聚焦提示，如 {"table_names": ["orders", "users"]} 或
+                {"metrics": ["gmv"]}，用于告知后端 preferred 表/字段范围；不传则返回全量结构。
+        """
 
         with SessionLocal() as db:
             payload = (
@@ -514,7 +534,15 @@ def build_datalogue_progressive_bi_worker_tools(
         dataset_id: int,
         table_names: list[str],
     ) -> ToolChunk:
-        """Describe specified tables with fields, comments, and top 3 sample values."""
+        """按表名精确返回指定表的字段清单、字段注释和前 3 条样例值，一次可查多张表。
+
+        用于在 request_schema_slice 之后针对候选表补齐字段细节，
+        避免一次性拉取整个 schema 造成上下文膨胀；空列表会 fail-closed 返回 TABLE_NAMES_REQUIRED。
+
+        Args:
+            dataset_id: 已确认的数据集 ID。
+            table_names: 需要描述的物理表名列表；必须为非空 list，允许一次传多张表。
+        """
 
         # table_names 必填、必须为非空 list;fail-closed 返回错误 payload
         if not isinstance(table_names, list) or not table_names:
@@ -539,7 +567,22 @@ def build_datalogue_progressive_bi_worker_tools(
         context_state: dict[str, Any],
         trace_id: str | None = None,
     ) -> ToolChunk:
-        """Validate plan support then execute in one step (merged L4+L5)."""
+        """校验查询计划的支持度并执行，一次返回结果摘要或失败诊断（合并 L4+L5）。
+
+        契约层会先按 BIWorkerQueryPlan 校验 query_plan 结构，
+        校验失败自动进入 Repair 链路返回可回填的 hint；校验通过后由 BIWorkerQueryRuntime
+        编译并执行 SQL，最终产出 artifact_ref、row_count、column_count 等安全摘要。
+
+        Args:
+            dataset_id: 已确认的数据集 ID。
+            confirmed_question: 用户已确认的自然语言问题；用于结果摘要与失败诊断的语境化描述。
+            query_plan: 结构化查询计划 dict，形状必须匹配 query_plan_contract_hint。
+                至少包含 intent/result_shape/data_graph/filters/selects 或 metrics 等顶层字段。
+            context_state: 渐进式上下文状态 dict，形状匹配 ProgressiveContextState（例如
+                asset_refs / relationship_refs / field_refs / lookup_dependencies 等）；
+                多余字段会被安全过滤。
+            trace_id: 可选调用追踪 ID，透传到 runtime 与 artifact 落库以便串联日志。
+        """
 
         # wrapper 入口摘要:一眼看到 LLM 传入的顶层 keys 和 dimension 规模,
         # 便于反查契约错误(pydantic ValidationError 在这里就挂,进不到 runtime)。
@@ -563,6 +606,21 @@ def build_datalogue_progressive_bi_worker_tools(
 
         try:
             plan = BIWorkerQueryPlan.model_validate(query_plan)
+            # 打印完整 query_plan 结构，便于排查 LLM 生成的 DSL 是否与校验规则对齐
+            logger.info(
+                "[datalogue_execute_query_plan_bundle] QUERY_PLAN dataset_id=%s trace_id=%s "
+                "intent=%s primary_entity=%s supporting_entities=%d "
+                "selects=%s metrics=%s filters=%s join_requirements=%s",
+                dataset_id,
+                trace_id,
+                plan.intent,
+                plan.data_graph.primary_entity.asset_ref,
+                len(plan.data_graph.supporting_entities),
+                [s.target.asset_ref for s in (plan.selects or [])],
+                [m.target.asset_ref for m in (plan.metrics or [])],
+                [json.dumps(f.model_dump(), ensure_ascii=False) for f in (plan.filters or [])],
+                [json.dumps(j.model_dump(), ensure_ascii=False) for j in (plan.join_requirements or [])],
+            )
             # 只保留 ProgressiveContextState 认识的字段；
             # LLM 可能把 prepare_query_context 返回的 dataset_summary 等额外字段一并传入。
             valid_keys = ProgressiveContextState.field_names()
@@ -659,7 +717,20 @@ def build_datalogue_progressive_bi_worker_tools(
         current_query_plan: dict[str, Any] | None = None,
         context_state: dict[str, Any] | None = None,
     ) -> ToolChunk:
-        """Repair a failed query plan with targeted hints based on failure type."""
+        """基于失败类型返回可执行的查询计划修复建议，用于 execute 失败后的自愈重试。
+
+        工具内部按 failure_type 命中 RepairRequest 模板，返回 safe_reason、
+        recommended_action 与结构化 hints；同类失败次数达到上限后会置 stop_retry=True，
+        由 BI Worker 上层决定停止重试并汇报 leader。
+
+        Args:
+            failure_type: 失败类型枚举字符串，允许值包括 FIELD_NOT_FOUND、
+                FILTER_MISSING、AGGREGATION_WRONG、VALUE_BINDING_FAILED、SQL_GUARD_BLOCKED、
+                EMPTY_RESULT；未识别值会兜底为 FIELD_NOT_FOUND。
+            current_query_plan: 上一次尝试的查询计划 dict，可选；用于让 hint 定位到具体字段路径。
+            context_state: 上一次的渐进式上下文状态 dict，可选；用于让 hint 引用已知的
+                asset_refs / relationship_refs 等参考。
+        """
 
         retry_key = f"repair:{failure_type}"
         retry_attempt = plan_contract_failure_counts.get(retry_key, 0) + 1
@@ -743,7 +814,16 @@ def build_datalogue_select_candidate_datasets_tool(
     """创建 Agent Team BI worker 可见的候选数据集筛选工具。"""
 
     async def datalogue_select_candidate_datasets(question: str, limit: int = 5) -> ToolChunk:
-        """Select safe dataset candidates for user confirmation before querying."""
+        """在缺少 dataset_id 时，根据用户问题筛选候选数据集卡片供用户二次确认。
+
+        返回值只包含 dataset_id/dataset_name/reason/score 等安全字段，
+        不返回 schema、SQL、raw rows 或字段明细；候选存在时会同时下发一次
+        message.completed SSE 兜底事件，避免 LLM 忘记 TeamSay 导致空 final。
+
+        Args:
+            question: 用户当前的自然语言查询问题；用于按名称/描述/同义词做关键词匹配。
+            limit: 期望返回的候选数量上限，默认 5，安全区间为 1~8，超出会被夹紧到该区间。
+        """
 
         safe_limit = max(1, min(int(limit or 5), 8))
         payload = select_candidate_datasets_for_agent_team(question=question, limit=safe_limit)

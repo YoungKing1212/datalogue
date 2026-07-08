@@ -224,7 +224,7 @@ async def test_agentscope_native_handoff_returns_safe_d2_result():
 
     result = await native.query_dataset(_handoff_request(), task_id="task-native")
 
-    assert result.parent_agent == "bi_agent"
+    assert result.parent_agent == "bi_worker"
     assert result.child_agent == "dataset_agent"
     assert result.child_run_id == "dataset-native-001"
     assert result.dataset_id == 10
@@ -239,7 +239,7 @@ async def test_agentscope_native_handoff_returns_safe_d2_result():
     assert "schema" not in result.model_dump()
     assert "raw_rows" not in result.model_dump()
     assert factory.sessions == [bridge.session]
-    assert bridge.calls[0]["kwargs"]["agent_name"] == "bi_agent"
+    assert bridge.calls[0]["kwargs"]["agent_name"] == "bi_worker"
 
 
 @pytest.mark.asyncio

@@ -439,7 +439,7 @@ async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_ses
         trace_id="trace-1",
         thread_id="thread-1",
         message_id="message-1",
-        selected_agent="bi_agent",
+        selected_agent="bi_worker",
     )
 
     events = [

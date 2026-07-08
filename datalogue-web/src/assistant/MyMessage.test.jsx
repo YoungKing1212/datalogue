@@ -213,6 +213,29 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
   });
 
+  it('labels BI Worker thinking reasoning separately from generic Agent progress', () => {
+    setMockMessage();
+    mockMessageState.message.content = [
+      {
+        type: 'reasoning',
+        text: 'BI Worker 思考中：正在分析问题与可用数据证据。',
+        parentId: 'agent-worker-thinking:reply-1:think-1',
+        reasoningKind: 'bi_worker_thinking_summary',
+        agentRole: 'worker',
+        agentName: 'BI Worker',
+        phase: 'thinking',
+        status: 'running',
+      },
+      { type: 'text', text: '正在处理…' },
+    ];
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByText('推理摘要'));
+
+    expect(screen.getByText('BI Worker 思考')).toBeInTheDocument();
+    expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
+  });
+
   it('uses each final reasoning summary title instead of the generic fallback label', () => {
     setMockMessage();
     mockMessageState.message.content = [

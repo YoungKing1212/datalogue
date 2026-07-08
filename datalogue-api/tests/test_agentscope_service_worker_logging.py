@@ -257,6 +257,159 @@ async def test_bi_worker_reply_publishes_safe_realtime_progress_events():
     assert "查询杨凯2025年日志" not in str(progress_events)
 
 
+@pytest.mark.asyncio
+async def test_bi_worker_thinking_events_publish_safe_reasoning_progress(monkeypatch):
+    from agentscope.event import (
+        ReplyEndEvent,
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+    )
+
+    from app.agentscope_service.progress_bridge import agent_progress_subscription
+    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING", "false")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        yield ThinkingBlockDeltaEvent(
+            reply_id="reply-1",
+            block_id="think-1",
+            delta="先分析用户问题，并考虑 SELECT * FROM hidden_schema.raw_rows",
+        )
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
+        yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
+
+    async with agent_progress_subscription(user_id="user-1") as queue:
+        events = [
+            event
+            async for event in middleware.on_reply(
+                agent=agent,
+                input_kwargs={"inputs": "查询杨凯2025年日志"},
+                next_handler=next_handler,
+            )
+        ]
+        progress_events = [queue.get_nowait() for _ in range(queue.qsize())]
+
+    assert [str(event.type) for event in events] == [
+        "REPLY_START",
+        "THINKING_BLOCK_START",
+        "THINKING_BLOCK_DELTA",
+        "THINKING_BLOCK_END",
+        "REPLY_END",
+    ]
+    thinking_payloads = [
+        event["payload"] for event in progress_events if event["payload"]["phase"] == "thinking"
+    ]
+    assert [payload["status"] for payload in thinking_payloads] == ["running", "completed"]
+    assert {payload["reasoning_kind"] for payload in thinking_payloads} == {
+        "bi_worker_thinking_summary"
+    }
+    assert thinking_payloads[0]["summary"] == "正在分析问题与可用数据证据。"
+    assert thinking_payloads[-1]["summary"] == "已完成一段安全推理摘要。"
+    assert thinking_payloads[0]["stream_group_id"] == "agent-worker-thinking:reply-1:think-1"
+    assert [payload["sequence"] for payload in thinking_payloads] == [1, 2]
+    serialized = str(progress_events)
+    assert "先分析用户问题" not in serialized
+    assert "SELECT" not in serialized
+    assert "hidden_schema" not in serialized
+    assert "raw_rows" not in serialized
+    assert "raw_delta" not in serialized
+    assert "查询杨凯2025年日志" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_thinking_debug_flag_streams_raw_delta(monkeypatch):
+    from agentscope.event import (
+        ReplyEndEvent,
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+    )
+
+    from app.agentscope_service.progress_bridge import agent_progress_subscription
+    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING", "true")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+    raw_delta = "原始 thinking delta：SELECT * FROM hidden_schema.raw_rows"
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        yield ThinkingBlockDeltaEvent(reply_id="reply-1", block_id="think-1", delta=raw_delta)
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
+        yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
+
+    async with agent_progress_subscription(user_id="user-1") as queue:
+        async for _event in middleware.on_reply(
+            agent=agent,
+            input_kwargs={"inputs": "查询杨凯2025年日志"},
+            next_handler=next_handler,
+        ):
+            pass
+        progress_events = [queue.get_nowait() for _ in range(queue.qsize())]
+
+    raw_payloads = [
+        event["payload"]
+        for event in progress_events
+        if event["payload"].get("reasoning_kind") == "bi_worker_raw_thinking_delta"
+    ]
+    assert len(raw_payloads) == 1
+    assert raw_payloads[0]["debug_raw"] is True
+    assert raw_payloads[0]["raw_delta"] == raw_delta
+    assert raw_payloads[0]["title"] == "BI Worker 调试原文"
+    assert raw_payloads[0]["stream_group_id"] == "agent-worker-thinking:reply-1:think-1"
+    safe_payloads = [
+        event["payload"]
+        for event in progress_events
+        if event["payload"].get("reasoning_kind") == "bi_worker_thinking_summary"
+    ]
+    assert [payload["status"] for payload in safe_payloads] == ["running", "completed"]
+    assert "raw_delta" not in str(safe_payloads)
+
+
+def test_bi_worker_thinking_debug_flag_reads_settings_when_env_not_exported(
+    monkeypatch, tmp_path
+):
+    """写在 .env 但未导出到 os.environ 时，也要能开启前端 raw delta 调试通道。"""
+    from app.agentscope_service.worker_logging import _debug_stream_raw_thinking_enabled
+    from app.core.config import get_settings
+
+    monkeypatch.delenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "DATALOGUE_DEBUG_STREAM_RAW_THINKING=true\n",
+        encoding="utf-8",
+    )
+    get_settings.cache_clear()
+    try:
+        assert _debug_stream_raw_thinking_enabled() is True
+    finally:
+        get_settings.cache_clear()
+
+
 def test_summarize_tool_progress_maps_progressive_bi_tools_to_safe_summaries():
     from app.agentscope_service.worker_logging import summarize_tool_progress
 
@@ -935,6 +1088,30 @@ def test_worker_context_includes_correlation_fields():
             title="测试标题",
             summary="测试摘要",
         )
+
+
+def test_unsafe_worker_progress_is_dropped_without_raising(monkeypatch, caplog):
+    """命中 SQL/schema 等敏感内容时只丢弃前端进度，不能中断 AgentScope 事件流。"""
+    from app.agentscope_service import worker_logging
+
+    published: list[dict] = []
+    monkeypatch.setattr(
+        worker_logging,
+        "publish_agent_progress",
+        lambda user_id, payload: published.append({"user_id": user_id, "payload": payload}),
+    )
+
+    with caplog.at_level("WARNING"):
+        worker_logging._publish_worker_progress(
+            worker_context={"user_id": "user-1", "agent_name": "bi-worker"},
+            phase="thinking",
+            status="running",
+            title="测试标题",
+            summary="select * from hidden_schema",
+        )
+
+    assert published == []
+    assert "unsafe progress payload dropped" in caplog.text
 
 
 def test_agentscope_otel_config_defaults(tmp_path, monkeypatch):

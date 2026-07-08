@@ -754,6 +754,65 @@ async def test_execute_query_plan_derives_field_refs_from_dataset(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_query_plan_normalizes_json_list_refs_before_dataset_merge(monkeypatch):
+    """工具 JSON 入参会把 refs 变成 list,runtime 合并 dataset refs 前必须先正规化。"""
+    runtime = BIWorkerQueryRuntime(db=None)
+
+    mock_dataset = _mock_dataset(
+        tables=[("pm_tenant", "log", ["rzrq"], "active")],
+    )
+    monkeypatch.setattr(runtime, "_get_dataset", lambda dataset_id: mock_dataset)
+
+    async def _return_safe_result(*args, **kwargs):
+        return BIWorkerQueryResult(
+            answer_summary="查询已完成。",
+            artifact_ref="artifact:query-list-refs-1",
+            checkpoint_ref="checkpoint:query-list-refs-1",
+            row_count=1,
+            column_count=1,
+        )
+
+    monkeypatch.setattr(runtime, "_execute_supported_plan", _return_safe_result)
+
+    plan = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="按 JSON list 上下文查询",
+        result_shape=ResultShape(type="table", grain="日报", limit=10),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(
+                asset_ref="table:pm_tenant.log",
+                alias="main",
+                role="primary",
+            ),
+            supporting_entities=[],
+        ),
+        selects=[
+            QuerySelect(
+                target=FieldTarget(
+                    asset_ref="table:pm_tenant.log.rzrq",
+                    alias="main",
+                    field="rzrq",
+                ),
+                display_name="日志日期",
+            )
+        ],
+    )
+    json_state = ProgressiveContextState()
+    json_state.asset_refs = ["table:pm_tenant.log"]  # type: ignore[assignment]
+    json_state.relationship_refs = []  # type: ignore[assignment]
+    json_state.field_refs = ["table:pm_tenant.log.rzrq"]  # type: ignore[assignment]
+
+    payload = await runtime.execute_query_plan(
+        dataset_id=1,
+        confirmed_question="按 JSON list 上下文查询",
+        query_plan=plan,
+        context_state=json_state,
+    )
+
+    assert payload["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_execute_query_plan_field_not_in_dataset_still_fails(monkeypatch):
     """dataset 兜底只覆盖真实字段,拼错字段仍应 FIELD_NOT_FOUND。"""
     runtime = BIWorkerQueryRuntime(db=None)

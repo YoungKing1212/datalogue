@@ -54,7 +54,7 @@ class AgentScopeDatasetAgentFactory:
         )
         tools = build_dataset_agentscope_tools(
             session=session,
-            agent_name="bi_agent",
+            agent_name="bi_worker",
         )  # DatasetAgent external tools 绑定当前 session，避免跨 handoff 复用内部执行态。
         return Agent(
             name="dataset_agent",

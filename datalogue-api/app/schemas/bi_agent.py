@@ -126,7 +126,7 @@ class BIAgentHandoffResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     handoff_id: str
-    parent_agent: Literal["bi_agent"] = "bi_agent"
+    parent_agent: Literal["bi_worker"] = "bi_worker"
     child_agent: Literal["dataset_agent"] = "dataset_agent"
     child_run_id: str | None = None
     dataset_id: int

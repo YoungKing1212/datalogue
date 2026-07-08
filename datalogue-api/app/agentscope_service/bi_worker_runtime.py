@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -184,6 +185,7 @@ class BIWorkerQueryRuntime:
 
         # _execute_plan 已经把 bridge blocked 场景写成 failure_type，这里直接透传给 LLM。
         if result.failure_type is not None:
+            logger.error("[failure_result]: %s", json.dumps(result.to_tool_payload()))
             logger.warning(
                 "[bi_worker.execute_query_plan] BRIDGE FAILED dataset_id=%s trace_id=%s "
                 "failure_type=%s safe_diagnosis=%s",
@@ -369,6 +371,17 @@ class BIWorkerQueryRuntime:
             failure_type = _map_bridge_code_to_failure(
                 code=str(result.get("code") or "RUNTIME_BLOCKED"),
                 error_summary=str(result.get("error_summary") or ""),
+            )
+            # 打印 bridge 原始失败信息：code、error_summary、tool_results 中的错误摘要
+            _log_tool_result_errors(result, dataset_id, trace_id)
+            logger.warning(
+                "[bi_worker._execute_plan] BRIDGE BLOCKED dataset_id=%s trace_id=%s "
+                "code=%s error_summary=%s failure_type=%s",
+                dataset_id,
+                trace_id,
+                result.get("code"),
+                result.get("error_summary"),
+                failure_type,
             )
             diagnosis = FAILURE_DIAGNOSIS_MAP[failure_type]
             return BIWorkerQueryResult(
@@ -578,6 +591,57 @@ def _answer_summary(
     if status != "completed" or not artifact_ref:
         return "查询未完成，未生成可展示结果。"
     return f"查询已完成，结果已生成 artifact_ref={artifact_ref}，共 {row_count or 0} 行、{column_count or 0} 列。"
+
+
+def _log_tool_result_errors(
+    result: dict[str, Any],
+    dataset_id: int,
+    trace_id: str | None = None,
+) -> None:
+    """打印 bridge blocked 返回的 tool_results 中的实际错误信息，便于排查具体的字段名。"""
+    tool_results = result.get("tool_results") or []
+    for i, tr in enumerate(tool_results):
+        if not isinstance(tr, dict):
+            continue
+        output = tr.get("output")
+        if output is not None:
+            # output 可能是 list[TextBlock] 或原始字符串
+            texts = []
+            if isinstance(output, list):
+                for block in output:
+                    text = getattr(block, "text", None) or (block if isinstance(block, str) else None)
+                    if text:
+                        texts.append(str(text))
+            elif isinstance(output, str):
+                texts.append(output)
+            for text in texts:
+                try:
+                    parsed = json.loads(text)
+                except (TypeError, json.JSONDecodeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    code_val = parsed.get("code") or parsed.get("status", "")
+                    error_val = parsed.get("error_summary", "") or parsed.get("error", "") or parsed.get("message", "")
+                    logger.warning(
+                        "[bi_worker._execute_plan] tool_result[%d] dataset_id=%s trace_id=%s "
+                        "code=%s error_summary=%s",
+                        i, dataset_id, trace_id, code_val, error_val,
+                    )
+                else:
+                    logger.warning(
+                        "[bi_worker._execute_plan] tool_result[%d] dataset_id=%s trace_id=%s raw=%s",
+                        i, dataset_id, trace_id, text[:500],
+                    )
+        elif tr.get("code"):
+            # 无 output 的扁平 tool_result（如权限拒绝等），直接从 dict 字段取
+            logger.warning(
+                "[bi_worker._execute_plan] tool_result[%d] dataset_id=%s trace_id=%s "
+                "tool=%s code=%s status=%s",
+                i, dataset_id, trace_id,
+                tr.get("name", "?"),
+                tr.get("code"),
+                tr.get("status"),
+            )
 
 
 def _map_bridge_code_to_failure(*, code: str, error_summary: str) -> QueryFailureType:

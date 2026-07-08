@@ -96,7 +96,7 @@ class AgentScopeDatasetRuntimeSession:
 
     dataset_id: int
     question: str
-    agent_name: str = "bi_agent"
+    agent_name: str = "bi_worker"
     sql_generation_context: dict[str, Any] | None = None
     dialect: str | None = "sqlite"
     current_datasource_dialect: str | None = None
@@ -159,7 +159,7 @@ class DatasetAgentScopeExternalTool(ToolBase):
         """把 AgentScope permission hook 映射到 Datalogue fail-closed 策略。"""
 
         del context  # 当前门禁由 Datalogue 会话状态决定，不信任 Agent 可写上下文。
-        if self.agent_name != "bi_agent" or self.session.agent_name != "bi_agent":
+        if self.agent_name != "bi_worker" or self.session.agent_name != "bi_worker":
             return self._deny("AGENT_NOT_ALLOWED", "只有 BI Agent 可以调用 BI 原子工具。")
         if self.name not in AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE:
             return self._deny("TOOL_NOT_WHITELISTED", "工具不在 DatasetAgent 白名单中。")
@@ -230,7 +230,7 @@ class AgentScopeDatasetRuntimeBridge:
         *,
         dataset_id: int,
         question: str,
-        agent_name: str = "bi_agent",
+        agent_name: str = "bi_worker",
         sql_generation_context: dict[str, Any] | None = None,
         dialect: str | None = "sqlite",
         current_datasource_dialect: str | None = None,
@@ -821,7 +821,7 @@ class AgentScopeDatasetRuntimeBridge:
 def build_dataset_agentscope_tools(
     *,
     session: AgentScopeDatasetRuntimeSession,
-    agent_name: str = "bi_agent",
+    agent_name: str = "bi_worker",
 ) -> list[DatasetAgentScopeExternalTool]:
     """构建 AgentScope 可注册的 DatasetAgent external tools。"""
 

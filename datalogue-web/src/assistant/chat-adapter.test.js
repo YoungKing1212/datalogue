@@ -251,6 +251,200 @@ describe('chat-adapter C-ready metadata', () => {
     expect(JSON.stringify(finalChunk)).not.toMatch(/\bselect \* from\b|hidden_table|schema/i);
   });
 
+  it('streams BI Worker thinking summary as a dedicated reasoning part and preserves it after final', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 思考中',
+            summary: '正在分析问题与可用数据证据。',
+            reasoning_kind: 'bi_worker_thinking_summary',
+            stream_group_id: 'reply-1:think-1',
+            sequence: 1,
+            raw_delta: 'select * from hidden_table',
+            debug_raw: false,
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          task_id: 'task-thinking',
+          payload: {
+            summary: '查询已完成。',
+            reasoning_summary: [
+              {
+                title: '生成结果',
+                summary: '已生成可查看的查询结果。',
+                status: 'completed',
+              },
+            ],
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 10 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯2025年日志' }));
+    const firstReasonings = chunks[0].content.filter((part) => part.type === 'reasoning');
+    const finalReasonings = chunks.at(-1).content.filter((part) => part.type === 'reasoning');
+
+    expect(firstReasonings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        parentId: 'agent-worker-thinking:reply-1:think-1',
+        reasoningKind: 'bi_worker_thinking_summary',
+        text: 'BI Worker 思考中：正在分析问题与可用数据证据。',
+      }),
+    ]));
+    expect(finalReasonings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        parentId: 'agent-worker-thinking:reply-1:think-1',
+        reasoningKind: 'bi_worker_thinking_summary',
+      }),
+      expect.objectContaining({
+        parentId: 'reasoning_summary',
+        text: '生成结果：已生成可查看的查询结果。',
+      }),
+    ]));
+    expect(JSON.stringify(chunks)).not.toMatch(/select \* from|hidden_table|raw_delta|schema|query_plan|raw_rows/i);
+  });
+
+  it('accumulates debug raw BI Worker thinking delta in a separate marked reasoning part', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking-debug',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 调试原文',
+            summary: '调试原文流式片段。',
+            reasoning_kind: 'bi_worker_raw_thinking_delta',
+            stream_group_id: 'reply-1:think-debug',
+            sequence: 1,
+            debug_raw: true,
+            raw_delta: '先分析',
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking-debug',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 调试原文',
+            summary: '调试原文流式片段。',
+            reasoning_kind: 'bi_worker_raw_thinking_delta',
+            stream_group_id: 'reply-1:think-debug',
+            sequence: 2,
+            debug_raw: true,
+            raw_delta: '用户问题',
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 10 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯2025年日志' }));
+    const rawReasoning = chunks.at(-1).content.find((part) => (
+      part.type === 'reasoning' && part.reasoningKind === 'bi_worker_raw_thinking_delta'
+    ));
+
+    expect(rawReasoning).toMatchObject({
+      parentId: 'agent-worker-raw-thinking:reply-1:think-debug',
+      title: 'BI Worker 调试原文',
+      debugRaw: true,
+      text: 'BI Worker 调试原文：先分析用户问题',
+    });
+  });
+
+  it('preserves readable spaces between english BI Worker raw thinking deltas', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking-english-debug',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 调试原文',
+            summary: '调试原文流式片段。',
+            reasoning_kind: 'bi_worker_raw_thinking_delta',
+            stream_group_id: 'reply-1:think-english-debug',
+            sequence: 1,
+            debug_raw: true,
+            raw_delta: 'The',
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking-english-debug',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 调试原文',
+            summary: '调试原文流式片段。',
+            reasoning_kind: 'bi_worker_raw_thinking_delta',
+            stream_group_id: 'reply-1:think-english-debug',
+            sequence: 2,
+            debug_raw: true,
+            raw_delta: 'user',
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking-english-debug',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 调试原文',
+            summary: '调试原文流式片段。',
+            reasoning_kind: 'bi_worker_raw_thinking_delta',
+            stream_group_id: 'reply-1:think-english-debug',
+            sequence: 3,
+            debug_raw: true,
+            raw_delta: ' wants',
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 10 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯2025年日志' }));
+    const rawReasoning = chunks.at(-1).content.find((part) => (
+      part.type === 'reasoning' && part.reasoningKind === 'bi_worker_raw_thinking_delta'
+    ));
+
+    expect(rawReasoning).toMatchObject({
+      parentId: 'agent-worker-raw-thinking:reply-1:think-english-debug',
+      debugRaw: true,
+      text: 'BI Worker 调试原文：The user wants',
+    });
+  });
+
   it('keeps BI Worker schema slice progressive payload out of chat content', async () => {
     streamAgentTeamTask.mockReturnValue(events([
       {
