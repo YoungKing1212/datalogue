@@ -509,8 +509,7 @@ class AgentTeamTaskRuntime:
                     from app.services.title_generator import maybe_auto_title_async
 
                     maybe_auto_title_async(
-                        self.db,
-                        session.thread_id,
+                        session.thread_id,  # type: ignore[arg-type]
                         request.question,
                         final_answer,
                         legacy_conversation_id=request.conversation_id,

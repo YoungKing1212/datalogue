@@ -165,48 +165,47 @@ def _update_session_title_sync(
         db.close()
 
 
-def maybe_auto_title(
-    db: Session,
+def _maybe_auto_title_worker(
     thread_id: str,
     user_message: str,
     assistant_response: str,
     legacy_conversation_id: int | None = None,
 ) -> None:
-    """尝试自动生成并更新会话标题（在后台线程中执行）。"""
-    # 先检查是否需要生成
-    session = (
-        db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == thread_id).one_or_none()
-    )
-    if session and session.title and len(session.title) > 80:
-        # 已有较长标题，认为已经生成过
-        return
+    """在后台线程中生成并更新会话标题。"""
+    db = SessionLocal()
+    try:
+        # 检查是否需要生成
+        session = (
+            db.query(AgentScopeSession)
+            .filter(AgentScopeSession.thread_id == thread_id)
+            .one_or_none()
+        )
+        if session is None:
+            return
+        existing_title: str | None = session.title  # type: ignore[assignment]
+        if existing_title and len(existing_title) > 80:
+            return
 
-    settings = get_settings()
-    title = generate_title(user_message, assistant_response, settings, db)
-    if title:
-        _update_session_title_sync(thread_id, title, legacy_conversation_id)
+        settings = get_settings()
+        title = generate_title(user_message, assistant_response, settings, db)
+        if title:
+            _update_session_title_sync(thread_id, title, legacy_conversation_id)
+    except Exception:
+        logger.exception("后台标题生成异常")
+    finally:
+        db.close()
 
 
 def maybe_auto_title_async(
-    db: Session,
     thread_id: str,
     user_message: str,
     assistant_response: str,
     legacy_conversation_id: int | None = None,
 ) -> None:
     """启动后台线程尝试自动生成并更新会话标题。"""
-    # 先在当前 DB 会话检查是否需要生成
-    session = (
-        db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == thread_id).one_or_none()
-    )
-    if session and session.title and len(session.title) > 80:
-        # 已有较长标题，认为已经生成过
-        return
-
-    # 启动后台线程
     thread = threading.Thread(
-        target=maybe_auto_title,
-        args=(db, thread_id, user_message, assistant_response),
+        target=_maybe_auto_title_worker,
+        args=(thread_id, user_message, assistant_response),
         kwargs={"legacy_conversation_id": legacy_conversation_id},
         daemon=True,
         name="auto-title",
