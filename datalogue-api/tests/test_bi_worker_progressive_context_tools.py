@@ -682,6 +682,10 @@ def test_describe_tables_returns_fields_with_sample_values(db_session, sample_da
     sample_field = next(f for f in entity["fields"] if f["name"] == "col_with_samples")
     assert sample_field["sample_values"] == ["1", "2", "3"]
     assert sample_field["sample_source"] == "metadata"
+    assert "table:pm_tenant.sample_table.col_with_samples" in payload["context_state_patch"][
+        "field_refs"
+    ]
+    assert payload["context_state_usage"].startswith("将 context_state_patch 合并进后续")
 
 
 def test_describe_tables_marks_unavailable_when_no_samples(db_session, sample_datasource):

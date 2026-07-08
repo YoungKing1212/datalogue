@@ -424,10 +424,18 @@ class BIWorkerContextProvider:
                 )
                 continue
             entities.append(self._describe_table(table))
+        relationships = self._relationships(entities, dataset)
         return {
             "datalogue_event_type": "bi_worker_l2_table_detail",
             "dataset_id": dataset.id,
             "entities": entities,
+            # describe_tables 是字段详情来源，必须同步给 Worker 可直接合并的 field_refs，
+            # 避免模型从自然语言字段列表手写 context_state 后触发 L4 FIELD_NOT_FOUND。
+            "context_state_patch": self._context_state_patch(entities, relationships),
+            "context_state_usage": (
+                "将 context_state_patch 合并进后续 L4/L5 的 context_state；"
+                "字段 ref 以 table:schema.table.field 形式进入 field_refs。"
+            ),
             "summary": f"已返回 {len(entities)} 张表的字段详情。",
         }
 
@@ -543,11 +551,12 @@ class BIWorkerContextProvider:
             "dimension_count": len(dimensions),
             "usage_hint": (
                 "优先匹配蓝图：若某蓝图的 name/description/trigger_keywords 与用户问题相关，"
-                "先提取 parameters，再调用 datalogue_prepare_query_context 和必要的 datalogue_request_schema_slice；"
+                "先提取 parameters，再调用 datalogue_prepare_query_context、datalogue_request_schema_slice 获取表/关系，"
+                "再用 datalogue_describe_tables 获取蓝图涉及表的字段与 field_refs；"
                 "将蓝图的输出字段、筛选条件和排序语义转换为 BIWorkerQueryPlan 后交给 datalogue_execute_query_plan_bundle。"
                 "禁止把 call_template 当作可直接传入工具的 SQL。"
                 if blueprints
-                else "无可用蓝图，请走 datalogue_prepare_query_context → datalogue_request_schema_slice → datalogue_execute_query_plan_bundle。"
+                else "无可用蓝图，请走 datalogue_prepare_query_context → datalogue_request_schema_slice → datalogue_describe_tables → datalogue_execute_query_plan_bundle。"
             ),
         }
 

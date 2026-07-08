@@ -559,3 +559,276 @@ def test_end_to_end_join_keys_to_sql_via_compiler():
 
     assert compiled["ok"] is True
     assert 'LEFT JOIN "departments" ON "orders"."dept_id" = "departments"."id"' in compiled["sql"]
+
+
+def test_schema_qualified_table_refs_resolve_alias_tables_for_join_sql():
+    """L2 返回 table:schema.table 时，runtime 应能反查 alias→物理表并编译 JOIN。"""
+    from app.agentscope_service.bi_worker_contracts import JoinKey
+
+    runtime = BIWorkerQueryRuntime(db=None)
+    plan = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="查询杨凯2024年日志",
+        result_shape=ResultShape(type="table", grain="日报", limit=100),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(
+                asset_ref="table:pm_tenant.plan_task_daily_record",
+                alias="main",
+                role="primary",
+            ),
+            supporting_entities=[
+                QueryEntity(
+                    asset_ref="table:pm_tenant.eas_personofile",
+                    alias="person",
+                    role="supporting",
+                )
+            ],
+        ),
+        join_requirements=[
+            JoinRequirement(
+                left_alias="main",
+                right_alias="person",
+                relationship_ref=(
+                    "blueprint_join:1:table:pm_tenant.plan_task_daily_record"
+                    "->table:pm_tenant.eas_personofile"
+                ),
+                join_type="left",
+                required=True,
+                reason="关联人员档案表获取姓名",
+                join_keys=[JoinKey(left_field="account", right_field="person_card")],
+            )
+        ],
+        filters=[
+            QueryFilter(
+                target=FieldTarget(
+                    asset_ref="table:pm_tenant.eas_personofile.person_name",
+                    alias="person",
+                    field="person_name",
+                ),
+                operator="=",
+                value="杨凯",
+                reason="按姓名筛选",
+            )
+        ],
+        selects=[
+            QuerySelect(
+                target=FieldTarget(
+                    asset_ref="table:pm_tenant.plan_task_daily_record.rzrq",
+                    alias="main",
+                    field="rzrq",
+                ),
+                display_name="日志日期",
+            )
+        ],
+    )
+
+    dsl = runtime._query_plan_to_legacy_query_plan(plan)
+    assert dsl["debug"]["selected_main_table"] == "pm_tenant.plan_task_daily_record"
+    assert dsl["join_requirements"][0]["left_table"] == "pm_tenant.plan_task_daily_record"
+    assert dsl["join_requirements"][0]["right_table"] == "pm_tenant.eas_personofile"
+
+    compiled = compile_query_plan_to_sql(
+        query_plan=dsl,
+        sql_generation_context={"table_schemas": []},
+        dialect="sqlite",
+        allowed_tables=[
+            "pm_tenant.plan_task_daily_record",
+            "pm_tenant.eas_personofile",
+        ],
+    )
+    assert compiled["ok"] is True
+    assert "LEFT JOIN" in compiled["sql"]
+
+
+def test_table_level_schema_qualified_target_ref_keeps_table_metadata():
+    """表级 target.asset_ref=table:schema.table 时，metadata 不能退化为字段名。"""
+
+    runtime = BIWorkerQueryRuntime(db=None)
+    plan = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="查询日志",
+        result_shape=ResultShape(type="table", grain="日报", limit=10),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(
+                asset_ref="table:pm_tenant.plan_task_daily_record",
+                alias="main",
+                role="primary",
+            )
+        ),
+        selects=[
+            QuerySelect(
+                target=FieldTarget(
+                    asset_ref="table:pm_tenant.plan_task_daily_record",
+                    alias="main",
+                    field="rzrq",
+                ),
+                display_name="日志日期",
+            )
+        ],
+    )
+
+    dsl = runtime._query_plan_to_legacy_query_plan(plan)
+    assert dsl["selected_assets"][0]["metadata"] == {
+        "column_name": "rzrq",
+        "table_name": "pm_tenant.plan_task_daily_record",
+    }
+
+
+# ---- runtime _derive_dataset_field_refs 兜底覆盖(4 层修复) ----
+
+
+def _mock_dataset(*, tables):
+    """构造 SemanticDataset 的最小 duck-typed 替身。
+
+    tables: list of tuples (schema_name, table_name, [column_names], status)
+    通过 SimpleNamespace 拼出 dataset.selected_tables[i].source_table.{...}。
+    """
+    from types import SimpleNamespace
+
+    links = []
+    for schema_name, table_name, columns, status in tables:
+        table = SimpleNamespace(
+            schema_name=schema_name,
+            table_name=table_name,
+            status=status,
+            columns=[SimpleNamespace(column_name=c) for c in columns],
+        )
+        links.append(SimpleNamespace(source_table=table))
+    return SimpleNamespace(selected_tables=links)
+
+
+@pytest.mark.asyncio
+async def test_execute_query_plan_derives_field_refs_from_dataset(monkeypatch):
+    """context_state 完全空时,runtime 应从 dataset 元数据补 field_refs,让 L4 通过。"""
+    runtime = BIWorkerQueryRuntime(db=None)
+
+    mock_dataset = _mock_dataset(
+        tables=[("pm_tenant", "log", ["rzrq"], "active")],
+    )
+    monkeypatch.setattr(runtime, "_get_dataset", lambda dataset_id: mock_dataset)
+
+    async def _return_safe_result(*args, **kwargs):
+        return BIWorkerQueryResult(
+            answer_summary="查询已完成。",
+            artifact_ref="artifact:query-derived-1",
+            checkpoint_ref="checkpoint:query-derived-1",
+            row_count=1,
+            column_count=1,
+        )
+
+    monkeypatch.setattr(runtime, "_execute_supported_plan", _return_safe_result)
+
+    plan = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="按表级字段查询",
+        result_shape=ResultShape(type="table", grain="日报", limit=10),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(
+                asset_ref="table:pm_tenant.log",
+                alias="main",
+                role="primary",
+            ),
+            supporting_entities=[],
+        ),
+        selects=[
+            QuerySelect(
+                target=FieldTarget(
+                    asset_ref="table:pm_tenant.log.rzrq",
+                    alias="main",
+                    field="rzrq",
+                ),
+                display_name="日志日期",
+            )
+        ],
+    )
+    empty_state = ProgressiveContextState()
+
+    payload = await runtime.execute_query_plan(
+        dataset_id=1,
+        confirmed_question="按表级字段查询",
+        query_plan=plan,
+        context_state=empty_state,
+    )
+
+    assert payload["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_execute_query_plan_field_not_in_dataset_still_fails(monkeypatch):
+    """dataset 兜底只覆盖真实字段,拼错字段仍应 FIELD_NOT_FOUND。"""
+    runtime = BIWorkerQueryRuntime(db=None)
+
+    mock_dataset = _mock_dataset(
+        tables=[("pm_tenant", "log", ["rzrq"], "active")],
+    )
+    monkeypatch.setattr(runtime, "_get_dataset", lambda dataset_id: mock_dataset)
+
+    async def _fail_if_executed(*args, **kwargs):
+        raise AssertionError("字段不存在时不应执行 L5 查询")
+
+    monkeypatch.setattr(runtime, "_execute_supported_plan", _fail_if_executed)
+
+    plan = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="拼错字段应报 FIELD_NOT_FOUND",
+        result_shape=ResultShape(type="table", grain="日报", limit=10),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(
+                asset_ref="table:pm_tenant.log",
+                alias="main",
+                role="primary",
+            ),
+            supporting_entities=[],
+        ),
+        selects=[
+            QuerySelect(
+                target=FieldTarget(
+                    asset_ref="table:pm_tenant.log.xyz_typo",
+                    alias="main",
+                    field="xyz_typo",
+                ),
+                display_name="拼错字段",
+            )
+        ],
+    )
+
+    payload = await runtime.execute_query_plan(
+        dataset_id=1,
+        confirmed_question="拼错字段应报 FIELD_NOT_FOUND",
+        query_plan=plan,
+        context_state=ProgressiveContextState(),
+    )
+
+    assert payload["status"] == "failed"
+    assert payload["failure_type"] == "FIELD_NOT_FOUND"
+
+
+def test_derive_dataset_field_refs_covers_all_columns_and_table():
+    """active 表所有列 + 表级 ref 都在集合内;deleted 表完全排除。"""
+    from app.agentscope_service.bi_worker_runtime import _derive_dataset_field_refs
+
+    dataset = _mock_dataset(
+        tables=[
+            ("pm_tenant", "log", ["rzrq", "content"], "active"),
+            ("pm_tenant", "archived", ["a", "b"], "deleted"),
+        ],
+    )
+    refs = _derive_dataset_field_refs(dataset)
+
+    assert "table:pm_tenant.log" in refs
+    assert "table:pm_tenant.log.rzrq" in refs
+    assert "table:pm_tenant.log.content" in refs
+    # deleted 表完全排除
+    assert "table:pm_tenant.archived" not in refs
+    assert "table:pm_tenant.archived.a" not in refs
+    assert "table:pm_tenant.archived.b" not in refs
+
+
+def test_derive_dataset_field_refs_handles_none_dataset():
+    """selected_tables 为 None 或 [] 应返回空集合(fail-closed)。"""
+    from types import SimpleNamespace
+
+    from app.agentscope_service.bi_worker_runtime import _derive_dataset_field_refs
+
+    assert _derive_dataset_field_refs(SimpleNamespace(selected_tables=None)) == set()
+    assert _derive_dataset_field_refs(SimpleNamespace(selected_tables=[])) == set()

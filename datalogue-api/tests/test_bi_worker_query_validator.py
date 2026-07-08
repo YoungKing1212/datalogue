@@ -189,3 +189,40 @@ def test_unknown_asset_and_field_are_reported_as_safe_missing_context():
     assert {"missing_asset", "missing_field"}.issubset(missing_types)
     for item in result.missing_context:
         assert set(item).issubset({"type", "ref", "recommended_next_tool", "focus"})
+
+
+def test_target_with_table_ref_and_field_hits_derived_field_ref():
+    """target.asset_ref 为表级 ref 时,应通过 normalized_field_ref 命中 field_refs。"""
+    plan = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="按表级 ref 查询",
+        result_shape=ResultShape(type="table", grain="日报", limit=10),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(
+                asset_ref="table:pm_tenant.log",
+                alias="main",
+                role="primary",
+            ),
+            supporting_entities=[],
+        ),
+        selects=[
+            QuerySelect(
+                target=FieldTarget(
+                    asset_ref="table:pm_tenant.log",
+                    alias="main",
+                    field="rzrq",
+                ),
+                display_name="日志日期",
+            )
+        ],
+    )
+    state = ProgressiveContextState(
+        asset_refs={"table:pm_tenant.log"},
+        relationship_refs=set(),
+        field_refs={"table:pm_tenant.log.rzrq"},
+    )
+
+    result = BIWorkerQueryValidator().validate(plan, state)
+
+    assert result.support_status == "supported"
+    assert result.missing_context == []

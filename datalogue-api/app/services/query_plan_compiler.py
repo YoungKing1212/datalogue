@@ -98,11 +98,15 @@ def _asset_ref_value(asset_ref: Any) -> str:
 
 
 def _table_from_field_ref(asset_ref: Any, field_name: Any) -> str | None:
+    original_ref = str(asset_ref or "").strip()
     raw = _asset_ref_value(asset_ref)
     field = str(field_name or "").strip()
     if field and raw.endswith(f".{field}"):
         table_name = raw[: -(len(field) + 1)].strip(".")
         return table_name or None
+    if original_ref.startswith("table:"):
+        # 表级 ref 可能是 table:schema.table；这里的点号是 schema 分隔符，不是字段分隔符。
+        return raw or None
     if raw and "." not in raw:
         return raw
     return None
@@ -127,6 +131,16 @@ def _field_column_name(item: dict[str, Any]) -> str:
         .split(".")[-1]
         .strip()
     )
+
+
+def _quote_table_name(table_name: str, dialect: str | None) -> str:
+    """按 schema/table 分段引用物理表名，避免把 schema.table 引成一个标识符。"""
+
+    parts = [part.strip() for part in str(table_name or "").split(".") if part.strip()]
+    if len(parts) <= 1:
+        return quote_identifier(table_name, dialect)
+    # schema-qualified 表名必须分别 quote，否则 SQL Guard/数据库都会把它当作单个表名。
+    return ".".join(quote_identifier(part, dialect) for part in parts)
 
 
 def _table_schema_name(schema: dict[str, Any]) -> str:
@@ -220,7 +234,7 @@ def _compile_where_clauses(
         # alias 是 QueryPlan 内部实体别名，不等于物理表名；优先使用 runtime 透传的 metadata。
         table_name = _field_table_name(item, main_table)
         column_ref = (
-            f"{quote_identifier(table_name, dialect)}.{quote_identifier(field_name, dialect)}"
+            f"{_quote_table_name(table_name, dialect)}.{quote_identifier(field_name, dialect)}"
         )
 
         if operator == "between" and isinstance(value, list) and len(value) >= 2:
@@ -266,7 +280,7 @@ def _compile_order_clauses(
         # 排序字段同样不能把 QueryPlan alias 当物理表名。
         table_name = _field_table_name(item, main_table)
         column_ref = (
-            f"{quote_identifier(table_name, dialect)}.{quote_identifier(field_name, dialect)}"
+            f"{_quote_table_name(table_name, dialect)}.{quote_identifier(field_name, dialect)}"
         )
         clauses.append(f"{column_ref} {direction}")
     return clauses
@@ -292,7 +306,7 @@ def _compile_group_by_items(
             continue
         table_name = _field_table_name(item, main_table)
         column_ref = (
-            f"{quote_identifier(table_name, dialect)}.{quote_identifier(column_name, dialect)}"
+            f"{_quote_table_name(table_name, dialect)}.{quote_identifier(column_name, dialect)}"
         )
         label = str(item.get("display_name") or item.get("name") or column_name)
         select_items.append(f"{column_ref} AS {quote_identifier(label, dialect)}")
@@ -320,7 +334,7 @@ def _compile_metric_select_items(
             continue
         table_name = _field_table_name(item, main_table)
         column_ref = (
-            f"{quote_identifier(table_name, dialect)}.{quote_identifier(column_name, dialect)}"
+            f"{_quote_table_name(table_name, dialect)}.{quote_identifier(column_name, dialect)}"
         )
         label = str(item.get("display_name") or column_name)
         if aggregation == "count_distinct":
@@ -429,13 +443,13 @@ def _compile_join_clauses(
                 logger.warning("join_keys 缺少 left_field/right_field，fail-closed: %r", key)
                 return None
             conditions.append(
-                f"{quote_identifier(left_table, dialect)}.{quote_identifier(left_field, dialect)} "
-                f"= {quote_identifier(right_table, dialect)}.{quote_identifier(right_field, dialect)}"
+                f"{_quote_table_name(left_table, dialect)}.{quote_identifier(left_field, dialect)} "
+                f"= {_quote_table_name(right_table, dialect)}.{quote_identifier(right_field, dialect)}"
             )
 
         join_keyword = "INNER JOIN" if join_type_raw == "inner" else "LEFT JOIN"
         clauses.append(
-            f"{join_keyword} {quote_identifier(right_table, dialect)} ON {' AND '.join(conditions)}"
+            f"{join_keyword} {_quote_table_name(right_table, dialect)} ON {' AND '.join(conditions)}"
         )
 
     return clauses
@@ -469,7 +483,7 @@ def _compile_select_sql(
         column_name = _asset_column_name(asset)
         label = str(asset.get("display_name") or asset.get("name") or column_name)
         select_items.append(
-            f"{quote_identifier(table_name, dialect)}.{quote_identifier(column_name, dialect)} "
+            f"{_quote_table_name(table_name, dialect)}.{quote_identifier(column_name, dialect)} "
             f"AS {quote_identifier(label, dialect)}"
         )
 
@@ -481,14 +495,14 @@ def _compile_select_sql(
                 continue
             label = str(field.get("display_name") or field.get("comment") or column_name)
             select_items.append(
-                f"{quote_identifier(main_table, dialect)}.{quote_identifier(column_name, dialect)} "
+                f"{_quote_table_name(main_table, dialect)}.{quote_identifier(column_name, dialect)} "
                 f"AS {quote_identifier(label, dialect)}"
             )
 
     if not select_items:
         return None
 
-    sql = f"SELECT {', '.join(select_items)} FROM {quote_identifier(main_table, dialect)}"
+    sql = f"SELECT {', '.join(select_items)} FROM {_quote_table_name(main_table, dialect)}"
 
     # 追加 JOIN 子句；join_requirements 元素异常时 fail-closed，避免退化为笛卡尔积
     join_clauses = _compile_join_clauses(query_plan, main_table, allowed_tables, dialect)

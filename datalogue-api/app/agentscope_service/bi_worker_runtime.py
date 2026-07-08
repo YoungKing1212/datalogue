@@ -34,6 +34,7 @@ from app.agentscope_service.bi_worker_validator import (
 )
 from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.bi.toolkit import build_bi_atomic_toolkit
+from app.models.dataset import SemanticDataset
 
 
 class BIWorkerQueryRuntime:
@@ -51,6 +52,18 @@ class BIWorkerQueryRuntime:
         context_state: ProgressiveContextState,
         trace_id: str | None = None,
     ) -> dict[str, Any]:
+        # 从 dataset 元数据主动补齐 field_refs/asset_refs,允许 LLM 不显式 merge context_state_patch。
+        # 只补字段级和表级 ref,不动 relationship_refs(蓝图 SQL 硬关系 LLM 必须显式引用)。
+        # 兜底本身只是"扩大合法引用范围"的可选增强:dataset 不可用时跳过,L4 仍然会用现有
+        # context_state 兜底判定,不会因为 dataset 加载失败而阻断已经合法的查询。
+        dataset = self._get_dataset(dataset_id)
+        if dataset is not None:
+            derived_refs = _derive_dataset_field_refs(dataset)
+            context_state.field_refs = context_state.field_refs | derived_refs
+            context_state.asset_refs = context_state.asset_refs | {
+                r for r in derived_refs if r.count(".") == 1
+            }
+
         # L4：内部校验 → 未通过时映射为失败类型
         validation = self.validator.validate(query_plan, context_state)
         if validation.support_status != "supported":
@@ -392,6 +405,45 @@ class BIWorkerQueryRuntime:
             missing_context=[],
         )
 
+    def _get_dataset(self, dataset_id: int) -> SemanticDataset | None:
+        """加载 dataset 元数据;db 未注入或找不到时返回 None,由调用侧决定降级策略。
+
+        当前 execute_query_plan 只把 dataset 用作 field_refs 兜底,dataset 缺失时应
+        跳过兜底、继续走 L4 现有 context_state 判定,而不是让整条查询 fail-closed。
+        """
+
+        if self.db is None:
+            return None
+        return self.db.get(SemanticDataset, dataset_id)
+
+
+def _derive_dataset_field_refs(dataset: SemanticDataset) -> set[str]:
+    """从 dataset 元数据推导全部字段级 ref,作为 L4 校验兜底 field_refs。
+
+    后端天然拥有 dataset schema,允许 LLM 忘 merge context_state_patch 时
+    L4 依然能精确命中。安全边界不变:字段属于 dataset,查询不会越权。
+    """
+
+    refs: set[str] = set()
+    for link in getattr(dataset, "selected_tables", None) or []:
+        table = getattr(link, "source_table", None)
+        if table is None:
+            continue
+        if getattr(table, "status", None) == "deleted":
+            continue
+        schema_name = getattr(table, "schema_name", None)
+        table_name = getattr(table, "table_name", None)
+        if not schema_name or not table_name:
+            continue
+        prefix = "table:" + schema_name + "." + table_name
+        refs.add(prefix)  # 表级 ref 也补,供 asset_refs 匹配路径使用
+        for column in getattr(table, "columns", None) or []:
+            column_name = getattr(column, "column_name", None)
+            if not column_name:
+                continue
+            refs.add(prefix + "." + column_name)
+    return refs
+
 
 def _answer_summary(
     *,
@@ -446,13 +498,18 @@ def _asset_ref_value(asset_ref: str | None) -> str:
 
 
 def _table_from_field_ref(asset_ref: str | None, field_name: str | None) -> str | None:
-    """从 field/table ref 中提取表名，支持 schema.table.column 形态。"""
+    """从 field/table ref 中提取表名，支持 schema.table 与 schema.table.column 形态。"""
 
+    original_ref = str(asset_ref or "").strip()
     raw = _asset_ref_value(asset_ref)
     field = str(field_name or "").strip()
     if field and raw.endswith(f".{field}"):
         table_name = raw[: -(len(field) + 1)].strip(".")
         return table_name or None
+    if original_ref.startswith("table:"):
+        # L2 schema 切片返回的表级 ref 是 table:schema.table；即使包含点号也代表物理表，
+        # 不能按旧逻辑当成无法解析，否则 join alias 无法反查 left/right_table。
+        return raw or None
     if raw and "." not in raw:
         return raw
     return None

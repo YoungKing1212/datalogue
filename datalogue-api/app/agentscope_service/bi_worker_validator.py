@@ -103,9 +103,12 @@ class BIWorkerQueryValidator:
                 self._append_missing(missing, seen, "missing_relationship", join.relationship_ref)
 
         for target in self._all_targets(plan):
-            # target.asset_ref 可能指向字段级 ref；若业务计划直接以资产 ref 表达，也允许 asset_refs 命中。
+            # 优先规范化字段级 ref 命中;若 LLM 传表级 ref + field 分离,能拼出字段级 ref 命中。
+            # 兼容 target.asset_ref 已是字段级或直接命中资产集合的情况。
+            normalized = target.normalized_field_ref
             if (
-                target.asset_ref not in context_state.field_refs
+                normalized not in context_state.field_refs
+                and target.asset_ref not in context_state.field_refs
                 and target.asset_ref not in context_state.asset_refs
             ):
                 self._append_missing(missing, seen, "missing_field", target.asset_ref)
@@ -113,7 +116,10 @@ class BIWorkerQueryValidator:
         for select in plan.selects:
             # display_semantic 只是展示层业务含义，不代表字段需要字典/枚举解码；
             # 只有明确 requires_decoding=true 时才强制要求 lookup dependency。
-            if select.requires_decoding and select.target.asset_ref not in context_state.lookup_dependencies:
+            if (
+                select.requires_decoding
+                and select.target.asset_ref not in context_state.lookup_dependencies
+            ):
                 self._append_missing(missing, seen, "lookup_dependency", select.target.asset_ref)
 
         return missing
@@ -147,7 +153,9 @@ class BIWorkerQueryValidator:
             return True
 
         missing_signatures = {f"{item['type']}:{item['ref']}" for item in missing_context}
-        return any(signature in context_state.missing_context_history for signature in missing_signatures)
+        return any(
+            signature in context_state.missing_context_history for signature in missing_signatures
+        )
 
     def _recommended_tool(self, missing_item: dict[str, Any]) -> str:
         if missing_item["type"] == "lookup_dependency":

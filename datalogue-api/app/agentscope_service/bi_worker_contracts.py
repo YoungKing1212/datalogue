@@ -50,9 +50,42 @@ class StrictModel(BaseModel):
 
 
 class FieldTarget(StrictModel):
-    asset_ref: str = Field(min_length=1)
+    # asset_ref 格式白名单:前缀必须是 table|asset|field,冒号后必须至少含一个 "." 分隔的路径。
+    # 允许形式:
+    #   - table:pm_tenant.log            (schema.table 表级)
+    #   - table:pm_tenant.log.rzrq       (schema.table.field 字段级)
+    #   - asset:pm_tenant.log            (asset 表级)
+    #   - field:pm_tenant.log.rzrq       (显式字段级)
+    # 拒绝形式:
+    #   - asset:primary                  (冒号后没有 ".")
+    #   - log.rzrq                       (缺少前缀冒号)
+    #   - rzrq                           (纯字段)
+    #   - invalid:pm_tenant.t            (前缀非白名单)
+    asset_ref: str = Field(
+        min_length=1,
+        pattern=(r"^(table|asset|field):" r"[\w一-龥][\w一-龥.\-]*" r"\.[\w一-龥.\-]+$"),
+    )
     alias: str = Field(min_length=1)
     field: str = Field(min_length=1)
+
+    @property
+    def normalized_field_ref(self) -> str:
+        """返回规范化字段级 ref,用于 L4 校验查找。
+
+        - asset_ref 拆成 prefix + path;
+        - path 2 段视为表级(schema.table),拼上 self.field 得到字段级 ref;
+        - path 3+ 段视为字段级(schema.table.field),原样返回;
+        - 若 asset_ref 缺少冒号(不合法),原样返回,由上层其他校验兜底。
+        """
+        parts = self.asset_ref.split(":", 1)
+        if len(parts) != 2:
+            return self.asset_ref
+        prefix, path = parts
+        segments = path.split(".")
+        # 2 段是表级 → 拼 field 得字段级;3+ 段已经是字段级 → 原样返回
+        if len(segments) == 2:
+            return prefix + ":" + path + "." + self.field
+        return self.asset_ref
 
 
 class QueryFilter(StrictModel):
@@ -272,7 +305,12 @@ class RepairRequest(StrictModel):
 FAILURE_DIAGNOSIS_MAP: dict[QueryFailureType, dict[str, str]] = {
     "FIELD_NOT_FOUND": {
         "safe_diagnosis": "查询引用了当前上下文中不存在的字段引用。",
-        "recommended_action": "使用 datalogue_request_schema_slice 验证并补充缺失字段后重新生成查询计划。",
+        "recommended_action": (
+            "确认 target.asset_ref 使用 `table:<schema>.<table>.<field>` 规范格式;"
+            "若已用规范格式仍报错,请检查是否合并了 datalogue_describe_tables 返回的 "
+            "context_state_patch.field_refs 到 context_state;"
+            "若字段名可能拼写错误,重新调用 datalogue_describe_tables 确认字段名。"
+        ),
     },
     "FILTER_MISSING": {
         "safe_diagnosis": "查询计划缺少必要的过滤条件引用。",
