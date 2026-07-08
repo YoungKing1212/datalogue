@@ -699,3 +699,43 @@ def test_progressive_bi_worker_tools_include_describe_tables():
     idx_slice = names.index("datalogue_request_schema_slice")
     idx_describe = names.index("datalogue_describe_tables")
     assert idx_describe == idx_slice + 1
+
+
+@pytest.mark.asyncio
+async def test_progressive_readonly_tools_bypass_permission_engine():
+    """所有 is_read_only=True 的 progressive 工具必须走 DatalogueBIWorkerReadOnlyTool 基类,
+    使 check_permissions 返回 ALLOW 决策,避免 AgentScope DONT_ASK 引擎在
+    SubAgentTemplate 场景下误拦截 (曾多次踩坑: search_assets / describe_tables 等)。
+    """
+    from agentscope.permission import PermissionBehavior, PermissionContext
+
+    from app.agentscope_service.tools import (
+        DatalogueBIWorkerReadOnlyTool,
+        build_datalogue_progressive_bi_worker_tools,
+        build_datalogue_search_assets_tool,
+    )
+
+    tools = list(build_datalogue_progressive_bi_worker_tools(worker_context=None))
+    tools.append(build_datalogue_search_assets_tool(worker_context=None))
+
+    readonly_names = set()
+    for tool in tools:
+        if getattr(tool, "is_read_only", False):
+            # 只读工具必须继承自绕过基类
+            assert isinstance(
+                tool, DatalogueBIWorkerReadOnlyTool
+            ), f"read-only tool {tool.name} 必须继承 DatalogueBIWorkerReadOnlyTool"
+            readonly_names.add(tool.name)
+            # 权限检查必须直接返回 ALLOW,不能落到默认 DENY/ASK
+            decision = await tool.check_permissions({}, PermissionContext())
+            assert decision.behavior is PermissionBehavior.ALLOW
+            assert decision.decision_reason == "ALLOWED_BY_TOOL"
+
+    # 核心只读工具都要被覆盖到 (execute_query_plan_bundle 不在此列表, 它是 read_only=False)
+    assert {
+        "datalogue_search_assets",
+        "datalogue_prepare_query_context",
+        "datalogue_request_schema_slice",
+        "datalogue_describe_tables",
+        "datalogue_repair_query_plan",
+    }.issubset(readonly_names)

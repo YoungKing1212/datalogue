@@ -416,9 +416,18 @@ async def _team_worker_context(
     }
 
 
-class DatalogueSearchAssetsTool(FunctionTool):
-    """datalogue_search_assets 的自定义 FunctionTool，绕过 AgentScope 2.0.3 DONT_ASK
-    权限引擎在 SubAgentTemplate 场景下对 FunctionTool 的误拦截。"""
+class DatalogueBIWorkerReadOnlyTool(FunctionTool):
+    """所有 BI Worker 只读 progressive tools 的通用基类。
+
+    绕过 AgentScope 2.0.3 DONT_ASK 权限引擎在 SubAgentTemplate 场景下
+    对 FunctionTool 的误拦截：默认策略会把新出现/未预注册的工具当作
+    需要用户 confirmation 甚至直接 DENY。BI Worker 内部的只读工具
+    (search_assets/prepare_query_context/request_schema_slice/
+    describe_tables/repair_query_plan/select_candidate_datasets)
+    都是安全内省能力,无副作用,统一 ALLOW。
+    执行类工具 (execute_query_plan_bundle) 因为 is_read_only=False
+    继续走原权限引擎,不能套用此基类。
+    """
 
     async def check_permissions(
         self,
@@ -427,9 +436,13 @@ class DatalogueSearchAssetsTool(FunctionTool):
     ) -> PermissionDecision:
         return PermissionDecision(
             behavior=PermissionBehavior.ALLOW,
-            message="datalogue_search_assets is always allowed for BI workers.",
+            message=f"{self.name} is always allowed for BI workers.",
             decision_reason="ALLOWED_BY_TOOL",
         )
+
+
+# 向后兼容别名:曾经只给 search_assets 用的类名,现在保留为别名避免破坏引用。
+DatalogueSearchAssetsTool = DatalogueBIWorkerReadOnlyTool
 
 
 def build_datalogue_search_assets_tool(
@@ -606,19 +619,19 @@ def build_datalogue_progressive_bi_worker_tools(
         return _tool_success_chunk(payload)
 
     return [
-        FunctionTool(
+        DatalogueBIWorkerReadOnlyTool(
             datalogue_prepare_query_context,
             description="BI Worker L0+L1：描述数据集能力并召回相关资产，返回统一查询上下文。",
             is_concurrency_safe=True,
             is_read_only=True,
         ),
-        FunctionTool(
+        DatalogueBIWorkerReadOnlyTool(
             datalogue_request_schema_slice,
             description="BI Worker L2a:返回数据集全部表清单和跨表关系(含蓝图 SQL 解析的真实 join keys),字段详情走 datalogue_describe_tables。",
             is_concurrency_safe=True,
             is_read_only=True,
         ),
-        FunctionTool(
+        DatalogueBIWorkerReadOnlyTool(
             datalogue_describe_tables,
             description="BI Worker L2b:按 table_names 精确返回指定表的字段清单/注释/前 3 条样例值,一次可查多张表。",
             is_concurrency_safe=True,
@@ -630,7 +643,7 @@ def build_datalogue_progressive_bi_worker_tools(
             is_concurrency_safe=False,
             is_read_only=False,
         ),
-        FunctionTool(
+        DatalogueBIWorkerReadOnlyTool(
             datalogue_repair_query_plan,
             description="BI Worker Repair：基于故障类型提供查询计划修复建议。",
             is_concurrency_safe=True,
@@ -658,7 +671,7 @@ def build_datalogue_select_candidate_datasets_tool(
             _publish_worker_business_final(worker_context=worker_context, payload=safe_payload)
         return _tool_success_chunk(safe_payload)
 
-    return FunctionTool(
+    return DatalogueBIWorkerReadOnlyTool(
         datalogue_select_candidate_datasets,
         description=(
             "Agent Team BI Worker 的候选数据集筛选工具；用于缺少 dataset_id 时根据用户问题返回"
