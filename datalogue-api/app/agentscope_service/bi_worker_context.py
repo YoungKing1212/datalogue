@@ -13,10 +13,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
+import sqlglot
 from sqlalchemy.orm import Session
+from sqlglot import exp
+from sqlglot.errors import ParseError, SqlglotError
 
 from app.agentscope_service.bi_worker_contracts import (
     DatasetCapabilityContext,
@@ -25,6 +29,9 @@ from app.agentscope_service.bi_worker_contracts import (
     ValueProfileContext,
 )
 from app.models.dataset import SemanticDataset, SourceColumn, SourceTable
+
+
+logger = logging.getLogger(__name__)
 
 
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
@@ -73,13 +80,191 @@ def _json_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _safe_parse_sql(sql: str) -> exp.Expression | None:
+    """依次尝试 mysql/sqlite/postgres 方言解析，全部失败返回 None。"""
+
+    for dialect in ("mysql", "sqlite", "postgres"):
+        try:
+            parsed = sqlglot.parse_one(sql, read=dialect)
+            # parse_one 声明返回 exp.Expr（Expression 的父类），
+            # 这里仅接受 Expression 子类，其他情况一律 skip。
+            if isinstance(parsed, exp.Expression):
+                return parsed
+        # sqlglot 内部可能抛出 ParseError/SqlglotError；此处兜底其他异常，
+        # 保证 blueprint 解析失败不阻塞主链路。
+        except (ParseError, SqlglotError, Exception):  # noqa: BLE001
+            continue
+    return None
+
+
+def _extract_joins_from_ast(
+    parsed: exp.Expression,
+    dataset: SemanticDataset,
+    blueprint: Any,
+) -> list[dict[str, Any]]:
+    """从 AST 提取 INNER/LEFT JOIN 的等值 join 键，返回 relationship dict 列表。"""
+
+    # dataset 中已选物理表：建 table_name(lower) -> (schema_name, table_name) 映射，
+    # 用于把 blueprint SQL 里的表名反查到 dataset 侧的规范物理表。
+    schema_by_name: dict[str, tuple[str, str]] = {}
+    for link in dataset.selected_tables or []:
+        st = getattr(link, "source_table", None)
+        if st is not None and st.status != "deleted":
+            schema_by_name[st.table_name.lower()] = (st.schema_name, st.table_name)
+
+    # alias -> 物理 (schema, table)：FROM 主表 + 所有 JOIN 右表都会被 find_all 遍历到。
+    alias_map: dict[str, tuple[str, str]] = {}
+    for tbl in parsed.find_all(exp.Table):
+        tbl_name = tbl.name or ""
+        alias = tbl.alias_or_name  # 无 alias 时回退到表名
+        physical = schema_by_name.get(tbl_name.lower())
+        if physical and alias:
+            alias_map[alias] = physical
+
+    results: list[dict[str, Any]] = []
+    for join_node in parsed.find_all(exp.Join):
+        # sqlglot 的 join 类型分布在 side/kind 两个字段：
+        # - side: LEFT/RIGHT/FULL
+        # - kind: INNER/CROSS
+        kind = (join_node.args.get("kind") or "").upper()
+        side = (join_node.args.get("side") or "").upper()
+        if side == "LEFT":
+            join_type = "left"
+        elif side in ("RIGHT", "FULL"):
+            # RIGHT/FULL 不在契约范围内，跳过
+            continue
+        elif kind == "INNER" or (not side and not kind):
+            join_type = "inner"
+        elif kind == "CROSS":
+            # CROSS JOIN 没有等值条件，直接跳过
+            continue
+        else:
+            # 其他非常规写法保守回退为 inner
+            join_type = "inner"
+
+        on_expr = join_node.args.get("on")
+        if on_expr is None:
+            continue
+
+        # 收集 ON 中的等值条件，暂存两侧 alias 便于后续规范化。
+        raw_keys: list[dict[str, str]] = []
+        for eq in on_expr.find_all(exp.EQ):
+            left_col = eq.this if isinstance(eq.this, exp.Column) else None
+            right_col = eq.expression if isinstance(eq.expression, exp.Column) else None
+            if left_col is None or right_col is None:
+                continue
+            left_alias = (left_col.table or "").strip()
+            right_alias = (right_col.table or "").strip()
+            left_field = (left_col.name or "").strip()
+            right_field = (right_col.name or "").strip()
+            if not (left_alias and right_alias and left_field and right_field):
+                continue
+            raw_keys.append(
+                {
+                    "_left_alias": left_alias,
+                    "_right_alias": right_alias,
+                    "left_field": left_field,
+                    "right_field": right_field,
+                }
+            )
+
+        if not raw_keys:
+            continue
+
+        # 右表：join_node.this 一定是 exp.Table
+        right_tbl_node = join_node.this if isinstance(join_node.this, exp.Table) else None
+        if right_tbl_node is None:
+            continue
+        right_alias = right_tbl_node.alias_or_name
+        right_physical = alias_map.get(right_alias)
+        if right_physical is None:
+            continue
+
+        # 左表从首个 join_key 的另一侧 alias 推断
+        first_key = raw_keys[0]
+        # 若首个 key 里 right_alias 恰好在两侧之一，另一侧就是左 alias
+        if first_key["_right_alias"] == right_alias:
+            first_left_alias = first_key["_left_alias"]
+        elif first_key["_left_alias"] == right_alias:
+            first_left_alias = first_key["_right_alias"]
+        else:
+            continue
+        left_physical = alias_map.get(first_left_alias)
+        if left_physical is None:
+            continue
+
+        # 规范化每条 key，允许 SQL 里 ON a.x=b.y 与 b.y=a.x 两种顺序
+        filtered_keys: list[dict[str, str]] = []
+        for k in raw_keys:
+            kla = k["_left_alias"]
+            kra = k["_right_alias"]
+            if kla == first_left_alias and kra == right_alias:
+                filtered_keys.append(
+                    {"left_field": k["left_field"], "right_field": k["right_field"]}
+                )
+            elif kla == right_alias and kra == first_left_alias:
+                filtered_keys.append(
+                    {"left_field": k["right_field"], "right_field": k["left_field"]}
+                )
+        if not filtered_keys:
+            continue
+
+        left_schema, left_table = left_physical
+        right_schema, right_table = right_physical
+        left_ref = f"table:{left_schema}.{left_table}"
+        right_ref = f"table:{right_schema}.{right_table}"
+        results.append(
+            {
+                "relationship_ref": (f"blueprint_join:{blueprint.id}:{left_ref}->{right_ref}"),
+                "left_asset_ref": left_ref,
+                "right_asset_ref": right_ref,
+                "relationship_type": "blueprint_join",
+                "join_keys": filtered_keys,
+                "join_type": join_type,
+                "source_blueprint_id": blueprint.id,
+                "description": f"来自蓝图「{blueprint.name}」的真实关联条件。",
+            }
+        )
+    return results
+
+
+def _parse_blueprint_joins(dataset: SemanticDataset) -> list[dict[str, Any]]:
+    """从 dataset 的所有 active 蓝图 call_template 解析真实 join 关系。
+
+    - 只处理简单单层 SELECT + INNER/LEFT JOIN；
+    - 只识别 ON 表达式里的 exp.EQ 等值条件；
+    - 任何异常/边界情况都 skip 单条 join，不阻塞主链路。
+    """
+
+    results: list[dict[str, Any]] = []
+    for bp in dataset.blueprints or []:
+        if bp.status != "active":
+            continue
+        sql = (bp.call_template or bp.raw_sql or "").strip()
+        if not sql:
+            continue
+        parsed = _safe_parse_sql(sql)
+        if parsed is None:
+            continue
+        try:
+            joins = _extract_joins_from_ast(parsed, dataset, bp)
+        except Exception:  # noqa: BLE001
+            # 解析异常降级到 debug 日志，绝不影响 L2 主链
+            logger.debug("解析蓝图 %s join 失败", bp.id, exc_info=True)
+            continue
+        results.extend(joins)
+    return results
+
+
 class BIWorkerContextProvider:
     """基于 Datalogue 元数据提供 BI Worker 查询上下文。"""
 
     def __init__(self, db: Session):
         self._db = db
 
-    def describe_dataset_capability(self, dataset_id: int, question: str) -> DatasetCapabilityContext:
+    def describe_dataset_capability(
+        self, dataset_id: int, question: str
+    ) -> DatasetCapabilityContext:
         dataset = self._get_dataset(dataset_id)
         tables = self._source_tables(dataset)
         columns = self._source_columns(tables)
@@ -144,12 +329,32 @@ class BIWorkerContextProvider:
         dataset = self._get_dataset(dataset_id)
         focus = focus or {}
         tables = self._matched_tables(dataset, question, focus)
+        # focus["fields"] 是精确通道：LLM 点名要的列按名称精确返回，
+        # 不做模糊匹配、不受 32 列硬上限截断（但仍受表实际列数上限）。
+        raw_focus_fields = focus.get("fields") if isinstance(focus, dict) else None
+        focus_field_names: set[str] = set()
+        if isinstance(raw_focus_fields, list):
+            for item in raw_focus_fields:
+                if isinstance(item, str) and item.strip():
+                    focus_field_names.add(item.strip().lower())
         entities = []
         for table in tables:
             columns = self._matched_columns(table, question, focus)
             if not columns:
                 columns = list(table.columns[: min(len(table.columns), 5)])
             # L2 允许暴露相关物理表/字段名，但只返回切片，不返回完整建表语句或数据内容。
+            # 硬编码上限从 8 提升到 32：旧上限会把蓝图 SQL 依赖的 join key 列挤掉，
+            # 导致后续 QueryPlan 拿不到真实的关联字段。仍受表实际列数上限约束。
+            sliced_columns = list(columns[:32])
+            if focus_field_names:
+                # focus 精确命中：把未在 sliced_columns 中的点名列补齐，
+                # 不受 32 列上限约束，但仅限于该表实际存在的物理列。
+                existing_names = {col.column_name.lower() for col in sliced_columns}
+                for column in table.columns:
+                    name_lower = column.column_name.lower()
+                    if name_lower in focus_field_names and name_lower not in existing_names:
+                        sliced_columns.append(column)
+                        existing_names.add(name_lower)
             entities.append(
                 {
                     "asset_ref": f"table:{table.schema_name}.{table.table_name}",
@@ -177,12 +382,12 @@ class BIWorkerContextProvider:
                             or column.ai_semantic_role
                             or column.semantic_role,
                         }
-                        for column in columns[:8]
+                        for column in sliced_columns
                     ],
                 }
             )
 
-        relationships = self._relationships(entities)
+        relationships = self._relationships(entities, dataset)
         return SchemaSliceContext(
             dataset_id=dataset.id,
             entities=entities,
@@ -286,28 +491,38 @@ class BIWorkerContextProvider:
         suggested_filters = self._extract_filter_clues(question)
         missing_conditions: list[dict[str, Any]] = []
         if not capability.key_dimensions:
-            missing_conditions.append({
-                "type": "missing_dimension",
-                "detail": "未发现业务维度信息，可能影响维度筛选。",
-            })
+            missing_conditions.append(
+                {
+                    "type": "missing_dimension",
+                    "detail": "未发现业务维度信息，可能影响维度筛选。",
+                }
+            )
         if not capability.key_metrics:
-            missing_conditions.append({
-                "type": "missing_metric",
-                "detail": "未发现业务指标信息，可能影响指标查询。",
-            })
+            missing_conditions.append(
+                {
+                    "type": "missing_metric",
+                    "detail": "未发现业务指标信息，可能影响指标查询。",
+                }
+            )
         if not matched_assets:
-            missing_conditions.append({
-                "type": "no_assets_recalled",
-                "detail": "未召回相关数据资产，建议调整问题描述。",
-            })
+            missing_conditions.append(
+                {
+                    "type": "no_assets_recalled",
+                    "detail": "未召回相关数据资产，建议调整问题描述。",
+                }
+            )
         if suggested_filters:
-            missing_conditions.append({
-                "type": "filter_hint_unresolved",
-                "detail": "问题中包含筛选条件，需要在 QueryPlan filters 中完整表达。",
-                "clues": suggested_filters,
-            })
+            missing_conditions.append(
+                {
+                    "type": "filter_hint_unresolved",
+                    "detail": "问题中包含筛选条件，需要在 QueryPlan filters 中完整表达。",
+                    "clues": suggested_filters,
+                }
+            )
         asset_coverage = "insufficient" if missing_conditions else "sufficient"
-        next_step = "request_more_schema" if asset_coverage == "insufficient" else "generate_query_plan"
+        next_step = (
+            "request_more_schema" if asset_coverage == "insufficient" else "generate_query_plan"
+        )
         return {
             "asset_coverage": asset_coverage,
             "dataset_id": capability.dataset_id,
@@ -324,10 +539,7 @@ class BIWorkerContextProvider:
             "next_step_suggestion": next_step,
             "suggested_filters": suggested_filters,
             "context_state": {
-                "asset_refs": [
-                    self._asset_ref_from_matched_asset(item)
-                    for item in matched_assets
-                ],
+                "asset_refs": [self._asset_ref_from_matched_asset(item) for item in matched_assets],
                 "relationship_refs": [],
                 "field_refs": [],
                 "dataset_summary": capability.summary,
@@ -362,35 +574,41 @@ class BIWorkerContextProvider:
         clues: list[dict[str, Any]] = []
         # 中文人名：查询XXX的、按XXX、XXX的日志/记录
         for pattern in [
-            r'查询\s*([一-龥]{2,4})\s*的',
-            r'按\s*([一-龥]{2,4})\s*(?:查询|筛选|过滤)',
-            r'([一-龥]{2,4})\s*(?:的日志|的记录|的订单|的数据)',
+            r"查询\s*([一-龥]{2,4})\s*的",
+            r"按\s*([一-龥]{2,4})\s*(?:查询|筛选|过滤)",
+            r"([一-龥]{2,4})\s*(?:的日志|的记录|的订单|的数据)",
         ]:
             match = re.search(pattern, question)
             if match:
                 name = match.group(1)
-                clues.append({
-                    "clue_type": "person_name",
-                    "value": name,
-                    "reason": f"用户输入的人名「{name}」应从员工姓名或相关人员字段筛选",
-                })
+                clues.append(
+                    {
+                        "clue_type": "person_name",
+                        "value": name,
+                        "reason": f"用户输入的人名「{name}」应从员工姓名或相关人员字段筛选",
+                    }
+                )
                 break
         # 年份：YYYY年 或 YYYY
-        year_match = re.search(r'(\d{4})\s*年', question)
+        year_match = re.search(r"(\d{4})\s*年", question)
         if year_match:
-            clues.append({
-                "clue_type": "year",
-                "value": year_match.group(1),
-                "reason": f"用户输入的年份「{year_match.group(1)}」应从日期字段筛选",
-            })
+            clues.append(
+                {
+                    "clue_type": "year",
+                    "value": year_match.group(1),
+                    "reason": f"用户输入的年份「{year_match.group(1)}」应从日期字段筛选",
+                }
+            )
         # 日期范围：YYYY-MM-DD 或 YYYY/MM/DD
-        date_match = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', question)
+        date_match = re.search(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})", question)
         if date_match:
-            clues.append({
-                "clue_type": "date",
-                "value": date_match.group(1),
-                "reason": f"用户输入的日期「{date_match.group(1)}」应从日志或日期字段筛选",
-            })
+            clues.append(
+                {
+                    "clue_type": "date",
+                    "value": date_match.group(1),
+                    "reason": f"用户输入的日期「{date_match.group(1)}」应从日志或日期字段筛选",
+                }
+            )
         return clues
 
     def _list_blueprints(self, dataset: SemanticDataset) -> list[dict[str, Any]]:
@@ -482,11 +700,7 @@ class BIWorkerContextProvider:
                 )
                 for column in table.columns
             ]
-            column_text = " ".join(
-                text
-                for text in column_texts
-                if text
-            )
+            column_text = " ".join(text for text in column_texts if text)
             if _matches(
                 f"{question} {focus_text}",
                 [
@@ -508,7 +722,20 @@ class BIWorkerContextProvider:
         question: str,
         focus: dict[str, Any],
     ) -> list[SourceColumn]:
-        focus_text = " ".join(str(value) for value in focus.values())
+        # 精确通道：LLM 通过 focus["fields"] 点名要的列，直接按名称返回，
+        # 不做模糊匹配，也不受后续 columns[:N] 截断影响（仍受表实际列数上限）。
+        explicit_fields = focus.get("fields") if isinstance(focus, dict) else None
+        if isinstance(explicit_fields, list) and explicit_fields:
+            wanted = {str(field).strip().lower() for field in explicit_fields if field}
+            exact = [
+                column
+                for column in table.columns
+                if column.column_name and column.column_name.lower() in wanted
+            ]
+            if exact:
+                return exact
+        # 兜底：保留原模糊匹配，让不显式点名字段的 focus（tables/relationships/reason）依然能命中。
+        focus_text = " ".join(str(value) for key, value in focus.items() if key != "fields")
         matched = []
         for column in table.columns:
             if _matches(
@@ -532,16 +759,22 @@ class BIWorkerContextProvider:
     def _business_labels(self, columns: list[SourceColumn], roles: set[str]) -> list[str]:
         labels: list[str] = []
         for column in columns:
-            role = (column.user_semantic_role or column.ai_semantic_role or column.semantic_role or "").lower()
+            role = (
+                column.user_semantic_role or column.ai_semantic_role or column.semantic_role or ""
+            ).lower()
             if roles and role and role not in roles:
                 continue
-            label = _first_text(column.column_comment, column.effective_desc, column.user_description)
+            label = _first_text(
+                column.column_comment, column.effective_desc, column.user_description
+            )
             if label and label not in labels:
                 labels.append(label)
         if labels:
             return labels
         for column in columns:
-            label = _first_text(column.column_comment, column.effective_desc, column.user_description)
+            label = _first_text(
+                column.column_comment, column.effective_desc, column.user_description
+            )
             if label and label not in labels:
                 labels.append(label)
         return labels
@@ -563,22 +796,37 @@ class BIWorkerContextProvider:
             questions.append(f"按{'、'.join(dimensions[:3])}分析")
         return questions[:6]
 
-    def _relationships(self, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if len(entities) < 2:
-            return []
-        primary = entities[0]["asset_ref"]
-        return [
-            {
-                "relationship_ref": f"dataset_selected:{primary}->{entity['asset_ref']}",
-                "left_asset_ref": primary,
-                "right_asset_ref": entity["asset_ref"],
-                "relationship_type": "dataset_selected_together",
-                "description": "这些实体属于同一语义数据集，可作为后续规划的候选关联资产。",
-            }
-            for entity in entities[1:]
+    def _relationships(
+        self,
+        entities: list[dict[str, Any]],
+        dataset: SemanticDataset,
+    ) -> list[dict[str, Any]]:
+        # 软关系：同一数据集内被同时选中的表之间的候选关联提示。
+        soft: list[dict[str, Any]] = []
+        if len(entities) >= 2:
+            primary = entities[0]["asset_ref"]
+            soft = [
+                {
+                    "relationship_ref": f"dataset_selected:{primary}->{entity['asset_ref']}",
+                    "left_asset_ref": primary,
+                    "right_asset_ref": entity["asset_ref"],
+                    "relationship_type": "dataset_selected_together",
+                    "description": "这些实体属于同一语义数据集，可作为后续规划的候选关联资产。",
+                }
+                for entity in entities[1:]
+            ]
+        # 硬关系：来自蓝图 SQL 的真实 FK/join，优先级高于软关系。
+        hard = _parse_blueprint_joins(dataset)
+        # 去重：同一对 (left_asset_ref, right_asset_ref) 若已存在真实 FK，则丢弃对应软关系。
+        hard_pairs = {(r["left_asset_ref"], r["right_asset_ref"]) for r in hard}
+        soft_filtered = [
+            r for r in soft if (r["left_asset_ref"], r["right_asset_ref"]) not in hard_pairs
         ]
+        return soft_filtered + hard
 
-    def _context_state_patch(self, entities: list[dict[str, Any]], relationships: list[dict[str, Any]]) -> dict[str, Any]:
+    def _context_state_patch(
+        self, entities: list[dict[str, Any]], relationships: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         """把 L2 schema 切片转换成 ProgressiveContextState 可直接合并的安全 ref 集合。"""
 
         field_refs: list[str] = []
@@ -601,7 +849,10 @@ class BIWorkerContextProvider:
     def _find_table(self, tables: list[SourceTable], table_name: str) -> SourceTable | None:
         lowered = table_name.lower()
         for table in tables:
-            if table.table_name.lower() == lowered or f"{table.schema_name}.{table.table_name}".lower() == lowered:
+            if (
+                table.table_name.lower() == lowered
+                or f"{table.schema_name}.{table.table_name}".lower() == lowered
+            ):
                 return table
         return None
 
