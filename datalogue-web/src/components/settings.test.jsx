@@ -37,6 +37,8 @@ describe('SettingsScreen LLM 模型配置', () => {
       expect(get).toHaveBeenCalledWith('/api/agentscope-control/credentials');
     });
 
+    fireEvent.click(screen.getByRole('button', { name: /新增 credential/ }));
+
     fireEvent.change(screen.getByLabelText('接入模板'), { target: { value: 'custom' } });
     fireEvent.change(screen.getByLabelText('供应商'), { target: { value: 'openai-compatible' } });
     fireEvent.change(screen.getByPlaceholderText('MiniMax via AgentScope'), {
