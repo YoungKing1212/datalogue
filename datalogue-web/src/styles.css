@@ -207,7 +207,7 @@ input:focus, textarea:focus, button:focus { outline: none; }
 .btn.ghost:hover { background: var(--surface); color: var(--text); }
 
 /* content area */
-.content { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+.content { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; scrollbar-gutter: stable; }
 
 /* ─── WORKSPACE ─── */
 .workspace { max-width: 1100px; margin: 0 auto; padding: 44px 32px 80px; }
@@ -4596,7 +4596,7 @@ input:focus, textarea:focus, button:focus { outline: none; }
 /* ═══════════════════════════════════════════════════════════════
    SETTINGS PAGE
    ═══════════════════════════════════════════════════════════════ */
-.st-wrap { display: grid; grid-template-columns: 220px 1fr; gap: 32px; max-width: 1100px; margin: 0 auto; padding: 28px 32px 60px; }
+.st-wrap { display: grid; grid-template-columns: 200px 760px; justify-content: center; gap: 40px; padding: 28px 40px 60px; }
 .st-sidebar { position: sticky; top: 20px; align-self: start; }
 .st-sidebar .group-title { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; padding: 14px 8px 6px; font-weight: 500; }
 .st-sidebar .group-title:first-child { padding-top: 0; }
@@ -4775,6 +4775,77 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 }
 .st-llm-layout {
   display: block;
+}
+
+/* 列表工具栏：新增 credential 按钮 */
+.st-toolbar-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+/* 设置内弹窗（LLM credential 编辑） */
+.st-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.45);
+}
+.st-modal {
+  width: 640px;
+  max-width: 100%;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+}
+.st-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+.st-modal-header .st-modal-titles {
+  min-width: 0;
+}
+.st-modal-eyebrow {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-bottom: 2px;
+}
+.st-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.st-modal-header .icon-btn {
+  margin-left: auto;
+}
+.st-modal-body {
+  padding: 18px 20px;
+  overflow-y: auto;
+}
+.st-modal-body .st-form {
+  margin-bottom: 0;
+}
+.st-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--hairline);
+}
+.st-modal-footer .llm-form-actions {
+  margin-left: auto;
+  width: auto;
 }
 .llm-editor .st-row {
   grid-template-columns: minmax(136px, 0.34fr) minmax(0, 1fr);
