@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -32,6 +33,8 @@ from pydantic import ValidationError
 from app.agentscope_service.bi_worker_context import BIWorkerContextProvider
 from app.agentscope_service.bi_worker_contracts import (
     BIWorkerQueryPlan,
+    BIWorkerQueryResult,
+    FAILURE_DIAGNOSIS_MAP,
     RepairRequest,
 )
 from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
@@ -43,6 +46,7 @@ from app.schemas.bi_workbench import sanitize_event_payload
 
 
 AgentToolFactory = Callable[[str | None, str | None, str | None], Awaitable[list[ToolBase]]]
+logger = logging.getLogger(__name__)
 
 BI_WORKER_PLAN_CONTRACT_MAX_RETRIES = 1
 _BI_WORKER_PLAN_CONTRACT_TOTAL_ATTEMPT_KEY = "__total_contract_attempts__"
@@ -537,6 +541,26 @@ def build_datalogue_progressive_bi_worker_tools(
     ) -> ToolChunk:
         """Validate plan support then execute in one step (merged L4+L5)."""
 
+        # wrapper 入口摘要:一眼看到 LLM 传入的顶层 keys 和 dimension 规模,
+        # 便于反查契约错误(pydantic ValidationError 在这里就挂,进不到 runtime)。
+        logger.info(
+            "[datalogue_execute_query_plan_bundle] REQUEST dataset_id=%s trace_id=%s "
+            "query_plan_keys=%s context_state_keys=%s question_len=%d",
+            dataset_id,
+            trace_id,
+            (
+                sorted(query_plan.keys())[:20]
+                if isinstance(query_plan, dict)
+                else type(query_plan).__name__
+            ),
+            (
+                sorted(context_state.keys())[:20]
+                if isinstance(context_state, dict)
+                else type(context_state).__name__
+            ),
+            len(confirmed_question or ""),
+        )
+
         try:
             plan = BIWorkerQueryPlan.model_validate(query_plan)
             # 只保留 ProgressiveContextState 认识的字段；
@@ -545,29 +569,89 @@ def build_datalogue_progressive_bi_worker_tools(
             filtered_state = {
                 key: value for key, value in context_state.items() if key in valid_keys
             }
+            dropped_keys = [k for k in context_state.keys() if k not in valid_keys]
+            if dropped_keys:
+                logger.info(
+                    "[datalogue_execute_query_plan_bundle] context_state 过滤未知 keys "
+                    "dataset_id=%s trace_id=%s dropped=%s",
+                    dataset_id,
+                    trace_id,
+                    dropped_keys[:20],
+                )
             state = ProgressiveContextState(**filtered_state)
         except (TypeError, ValidationError) as exc:
+            # 契约错误:直接进入 Repair 链路 A。记录错误摘要便于事后排查 LLM 传入结构。
+            logger.warning(
+                "[datalogue_execute_query_plan_bundle] CONTRACT ERROR dataset_id=%s "
+                "trace_id=%s exc_type=%s signature=%s",
+                dataset_id,
+                trace_id,
+                type(exc).__name__,
+                _safe_plan_contract_signature(exc),
+            )
             return _tool_success_chunk(
                 _bi_worker_plan_contract_repair_payload(
                     failure_counts=plan_contract_failure_counts,
                     exc=exc,
                 )
             )
-        with SessionLocal() as db:
-            runtime = BIWorkerQueryRuntime(db)
-            payload = await runtime.execute_query_plan(
-                dataset_id=dataset_id,
-                confirmed_question=confirmed_question,
-                query_plan=plan,
-                context_state=state,
-                trace_id=trace_id,
+        try:
+            with SessionLocal() as db:
+                runtime = BIWorkerQueryRuntime(db)
+                payload = await runtime.execute_query_plan(
+                    dataset_id=dataset_id,
+                    confirmed_question=confirmed_question,
+                    query_plan=plan,
+                    context_state=state,
+                    trace_id=trace_id,
+                )
+                db.commit()
+        except Exception:
+            logger.exception(
+                "BI Worker query plan execution failed: dataset_id=%s trace_id=%s",
+                dataset_id,
+                trace_id,
             )
-            db.commit()
+            diagnosis = FAILURE_DIAGNOSIS_MAP["FIELD_NOT_FOUND"]
+            payload = BIWorkerQueryResult(
+                answer_summary="查询执行失败（受控查询运行时异常）。",
+                artifact_ref=None,
+                checkpoint_ref=None,
+                row_count=None,
+                column_count=None,
+                failure_type="FIELD_NOT_FOUND",
+                safe_diagnosis=diagnosis["safe_diagnosis"],
+                recommended_action=diagnosis["recommended_action"],
+            ).to_tool_payload()
         if (
             payload.get("datalogue_event_type") == "dataset_query_result"
             and payload.get("status") == "completed"
         ):
             _publish_worker_business_final(worker_context=worker_context, payload=payload)
+
+        # 结果分类日志:让运维/开发用一行就能看清最终 outcome(成功/失败类型)。
+        # runtime 层已经打过详细失败原因,这里只做面向 wrapper 的收口摘要。
+        status = payload.get("status")
+        failure_type = payload.get("failure_type")
+        if status == "completed" and not failure_type:
+            logger.info(
+                "[datalogue_execute_query_plan_bundle] RESPONSE OK dataset_id=%s trace_id=%s "
+                "row_count=%s artifact_ref=%s",
+                dataset_id,
+                trace_id,
+                payload.get("row_count"),
+                payload.get("artifact_ref"),
+            )
+        else:
+            logger.warning(
+                "[datalogue_execute_query_plan_bundle] RESPONSE FAILED dataset_id=%s "
+                "trace_id=%s status=%s failure_type=%s event_type=%s",
+                dataset_id,
+                trace_id,
+                status,
+                failure_type,
+                payload.get("datalogue_event_type"),
+            )
         return _tool_success_chunk(payload)
 
     def datalogue_repair_query_plan(

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -36,6 +37,8 @@ from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.bi.toolkit import build_bi_atomic_toolkit
 from app.models.dataset import SemanticDataset
 
+logger = logging.getLogger(__name__)
+
 
 class BIWorkerQueryRuntime:
     """BI Worker L5 Runtime：只执行已被 L4 渐进式上下文支持的查询计划。"""
@@ -52,6 +55,29 @@ class BIWorkerQueryRuntime:
         context_state: ProgressiveContextState,
         trace_id: str | None = None,
     ) -> dict[str, Any]:
+
+        # 进入点结构化摘要:一眼看清 dimension,便于按 dataset_id/trace_id 反查
+        logger.info(
+            "[bi_worker.execute_query_plan] START dataset_id=%s trace_id=%s intent=%s "
+            "primary_asset=%s supporting=%d filters=%d selects=%d metrics=%d "
+            "join_requirements=%d ctx_asset_refs=%d ctx_field_refs=%d "
+            "ctx_relationship_refs=%d suggested_filters=%d",
+            dataset_id,
+            trace_id,
+            query_plan.intent,
+            query_plan.data_graph.primary_entity.asset_ref,
+            len(query_plan.data_graph.supporting_entities),
+            len(query_plan.filters),
+            len(query_plan.selects),
+            len(query_plan.metrics),
+            len(query_plan.join_requirements),
+            len(context_state.asset_refs),
+            len(context_state.field_refs),
+            len(context_state.relationship_refs),
+            len(context_state.suggested_filters),
+        )
+
+        _normalize_context_state_refs(context_state)
         # 从 dataset 元数据主动补齐 field_refs/asset_refs,允许 LLM 不显式 merge context_state_patch。
         # 只补字段级和表级 ref,不动 relationship_refs(蓝图 SQL 硬关系 LLM 必须显式引用)。
         # 兜底本身只是"扩大合法引用范围"的可选增强:dataset 不可用时跳过,L4 仍然会用现有
@@ -59,21 +85,67 @@ class BIWorkerQueryRuntime:
         dataset = self._get_dataset(dataset_id)
         if dataset is not None:
             derived_refs = _derive_dataset_field_refs(dataset)
+            before_field = len(context_state.field_refs)
+            before_asset = len(context_state.asset_refs)
             context_state.field_refs = context_state.field_refs | derived_refs
             context_state.asset_refs = context_state.asset_refs | {
                 r for r in derived_refs if r.count(".") == 1
             }
+            logger.info(
+                "[bi_worker.execute_query_plan] dataset ref 兜底 dataset_id=%s "
+                "derived=%d field_refs=%d->%d asset_refs=%d->%d",
+                dataset_id,
+                len(derived_refs),
+                before_field,
+                len(context_state.field_refs),
+                before_asset,
+                len(context_state.asset_refs),
+            )
+        else:
+            logger.warning(
+                "[bi_worker.execute_query_plan] dataset 未找到,跳过 ref 兜底 dataset_id=%s",
+                dataset_id,
+            )
 
         # L4：内部校验 → 未通过时映射为失败类型
         validation = self.validator.validate(query_plan, context_state)
         if validation.support_status != "supported":
+            missing = getattr(validation, "missing_context", None) or []
+            # 逐条打印 missing 项 —— 这是 FIELD_NOT_FOUND 排查的核心信息
+            for item in missing[:20]:
+                logger.warning(
+                    "[bi_worker.execute_query_plan] L4 missing_context dataset_id=%s "
+                    "type=%s ref=%s recommended_next_tool=%s",
+                    dataset_id,
+                    item.get("type"),
+                    item.get("ref"),
+                    item.get("recommended_next_tool"),
+                )
             failure = self._map_validation_to_failure(validation, query_plan)
+            logger.warning(
+                "[bi_worker.execute_query_plan] L4 FAILED dataset_id=%s trace_id=%s "
+                "support_status=%s failure_type=%s missing_count=%d safe_reason=%s",
+                dataset_id,
+                trace_id,
+                validation.support_status,
+                failure.failure_type,
+                len(missing),
+                validation.safe_reason,
+            )
             return failure.to_tool_payload()
 
         # 筛选完整性预检：问题中有筛选线索但 QueryPlan 未在 filters 中体现
         if not query_plan.filters and context_state.suggested_filters:
             missing_count = len(context_state.suggested_filters)
             diagnosis = FAILURE_DIAGNOSIS_MAP["FILTER_MISSING"]
+            logger.warning(
+                "[bi_worker.execute_query_plan] FILTER_MISSING dataset_id=%s trace_id=%s "
+                "suggested_filter_count=%d types=%s",
+                dataset_id,
+                trace_id,
+                missing_count,
+                [str(item.get("clue_type") or "") for item in context_state.suggested_filters[:10]],
+            )
             return BIWorkerQueryResult(
                 answer_summary=f"查询计划缺少筛选条件：{missing_count} 个筛选线索未在 filters 中体现。",
                 artifact_ref=None,
@@ -93,14 +165,46 @@ class BIWorkerQueryRuntime:
                 trace_id=trace_id,
             )
         except Exception as exc:
+            # 执行阶段异常:打完整堆栈便于定位真实数据库/编译错误。
+            # 异常 message 可能含 SQL 片段,但 logger 只写文件日志、不进用户可见通道,允许打。
+            logger.exception(
+                "[bi_worker.execute_query_plan] EXECUTE EXCEPTION dataset_id=%s trace_id=%s "
+                "exc_type=%s exc_msg=%s",
+                dataset_id,
+                trace_id,
+                type(exc).__name__,
+                str(exc),
+            )
             failure = self._map_exception_to_failure(exc)
+            logger.warning(
+                "[bi_worker.execute_query_plan] 异常映射为 failure_type=%s",
+                failure.failure_type,
+            )
             return failure.to_tool_payload()
+
         # _execute_plan 已经把 bridge blocked 场景写成 failure_type，这里直接透传给 LLM。
         if result.failure_type is not None:
+            logger.warning(
+                "[bi_worker.execute_query_plan] BRIDGE FAILED dataset_id=%s trace_id=%s "
+                "failure_type=%s safe_diagnosis=%s",
+                dataset_id,
+                trace_id,
+                result.failure_type,
+                result.safe_diagnosis,
+            )
             return result.to_tool_payload()
+
         # 空结果映射：row_count=0 是明确空，row_count is None 且没有 artifact 也当作空结果，
         # 避免出现 status=completed 但 answer_summary="查询未完成" 的自相矛盾 payload。
         if result.row_count == 0 or (result.row_count is None and not result.artifact_ref):
+            logger.warning(
+                "[bi_worker.execute_query_plan] EMPTY_RESULT dataset_id=%s trace_id=%s "
+                "row_count=%s artifact_ref=%s",
+                dataset_id,
+                trace_id,
+                result.row_count,
+                result.artifact_ref,
+            )
             empty_result = BIWorkerQueryResult(
                 answer_summary="查询执行成功但未返回数据。",
                 artifact_ref=result.artifact_ref,
@@ -112,6 +216,17 @@ class BIWorkerQueryRuntime:
                 recommended_action=FAILURE_DIAGNOSIS_MAP["EMPTY_RESULT"]["recommended_action"],
             )
             return empty_result.to_tool_payload()
+
+        # 成功路径:记录关键指标,便于回归对比和 SLO 观测。
+        logger.info(
+            "[bi_worker.execute_query_plan] SUCCESS dataset_id=%s trace_id=%s "
+            "row_count=%s column_count=%s artifact_ref=%s",
+            dataset_id,
+            trace_id,
+            result.row_count,
+            result.column_count,
+            result.artifact_ref,
+        )
         return result.to_tool_payload()
 
     def _map_validation_to_failure(
@@ -443,6 +558,14 @@ def _derive_dataset_field_refs(dataset: SemanticDataset) -> set[str]:
                 continue
             refs.add(prefix + "." + column_name)
     return refs
+
+
+def _normalize_context_state_refs(context_state: ProgressiveContextState) -> None:
+    """工具 JSON 入参会把 ref 集合反序列化为 list,进入集合运算前统一收敛类型。"""
+
+    context_state.asset_refs = set(context_state.asset_refs or [])
+    context_state.relationship_refs = set(context_state.relationship_refs or [])
+    context_state.field_refs = set(context_state.field_refs or [])
 
 
 def _answer_summary(
