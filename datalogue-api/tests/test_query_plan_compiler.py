@@ -155,3 +155,177 @@ def test_contains_operator_escapes_percent_literal():
     # 转义后的 % 应以 \% 形式出现在 SQL 中，且附带 ESCAPE 子句
     assert "\\%" in compiled["sql"]
     assert "ESCAPE '\\'" in compiled["sql"]
+
+
+# ---- join_requirements 编译契约（改动 C 新增）----
+
+
+def _join_context() -> dict:
+    """构造 orders + departments 两表 schema，供 JOIN 相关用例复用。"""
+    return {
+        "table_schemas": [
+            {
+                "table_name": "orders",
+                "fields": [{"column_name": "order_id"}, {"column_name": "dept_id"}],
+            },
+            {
+                "table_name": "departments",
+                "fields": [{"column_name": "id"}, {"column_name": "name"}],
+            },
+        ],
+    }
+
+
+def test_compiles_inner_join_from_join_requirements():
+    """join_requirements 声明的 INNER JOIN 应被编译进最终 SQL。"""
+    plan = _base_plan()
+    plan["join_requirements"] = [
+        {
+            "left_alias": "main",
+            "right_alias": "dept",
+            "left_table": "orders",
+            "right_table": "departments",
+            "relationship_ref": "dataset_selected:orders.dept",
+            "join_type": "inner",
+            "required": True,
+            "reason": "补齐部门信息",
+            "join_keys": [{"left_field": "dept_id", "right_field": "id"}],
+        }
+    ]
+
+    compiled = _compile(
+        plan=plan,
+        context=_join_context(),
+        allowed_tables=["orders", "departments"],
+    )
+
+    assert compiled["ok"] is True
+    assert 'INNER JOIN "departments" ON "orders"."dept_id" = "departments"."id"' in compiled["sql"]
+
+
+def test_compiles_left_join_with_multiple_join_keys():
+    """多组 join_keys 应通过 AND 拼接在同一 ON 子句里。"""
+    plan = _base_plan()
+    plan["join_requirements"] = [
+        {
+            "left_alias": "main",
+            "right_alias": "dept",
+            "left_table": "orders",
+            "right_table": "departments",
+            "relationship_ref": "dataset_selected:orders.dept",
+            "join_type": "left",
+            "required": True,
+            "reason": "多字段联合关联",
+            "join_keys": [
+                {"left_field": "dept_id", "right_field": "id"},
+                {"left_field": "order_id", "right_field": "name"},
+            ],
+        }
+    ]
+
+    compiled = _compile(
+        plan=plan,
+        context=_join_context(),
+        allowed_tables=["orders", "departments"],
+    )
+
+    assert compiled["ok"] is True
+    assert 'LEFT JOIN "departments" ON' in compiled["sql"]
+    # 两个 ON 条件必须 AND 拼接，避免退化为仅使用其中一个 key
+    assert (
+        '"orders"."dept_id" = "departments"."id" AND ' '"orders"."order_id" = "departments"."name"'
+    ) in compiled["sql"]
+
+
+def test_fails_closed_when_join_missing_join_keys():
+    """join_keys 为空时 fail-closed，避免退化为笛卡尔积。"""
+    plan = _base_plan()
+    plan["join_requirements"] = [
+        {
+            "left_alias": "main",
+            "right_alias": "dept",
+            "left_table": "orders",
+            "right_table": "departments",
+            "relationship_ref": "dataset_selected:orders.dept",
+            "join_type": "inner",
+            "required": True,
+            "reason": "缺 join 条件",
+            "join_keys": [],
+        }
+    ]
+
+    compiled = _compile(
+        plan=plan,
+        context=_join_context(),
+        allowed_tables=["orders", "departments"],
+    )
+
+    assert compiled["ok"] is False
+    assert compiled["code"] == "PLAN_NOT_COMPILABLE"
+
+
+def test_fails_closed_when_join_table_not_in_allowed_tables():
+    """右表不在白名单里时 fail-closed，避免绕过 SQL Guard。"""
+    plan = _base_plan()
+    plan["join_requirements"] = [
+        {
+            "left_alias": "main",
+            "right_alias": "dept",
+            "left_table": "orders",
+            "right_table": "departments",
+            "relationship_ref": "dataset_selected:orders.dept",
+            "join_type": "inner",
+            "required": True,
+            "reason": "白名单外表",
+            "join_keys": [{"left_field": "dept_id", "right_field": "id"}],
+        }
+    ]
+
+    compiled = _compile(
+        plan=plan,
+        context=_join_context(),
+        allowed_tables=["orders"],  # 仅允许 orders，departments 被拦截
+    )
+
+    assert compiled["ok"] is False
+    assert compiled["code"] == "PLAN_NOT_COMPILABLE"
+
+
+def test_fails_closed_when_join_type_unsupported():
+    """join_type 只允许 inner/left；其它类型 fail-closed。"""
+    plan = _base_plan()
+    plan["join_requirements"] = [
+        {
+            "left_alias": "main",
+            "right_alias": "dept",
+            "left_table": "orders",
+            "right_table": "departments",
+            "relationship_ref": "dataset_selected:orders.dept",
+            "join_type": "cross",  # 非法 join 类型
+            "required": True,
+            "reason": "非法 join 类型",
+            "join_keys": [{"left_field": "dept_id", "right_field": "id"}],
+        }
+    ]
+
+    compiled = _compile(
+        plan=plan,
+        context=_join_context(),
+        allowed_tables=["orders", "departments"],
+    )
+
+    assert compiled["ok"] is False
+    assert compiled["code"] == "PLAN_NOT_COMPILABLE"
+
+
+def test_no_join_when_join_requirements_empty():
+    """join_requirements 缺失或为空时正常出 SQL，且不含 JOIN 关键字。"""
+    plan = _base_plan()
+    # 显式设为空列表，验证不会 fail-closed 也不会产生 JOIN 子句
+    plan["join_requirements"] = []
+
+    compiled = _compile(plan=plan)
+
+    assert compiled["ok"] is True
+    # SELECT 语法不含其它 JOIN 关键字，所以这里可以直接断言不出现
+    assert "JOIN" not in compiled["sql"]

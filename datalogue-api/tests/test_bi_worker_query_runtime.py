@@ -509,4 +509,53 @@ def test_query_plan_join_keys_default_empty_list():
     assert dsl["join_requirements"][0]["join_keys"] == []
 
 
+# ---- alias→table 解析与端到端 JOIN 编译（改动 C 新增）----
 
+
+def test_query_plan_to_legacy_dsl_includes_left_and_right_table_from_alias():
+    """legacy DSL 的 join_requirements 元素应通过 _alias_table_names 携带 left/right_table。"""
+    runtime = BIWorkerQueryRuntime(db=None)
+    # _plan() 里 primary alias="o" -> orders，supporting alias="d" -> departments
+    dsl = runtime._query_plan_to_legacy_query_plan(_plan())
+
+    assert dsl["join_requirements"][0]["left_table"] == "orders"
+    assert dsl["join_requirements"][0]["right_table"] == "departments"
+
+
+def test_end_to_end_join_keys_to_sql_via_compiler():
+    """端到端：JoinKey → legacy DSL → 编译器 → 生成合法 LEFT JOIN SQL。"""
+    from app.agentscope_service.bi_worker_contracts import JoinKey
+
+    runtime = BIWorkerQueryRuntime(db=None)
+    plan = _plan()
+    # _plan() 默认 join_keys 为空，此处显式补上关联字段声明
+    plan.join_requirements[0].join_keys = [
+        JoinKey(left_field="dept_id", right_field="id"),
+    ]
+
+    dsl = runtime._query_plan_to_legacy_query_plan(plan)
+    compiled = compile_query_plan_to_sql(
+        query_plan=dsl,
+        sql_generation_context={
+            "table_schemas": [
+                {
+                    "table_name": "orders",
+                    "fields": [
+                        {"column_name": "order_id"},
+                        {"column_name": "order_date"},
+                        {"column_name": "amount"},
+                        {"column_name": "dept_id"},
+                    ],
+                },
+                {
+                    "table_name": "departments",
+                    "fields": [{"column_name": "id"}, {"column_name": "name"}],
+                },
+            ],
+        },
+        dialect="sqlite",
+        allowed_tables=["orders", "departments"],
+    )
+
+    assert compiled["ok"] is True
+    assert 'LEFT JOIN "departments" ON "orders"."dept_id" = "departments"."id"' in compiled["sql"]

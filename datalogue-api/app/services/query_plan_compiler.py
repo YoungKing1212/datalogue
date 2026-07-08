@@ -47,9 +47,17 @@ def _failure(
         "execution_source": EXECUTION_SOURCE_TOOL_COMPILER,
         "sql_guard": sql_guard,
         "warnings": [],
-        "control_plane": {"execution_source": EXECUTION_SOURCE_TOOL_COMPILER, "status": "blocked", "code": code},
+        "control_plane": {
+            "execution_source": EXECUTION_SOURCE_TOOL_COMPILER,
+            "status": "blocked",
+            "code": code,
+        },
         "query_artifact": None,
-        "trace": {"execution_source": EXECUTION_SOURCE_TOOL_COMPILER, "status": "blocked", "code": code},
+        "trace": {
+            "execution_source": EXECUTION_SOURCE_TOOL_COMPILER,
+            "status": "blocked",
+            "code": code,
+        },
     }
 
 
@@ -114,14 +122,22 @@ def _field_table_name(item: dict[str, Any], main_table: str) -> str:
 def _field_column_name(item: dict[str, Any]) -> str:
     metadata = item.get("metadata")
     meta = metadata if isinstance(metadata, dict) else {}
-    return str(meta.get("column_name") or item.get("field") or item.get("name") or "").split(".")[-1].strip()
+    return (
+        str(meta.get("column_name") or item.get("field") or item.get("name") or "")
+        .split(".")[-1]
+        .strip()
+    )
 
 
 def _table_schema_name(schema: dict[str, Any]) -> str:
-    return str(schema.get("table_name") or schema.get("name") or schema.get("asset_id") or "").strip()
+    return str(
+        schema.get("table_name") or schema.get("name") or schema.get("asset_id") or ""
+    ).strip()
 
 
-def _main_table(query_plan: dict[str, Any], sql_generation_context: dict[str, Any] | None) -> str | None:
+def _main_table(
+    query_plan: dict[str, Any], sql_generation_context: dict[str, Any] | None
+) -> str | None:
     debug_payload = query_plan.get("debug")
     debug = debug_payload if isinstance(debug_payload, dict) else {}
     selected = str(debug.get("selected_main_table") or "").strip()
@@ -203,7 +219,9 @@ def _compile_where_clauses(
         value = item.get("value")
         # alias 是 QueryPlan 内部实体别名，不等于物理表名；优先使用 runtime 透传的 metadata。
         table_name = _field_table_name(item, main_table)
-        column_ref = f"{quote_identifier(table_name, dialect)}.{quote_identifier(field_name, dialect)}"
+        column_ref = (
+            f"{quote_identifier(table_name, dialect)}.{quote_identifier(field_name, dialect)}"
+        )
 
         if operator == "between" and isinstance(value, list) and len(value) >= 2:
             clauses.append(
@@ -247,7 +265,9 @@ def _compile_order_clauses(
             direction = "ASC"
         # 排序字段同样不能把 QueryPlan alias 当物理表名。
         table_name = _field_table_name(item, main_table)
-        column_ref = f"{quote_identifier(table_name, dialect)}.{quote_identifier(field_name, dialect)}"
+        column_ref = (
+            f"{quote_identifier(table_name, dialect)}.{quote_identifier(field_name, dialect)}"
+        )
         clauses.append(f"{column_ref} {direction}")
     return clauses
 
@@ -271,7 +291,9 @@ def _compile_group_by_items(
         if not column_name:
             continue
         table_name = _field_table_name(item, main_table)
-        column_ref = f"{quote_identifier(table_name, dialect)}.{quote_identifier(column_name, dialect)}"
+        column_ref = (
+            f"{quote_identifier(table_name, dialect)}.{quote_identifier(column_name, dialect)}"
+        )
         label = str(item.get("display_name") or item.get("name") or column_name)
         select_items.append(f"{column_ref} AS {quote_identifier(label, dialect)}")
         group_clauses.append(column_ref)
@@ -297,7 +319,9 @@ def _compile_metric_select_items(
         if not column_name or aggregation not in _METRIC_AGGREGATIONS:
             continue
         table_name = _field_table_name(item, main_table)
-        column_ref = f"{quote_identifier(table_name, dialect)}.{quote_identifier(column_name, dialect)}"
+        column_ref = (
+            f"{quote_identifier(table_name, dialect)}.{quote_identifier(column_name, dialect)}"
+        )
         label = str(item.get("display_name") or column_name)
         if aggregation == "count_distinct":
             expression = f"COUNT(DISTINCT {column_ref})"
@@ -320,11 +344,109 @@ def _safe_limit(limit: Any) -> int | None:
         return None
 
 
+def _compile_join_clauses(
+    query_plan: dict[str, Any],
+    main_table: str,
+    allowed_tables: list[str] | None,
+    dialect: str | None,
+) -> list[str] | None:
+    """将 query_plan.join_requirements 编译为安全的 JOIN 子句片段。
+
+    - join_requirements 缺失或非 list：视为无 join，返回 []（不算错误）。
+    - 任一 join 描述不完整或字段异常：fail-closed 返回 None，触发上层 PLAN_NOT_COMPILABLE。
+    - allowed_tables 非空时，左右表必须都在白名单里，避免绕过 SQL Guard。
+    """
+
+    join_requirements = query_plan.get("join_requirements")
+    if not isinstance(join_requirements, list):
+        # 未声明 join_requirements 视为无 join，允许纯单表查询通过
+        return []
+    if not join_requirements:
+        return []
+
+    # 仅在 allowed_tables 是非空 list 时启用白名单校验
+    allowed_set: set[str] | None = None
+    if isinstance(allowed_tables, list) and allowed_tables:
+        allowed_set = {str(t).strip() for t in allowed_tables if str(t).strip()}
+
+    clauses: list[str] = []
+    for item in join_requirements:
+        if not isinstance(item, dict):
+            # 元素类型异常 fail-closed，避免静默丢失 join 造成笛卡尔积
+            logger.warning("join_requirements 元素类型异常，fail-closed 拒绝编译: %r", item)
+            return None
+
+        left_table = str(item.get("left_table") or "").strip()
+        right_table = str(item.get("right_table") or "").strip()
+        if not left_table or not right_table:
+            # left_table / right_table 缺失说明 alias 解析失败，无法生成合法 JOIN
+            logger.warning(
+                "join_requirements 缺少 left_table/right_table，fail-closed 拒绝编译: %r",
+                item,
+            )
+            return None
+
+        # 本轮暂不处理自 join：right_table 等于 main_table 视为异常
+        if right_table == main_table:
+            logger.warning(
+                "join_requirements 出现 right_table == main_table 自 join，本轮 fail-closed: %s",
+                right_table,
+            )
+            return None
+
+        join_type_raw = str(item.get("join_type") or "").lower().strip()
+        if join_type_raw not in {"inner", "left"}:
+            # 只允许 inner / left；其它类型 fail-closed 避免生成不受控 SQL
+            logger.warning("join_requirements 不支持的 join_type，fail-closed: %s", join_type_raw)
+            return None
+
+        join_keys = item.get("join_keys")
+        if not isinstance(join_keys, list) or not join_keys:
+            # 缺少 join 条件会退化为笛卡尔积，必须 fail-closed
+            logger.warning("join_requirements 缺少 join_keys，fail-closed 拒绝编译: %r", item)
+            return None
+
+        if allowed_set is not None and (
+            left_table not in allowed_set or right_table not in allowed_set
+        ):
+            # 白名单外的物理表禁止参与 JOIN，避免绕过 SQL Guard 的表访问约束
+            logger.warning(
+                "join_requirements 涉及白名单外表，fail-closed: left=%s right=%s",
+                left_table,
+                right_table,
+            )
+            return None
+
+        conditions: list[str] = []
+        for key in join_keys:
+            if not isinstance(key, dict):
+                logger.warning("join_keys 元素类型异常，fail-closed: %r", key)
+                return None
+            left_field = str(key.get("left_field") or "").strip()
+            right_field = str(key.get("right_field") or "").strip()
+            if not left_field or not right_field:
+                # 关联字段缺失时无法生成安全 ON 条件，fail-closed
+                logger.warning("join_keys 缺少 left_field/right_field，fail-closed: %r", key)
+                return None
+            conditions.append(
+                f"{quote_identifier(left_table, dialect)}.{quote_identifier(left_field, dialect)} "
+                f"= {quote_identifier(right_table, dialect)}.{quote_identifier(right_field, dialect)}"
+            )
+
+        join_keyword = "INNER JOIN" if join_type_raw == "inner" else "LEFT JOIN"
+        clauses.append(
+            f"{join_keyword} {quote_identifier(right_table, dialect)} ON {' AND '.join(conditions)}"
+        )
+
+    return clauses
+
+
 def _compile_select_sql(
     *,
     query_plan: dict[str, Any],
     sql_generation_context: dict[str, Any] | None,
     dialect: str | None,
+    allowed_tables: list[str] | None = None,
 ) -> str | None:
     """从查询计划资产引用生成最小可执行 SELECT；不读取任何模型 SQL 文本。"""
 
@@ -367,6 +489,13 @@ def _compile_select_sql(
         return None
 
     sql = f"SELECT {', '.join(select_items)} FROM {quote_identifier(main_table, dialect)}"
+
+    # 追加 JOIN 子句；join_requirements 元素异常时 fail-closed，避免退化为笛卡尔积
+    join_clauses = _compile_join_clauses(query_plan, main_table, allowed_tables, dialect)
+    if join_clauses is None:
+        return None
+    if join_clauses:
+        sql = sql + " " + " ".join(join_clauses)
 
     # 从 query_plan.filters 生成安全 WHERE 子句
     where_clauses = _compile_where_clauses(query_plan.get("filters"), main_table, dialect)
@@ -470,6 +599,7 @@ def compile_query_plan_to_sql(
         query_plan=query_plan,
         sql_generation_context=sql_generation_context,
         dialect=dialect,
+        allowed_tables=allowed_tables,
     )
     if not sql:
         return _failure(
