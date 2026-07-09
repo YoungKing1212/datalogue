@@ -20,6 +20,7 @@ from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     BIWorkerQueryResult,
     FieldTarget,
+    JoinKey,
     JoinRequirement,
     QueryDataGraph,
     QueryEntity,
@@ -60,6 +61,7 @@ def _plan(*, relationship_ref: str = "relationship:orders.department") -> BIWork
                 join_type="left",
                 required=True,
                 reason="补充订单归属部门",
+                join_keys=[JoinKey(left_field="dept_id", right_field="id")],
             )
         ],
         filters=[
@@ -458,11 +460,11 @@ async def test_execute_plan_passes_through_bridge_blocked_failure_type(monkeypat
 
 
 def test_map_bridge_code_to_failure_maps_execute_blocked_by_keywords():
-    """_map_bridge_code_to_failure 复用 _map_exception 的关键字表；EXECUTE_BLOCKED 默认落回 FIELD_NOT_FOUND。"""
+    """_map_bridge_code_to_failure 复用 _map_exception 的关键字表；EXECUTE_BLOCKED 默认落回 EXECUTE_FAILED。"""
     from app.domains.bi.worker.runtime import _map_bridge_code_to_failure
 
     assert (
-        _map_bridge_code_to_failure(code="EXECUTE_BLOCKED", error_summary="") == "FIELD_NOT_FOUND"
+        _map_bridge_code_to_failure(code="EXECUTE_BLOCKED", error_summary="") == "EXECUTE_FAILED"
     )
     assert (
         _map_bridge_code_to_failure(code="EXECUTE_BLOCKED", error_summary="bind parameter")
@@ -474,7 +476,7 @@ def test_map_bridge_code_to_failure_maps_execute_blocked_by_keywords():
     )
     assert (
         _map_bridge_code_to_failure(code="TOOL_SEQUENCE_EXHAUSTED", error_summary="")
-        == "FIELD_NOT_FOUND"
+        == "EXECUTE_FAILED"
     )
     assert (
         _map_bridge_code_to_failure(code="RUNTIME_BLOCKED", error_summary="aggregation mismatch")
@@ -501,12 +503,21 @@ def test_query_plan_supports_join_keys_and_legacy_dsl_includes_join_requirements
     assert dsl["join_requirements"][0]["right_alias"] == "d"
 
 
-def test_query_plan_join_keys_default_empty_list():
-    """未显式声明 join_keys 时，legacy DSL 里应为空列表（不遗漏 key）。"""
-    runtime = BIWorkerQueryRuntime(db=None)
-    plan = _plan()
-    dsl = runtime._query_plan_to_legacy_query_plan(plan)
-    assert dsl["join_requirements"][0]["join_keys"] == []
+def test_query_plan_join_keys_rejects_empty_list():
+    """JoinRequirement 的 join_keys 为空时模型校验应拒绝（fail-fast，避免编译器 fail-closed）。"""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="join_keys"):
+        JoinRequirement(
+            left_alias="o",
+            right_alias="d",
+            relationship_ref="relationship:orders.department",
+            join_type="left",
+            required=True,
+            reason="补充订单归属部门",
+            join_keys=[],
+        )
 
 
 # ---- alias→table 解析与端到端 JOIN 编译（改动 C 新增）----

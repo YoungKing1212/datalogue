@@ -14,6 +14,7 @@
 from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     FieldTarget,
+    JoinKey,
     JoinRequirement,
     QueryDataGraph,
     QueryEntity,
@@ -66,6 +67,7 @@ def _plan(
                 join_type="left",
                 required=True,
                 reason="补充订单归属部门",
+                join_keys=[JoinKey(left_field="dept_id", right_field="id")],
             )
         ],
         filters=[

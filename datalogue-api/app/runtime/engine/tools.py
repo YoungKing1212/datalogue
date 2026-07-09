@@ -670,14 +670,14 @@ def build_datalogue_progressive_bi_worker_tools(
                 dataset_id,
                 trace_id,
             )
-            diagnosis = FAILURE_DIAGNOSIS_MAP["FIELD_NOT_FOUND"]
+            diagnosis = FAILURE_DIAGNOSIS_MAP["EXECUTE_FAILED"]
             payload = BIWorkerQueryResult(
                 answer_summary="查询执行失败（受控查询运行时异常）。",
                 artifact_ref=None,
                 checkpoint_ref=None,
                 row_count=None,
                 column_count=None,
-                failure_type="FIELD_NOT_FOUND",
+                failure_type="EXECUTE_FAILED",
                 safe_diagnosis=diagnosis["safe_diagnosis"],
                 recommended_action=diagnosis["recommended_action"],
             ).to_tool_payload()
@@ -749,6 +749,7 @@ def build_datalogue_progressive_bi_worker_tools(
             "VALUE_BINDING_FAILED",
             "SQL_GUARD_BLOCKED",
             "EMPTY_RESULT",
+            "EXECUTE_FAILED",
         }
         resolved_type = failure_type if failure_type in valid_failure_types else "FIELD_NOT_FOUND"
         repair = RepairRequest.from_failure_type(

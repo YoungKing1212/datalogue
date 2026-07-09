@@ -222,6 +222,9 @@ async def test_query_plan_contract_hint_points_to_real_operator_and_join_shape()
                 "join_type": "inner",
                 "left_asset_ref": "table:pm_tenant.plan_task_daily_record",
                 "right_asset_ref": "table:pm_tenant.eas_personofile",
+                "join_keys": [
+                    {"left_field": "person_id", "right_field": "id"}
+                ],
             }
         ],
         "filters": [
@@ -324,6 +327,9 @@ async def test_query_plan_contract_details_explain_legacy_join_fields():
                 "type": "inner",
                 "relationship_ref": "rel:contract_customer",
                 "reason": "关联客户",
+                "join_keys": [
+                    {"left_field": "customer_id", "right_field": "id"}
+                ],
             },
             {
                 "left": "contract",
@@ -331,6 +337,9 @@ async def test_query_plan_contract_details_explain_legacy_join_fields():
                 "type": "left",
                 "relationship_ref": "rel:contract_org",
                 "reason": "关联组织",
+                "join_keys": [
+                    {"left_field": "org_id", "right_field": "id"}
+                ],
             },
             {
                 "left": "contract",
@@ -338,6 +347,9 @@ async def test_query_plan_contract_details_explain_legacy_join_fields():
                 "type": "left",
                 "relationship_ref": "rel:contract_person",
                 "reason": "关联人员",
+                "join_keys": [
+                    {"left_field": "person_id", "right_field": "id"}
+                ],
             },
         ],
         "filters": [],
@@ -728,7 +740,7 @@ async def test_execute_query_plan_bundle_logs_runtime_exception(caplog):
         payload = json.loads(result_chunk.content[0].text)
         assert payload["status"] == "failed"
         assert payload["datalogue_event_type"] == "dataset_query_result"
-        assert payload["failure_type"] == "FIELD_NOT_FOUND"
+        assert payload["failure_type"] == "EXECUTE_FAILED"
         assert "BI Worker query plan execution failed" in caplog.text
         assert "unsupported operand type" in caplog.text
     finally:

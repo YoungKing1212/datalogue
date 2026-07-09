@@ -31,6 +31,7 @@ QueryFailureType = Literal[
     "VALUE_BINDING_FAILED",
     "SQL_GUARD_BLOCKED",
     "EMPTY_RESULT",
+    "EXECUTE_FAILED",
 ]
 
 _FORBIDDEN_SAFE_REASON_FRAGMENTS = (
@@ -154,6 +155,16 @@ class JoinRequirement(StrictModel):
     # 从 LLM 侧显式传给后端；旧编译器暂不消费，后续可平滑接入。
     join_keys: list[JoinKey] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _validate_join_keys(self) -> "JoinRequirement":
+        """有 relationship_ref 时 join_keys 必须非空，避免编译器 fail-closed 才暴露错误。"""
+        if self.join_keys is None or len(self.join_keys) == 0:
+            raise ValueError(
+                "join_keys 不能为空；有 join_requirements 时必须提供至少一对 "
+                "left_field/right_field 作为 join 条件"
+            )
+        return self
+
 
 class BIWorkerQueryPlan(StrictModel):
     intent: QueryIntent
@@ -256,6 +267,10 @@ REPAIR_HINTS: dict[QueryFailureType, dict[str, str]] = {
         "safe_reason": "查询执行成功但未返回数据行，可能是过滤条件过严或数据集无匹配记录。",
         "recommended_action": "放宽过滤条件，或确认数据集在所选时间范围内是否有数据。",
     },
+    "EXECUTE_FAILED": {
+        "safe_reason": "查询执行失败，可能是数据库连接异常、权限不足或 SQL 语法错误。",
+        "recommended_action": "检查数据库连接状态和查询权限，确认 SQL 语法正确后重试。",
+    },
 }
 
 
@@ -331,6 +346,10 @@ FAILURE_DIAGNOSIS_MAP: dict[QueryFailureType, dict[str, str]] = {
     "EMPTY_RESULT": {
         "safe_diagnosis": "查询执行成功但未返回数据。",
         "recommended_action": "尝试放宽过滤条件或确认数据集在所选时间范围内是否有数据。",
+    },
+    "EXECUTE_FAILED": {
+        "safe_diagnosis": "查询已编译成功但数据库执行失败，可能是数据库连接、语法或权限问题。",
+        "recommended_action": "检查数据库连接状态和查询语句，确认数据源可访问后重试。",
     },
 }
 

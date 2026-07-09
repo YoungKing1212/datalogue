@@ -51,6 +51,9 @@ def test_query_plan_accepts_multitable_relationship_refs():
                     "join_type": "inner",
                     "required": True,
                     "reason": "人员姓名来自员工维表",
+                    "join_keys": [
+                        {"left_field": "employee_id", "right_field": "employee_id"}
+                    ],
                 }
             ],
             "filters": [

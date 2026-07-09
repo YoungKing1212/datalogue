@@ -271,7 +271,7 @@ class BIWorkerQueryRuntime:
         elif "aggregation" in exc_msg or "aggregate" in exc_msg:
             failure_type = "AGGREGATION_WRONG"
         else:
-            failure_type = "FIELD_NOT_FOUND"
+            failure_type = "EXECUTE_FAILED"
         diagnosis = FAILURE_DIAGNOSIS_MAP[failure_type]
         return BIWorkerQueryResult(
             answer_summary=f"查询执行失败（{failure_type}）。",
@@ -658,7 +658,7 @@ def _map_bridge_code_to_failure(*, code: str, error_summary: str) -> QueryFailur
         return "VALUE_BINDING_FAILED"
     if "aggregation" in signal or "aggregate" in signal:
         return "AGGREGATION_WRONG"
-    return "FIELD_NOT_FOUND"
+    return "EXECUTE_FAILED"
 
 
 def _optional_str(value: Any) -> str | None:
