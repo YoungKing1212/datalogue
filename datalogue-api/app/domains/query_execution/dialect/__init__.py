@@ -23,6 +23,7 @@ __all__ = [
     "FORBIDDEN_SQL_KEYWORDS",
     "adapt_sql_for_execution",
     "contains_forbidden_keyword",
+    "normalize_execution_dialect",
     "normalize_supported_dialect",
     "quote_ident",
     "quote_identifier",
@@ -43,7 +44,8 @@ def __getattr__(name: str) -> Any:
         from . import names
 
         return getattr(names, name)
-    if name in {"adapt_sql_for_execution", "normalize_supported_dialect", "quote_identifier"}:
+    if name in {"adapt_sql_for_execution", "normalize_execution_dialect",
+    "normalize_supported_dialect", "quote_identifier"}:
         from . import adapter
 
         return getattr(adapter, name)

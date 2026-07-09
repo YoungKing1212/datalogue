@@ -20,6 +20,7 @@ from typing import Any
 from app.domains.query_execution.dialect.adapter import (
     EXECUTION_SOURCE_TOOL_COMPILER,
     adapt_sql_for_execution,
+    normalize_execution_dialect,
     quote_identifier,
 )
 
@@ -358,6 +359,14 @@ def _safe_limit(limit: Any) -> int | None:
         return None
 
 
+def _limit_clause(limit: int, dialect: str | None) -> str:
+    """按执行方言渲染行数限制；Oracle 不能使用 MySQL/SQLite 的 LIMIT。"""
+
+    if normalize_execution_dialect(dialect) == "oracle":
+        return f"FETCH FIRST {limit} ROWS ONLY"
+    return f"LIMIT {limit}"
+
+
 def _compile_join_clauses(
     query_plan: dict[str, Any],
     main_table: str,
@@ -526,10 +535,10 @@ def _compile_select_sql(
     if order_clauses:
         sql += f" ORDER BY {', '.join(order_clauses)}"
 
-    # 支持 LIMIT
+    # 支持方言化行数限制
     limit = _safe_limit(query_plan.get("limit"))
     if limit is not None:
-        sql += f" LIMIT {limit}"
+        sql += f" {_limit_clause(limit, dialect)}"
 
     return sql
 

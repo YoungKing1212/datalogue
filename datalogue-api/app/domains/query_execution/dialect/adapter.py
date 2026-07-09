@@ -23,19 +23,28 @@ from app.domains.query_execution.guard import guard_readonly_sql
 EXECUTION_SOURCE_TOOL_COMPILER = "tool_compiler"
 
 _DIALECT_ALIASES = {
+    "doris": "mysql",
     "mariadb": "mysql",
 }
-_SUPPORTED_DIALECTS = {"mysql", "sqlite"}
+_SUPPORTED_DIALECTS = {"mysql", "oracle", "sqlite"}
 _CURRENT_DATASOURCE_DIALECT_ERROR = "DIALECT_UNSUPPORTED_FOR_CURRENT_DATASOURCE"
+
+
+def normalize_execution_dialect(dialect: str | None) -> str | None:
+    """归一化服务端执行方言别名；未知值原样返回，交给调用方边界处理。"""
+
+    normalized = str(dialect or "").strip().lower()
+    if not normalized:
+        return None
+    return _DIALECT_ALIASES.get(normalized, normalized)
 
 
 def normalize_supported_dialect(dialect: str | None) -> str | None:
     """归一化当前阶段真实启用的数据源方言；未知值必须 fail closed。"""
 
-    normalized = str(dialect or "").strip().lower()
+    normalized = normalize_execution_dialect(dialect)
     if not normalized:
         return None
-    normalized = _DIALECT_ALIASES.get(normalized, normalized)
     return normalized if normalized in _SUPPORTED_DIALECTS else None
 
 

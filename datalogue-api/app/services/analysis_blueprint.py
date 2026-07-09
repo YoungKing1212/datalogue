@@ -26,6 +26,7 @@ from app.core.models.dataset import AnalysisBlueprint, BlueprintUsageLog, Semant
 from app.core.models.datasource import Datasource
 from app.domains.data_source.service import build_datasource_context, create_engine_for_datasource
 from app.domains.query_execution.guard import guard_readonly_sql
+from app.domains.query_execution.dialect.adapter import normalize_execution_dialect
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,7 @@ def _datasource_dialect(datasource: Datasource) -> str:
     """获取数据源方言标识。"""
     context = build_datasource_context(datasource)
     value = (context or {}).get("dialect") or getattr(datasource, "db_type", None) or ""
-    return str(value).lower()
+    return normalize_execution_dialect(value) or str(value).lower()
 
 
 def _get_raw_connection(conn: Any) -> Any:
