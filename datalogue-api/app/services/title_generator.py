@@ -51,6 +51,31 @@ def _postprocess_title(title: str) -> str:
     return text[:80].strip()
 
 
+def _extract_title_from_reasoning(text: str) -> str:
+    """从推理模型的 reasoning_content 中提取最终标题。
+
+    推理模型（如 DeepSeek V4 Pro）在 reasoning_content 中输出思考过程，
+    最终的标题通常在末尾用引号包裹或是最后一个句子。
+    """
+    # 策略1：查找最后的引号内容（如 "杨凯2024工作日志查询"）
+    for quote_char in ['"', "'", '"', "'", '「', '」', '『', '』']:
+        parts = text.split(quote_char)
+        if len(parts) >= 3:
+            # 取最后一段引号内容
+            for i in range(len(parts) - 2, 0, -1):
+                candidate = parts[i].strip()
+                if candidate and len(candidate) <= 80:
+                    return candidate
+    # 策略2：取最后一个句子（句号、感叹号后的内容）
+    for sep in ('。', '！', '？', '\n'):
+        segments = text.split(sep)
+        last = segments[-1].strip()
+        if last and len(last) <= 80:
+            return last
+    # 策略3：取最后200字符
+    return text[-200:].strip()
+
+
 def generate_title(
     user_message: str,
     assistant_response: str,
@@ -67,17 +92,27 @@ def generate_title(
         user_message_clean = _strip_thinking_blocks(user_message or "")
         assistant_response_clean = _strip_thinking_blocks(assistant_response or "")
 
-        # 构建 prompt
-        prompt = (
-            "Generate a short, descriptive title (3-7 words) for a conversation that starts with the following exchange. "
-            "The title should capture the main topic or intent. Write the title in Chinese.\n\n"
+        # 构建 prompt，使用 system 角色引导模型直接输出标题
+        system_prompt = (
+            "You are a title generator. Generate a short, descriptive title (3-7 words) "
+            "for a conversation. The title should capture the main topic or intent. "
+            "Write the title in the same language as the user's message. "
+            "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+        )
+        user_prompt = (
             "User: {user_message}\n"
-            "Assistant: {assistant_response}\n\n"
-            "Title:"
+            "Assistant: {assistant_response}"
         ).format(
             user_message=user_message_clean[:500],
             assistant_response=assistant_response_clean[:500],
         )
+
+        # 标题生成不需要推理能力，使用非推理模型以避免 reasoning_content 问题
+        model = config.model
+        # DeepSeek V4 Pro 是推理模型，其 content 始终为空。标题生成
+        # 只需简单文本输出，改用 deepseek-chat。
+        if "v4" in model.lower() and "pro" in model.lower():
+            model = "deepseek-chat"
 
         # 调用 LLM
         with httpx.Client(timeout=15.0) as client:
@@ -85,8 +120,11 @@ def generate_title(
                 f"{config.base_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {config.api_key}"},
                 json={
-                    "model": config.model,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
                     "temperature": 0.3,
                     "max_tokens": 100,
                 },
@@ -108,6 +146,14 @@ def generate_title(
                 return None
 
             title_text = message.get("content", "")
+            # 推理模型（如 DeepSeek V4 Pro）可能把所有输出放在
+            # reasoning_content 中，content 始终为空。从 reasoning_content
+            # 末尾提取最终的标题文本。
+            if not title_text:
+                raw = (message.get("reasoning_content") or "").strip()
+                if raw:
+                    # 取 reasoning_content 的最后一个句子或引号内容
+                    title_text = _extract_title_from_reasoning(raw)
             if not title_text:
                 return None
 
