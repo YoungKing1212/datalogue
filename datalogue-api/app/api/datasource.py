@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import encrypt_password
 from app.core import schemas, models
-from app.services.datasource import (
+from app.domains.data_source.service import (
     enrich_datasource_defaults,
     get_capabilities,
     get_schema,

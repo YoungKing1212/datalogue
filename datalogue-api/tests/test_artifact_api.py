@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from app.core import models
-from app.services.artifact_store import ArtifactStore
+from app.domains.query_execution.artifact_store import ArtifactStore
 
 
 def test_get_artifact_api_returns_json_payload(client, db_session, sample_dataset):

@@ -45,7 +45,7 @@ from pydantic import SecretStr
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.services.llm_config import DEFAULT_LLM_ROLE, resolve_llm_config
+from app.core.llm_config import DEFAULT_LLM_ROLE, resolve_llm_config
 
 _settings = get_settings()
 logger = logging.getLogger(__name__)

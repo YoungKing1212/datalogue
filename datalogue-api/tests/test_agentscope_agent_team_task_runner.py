@@ -269,7 +269,7 @@ async def test_agentscope_service_task_runner_default_model_comes_from_database_
     from app.core.config import Settings
     from app.runtime.engine.runner import AgentTeamTaskRunner
     from app.core.models.llm import LLMModelConfig
-    from app.services.llm_config import credential_id_for_model_config
+    from app.core.llm_config import credential_id_for_model_config
 
     config = LLMModelConfig(
         name="设置页默认模型",

@@ -24,7 +24,7 @@ from app.services.runtime_mirror import (
     record_agentscope_event,
     record_agentscope_ref,
 )
-from app.services.artifact_store import ArtifactStore
+from app.domains.query_execution.artifact_store import ArtifactStore
 
 
 FORBIDDEN_KEYS = {

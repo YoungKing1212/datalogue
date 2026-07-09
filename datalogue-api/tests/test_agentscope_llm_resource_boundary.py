@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage
 
 from app.core.config import Settings
 from app.core.models.llm import LLMModelConfig
-from app.services.llm_config import credential_id_for_model_config, resolve_llm_config
+from app.core.llm_config import credential_id_for_model_config, resolve_llm_config
 
 
 class _FakeCredentialResponse:
@@ -102,7 +102,7 @@ def test_local_llm_config_api_is_available(client, db_session, monkeypatch):
 def test_resolve_llm_config_uses_database_config_before_env(db_session, monkeypatch):
     config = _create_llm_config(db_session)
     _FakeHttpxClient.credential_id = credential_id_for_model_config(config.id)
-    monkeypatch.setattr("app.services.llm_config.httpx.Client", _FakeHttpxClient)
+    monkeypatch.setattr("app.core.llm_config.httpx.Client", _FakeHttpxClient)
 
     resolved = resolve_llm_config(
         Settings(

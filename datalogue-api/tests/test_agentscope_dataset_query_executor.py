@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.core.models.conversation import QueryArtifact
-from app.services.artifact_store import ArtifactStore
+from app.domains.query_execution.artifact_store import ArtifactStore
 
 
 @pytest.mark.asyncio

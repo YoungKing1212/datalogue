@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.core.models.dataset import SemanticDataset
 from app.core.models.datasource import Datasource
-from app.services.datasource import build_datasource_context, normalize_db_type
+from app.domains.data_source.service import build_datasource_context, normalize_db_type
 
 logger = logging.getLogger(__name__)
 

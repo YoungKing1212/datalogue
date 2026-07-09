@@ -22,7 +22,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import SessionLocal
 from app.core.models.agentscope_workbench import AgentScopeSession
 from app.core.models.conversation import Conversation
-from app.services.llm_config import resolve_llm_config
+from app.core.llm_config import resolve_llm_config
 
 logger = logging.getLogger(__name__)
 

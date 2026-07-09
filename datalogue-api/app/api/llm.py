@@ -24,7 +24,7 @@ from app.runtime.engine.client import AgentScopeServiceClient
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.llm import AgentScopeChatClient, _llm_call_policy, build_llm_model_kwargs
-from app.services.llm_config import (
+from app.core.llm_config import (
     DEFAULT_LLM_ROLE,
     ResolvedLLMConfig,
     credential_api_key_from_items,

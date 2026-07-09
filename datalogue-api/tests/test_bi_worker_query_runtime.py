@@ -34,7 +34,7 @@ from app.domains.bi.worker.validator import ProgressiveContextState
 from app.domains.bi.worker.dataset_query import (
     execute_dataset_query_for_agent_team_direct_fallback,
 )
-from app.services.query_plan_compiler import compile_query_plan_to_sql
+from app.domains.query_execution.compiler import compile_query_plan_to_sql
 
 
 def _target(ref: str, field: str, alias: str = "o") -> FieldTarget:

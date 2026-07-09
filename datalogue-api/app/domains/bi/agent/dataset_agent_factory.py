@@ -27,7 +27,7 @@ from app.domains.bi.skill.runtime_bridge import (
     AgentScopeDatasetRuntimeSession,
     build_dataset_agentscope_tools,
 )
-from app.services.llm_config import resolve_llm_config
+from app.core.llm_config import resolve_llm_config
 
 
 from app.prompts import DATASET_AGENT_SYSTEM_PROMPT

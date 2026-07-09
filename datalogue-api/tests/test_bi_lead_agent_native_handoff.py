@@ -20,7 +20,7 @@ import pytest
 
 from app.core.models.dataset import AnalysisBlueprint
 from app.core.schemas.bi_agent import BIAgentHandoffRequest
-from app.services.artifact_store import ArtifactStore
+from app.domains.query_execution.artifact_store import ArtifactStore
 from app.domains.bi.agent.handoff_events import (
     collect_native_handoff_payload,
     map_native_handoff_event,

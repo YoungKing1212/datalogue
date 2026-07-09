@@ -1,4 +1,4 @@
-from app.services.sql_dialect_adapter import adapt_sql_for_execution
+from app.domains.query_execution.dialect.adapter import adapt_sql_for_execution
 
 
 def test_sql_dialect_adapter_accepts_current_sqlite_readonly_sql():

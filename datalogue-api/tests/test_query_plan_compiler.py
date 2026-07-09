@@ -11,7 +11,7 @@
 #   - contains 算子使用 ESCAPE 子句正确转义 % 与 _。
 # ============================================================
 
-from app.services.query_plan_compiler import compile_query_plan_to_sql
+from app.domains.query_execution.compiler import compile_query_plan_to_sql
 
 
 def _base_plan() -> dict:

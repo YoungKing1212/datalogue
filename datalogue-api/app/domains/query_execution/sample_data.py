@@ -54,7 +54,7 @@ def fetch_sample_rows(
         lines.append("（未绑定数据源，跳过样例查询）")
         return "\n".join(lines)
 
-    from app.services.datasource import create_engine_for_datasource, quote_identifier, normalize_db_type
+    from app.domains.data_source.service import create_engine_for_datasource, quote_identifier, normalize_db_type
 
     engine = create_engine_for_datasource(datasource)
     db_type = normalize_db_type(getattr(datasource, "db_type", None))

@@ -158,7 +158,7 @@ class TestDatasourceAPI:
 
     def test_test_connection_returns_driver_missing_diagnostic(self, client, monkeypatch):
         """可选驱动缺失时连接测试返回结构化诊断，不抛 500。"""
-        from app.services import datasource as datasource_service
+        from app.domains.data_source import service as datasource_service
 
         monkeypatch.setattr(
             datasource_service.ADAPTERS["oracle"],

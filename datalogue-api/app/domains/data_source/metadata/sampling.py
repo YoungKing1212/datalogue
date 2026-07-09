@@ -17,6 +17,6 @@
 本文件不承载新业务逻辑。
 """
 
-from app.services.datasource import preview_table  # noqa: F401  兼容迁移中，保留公开导出
+from app.domains.data_source.service import preview_table  # noqa: F401  兼容迁移中，保留公开导出
 
 __all__ = ["preview_table"]
