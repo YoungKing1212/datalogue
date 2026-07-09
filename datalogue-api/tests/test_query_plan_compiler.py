@@ -336,7 +336,12 @@ def test_compiles_oracle_limit_as_fetch_first():
     plan = _base_plan()
     plan["limit"] = 25
 
-    compiled = _compile(plan=plan, dialect="oracle", current_datasource_dialect="oracle")
+    compiled = _compile(
+        plan=plan,
+        dialect="oracle",
+        current_datasource_dialect="oracle",
+        query_constraints={"enabled": True, "default_limit": 25, "max_limit": 100},
+    )
 
     assert compiled["ok"] is True
     assert compiled["dialect"] == "oracle"

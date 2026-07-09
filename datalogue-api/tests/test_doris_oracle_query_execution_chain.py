@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from app.core.models.datasource import Datasource
 from app.core.models.dataset import DatasetSourceTable, SemanticDataset, SourceColumn, SourceTable
 from app.domains.bi.agent.runtime_context import build_bi_runtime_context
+from app.domains.query_execution.guard import SQLGuardResult
 from app.domains.query_execution.preview import preview_dataset_sql
 from app.services import analysis_blueprint
 
@@ -84,7 +85,7 @@ def test_preview_dataset_sql_normalizes_doris_before_guard(monkeypatch, db_sessi
     def fake_guard(sql, *, dialect, query_constraints, allowed_tables):
         captured["dialect"] = dialect
         captured["allowed_tables"] = allowed_tables
-        return SimpleNamespace(
+        return SQLGuardResult(
             ok=False,
             normalized_sql=None,
             code="STOP_BEFORE_ENGINE",
