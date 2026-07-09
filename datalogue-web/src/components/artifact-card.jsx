@@ -131,6 +131,28 @@ function isSafePreviewKey(key) {
   );
 }
 
+function resultMetricValue(source, ...keys) {
+  for (const key of keys) {
+    const value = source?.[key];
+    if (Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  }
+  return null;
+}
+
+function ResultMetrics({ artifact }) {
+  const preview = artifact?.preview_payload || artifact?.previewPayload || {};
+  const rowCount = resultMetricValue(artifact, 'row_count', 'rowCount') ?? resultMetricValue(preview, 'row_count', 'rowCount');
+  const columnCount = resultMetricValue(artifact, 'column_count', 'columnCount') ?? resultMetricValue(preview, 'column_count', 'columnCount');
+  if (rowCount == null && columnCount == null) return null;
+  return (
+    <div className="artifact-card-metrics" aria-label="查询结果规模">
+      {rowCount != null && <span><strong>{rowCount.toLocaleString()}</strong> 行</span>}
+      {columnCount != null && <span><strong>{columnCount.toLocaleString()}</strong> 列</span>}
+    </div>
+  );
+}
+
 function PreviewBody({ previewPayload }) {
   if (!previewPayload) return null;
 
@@ -283,6 +305,8 @@ export function ArtifactCard({ artifact, onAction, collapsed: initialCollapsed =
               ))}
             </div>
           )}
+
+          <ResultMetrics artifact={artifact} />
 
           <PreviewBody previewPayload={previewPayload} />
 

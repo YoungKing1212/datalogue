@@ -14,6 +14,42 @@ import {
 
 // DatasourcesScreen — 数据源管理完整功能
 
+export const DB_ICON = {
+  postgres: '🐘',
+  mysql: '🐬',
+  doris: '🌊',
+  clickhouse: '🪶',
+  bigquery: '☁️',
+  oracle: '🔶',
+  sqlite: '📄',
+  hive: '⬢',
+  sqlserver: '▣',
+  trino: '△',
+  presto: '◇',
+};
+
+export function datasourceDisplayInfo(datasource = {}, capability = null) {
+  const dbType = datasource.db_type || capability?.db_type || '';
+  const dialect = datasource.dialect || capability?.dialect || dbType || '—';
+  const driver = datasource.driver || capability?.driver || '';
+  const defaultPort = capability?.default_port;
+  const productLabel = dbType === 'doris'
+    ? 'Doris（MySQL 协议）'
+    : capability?.label || dbType?.toUpperCase?.() || '—';
+  const dialectLabel = dbType === 'doris' && dialect === 'mysql'
+    ? 'mysql（Doris 第一阶段执行方言）'
+    : dialect;
+  const portLabel = datasource.port || defaultPort || '—';
+  return {
+    icon: DB_ICON[dbType] || '📊',
+    dbType,
+    productLabel,
+    dialectLabel,
+    driverLabel: driver || '内置',
+    portLabel,
+  };
+}
+
 function DatasourcesScreen() {
   const [datasources, setDatasources] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -251,12 +287,13 @@ function DatasourcesScreen() {
   const totalPages = Math.max(1, Math.ceil(filteredTables.length / TABLE_PAGE_SIZE));
   const paginatedTables = filteredTables.slice((tablePage - 1) * TABLE_PAGE_SIZE, tablePage * TABLE_PAGE_SIZE);
 
-  const DB_ICON = { postgres: '🐘', mysql: '🐬', clickhouse: '🪶', bigquery: '☁️', oracle: '🔶', sqlite: '📄', hive: '⬢', sqlserver: '▣', trino: '△', presto: '◇' };
   const dbTypeOptions = capabilities.length
     ? capabilities.map(c => ({ value: c.db_type, label: `${c.label}${c.stable ? '' : '（可选驱动）'}` }))
     : ['postgres', 'mysql', 'sqlite'].map(v => ({ value: v, label: v }));
   const activeCapability = capabilities.find(c => c.db_type === form.db_type);
   const selectedCapability = capabilities.find(c => c.db_type === selectedDs?.db_type);
+  const selectedDisplay = selectedDs ? datasourceDisplayInfo(selectedDs, selectedCapability) : null;
+  const activeDisplay = datasourceDisplayInfo(form, activeCapability);
   const optionValue = (key) => form.connection_options?.[key] || '';
   const setOptionValue = (key, value) => {
     setForm({
@@ -320,7 +357,7 @@ function DatasourcesScreen() {
               }}
             >
               <div style={{display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6}}>
-                <span style={{fontSize: 18}}>{DB_ICON[ds.db_type] || '📊'}</span>
+                <span style={{fontSize: 18}}>{datasourceDisplayInfo(ds, capabilities.find(c => c.db_type === ds.db_type)).icon}</span>
                 <span style={{fontWeight: 500, fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{ds.name}</span>
                 <span style={{fontSize: 10, padding: '1px 6px', borderRadius: 4, background: statusColor(ds.status) + '22', color: statusColor(ds.status), flexShrink: 0}}>
                   {ds.status === 'connected' ? '已连接' : ds.status === 'syncing' ? '同步中' : '断开'}
@@ -344,7 +381,7 @@ function DatasourcesScreen() {
               <div>
                 <h2 style={{margin: 0, fontSize: 16, fontWeight: 500}}>{selectedDs.name}</h2>
                 <div style={{fontSize: 12, color: 'var(--text-3)', marginTop: 2}}>
-                  {DB_ICON[selectedDs.db_type]} {selectedDs.db_type} · {selectedDs.host}:{selectedDs.port}/{selectedDs.database_name}
+                  {selectedDisplay.icon} {selectedDisplay.productLabel} · {selectedDs.host}:{selectedDs.port}/{selectedDs.database_name}
                 </div>
               </div>
               <div style={{display: 'flex', gap: 8}}>
@@ -392,7 +429,7 @@ function DatasourcesScreen() {
               <div>
                 <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 20}}>
                   {[
-                    { label: '数据库类型', val: selectedDs.db_type?.toUpperCase() || '—' },
+                    { label: '数据库类型', val: selectedDisplay.productLabel },
                     { label: '表数量', val: schema.length + ' 张' },
                     { label: '驱动状态', val: driverStatusLabel(selectedCapability?.driver_status) },
                   ].map(s => (
@@ -408,8 +445,8 @@ function DatasourcesScreen() {
                     <span style={{color: 'var(--text-3)'}}>主机地址</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--accent)'}}>{selectedDs.host}:{selectedDs.port}</code>
                     <span style={{color: 'var(--text-3)'}}>数据库名</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--accent)'}}>{selectedDs.database_name}</code>
                     <span style={{color: 'var(--text-3)'}}>用户名</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--text)'}}>{selectedDs.username}</code>
-                    <span style={{color: 'var(--text-3)'}}>方言</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--text)'}}>{selectedDs.dialect || selectedCapability?.dialect || selectedDs.db_type}</code>
-                    <span style={{color: 'var(--text-3)'}}>驱动</span><span style={{color: driverStatusColor(selectedCapability?.driver_status)}}>{selectedCapability?.driver || selectedDs.driver || '内置'} · {driverStatusLabel(selectedCapability?.driver_status)}</span>
+                    <span style={{color: 'var(--text-3)'}}>方言</span><code style={{fontFamily: 'var(--font-mono)', color: 'var(--text)'}}>{selectedDisplay.dialectLabel}</code>
+                    <span style={{color: 'var(--text-3)'}}>驱动</span><span style={{color: driverStatusColor(selectedCapability?.driver_status)}}>{selectedDisplay.driverLabel} · {driverStatusLabel(selectedCapability?.driver_status)}</span>
                     <span style={{color: 'var(--text-3)'}}>创建时间</span><span style={{fontFamily: 'var(--font-mono)', color: 'var(--text-3)'}}>{selectedDs.created_at ? new Date(selectedDs.created_at).toLocaleString('zh-CN') : '—'}</span>
                   </div>
                   {selectedCapability?.driver_status === 'missing' && (
@@ -607,7 +644,7 @@ function DatasourcesScreen() {
                   <span style={{color: driverStatusColor(activeCapability.driver_status), fontWeight: 600}}>
                     {driverStatusLabel(activeCapability.driver_status)}
                   </span>
-                  <span style={{color: 'var(--text-3)'}}> · {activeCapability.driver || 'Python 内置'} · 方言 {activeCapability.dialect}</span>
+                  <span style={{color: 'var(--text-3)'}}> · {activeDisplay.driverLabel || 'Python 内置'} · 方言 {activeDisplay.dialectLabel} · 默认端口 {activeDisplay.portLabel}</span>
                   {activeCapability.driver_status === 'missing' && (
                     <div style={{color: 'var(--warn)', marginTop: 4}}>
                       {activeCapability.install_hint}
