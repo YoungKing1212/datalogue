@@ -143,6 +143,40 @@ describe('ArtifactCard', () => {
     window.removeEventListener('datalogue:artifact-action', listener);
   });
 
+
+  it('shows BI result row and column counts while keeping Doris/Oracle raw preview data hidden', () => {
+    render(
+      <ArtifactCard
+        artifact={{
+          title: 'Doris 查询结果',
+          status: 'completed',
+          summary_for_chat: 'Doris 明细查询已完成，共 10 行、4 列。',
+          row_count: 10,
+          column_count: 4,
+          primary_ref: { ref_id: 'artifact:doris-result-1', ref_type: 'result' },
+          related_refs: [{ ref_id: 'checkpoint:doris-query-1', ref_type: 'checkpoint' }],
+          preview_payload: {
+            rows: [{ order_id: 1, amount: 100 }],
+            columns: ['order_id', 'amount'],
+            raw_sql: 'select * from doris_orders limit 10',
+          },
+          actions: [
+            { action_type: 'view', label: '查看详情', ref: 'artifact:doris-result-1', disabled: false },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Doris 查询结果')).toBeInTheDocument();
+    expect(screen.getByLabelText('查询结果规模')).toHaveTextContent('10 行');
+    expect(screen.getByLabelText('查询结果规模')).toHaveTextContent('4 列');
+    expect(screen.getByText('artifact:doris-result-1')).toBeInTheDocument();
+    expect(screen.getByText('checkpoint:doris-query-1')).toBeInTheDocument();
+    expect(screen.queryByText(/doris_orders/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('order_id')).not.toBeInTheDocument();
+    expect(screen.queryByText('100')).not.toBeInTheDocument();
+  });
+
   it('renders null when artifact is null', () => {
     const { container } = render(<ArtifactCard artifact={null} />);
     expect(container.firstChild).toBeNull();
