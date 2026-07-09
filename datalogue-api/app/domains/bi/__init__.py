@@ -1,20 +1,20 @@
 # ============================================================
 # File Name   : __init__.py
 # Description:
-#   BI 业务域门面包，聚合 BI Agent / BI Worker 相关服务的兼容导出。
+#   Datalogue BI 业务域根包。
 #
 # Responsibilities:
-#   - 指向 `app.agents.bi_agent` 与 `app.agentscope_service` 中的既有 BI 实现
-#   - 兼容迁移中，不承载新业务逻辑
+#   - 作为 BI Agent、BI Worker、Skill、Toolkit 与 QueryPlan 契约的领域边界。
+#   - 不承载 AgentScope Service 嵌入、Workbench task 真相源或数据源适配实现。
 #
 # Author      : KenYang
 # Created On  : 2026-07-09
 # ============================================================
 
-"""BI 业务域门面包。
+"""Datalogue BI 业务域根包。
 
-本包仅通过子模块 re-export BI Agent 与 BI Worker 侧的既有能力，
-不承载新业务逻辑；实际实现请继续在原模块中维护。
+子包按能力分层：agent 放 BI 应用服务，skill 放 Dataset 查询 Skill，
+toolkit 放受控原子工具，worker 放 BI Worker QueryPlan 契约、运行时与上下文。
 """
 
 __all__: list[str] = []

@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : agent_services.py
 # Description:
-#   BI Agent 领域服务门面，re-export BI Agent 相关运行/交接服务。
+#   BI Agent 领域服务兼容入口。
 #
 # Responsibilities:
-#   - 暴露 BIAgentRunService 等已有服务对象，供领域视角调用
-#   - 兼容迁移中，不承载新业务逻辑
+#   - 暴露 BIAgentRunService，供旧调用方在迁移期间继续使用。
+#   - 保持真实实现源在 app.domains.bi.agent.run_service。
 #
 # Author      : KenYang
 # Created On  : 2026-07-09
@@ -13,10 +13,10 @@
 
 """BI Agent 领域服务门面。
 
-`BIAgentRunService` 等具体服务实现仍在 `app.agents.bi_agent`；本文件只做
-re-export，不承载新业务逻辑。
+`BIAgentRunService` 的真实实现已经位于 `app.domains.bi.agent.run_service`；
+本文件只保留旧聚合入口，避免迁移期出现 import break。
 """
 
-from app.domains.bi.agent.run_service import BIAgentRunService  # noqa: F401  兼容迁移中，保留公开导出
+from app.domains.bi.agent.run_service import BIAgentRunService  # noqa: F401  迁移期聚合入口，保留公开导出
 
 __all__ = ["BIAgentRunService"]

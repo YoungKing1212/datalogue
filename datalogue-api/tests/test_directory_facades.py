@@ -15,6 +15,7 @@
 
 import importlib
 import inspect
+from pathlib import Path
 
 
 def test_target_packages_are_importable():
@@ -155,3 +156,48 @@ def test_query_execution_artifact_and_repair_implementation_lives_in_domain_modu
 
     assert domain_artifact.ArtifactStore.__module__ == "app.domains.query_execution.artifact_store"
     assert domain_repair.validate_repair_plan.__module__ == "app.domains.query_execution.repair_plan"
+
+
+def test_domains_bi_boundary_is_canonical_source_for_bi_capabilities():
+    """Phase E: domains/bi 只收 Datalogue BI 能力、Skill、Toolkit、QueryPlan 契约与 runtime context。"""
+
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    bi_root = app_root / "domains" / "bi"
+
+    assert bi_root.is_dir()
+    assert not (app_root / "bi").exists()
+    assert not (app_root / "agents" / "bi_agent").exists()
+    assert not any((bi_root / "toolchain").glob("*.py"))
+
+    allowed_top_level = {
+        "__init__.py",
+        "agent",
+        "agent_services.py",
+        "skill",
+        "toolkit",
+        "worker",
+        "worker_query.py",
+    }
+    source_names = {
+        path.name
+        for path in bi_root.iterdir()
+        if path.name != "__pycache__" and (path.is_file() or any(path.rglob("*.py")))
+    }
+    assert source_names <= allowed_top_level
+
+    bi_package = importlib.import_module("app.domains.bi")
+    agent = importlib.import_module("app.domains.bi.agent")
+    skill = importlib.import_module("app.domains.bi.skill")
+    toolkit = importlib.import_module("app.domains.bi.toolkit")
+    worker_contracts = importlib.import_module("app.domains.bi.worker.contracts")
+    worker_runtime = importlib.import_module("app.domains.bi.worker.runtime")
+    runtime_context = importlib.import_module("app.domains.bi.agent.runtime_context")
+
+    assert bi_package.__all__ == []
+    assert agent.BIAgentRunService.__module__ == "app.domains.bi.agent.run_service"
+    assert skill.DatasetQuerySkill.__module__ == "app.domains.bi.skill.dataset_query"
+    assert skill.AgentScopeDatasetRuntimeBridge.__module__ == "app.domains.bi.skill.runtime_bridge"
+    assert toolkit.build_bi_atomic_toolkit.__module__ == "app.domains.bi.toolkit.atomic"
+    assert worker_contracts.BIWorkerQueryPlan.__module__ == "app.domains.bi.worker.contracts"
+    assert worker_runtime.BIWorkerQueryRuntime.__module__ == "app.domains.bi.worker.runtime"
+    assert runtime_context.build_bi_runtime_context.__module__ == "app.domains.bi.agent.runtime_context"
