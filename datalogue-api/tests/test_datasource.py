@@ -15,6 +15,10 @@
 数据源管理 API 测试
 """
 
+from app.core.models.datasource import Datasource
+from app.core.security import encrypt_password
+from app.domains.data_source import service as datasource_service
+
 
 class TestDatasourceAPI:
     """测试 /api/datasource 路由"""
@@ -147,7 +151,11 @@ class TestDatasourceAPI:
         assert resp.status_code == 200
         items = resp.json()
         db_types = {item["db_type"] for item in items}
-        assert {"mysql", "postgres", "sqlite", "oracle", "hive"}.issubset(db_types)
+        assert {"mysql", "doris", "postgres", "sqlite", "oracle", "hive"}.issubset(db_types)
+        doris = next(item for item in items if item["db_type"] == "doris")
+        assert doris["dialect"] == "mysql"
+        assert doris["driver"] == "pymysql"
+        assert doris["default_port"] == 9030
         sqlite = next(item for item in items if item["db_type"] == "sqlite")
         assert sqlite["driver_status"] == "builtin"
         oracle = next(item for item in items if item["db_type"] == "oracle")
@@ -185,3 +193,186 @@ class TestDatasourceAPI:
         assert data["ok"] is False
         assert data["code"] == "DRIVER_MISSING"
         assert data["diagnostic"]["category"] == "driver"
+
+    def test_create_doris_datasource_normalizes_execution_dialect(self, client):
+        """Doris 对外保持 db_type=doris，但执行方言由服务端固定为 mysql。"""
+        resp = client.post(
+            "/api/datasource",
+            json={
+                "name": "Doris",
+                "db_type": "doris",
+                "host": "127.0.0.1",
+                "port": 0,
+                "database_name": "demo",
+                "username": "user",
+                "password": "pass",
+                "dialect": "doris",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["db_type"] == "doris"
+        assert data["dialect"] == "mysql"
+        assert data["driver"] == "pymysql"
+        assert data["port"] == 9030
+
+    def test_update_doris_datasource_rejects_stale_dialect_on_partial_update(self, client):
+        """只更新 dialect 时也结合持久化 db_type，避免 Doris 被脏写回 doris 方言。"""
+        created = client.post(
+            "/api/datasource",
+            json={
+                "name": "Doris",
+                "db_type": "doris",
+                "host": "127.0.0.1",
+                "port": 9030,
+                "database_name": "demo",
+                "username": "user",
+                "password": "pass",
+            },
+        ).json()
+
+        resp = client.put(f"/api/datasource/{created['id']}", json={"dialect": "doris"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["db_type"] == "doris"
+        assert data["dialect"] == "mysql"
+
+
+def test_build_datasource_context_normalizes_doris_stale_dialect():
+    """共享 datasource context 兜底历史脏数据：Doris 执行 dialect 必须是 mysql。"""
+    ds = Datasource(
+        id=7,
+        name="Doris",
+        db_type="doris",
+        dialect="doris",
+        driver="pymysql",
+        host="127.0.0.1",
+        port=9030,
+        database_name="demo",
+        username="user",
+        password_enc=encrypt_password("pass"),
+        query_timeout_seconds=45,
+    )
+
+    context = datasource_service.build_datasource_context(ds, allowed_tables=["orders"])
+
+    assert context["datasource_id"] == 7
+    assert context["db_type"] == "doris"
+    assert context["dialect"] == "mysql"
+    assert context["allowed_tables"] == ["orders"]
+    assert context["query_timeout_seconds"] == 45
+
+
+def test_doris_adapter_builds_mysql_compatible_url_and_timeout(monkeypatch):
+    """Doris 适配器复用 mysql+pymysql URL 和 connect_timeout。"""
+    ds = Datasource(
+        name="Doris",
+        db_type="doris",
+        host="doris.local",
+        port=9030,
+        database_name="warehouse",
+        username="ken",
+        password_enc=encrypt_password("secret"),
+        connect_timeout_seconds=12,
+    )
+    adapter = datasource_service.ADAPTERS["doris"]
+    captured = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return "engine"
+
+    monkeypatch.setattr("app.domains.data_source.adapters.base.create_engine", fake_create_engine)
+    monkeypatch.setattr(adapter, "driver_available", lambda: True)
+
+    engine = adapter.create_engine(ds)
+
+    assert engine == "engine"
+    assert captured["url"] == "mysql+pymysql://ken:secret@doris.local:9030/warehouse"
+    assert captured["kwargs"]["connect_args"]["connect_timeout"] == 12
+
+
+def test_oracle_adapter_build_url_prefers_explicit_service_name_over_sid():
+    """Oracle 同时配置 service_name/sid 时按明确 service_name 生成 URL，避免歧义。"""
+    ds = Datasource(
+        name="Oracle",
+        db_type="oracle",
+        host="oracle.local",
+        port=1521,
+        database_name="fallback",
+        username="ken",
+        password_enc=encrypt_password("secret"),
+        connection_options={"service_name": "ORCLPDB1", "sid": "ORCL"},
+    )
+
+    url = datasource_service.ADAPTERS["oracle"].build_url(ds)
+
+    assert url == "oracle+oracledb://ken:secret@oracle.local:1521/?service_name=ORCLPDB1"
+
+
+def test_oracle_adapter_build_url_supports_sid_without_service_name():
+    """Oracle 仅配置 sid 时使用 SQLAlchemy oracledb SID 查询参数形式。"""
+    ds = Datasource(
+        name="Oracle",
+        db_type="oracle",
+        host="oracle.local",
+        port=1521,
+        database_name="fallback",
+        username="ken",
+        password_enc=encrypt_password("secret"),
+        connection_options={"sid": "ORCL"},
+    )
+
+    url = datasource_service.ADAPTERS["oracle"].build_url(ds)
+
+    assert url == "oracle+oracledb://ken:secret@oracle.local:1521/?sid=ORCL"
+
+
+def test_preview_table_uses_mysql_protocol_sql_for_doris(monkeypatch):
+    """Doris 表预览使用 MySQL 协议 SQL：反引号、忽略 schema、LIMIT :limit。"""
+    captured = {}
+
+    class FakeResult:
+        def keys(self):
+            return ["id"]
+
+        def fetchall(self):
+            return [(1,)]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return FakeResult()
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+        def dispose(self):
+            captured["disposed"] = True
+
+    ds = Datasource(
+        name="Doris",
+        db_type="doris",
+        host="127.0.0.1",
+        port=9030,
+        database_name="demo",
+        username="user",
+        password_enc=encrypt_password("pass"),
+    )
+    monkeypatch.setattr(datasource_service, "create_engine_for_datasource", lambda _ds: FakeEngine())
+
+    result = datasource_service.preview_table(ds, "edmadmin", "orders", 10)
+
+    assert captured["sql"] == "SELECT * FROM `orders` LIMIT :limit"
+    assert captured["params"] == {"limit": 10}
+    assert captured["disposed"] is True
+    assert result == {"columns": ["id"], "rows": [{"id": 1}]}
