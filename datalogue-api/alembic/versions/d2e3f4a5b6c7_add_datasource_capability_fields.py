@@ -34,6 +34,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 CAPABILITY_DEFAULTS = {
     "mysql": ("mysql", "pymysql", None),
+    "doris": ("mysql", "pymysql", None),
     "postgres": ("postgres", "psycopg2", "public"),
     "postgresql": ("postgres", "psycopg2", "public"),
     "sqlite": ("sqlite", None, "main"),
