@@ -45,3 +45,30 @@ def test_sql_dialect_adapter_keeps_guard_readonly_boundary():
     assert result["sql"] is None
     assert result["sql_guard"]["ok"] is False
     assert result["sql_guard"]["code"] in {"FORBIDDEN_KEYWORD", "NOT_READONLY"}
+
+
+def test_sql_dialect_adapter_accepts_oracle_readonly_sql_with_fetch_first():
+    result = adapt_sql_for_execution(
+        "SELECT id FROM user_logs FETCH FIRST 20 ROWS ONLY",
+        dialect="oracle",
+        query_constraints={"enabled": True, "default_limit": 20, "max_limit": 100},
+        allowed_tables=["user_logs"],
+    )
+
+    assert result["ok"] is True
+    assert result["dialect"] == "oracle"
+    assert "FETCH FIRST 20 ROWS ONLY" in result["sql"]
+
+
+def test_sql_dialect_adapter_normalizes_doris_to_mysql_execution_dialect():
+    result = adapt_sql_for_execution(
+        "SELECT id FROM user_logs",
+        dialect="doris",
+        current_datasource_dialect="doris",
+        query_constraints={"enabled": True, "default_limit": 20, "max_limit": 100},
+        allowed_tables=["user_logs"],
+    )
+
+    assert result["ok"] is True
+    assert result["dialect"] == "mysql"
+    assert "LIMIT" in result["sql"]

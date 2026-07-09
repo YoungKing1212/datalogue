@@ -329,3 +329,29 @@ def test_no_join_when_join_requirements_empty():
     assert compiled["ok"] is True
     # SELECT 语法不含其它 JOIN 关键字，所以这里可以直接断言不出现
     assert "JOIN" not in compiled["sql"]
+
+
+def test_compiles_oracle_limit_as_fetch_first():
+    """Oracle 查询计划编译器必须渲染 FETCH FIRST，不能生成 LIMIT。"""
+    plan = _base_plan()
+    plan["limit"] = 25
+
+    compiled = _compile(plan=plan, dialect="oracle", current_datasource_dialect="oracle")
+
+    assert compiled["ok"] is True
+    assert compiled["dialect"] == "oracle"
+    assert "FETCH FIRST 25 ROWS ONLY" in compiled["sql"]
+    assert " LIMIT " not in compiled["sql"]
+
+
+def test_compiles_doris_stale_dialect_as_mysql_limit():
+    """Doris 第一阶段只作为产品 db_type，执行方言统一归一化为 MySQL。"""
+    plan = _base_plan()
+    plan["limit"] = 30
+
+    compiled = _compile(plan=plan, dialect="doris", current_datasource_dialect="doris")
+
+    assert compiled["ok"] is True
+    assert compiled["dialect"] == "mysql"
+    assert "`orders`.`order_id`" in compiled["sql"]
+    assert "LIMIT 30" in compiled["sql"]
