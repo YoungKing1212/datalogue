@@ -10,7 +10,7 @@ import {
   useAui,
   useAuiState,
 } from '@assistant-ui/react';
-import { Icon } from '../../components/icons';
+import { Icon } from '../../shared/components/icons';
 
 /**
  * 单条 thread item：标题 + hover 删除按钮

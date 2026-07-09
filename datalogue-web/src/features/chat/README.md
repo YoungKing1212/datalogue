@@ -1,10 +1,11 @@
 # Chat 功能域
 
-`src/features/chat` 是普通问数对话页的前端功能域，当前承载聊天 runtime adapter、线程列表 adapter、Thread/ThreadList/Composer/Message 可见壳。
+`src/features/chat` 是普通问数对话页的前端功能域，当前承载聊天页面入口、runtime adapter、线程列表 adapter、Thread/ThreadList/Composer/Message 可见壳。
 
 ## 当前边界
 
 - `chat-adapter.js`：把 Agent Team / 后端 SSE 流收敛为 assistant-ui 可消费的消息流和 metadata。
+- `chat-page.jsx`：普通问数页面入口，负责 runtime 装配、URL 同步、数据集/模型选择和 AgentPanel 事件接线。
 - `thread-list-adapter.js`：把 `/api/conversation` 会话接口适配为 assistant-ui thread list，包含本地草稿到后端会话的懒创建映射。
 - `Thread.jsx`、`ThreadList.jsx`、`MyComposer.jsx`、`MyMessage.jsx`：普通 Chat 页面使用的 assistant-ui UI 壳和消息展示。
 
@@ -14,7 +15,7 @@
 
 ## 兼容入口
 
-旧 `src/assistant/*` 同名文件只保留 re-export，保证 `components/chat-page.jsx`、`dataset-assistant-panel.jsx` 和现有测试可以继续使用旧 import。后续调用方收口到 `src/features/chat` 后，再决定是否删除旧兼容壳。
+旧 `src/assistant/*` 同名文件和 `src/components/chat-page.jsx` 只保留 re-export，保证历史 import 可以继续工作。后续调用方收口到 `src/features/chat` 后，再决定是否删除旧兼容壳。
 
 ## 禁止边界
 

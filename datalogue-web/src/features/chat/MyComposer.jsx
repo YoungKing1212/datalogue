@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { ComposerPrimitive, useAuiState, unstable_useComposerInputHistory } from '@assistant-ui/react';
-import { Icon } from '../../components/icons';
+import { Icon } from '../../shared/components/icons';
 
 /**
  * DatasetChip — 数据集选择下拉（保留旧版交互）

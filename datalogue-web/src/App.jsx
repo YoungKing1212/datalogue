@@ -1,10 +1,10 @@
 import React, { useState, useEffect, Fragment } from 'react';
 import { BrowserRouter, Routes, Route, useLocation, Link, Navigate } from 'react-router-dom';
 import { Spin } from 'antd';
-import { Icon } from './components/icons';
+import { Icon } from './shared/components/icons';
 import { Sidebar } from './components/sidebar';
 import { Workspace } from './components/workspace';
-import { ChatPage } from './components/chat-page';
+import { ChatPage } from './features/chat/chat-page';
 import { DatasetsScreen } from './components/datasets';
 import { DashboardScreen } from './components/dashboard';
 import { ApisScreen } from './components/apis';

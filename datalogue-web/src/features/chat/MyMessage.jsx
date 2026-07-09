@@ -18,7 +18,7 @@ import { code } from '@streamdown/code';
 import { math } from '@streamdown/math';
 import { Collapse, Timeline, Tag, Typography } from 'antd';
 import 'katex/dist/katex.min.css';
-import { Icon } from '../../components/icons';
+import { Icon } from '../../shared/components/icons';
 import { LineChart, Donut, GroupedBar } from '../../components/charts';
 import ArtifactCard from '../../components/artifact-card';
 import { getArtifact } from '../../api/client';
