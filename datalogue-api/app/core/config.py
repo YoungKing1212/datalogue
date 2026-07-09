@@ -29,6 +29,16 @@ class Settings(BaseSettings):
 
     SECRET_KEY: str = "change-me"
     AES_KEY: str = "your-32-byte-aes-key-here!!"
+    AUTH_TRANSPORT_KEY: str = "datalogue-auth-transport-key"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    AUTH_COOKIE_NAME: str = "refresh_token"
+    AUTH_COOKIE_SECURE: bool = False
+    AUTH_COOKIE_SAMESITE: str = "lax"
+    AUTH_COOKIE_PATH: str = "/api/auth"
+    BOOTSTRAP_ADMIN_USERNAME: str = "admin"
+    BOOTSTRAP_ADMIN_PASSWORD: str = "admin"
+    CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
@@ -176,6 +186,14 @@ class Settings(BaseSettings):
         normalized = (value or "off").strip().lower()
         if normalized not in {"off", "dev_only"}:
             raise ValueError("BI_LEAD_AGENT_DATASET_FALLBACK_MODE must be 'off' or 'dev_only'")
+        return normalized
+
+    @field_validator("AUTH_COOKIE_SAMESITE")
+    @classmethod
+    def _validate_auth_cookie_samesite(cls, value: str) -> str:
+        normalized = (value or "lax").strip().lower()
+        if normalized not in {"lax", "strict", "none"}:
+            raise ValueError("AUTH_COOKIE_SAMESITE must be 'lax', 'strict' or 'none'")
         return normalized
 
 @lru_cache

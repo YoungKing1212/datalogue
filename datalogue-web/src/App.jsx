@@ -1,5 +1,6 @@
 import React, { useState, useEffect, Fragment } from 'react';
-import { BrowserRouter, Routes, Route, useLocation, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation, Link, Navigate } from 'react-router-dom';
+import { Spin } from 'antd';
 import { Icon } from './components/icons';
 import { Sidebar } from './components/sidebar';
 import { Workspace } from './components/workspace';
@@ -12,11 +13,14 @@ import { PinnedScreen } from './components/pinned';
 import { SettingsScreen } from './components/settings';
 import { PublishDrawer } from './components/publish-drawer';
 import { NotificationsPopover, bellCount } from './components/notifications';
-import { useTweaks, TweaksPanel, TweakSection, TweakColor, TweakRadio, TweakToggle, TweakSelect, TweakButton } from './components/tweaks-panel';
+import { useTweaks, TweaksPanel, TweakSection, TweakColor, TweakRadio, TweakToggle, TweakButton } from './components/tweaks-panel';
 import { DatasourcesScreen } from './components/datasources';
 import { KnowledgeScreen } from './components/knowledge';
+import { UserCreateScreen } from './components/user-create';
 import { EditorModalHost } from './components/editor-modal';
 import WorkbenchRoute from './components/workbench-route';
+import { LoginPage } from './components/login-page';
+import { AuthProvider, useAuth } from './auth/auth-context';
 
 // App — main router with URL-based routing.
 
@@ -61,9 +65,10 @@ const CRUMBS_MAP = {
   '/review':       { crumb: ['数语', '语义治理', '审核队列'], title: '审核队列' },
   '/datasources':  { crumb: ['数语', '数据连接', '数据源管理'], title: '数据源' },
   '/settings':     { crumb: ['数语', '系统管理', '设置'], title: '系统设置' },
+  '/users':        { crumb: ['数语', '系统管理', '用户管理'], title: '用户管理' },
 };
 
-function TopBar({ onPublish }) {
+function TopBar({ onPublish, currentUser, onLogout }) {
   const [notifOpen, setNotifOpen] = useState(false);
   const location = useLocation();
   const count = bellCount();
@@ -98,6 +103,12 @@ function TopBar({ onPublish }) {
           </>
         )}
         <button className="icon-btn" title="搜索"><Icon name="search" /></button>
+        {currentUser && (
+          <>
+            <span className="topbar-user">{currentUser.username}</span>
+            <button className="btn ghost" onClick={onLogout}>退出登录</button>
+          </>
+        )}
         <button
           className={'icon-btn notif-btn ' + (notifOpen ? 'on' : '')}
           title="消息"
@@ -113,6 +124,7 @@ function TopBar({ onPublish }) {
 
 function AppInner({ t, setTweak }) {
   const [publishOpen, setPublishOpen] = useState(false);
+  const { user, logout } = useAuth();
 
   // Apply accent CSS variable
   useEffect(() => {
@@ -131,7 +143,7 @@ function AppInner({ t, setTweak }) {
     <div className="app">
       <Sidebar />
       <div className="main">
-        <TopBar onPublish={() => setPublishOpen(true)} />
+        <TopBar onPublish={() => setPublishOpen(true)} currentUser={user} onLogout={logout} />
         <div className="content">
           <Routes>
             <Route path="/" element={<Workspace />} />
@@ -148,6 +160,14 @@ function AppInner({ t, setTweak }) {
             <Route path="/review" element={<KnowledgeScreen key="kb-queue" initialTab="queue" />} />
             <Route path="/datasources" element={<DatasourcesScreen />} />
             <Route path="/settings" element={<SettingsScreen />} />
+            <Route
+              path="/users"
+              element={(
+                <RequireSuperuser>
+                  <UserCreateScreen />
+                </RequireSuperuser>
+              )}
+            />
           </Routes>
         </div>
       </div>
@@ -177,6 +197,39 @@ function AppInner({ t, setTweak }) {
       </TweaksPanel>
     </div>
   );
+}
+
+function RequireAuth({ children }) {
+  const { user, ready } = useAuth();
+  const location = useLocation();
+
+  if (!ready) {
+    return (
+      <div className="auth-loading">
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  return children;
+}
+
+function RequireSuperuser({ children }) {
+  const { user } = useAuth();
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!user.is_superuser && user.role !== 'admin') {
+    return <Navigate to="/" replace />;
+  }
+
+  return children;
 }
 
 // Error Boundary — 捕获子组件错误，防止整页白屏
@@ -218,10 +271,22 @@ export default function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   return (
-    <BrowserRouter>
-      <ErrorBoundary>
-        <AppInner t={t} setTweak={setTweak} />
-      </ErrorBoundary>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route
+              path="/*"
+              element={(
+                <RequireAuth>
+                  <AppInner t={t} setTweak={setTweak} />
+                </RequireAuth>
+              )}
+            />
+          </Routes>
+        </ErrorBoundary>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

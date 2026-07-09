@@ -12,19 +12,64 @@
 # ============================================================
 
 from contextlib import AsyncExitStack, asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.database import engine, Base
+from app.core.database import engine, Base, SessionLocal
 from app.core.config import get_settings
 from app.core.logging import setup_logging
+from app.core.security import hash_password
 from app.api import router as api_router
 from app.agentscope_service import create_embedded_agentscope_app
 from app.agentscope_service.otel_setup import setup_agentscope_tracing
+from app import models
 
 # 初始化带颜色的日志，可选持久化到文件
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+def _parse_cors_origins(raw_origins: str) -> list[str]:
+    origins = [item.strip() for item in (raw_origins or "").split(",") if item.strip()]
+    if origins:
+        return origins
+    return ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+def _bootstrap_admin_if_needed() -> None:
+    db = SessionLocal()
+    try:
+        admin = db.query(models.User).filter(models.User.username == "admin").first()
+        if admin is None:
+            admin = models.User(
+                username="admin",
+                full_name="系统管理员",
+                hashed_password=hash_password("admin"),
+                role="admin",
+                is_superuser=True,
+                is_active=True,
+            )
+            db.add(admin)
+            db.commit()
+            logger.warning(
+                "Bootstrap admin created: username=%s. Please change password immediately.",
+                "admin",
+            )
+            return
+
+        # 平台刚上线期间，启动时强制校准默认管理员口令与权限，避免历史格式/旧密码导致无法登录。
+        admin.hashed_password = hash_password("admin")
+        admin.role = "admin"
+        admin.is_superuser = True
+        admin.is_active = True
+        db.commit()
+        logger.warning(
+            "Bootstrap admin account synchronized with default credentials on startup.",
+        )
+    finally:
+        db.close()
 setup_logging(
     level=settings.LOG_LEVEL,
     log_dir=settings.LOG_DIR,
@@ -36,6 +81,7 @@ setup_logging(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    _bootstrap_admin_if_needed()
     # OTel 必须在 AgentScope 子应用生命周期前初始化，否则 TracingMiddleware 会按 no-op 透传。
     setup_agentscope_tracing(settings)
     async with AsyncExitStack() as stack:
@@ -54,7 +100,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_parse_cors_origins(settings.CORS_ALLOW_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

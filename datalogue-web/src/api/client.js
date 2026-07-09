@@ -1,15 +1,113 @@
 // 前端 API 客户端 — 统一封装 fetch，对接后端 FastAPI 服务
 
 const BASE_URL = ''; // Vite proxy 已配置 /api 转发，无需写死域名
+const AUTH_TRANSPORT_KEY = import.meta.env.VITE_AUTH_TRANSPORT_KEY || 'datalogue-auth-transport-key';
+let _accessToken = null;
+let _refreshHandler = null;
+let _authFailureHandler = null;
+
+let _authTransportCryptoKeyPromise = null;
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+async function getAuthTransportCryptoKey() {
+  if (_authTransportCryptoKeyPromise) return _authTransportCryptoKeyPromise;
+  _authTransportCryptoKeyPromise = (async () => {
+    if (!globalThis.crypto?.subtle) {
+      throw new Error('当前浏览器环境不支持 Web Crypto，请更换环境后重试');
+    }
+    const encoder = new TextEncoder();
+    const keyMaterial = encoder.encode(AUTH_TRANSPORT_KEY);
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', keyMaterial);
+    return globalThis.crypto.subtle.importKey(
+      'raw',
+      digest,
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt'],
+    );
+  })();
+  return _authTransportCryptoKeyPromise;
+}
+
+async function encryptAuthPassword(plainPassword) {
+  const key = await getAuthTransportCryptoKey();
+  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+  const payload = new TextEncoder().encode(plainPassword);
+  const encrypted = await globalThis.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, payload);
+  const cipherBytes = new Uint8Array(encrypted);
+  const merged = new Uint8Array(iv.length + cipherBytes.length);
+  merged.set(iv, 0);
+  merged.set(cipherBytes, iv.length);
+  return bytesToBase64(merged);
+}
+
+export function setAccessToken(token) {
+  _accessToken = token || null;
+}
+
+export function setAuthRefreshHandler(handler) {
+  _refreshHandler = typeof handler === 'function' ? handler : null;
+}
+
+export function setAuthFailureHandler(handler) {
+  _authFailureHandler = typeof handler === 'function' ? handler : null;
+}
+
+async function parseJsonResponse(res) {
+  if (res.status === 204) return null;
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return res.json();
+  }
+  return null;
+}
+
+async function request(path, options = {}, retried = false) {
+  const headers = { ...(options.headers || {}) };
+  if (_accessToken && !headers.Authorization) {
+    headers.Authorization = `Bearer ${_accessToken}`;
+  }
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...options,
+    headers,
+    credentials: 'include',
+  });
+
+  const allowRetry =
+    !retried &&
+    res.status === 401 &&
+    typeof _refreshHandler === 'function' &&
+    !String(path).startsWith('/api/auth/');
+
+  if (allowRetry) {
+    const refreshed = await _refreshHandler();
+    if (refreshed) {
+      return request(path, options, true);
+    }
+    if (typeof _authFailureHandler === 'function') {
+      _authFailureHandler();
+    }
+  }
+
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  return parseJsonResponse(res);
+}
 
 /**
  * 通用 GET 请求
  * @param {string} path - API 路径（如 /api/conversation）
  */
 export async function get(path) {
-  const res = await fetch(`${BASE_URL}${path}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-  return res.json();
+  return request(path, { method: 'GET' });
 }
 
 /**
@@ -18,13 +116,11 @@ export async function get(path) {
  * @param {object} body - JSON 请求体
  */
 export async function post(path, body) {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  return request(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-  return res.json();
 }
 
 /**
@@ -33,13 +129,11 @@ export async function post(path, body) {
  * @param {object} body - JSON 请求体
  */
 export async function put(path, body) {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  return request(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-  return res.json();
 }
 
 /**
@@ -48,13 +142,11 @@ export async function put(path, body) {
  * @param {object} body - JSON 请求体
  */
 export async function patch(path, body) {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  return request(path, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-  return res.json();
 }
 
 /**
@@ -62,9 +154,55 @@ export async function patch(path, body) {
  * @param {string} path - API 路径
  */
 export async function del(path) {
-  const res = await fetch(`${BASE_URL}${path}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-  return res.json();
+  return request(path, { method: 'DELETE' });
+}
+
+export async function loginAuth(payload) {
+  const passwordEnc = await encryptAuthPassword(payload.password || '');
+  const data = await post('/api/auth/login', {
+    username: payload.username,
+    password_enc: passwordEnc,
+  });
+  setAccessToken(data?.access_token || null);
+  return data;
+}
+
+export async function refreshAuth() {
+  const data = await post('/api/auth/refresh', {});
+  setAccessToken(data?.access_token || null);
+  return data;
+}
+
+export async function logoutAuth() {
+  try {
+    await post('/api/auth/logout', {});
+  } finally {
+    setAccessToken(null);
+  }
+}
+
+export function getCurrentUser() {
+  return get('/api/auth/me');
+}
+
+export function createUserAccount(payload) {
+  return post('/api/auth/register', payload);
+}
+
+export function listUserAccounts({ limit = 100, offset = 0 } = {}) {
+  return get(`/api/auth/users?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`);
+}
+
+export function updateUserAccount(userId, payload) {
+  return patch(`/api/auth/users/${encodeURIComponent(userId)}`, payload);
+}
+
+export function resetUserAccountPassword(userId) {
+  return post(`/api/auth/users/${encodeURIComponent(userId)}/reset-password`, {});
+}
+
+export function deleteUserAccount(userId) {
+  return del(`/api/auth/users/${encodeURIComponent(userId)}`);
 }
 
 // ── 具体业务 API ─────────────────────────────────────

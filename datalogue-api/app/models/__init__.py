@@ -48,6 +48,7 @@ from .agentscope_workbench import (
 from .agent_team_task import AgentTeamTask
 from .bi_agent import BIAgentHandoff, BIAgentConfirmation, BIAgentRun
 from .llm import LLMModelConfig
+from .user import User
 
 __all__ = [
     "Datasource",
@@ -83,4 +84,5 @@ __all__ = [
     "BIAgentConfirmation",
     "BIAgentHandoff",
     "LLMModelConfig",
+    "User",
 ]
