@@ -107,7 +107,7 @@ def test_rejects_unsupported_execution_strategy():
 
 def test_fails_closed_for_unknown_dialect():
     """未识别的方言 fail-closed。"""
-    compiled = _compile(dialect="oracle")
+    compiled = _compile(dialect="snowflake")
 
     assert compiled["ok"] is False
     assert compiled["code"] == "DIALECT_UNSUPPORTED_FOR_CURRENT_DATASOURCE"
