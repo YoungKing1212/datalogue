@@ -205,7 +205,7 @@ def get_schemas(ds: Datasource) -> list[str]:
         raise RuntimeError(diagnostic)
 
 
-def get_schema(ds: Datasource, schema_name: str = None) -> list[dict[str, Any]]:
+def get_schema(ds: Datasource, schema_name: str | None = None) -> list[dict[str, Any]]:
     """获取指定 schema 的表和字段元信息。"""
     try:
         return get_adapter(getattr(ds, "db_type", None)).get_schema(ds, schema_name=schema_name)
