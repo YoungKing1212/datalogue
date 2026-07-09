@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.events.projection import build_task_envelope, project_agentscope_event
 from app.middlewares.lifecycle import log_lifecycle, log_output
 from app.models.agent_team_task import AgentTeamTask
-from app.runtime.thread_resolver import new_agentscope_thread_id
+from app.runtime.thread_resolver import new_runtime_thread_id
 from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 from app.schemas.bi_workbench import DatalogueEventEnvelope
 from app.services.agentscope_mirror import (
@@ -307,7 +307,7 @@ class AgentTeamTaskRuntime:
 
     async def stream(self, request: AgentTeamTaskRequest) -> AsyncIterator[DatalogueEventEnvelope]:
         selected_agent = "agent_team_leader"
-        thread_id = request.thread_id or new_agentscope_thread_id()
+        thread_id = request.thread_id or new_runtime_thread_id()
         trace_id = f"trace-agent-team-{uuid.uuid4().hex}"
         log_lifecycle(
             "agent_team.task.received",
@@ -683,7 +683,7 @@ class AgentTeamTaskRuntime:
         checkpoint_ref: str | None,
     ) -> None:
         if artifact_ref:
-            _record_agentscope_ref_once(
+            _record_thread_ref_once(
                 self.db,
                 thread_id=thread_id,
                 message_id=message_id,
@@ -692,7 +692,7 @@ class AgentTeamTaskRuntime:
                 relation="primary",
             )
         if checkpoint_ref:
-            _record_agentscope_ref_once(
+            _record_thread_ref_once(
                 self.db,
                 thread_id=thread_id,
                 message_id=message_id,
@@ -709,7 +709,7 @@ def _append_unique(values: list[str] | None, value: str | None) -> list[str]:
     return existing
 
 
-def _record_agentscope_ref_once(
+def _record_thread_ref_once(
     db: Session,
     *,
     thread_id: str,

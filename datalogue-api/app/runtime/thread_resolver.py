@@ -60,5 +60,5 @@ def resolve_thread_ref(raw_thread_id: str | int | None) -> ThreadRef | None:
     )
 
 
-def new_agentscope_thread_id() -> str:
+def new_runtime_thread_id() -> str:
     return f"as_{uuid.uuid4()}"

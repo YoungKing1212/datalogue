@@ -23,7 +23,7 @@ from app.models.agentscope_workbench import (
     AgentScopeRef,
     AgentScopeSession,
 )
-from app.runtime.thread_resolver import new_agentscope_thread_id, normalize_thread_id
+from app.runtime.thread_resolver import new_runtime_thread_id, normalize_thread_id
 from app.schemas.agentscope_workbench import AgentScopeMessageStatus
 
 _FORBIDDEN_KEY_FRAGMENTS = (
@@ -122,7 +122,7 @@ def create_agentscope_session(
     legacy_conversation_id: int | None = None,
     metadata: dict | None = None,
 ) -> AgentScopeSession:
-    normalized = normalize_thread_id(thread_id) if thread_id else new_agentscope_thread_id()
+    normalized = normalize_thread_id(thread_id) if thread_id else new_runtime_thread_id()
     if normalized is None or not normalized.startswith("as_"):
         raise ValueError("AGENTSCOPE_SESSION_REQUIRES_AS_THREAD")
 
