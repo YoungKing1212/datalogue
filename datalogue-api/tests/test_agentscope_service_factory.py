@@ -150,6 +150,8 @@ def test_main_lifespan_enters_mounted_agentscope_service_lifespan(monkeypatch):
         return FastAPI(title="fake-agentscope", lifespan=fake_child_lifespan)
 
     monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)
+    # 该用例只验证父应用显式进入 AgentScope 子应用 lifespan，不能顺带访问真实业务库。
+    monkeypatch.setattr(main_module, "_bootstrap_admin_if_needed", lambda: None)
     monkeypatch.setattr(
         main_module,
         "create_embedded_runtime_app",
@@ -193,6 +195,8 @@ def test_main_lifespan_initializes_agentscope_otel_before_child_lifespan(monkeyp
         events.append("otel")
 
     monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)
+    # 该用例只验证 OTel 与子应用 lifespan 的顺序，管理员引导由认证测试单独覆盖。
+    monkeypatch.setattr(main_module, "_bootstrap_admin_if_needed", lambda: None)
     monkeypatch.setattr(
         main_module,
         "create_embedded_runtime_app",
