@@ -73,6 +73,7 @@ def test_worker_template_specs_convert_to_agentscope_subagent_templates():
         "datalogue_execute_query_plan_bundle",
         "datalogue_repair_query_plan",
         "datalogue_request_schema_slice",
+        "datalogue_describe_tables",
         "datalogue_select_candidate_datasets",
     }
 
@@ -90,6 +91,27 @@ def test_worker_template_specs_convert_to_agentscope_subagent_templates():
         assert rule.tool_name == tool_name
         assert rule.behavior == PermissionBehavior.ALLOW
         assert rule.source == "datalogue-bi-worker-template"
+
+
+def test_report_worker_template_has_isolated_permission_context():
+    from agentscope.permission import PermissionBehavior, PermissionMode
+    from app.runtime.engine.registry import build_datalogue_worker_template_specs
+
+    template = build_datalogue_worker_template_specs()[1].to_subagent_template()
+    expected_allow_rules = {"TeamSay", "datalogue_get_artifact_report_input"}
+
+    assert template.type == "report"
+    assert "REPORT_WORKER_BOUNDARY" in template.system_prompt_template
+    assert template.permission_context.mode == PermissionMode.DONT_ASK
+    assert template.override_leader_mode is True
+    assert template.extend_leader_permission_rules is False
+    assert template.extend_leader_working_directories is False
+    assert set(template.permission_context.allow_rules) == expected_allow_rules
+    for tool_name in expected_allow_rules:
+        [rule] = template.permission_context.allow_rules[tool_name]
+        assert rule.tool_name == tool_name
+        assert rule.behavior == PermissionBehavior.ALLOW
+        assert rule.source == "datalogue-report-worker-template"
 
 
 def test_bi_worker_prompt_template_is_agentscope_format_safe():
@@ -118,7 +140,13 @@ async def test_extra_agent_tools_registers_progressive_tools_without_legacy_data
         async def get_agent(self, user_id, agent_id):
             assert user_id == "user-1"
             assert agent_id == "agent-created-by-agentcreate"
-            return SimpleNamespace(source="team", data=SimpleNamespace(name="bi-worker"))
+            return SimpleNamespace(
+                source="team",
+                data=SimpleNamespace(
+                    name="bi-worker",
+                    system_prompt="你是 Datalogue BI Worker，只处理 Datalogue Dataset Query 类问数任务。",
+                ),
+            )
 
     factory = datalogue_tools.build_datalogue_extra_agent_tools(storage=FakeStorage())
     registered_tools = await factory(

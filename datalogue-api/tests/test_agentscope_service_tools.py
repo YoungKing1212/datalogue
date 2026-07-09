@@ -55,8 +55,13 @@ async def test_extra_agent_tools_hides_dataset_tool_from_leader():
 async def test_extra_agent_tools_returns_dataset_tool_for_team_worker_only():
     from app.runtime.engine.tools import build_datalogue_extra_agent_tools
 
+    class FakeAgentData:
+        name = "bi-worker"
+        system_prompt = "你是 Datalogue BI Worker，只处理 Datalogue Dataset Query 类问数任务。"
+
     class FakeAgentRecord:
         source = "team"
+        data = FakeAgentData()
 
     class FakeStorage:
         async def get_agent(self, user_id, agent_id):
@@ -79,6 +84,56 @@ async def test_extra_agent_tools_returns_dataset_tool_for_team_worker_only():
     ]
     assert "datalogue_query_dataset" not in {tool.name for tool in tools}
     assert AGENTSCOPE_SERVICE_BUILTIN_TOOL_NAMES.isdisjoint({tool.name for tool in tools})
+
+
+@pytest.mark.asyncio
+async def test_extra_agent_tools_returns_report_tool_for_report_worker_only():
+    from app.runtime.engine.tools import build_datalogue_extra_agent_tools
+
+    class FakeAgentData:
+        name = "report-worker"
+        system_prompt = "你是 Datalogue Report Worker。REPORT_WORKER_BOUNDARY"
+
+    class FakeAgentRecord:
+        source = "team"
+        data = FakeAgentData()
+
+    class FakeStorage:
+        async def get_agent(self, user_id, agent_id):
+            assert user_id == "user-1"
+            assert agent_id == "worker-report-1"
+            return FakeAgentRecord()
+
+    factory = build_datalogue_extra_agent_tools(storage=FakeStorage())
+
+    tools = await factory("user-1", "worker-report-1", "session-1")
+
+    assert [tool.name for tool in tools] == ["datalogue_get_artifact_report_input"]
+    assert "datalogue_execute_query_plan_bundle" not in {tool.name for tool in tools}
+    assert AGENTSCOPE_SERVICE_BUILTIN_TOOL_NAMES.isdisjoint({tool.name for tool in tools})
+
+
+@pytest.mark.asyncio
+async def test_extra_agent_tools_fail_closed_for_unmarked_team_worker():
+    from app.runtime.engine.tools import build_datalogue_extra_agent_tools
+
+    class FakeAgentData:
+        name = "team-worker"
+        system_prompt = "普通 Team worker，没有 Datalogue marker。"
+
+    class FakeAgentRecord:
+        source = "team"
+        data = FakeAgentData()
+
+    class FakeStorage:
+        async def get_agent(self, user_id, agent_id):
+            return FakeAgentRecord()
+
+    factory = build_datalogue_extra_agent_tools(storage=FakeStorage())
+
+    tools = await factory("user-1", "worker-unknown", "session-1")
+
+    assert tools == []
 
 
 @pytest.mark.asyncio
@@ -462,6 +517,7 @@ async def test_bi_worker_candidate_dataset_tool_returns_safe_candidates(monkeypa
 
     class FakeAgentData:
         name = "bi-worker"
+        system_prompt = "你是 Datalogue BI Worker，只处理 Datalogue Dataset Query 类问数任务。"
 
     class FakeAgentRecord:
         source = "team"
@@ -531,6 +587,7 @@ async def test_bi_worker_candidate_dataset_tool_publishes_safe_final_event(monke
 
     class FakeAgentData:
         name = "bi-worker"
+        system_prompt = "你是 Datalogue BI Worker，只处理 Datalogue Dataset Query 类问数任务。"
 
     class FakeAgentRecord:
         source = "team"

@@ -6444,6 +6444,35 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 }
 .md-body tbody tr:last-child td { border-bottom: none; }
 
+.md-mermaid-block,
+.md-echarts-block {
+  width: 100%;
+  min-height: 260px;
+  margin: 14px 0;
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.md-mermaid-block {
+  padding: 14px;
+}
+
+.md-echarts-block {
+  height: 320px;
+}
+
+.md-chart-fallback {
+  margin: 12px 0;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+}
+
 .code-wrap { margin: 14px 0; border-radius: 8px; overflow: hidden; border: 1px solid #1b2230; }
 .code-bar { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; background: #161b22; }
 .code-lang { font-family: var(--font-mono); font-size: 11.5px; color: #8b949e; }

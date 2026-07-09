@@ -40,9 +40,12 @@ from app.domains.bi.worker.contracts import (
 from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
 from app.domains.bi.worker.validator import ProgressiveContextState
 from app.domains.agent_team.progress_bridge import publish_agent_event
+from app.domains.agent_team.worker_identity import resolve_team_worker_type
 from app.core.database import SessionLocal
 from app.core.models.dataset import SemanticDataset
 from app.core.schemas.bi_workbench import sanitize_event_payload
+from app.domains.query_execution.artifact_store import ArtifactStore
+from app.domains.query_execution.report_input import build_artifact_report_input
 
 AgentToolFactory = Callable[[str | None, str | None, str | None], Awaitable[list[ToolBase]]]
 logger = logging.getLogger(__name__)
@@ -184,12 +187,17 @@ def build_datalogue_extra_agent_tools(*, storage: StorageBase | None = None) -> 
         if worker_context is None:
             return (
                 []
-            )  # Dataset 查询只能由 Team worker 调用；拿不到身份时 fail-closed，避免 Leader 直接查数。
-        return [
-            build_datalogue_search_assets_tool(worker_context=worker_context),
-            build_datalogue_select_candidate_datasets_tool(worker_context=worker_context),
-            *build_datalogue_progressive_bi_worker_tools(worker_context=worker_context),
-        ]
+            )  # Datalogue 业务工具只能由带 marker 的 Team worker 调用；拿不到身份时 fail-closed。
+        worker_type = worker_context.get("worker_type")
+        if worker_type == "bi":
+            return [
+                build_datalogue_search_assets_tool(worker_context=worker_context),
+                build_datalogue_select_candidate_datasets_tool(worker_context=worker_context),
+                *build_datalogue_progressive_bi_worker_tools(worker_context=worker_context),
+            ]
+        if worker_type == "report":
+            return build_datalogue_report_worker_tools(worker_context=worker_context)
+        return []
 
     return _extra_agent_tools
 
@@ -406,6 +414,9 @@ async def _team_worker_context(
 
     if storage is None or not user_id or not agent_id:
         return None
+    worker_type = await resolve_team_worker_type(storage=storage, user_id=user_id, agent_id=agent_id)
+    if worker_type is None:
+        return None
     agent_record = await storage.get_agent(user_id, agent_id)
     if not agent_record or agent_record.source != "team":
         return None
@@ -414,6 +425,7 @@ async def _team_worker_context(
     return {
         "user_id": user_id,
         "agent_id": agent_id,
+        "worker_type": worker_type,
         "agent_name": str(agent_name) if agent_name else None,
         "session_id": session_id,
     }
@@ -446,6 +458,56 @@ class DatalogueBIWorkerReadOnlyTool(FunctionTool):
 
 # 向后兼容别名:曾经只给 search_assets 用的类名,现在保留为别名避免破坏引用。
 DatalogueSearchAssetsTool = DatalogueBIWorkerReadOnlyTool
+
+
+class DatalogueReportWorkerReadOnlyTool(FunctionTool):
+    """Report Worker 只读工具基类；只允许读取已落库的安全 artifact 投影。"""
+
+    async def check_permissions(
+        self,
+        tool_input: dict[str, Any],
+        context: PermissionContext,
+    ) -> PermissionDecision:
+        return PermissionDecision(
+            behavior=PermissionBehavior.ALLOW,
+            message=f"{self.name} is always allowed for Report workers.",
+            decision_reason="ALLOWED_BY_TOOL",
+        )
+
+
+def build_datalogue_report_worker_tools(
+    *,
+    worker_context: dict[str, str | None] | None = None,
+) -> list[ToolBase]:
+    """创建 Report Worker 可见的只读 artifact 工具集。"""
+
+    def datalogue_get_artifact_report_input(artifact_ref: str) -> ToolChunk:
+        """读取查询 artifact 的报告输入投影。
+
+        工具只接收 artifact_ref，不接收 SQL、schema、QueryPlan 或 rows 参数；
+        读取后会校验 report_input_meta 与 rows/columns 一致性，失败则返回安全错误。
+
+        Args:
+            artifact_ref: BI Worker 查询成功后返回的 artifact 引用。
+        """
+
+        _ = worker_context
+        with SessionLocal() as db:
+            artifact = ArtifactStore(db).get(str(artifact_ref or ""))
+            payload = build_artifact_report_input(artifact, artifact_ref=str(artifact_ref or ""))
+        return _tool_success_chunk(payload)
+
+    return [
+        DatalogueReportWorkerReadOnlyTool(
+            datalogue_get_artifact_report_input,
+            description=(
+                "Report Worker 只读工具：根据 artifact_ref 读取 sql_result 的报告输入投影，"
+                "只返回用户可见 rows/columns/report_input_meta。"
+            ),
+            is_concurrency_safe=True,
+            is_read_only=True,
+        )
+    ]
 
 
 def build_datalogue_search_assets_tool(

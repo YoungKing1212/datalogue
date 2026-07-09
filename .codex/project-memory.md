@@ -570,3 +570,12 @@
 - 关键改动：登录页由单卡片升级为双栏布局（左侧品牌价值展示 + 右侧登录表单卡片），新增分层背景光晕、玻璃感容器、表单按钮视觉强化与移动端响应式适配；保持现有 Ant Design 技术栈与登录逻辑不变。
 - 验证方式：执行 `cd datalogue-web && npm run lint` 与 `cd datalogue-web && npm run build` 均通过（lint 仅保留仓库既有 warnings，无新增 errors）。
 - 残留风险：当前仅完成视觉升级，未接入品牌插画或动态运营素材；如需进一步品牌化，可追加自定义 SVG 背景和轻量入场动画。
+
+### 2026-07-09 17:05 · Report Worker 智能报告闭环
+
+- 完成时间：2026-07-09 17:05。
+- 功能名称：Report Worker 智能报告闭环。
+- 涉及文件：`datalogue-api/app/domains/query_execution/report_input.py`、`datalogue-api/app/domains/agent_team/worker_identity.py`、`datalogue-api/app/runtime/engine/tools.py`、`datalogue-api/app/runtime/engine/registry.py`、`datalogue-api/app/prompts/agent_team.py`、`datalogue-api/app/domains/bi/toolkit/atomic.py`、`datalogue-api/app/domains/bi/agent/native_handoff.py`、`datalogue-api/conf/report_worker_permissions.json`、`datalogue-api/conf/bi_worker_permissions.json`、`datalogue-web/src/assistant-ui/DatalogueMarkdown.jsx`、`datalogue-web/src/assistant-ui/DatalogueChartBlocks.jsx`、`datalogue-web/src/styles.css`、`datalogue-web/package.json`、`datalogue-web/package-lock.json` 及相关测试。
+- 关键改动：新增 `report_input` 安全投影，三处 `sql_result` 写入点统一写入 `report_input_meta` 与裁剪后的用户可见 rows/columns；新增 `datalogue_get_artifact_report_input` 工具，只按 artifact_ref 读取并校验报告输入，不查业务库、不接收 SQL/schema/raw rows；新增 `resolve_team_worker_type`，按 team agent system_prompt marker fail-closed 区分 BI/Report worker，Report Worker 只拿报告读取工具并使用独立权限上下文；Leader prompt 支持 BI 成功后按用户语义和结果复杂度自主决策是否生成报告，Report Worker 输出中文 Markdown，并允许 Mermaid/ECharts 图表；前端 Markdown fallback 与 Streamdown 主路径都支持 `mermaid`/`echarts` fenced code block，ECharts 仅接受纯 JSON option 并拒绝原型污染键。
+- 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_report_worker_artifact_input.py datalogue-api/tests/test_agentscope_service_tools.py datalogue-api/tests/test_agentscope_static_agent_registry.py -q`，结果 `33 passed`；执行 `pytest datalogue-api/tests/test_artifact_api.py datalogue-api/tests/test_bi_lead_agent_native_handoff.py datalogue-api/tests/test_agentscope_service_worker_logging.py -q`，结果 `53 passed`；执行 `cd datalogue-web && npm run test -- DatalogueMessage.test.jsx`，结果 `6 passed`；执行 `npm run lint`，结果 0 errors、13 个既有 warnings；执行 `npm run build` 成功，保留现有大 chunk warning；调用 Claude Code review，结论为无阻塞问题，并按建议补强了 report input 边界测试与 `create_query_artifact` 链路。
+- 残留风险或后续事项：本轮不新增报告持久化表、不新增报告文件 artifact 类型、不新增 Workbench 报告面板；Leader 何时派生 Report Worker 仍依赖模型遵循 prompt，后续如需更强确定性，可在 Agent Team runner 层增加成功查询后的策略性 report worker 创建闸门。

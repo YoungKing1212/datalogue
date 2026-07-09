@@ -29,12 +29,12 @@ from agentscope.middleware import MiddlewareBase, TracingMiddleware
 from app.domains.bi.worker.timeline_cache import store_bi_worker_timeline
 from app.domains.agent_team.progress_bridge import publish_agent_progress
 from app.domains.agent_team.task_context import resolve_task_context
+from app.domains.agent_team.worker_identity import resolve_team_worker_type
 from app.core.middlewares.lifecycle import raw_agent_logs_enabled
 
 AgentMiddlewareFactory = Callable[
     [str | None, str | None, str | None], Awaitable[list[MiddlewareBase]]
 ]
-_BI_WORKER_MARKERS = ("Datalogue BI Worker", "Dataset Query")
 _LEADER_MARKERS = ("Datalogue Agent Team Leader", "Agent Team Leader", "智能问数主链")
 logger = logging.getLogger(__name__)
 _SENSITIVE_TEXT_PATTERN = re.compile(
@@ -219,13 +219,13 @@ async def _bi_worker_context(
 
     if storage is None or not user_id or not agent_id:
         return None
+    worker_type = await resolve_team_worker_type(storage=storage, user_id=user_id, agent_id=agent_id)
+    if worker_type != "bi":
+        return None
     agent_record = await storage.get_agent(user_id, agent_id)
     if not agent_record or agent_record.source != "team":
         return None
     agent_data = getattr(agent_record, "data", None)
-    system_prompt = str(getattr(agent_data, "system_prompt", "") or "")
-    if not any(marker in system_prompt for marker in _BI_WORKER_MARKERS):
-        return None
     agent_name = getattr(agent_data, "name", None)
 
     # 从 Redis 解析 task context（通过直接命中或 TeamRecord 反查 leader session）。
