@@ -29,6 +29,7 @@ from app.core.middlewares.lifecycle import log_lifecycle
 from app.prompts import NATIVE_HANDOFF_CHILD_MESSAGE_TEMPLATE
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.domains.query_execution.artifact_store import ArtifactStore
+from app.domains.query_execution.report_input import build_sql_result_report_payload
 from app.domains.bi.agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
 from app.domains.bi.agent.handoff_events import (
     collect_native_handoff_payload,
@@ -426,9 +427,10 @@ class AgentScopeNativeBIHandoff:
             )
             return None
 
-        artifact_payload = self._safe_blueprint_artifact_payload(result)
+        artifact_payload = build_sql_result_report_payload(self._safe_blueprint_artifact_payload(result))
         artifact_ref = ArtifactStore(self.db).put_json(
             kind="sql_result",
+            # 受控蓝图补执行也产出 sql_result，必须与主执行链一样携带 Report Worker 读取 meta。
             payload=artifact_payload,
             dataset_id=request.dataset_id,
             trace_id=request.trace_id,

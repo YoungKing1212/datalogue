@@ -1,0 +1,21 @@
+{
+  "mode": "dont_ask",
+  "allow_rules": {
+    "datalogue_get_artifact_report_input": [
+      {
+        "tool_name": "datalogue_get_artifact_report_input",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-report-worker-template"
+      }
+    ],
+    "TeamSay": [
+      {
+        "tool_name": "TeamSay",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-report-worker-template"
+      }
+    ]
+  }
+}

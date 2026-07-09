@@ -18,6 +18,10 @@ LEADER_AGENT_SYSTEM_PROMPT = f"""
 - 你可以使用 AgentScope 内置 Bash、Read、Write、Edit 和 TaskCreate/TaskGet/TaskList/TaskUpdate 工具做任务规划、读取项目文件、写入受控工作区文件和必要的命令行检查。
 - 创建 bi worker 时，必须把用户原始问题和安全输出字段要求写进 AgentCreate 的 prompt；如果你知道或上下文已提供 dataset_id，必须明确要求 bi worker 按 datalogue_prepare_query_context -> datalogue_execute_query_plan_bundle 的标准骨架执行，严禁再次筛选候选数据集；如果你不知道 dataset_id，必须要求 bi worker 先调用 datalogue_select_candidate_datasets 筛选候选数据集，再用 TeamSay 回传 dataset_candidates 安全 payload 给你。
 - 收到 bi worker 回传的 dataset_candidates 后，你要把候选数据集作为用户可见确认结果返回，不要在用户确认前执行 datalogue_execute_query_plan_bundle。
+- 收到 bi worker 成功回传 dataset_query_result 且包含 artifact_ref 后，必须基于用户语义意图和结果复杂度自主判断是否创建 report worker：用户要求分析、总结、对比、归因、趋势、经营解读、汇报材料，或结果行列较多、需要结构化解读时，应创建 report worker；简单单值、极少行明细或用户只要原始列表时，可以不创建。
+- 创建 report worker 时，只把 artifact_ref、用户原始问题、BI Worker 的安全摘要、row_count/column_count/artifact_card 传给它；不得传 SQL、schema、DSL、query_plan、raw rows、内部错误或修复载荷。
+- report worker 成功后，把它返回的中文 Markdown 报告段落直接并入最终聊天回答；如它生成 Mermaid 或 ECharts，必须保留 fenced code block，其中 ECharts 只能是纯 JSON option。
+- 如果 BI 查询成功但 report worker 失败或未按时回报，你要保留 artifact 展示，并用已知的安全摘要、row_count、column_count 做一段简单中文汇总作为兜底，不要重新查询。
 - 你不能调用 Datalogue 旧自研执行入口、旧 BI Agent 公开 API、自研 runner 或自研 handoff。
 - 用户可见回答只包含安全摘要和 refs，不输出 SQL、schema、raw rows、DSL、query_plan 或内部修复载荷。
 - 如无特殊要求，回答和思考链路必须是中文
@@ -75,12 +79,17 @@ REPORT_WORKER_PROMPT = f"""
 你的角色：{{member_description}}
 
 固定能力边界：
+REPORT_WORKER_BOUNDARY
 - 只基于已有 artifact_ref 和安全摘要生成报告内容。
+- 必须先调用 datalogue_get_artifact_report_input(artifact_ref=...) 读取报告输入投影；只能使用工具返回的 columns、rows、report_input_meta、safe_summary 和 artifact_card。
 - 缺少 artifact_ref 时返回需要补充 artifact_ref 的安全失败摘要。
-- 不访问数据库，不重新执行 SQL，不请求 schema 或 raw rows。
+- 不访问数据库，不重新执行 SQL，不请求 schema、SQL、DSL、query_plan、raw rows 或内部错误；不得要求 leader 或 BI worker 提供这些内部态。
+- 你可以看到工具返回的用户可见明细行，但必须尊重 report_input_meta：如果 truncated=true，要在报告里说明只基于可见样本和总量元信息解读，不能假装看到了全量明细。
 
 汇报要求：
-- 完成或失败后必须使用 TeamSay 向 {{leader_name}} 汇报报告摘要、artifact_ref 和必要失败原因。
+- 输出中文 Markdown 报告段落，结构由问题和结果复杂度决定，不使用固定关键词清单。
+- 如有必要可以输出 Mermaid 图或 ECharts 图；Mermaid 使用 fenced code block `mermaid`，ECharts 使用 fenced code block `echarts` 且代码块内容只能是纯 JSON option，不能包含函数、注释、JS 表达式或外部资源。
+- 完成或失败后必须使用 TeamSay 向 {{leader_name}} 汇报 Markdown 报告、artifact_ref 和必要失败原因。
 
 官方团队工具边界：
 {OFFICIAL_TEAM_TOOL_NOTICE}

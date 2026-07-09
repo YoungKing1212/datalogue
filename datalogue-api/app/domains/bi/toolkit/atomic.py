@@ -30,6 +30,7 @@ from app.core.models.dataset import AnalysisBlueprint, SemanticDataset
 from app.core.safety import DataloguePayloadSanitizer
 from app.domains.query_execution.artifact_store import ArtifactStore
 from app.domains.query_execution.compiler import compile_query_plan_to_sql
+from app.domains.query_execution.report_input import build_sql_result_report_payload
 
 
 logger = logging.getLogger(__name__)
@@ -330,9 +331,11 @@ class ExecuteCompiledQueryTool(DatalogueBIAtomicTool):
             failure = _safe_execution_failure(compiled_query_ref, exc)
             _record_field_not_found_failure(compiled, failure, exc)
             return failure
+        artifact_payload = build_sql_result_report_payload(execution_result)
         artifact_ref = ArtifactStore(self.context.db).put_json(
             kind="sql_result",
-            payload=execution_result,
+            # sql_result 落库时同步写入 report_input_meta，Report Worker 后续只能读这个安全投影。
+            payload=artifact_payload,
             dataset_id=dataset_id if dataset_id is not None else compiled.get("dataset_id"),
             conversation_id=conversation_id,
             trace_id=trace_id,
@@ -416,11 +419,12 @@ class CreateQueryArtifactTool(DatalogueBIAtomicTool):
         conversation_id: int | None = None,
         trace_id: str | None = None,
     ) -> dict[str, str]:
-        # 写入前复用 Shell 输出清洗，避免 Agent 旁路塞入内部执行载荷。
-        sanitized_payload = self.context.sanitizer.sanitize_output(payload)
+        # 写入前使用 report_input helper 的白名单清洗，避免通用消息 sanitizer 把用户可见 rows 误当 raw rows 删除。
+        artifact_payload = build_sql_result_report_payload(payload)
         artifact_ref = ArtifactStore(self.context.db).put_json(
             kind="sql_result",
-            payload=sanitized_payload,
+            # create_query_artifact 是 Agent 可触发写入点，也必须补齐报告读取 meta，避免旁路 artifact。
+            payload=artifact_payload,
             dataset_id=dataset_id,
             conversation_id=conversation_id,
             trace_id=trace_id,

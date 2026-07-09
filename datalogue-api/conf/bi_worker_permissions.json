@@ -25,6 +25,14 @@
         "source": "datalogue-bi-worker-template"
       }
     ],
+    "datalogue_describe_tables": [
+      {
+        "tool_name": "datalogue_describe_tables",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-bi-worker-template"
+      }
+    ],
     "datalogue_execute_query_plan_bundle": [
       {
         "tool_name": "datalogue_execute_query_plan_bundle",

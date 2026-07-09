@@ -2,7 +2,7 @@
 // 覆盖 assistant-ui 消息展示壳的安全过滤、状态映射和旧 message parts 兼容。
 
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@assistant-ui/react', () => ({
@@ -18,13 +18,31 @@ vi.mock('@assistant-ui/react', () => ({
 }));
 
 vi.mock('@assistant-ui/react-streamdown', () => ({
-  StreamdownTextPrimitive: ({ containerClassName, preprocess }) => (
+  StreamdownTextPrimitive: ({ containerClassName, preprocess, componentsByLanguage }) => (
     <div data-testid="streamdown" className={containerClassName}>
       {preprocess ? preprocess('回答 <think>内部推理</think>\n| 省份 | GMV |') : 'streamdown'}
+      <span data-testid="streamdown-languages">
+        {Object.keys(componentsByLanguage || {}).join(',')}
+      </span>
     </div>
   ),
   normalizeMathDelimiters: (text) => text,
   escapeCurrencyDollars: (text) => text,
+}));
+
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(async () => ({ svg: '<svg data-testid="mermaid-svg"></svg>' })),
+  },
+}));
+
+vi.mock('echarts', () => ({
+  init: vi.fn(() => ({
+    setOption: vi.fn(),
+    resize: vi.fn(),
+    dispose: vi.fn(),
+  })),
 }));
 
 vi.mock('@assistant-ui/react-markdown', () => ({
@@ -42,6 +60,7 @@ vi.mock('../components/artifact-card', () => ({
 }));
 
 import { DatalogueMarkdown } from './DatalogueMarkdown';
+import { parseSafeEChartsOption } from './DatalogueChartBlocks';
 import { DatalogueReasoning } from './DatalogueReasoning';
 import { DatalogueToolUI } from './DatalogueToolUI';
 import { DatalogueMessage } from './DatalogueMessage';
@@ -52,7 +71,33 @@ describe('assistant-ui Datalogue message components', () => {
 
     expect(screen.getByTestId('streamdown')).toHaveClass('ai-message');
     expect(screen.getByTestId('streamdown')).toHaveTextContent('回答');
+    expect(screen.getByTestId('streamdown-languages')).toHaveTextContent('mermaid,echarts');
     expect(screen.queryByText(/内部推理/)).not.toBeInTheDocument();
+  });
+
+  it('renders Mermaid and ECharts fenced blocks in fallback markdown', async () => {
+    render(
+      <DatalogueMarkdown
+        text={[
+          '```mermaid',
+          'flowchart TD',
+          '  A --> B',
+          '```',
+          '',
+          '```echarts',
+          '{"xAxis":{"type":"category","data":["A"]},"yAxis":{"type":"value"},"series":[{"type":"bar","data":[1]}]}',
+          '```',
+        ].join('\n')}
+      />,
+    );
+
+    expect(screen.getByTestId('echarts-block')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('mermaid-block').innerHTML).toContain('<svg'));
+  });
+
+  it('rejects unsafe ECharts options before chart initialization', () => {
+    expect(() => parseSafeEChartsOption('[{"series":[]}]')).toThrow(/JSON 对象/);
+    expect(() => parseSafeEChartsOption('{"__proto__":{"polluted":true}}')).toThrow(/不允许/);
   });
 
   it('renders reasoning as a collapsible business summary without control-plane fields', () => {

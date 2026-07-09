@@ -76,10 +76,15 @@ class AgentTeamWorkerTemplateSpec:
         """转换为 AgentScope 官方 AgentCreate 可消费的 SubAgentTemplate。"""
 
         kwargs = {}
-        if self.worker_type == "bi":
+        if self.worker_type in {"bi", "report"}:
+            permission_context = (
+                _bi_worker_permission_context()
+                if self.worker_type == "bi"
+                else _report_worker_permission_context()
+            )
             kwargs = {
-                # BI worker 是业务查询 worker，不应该继承 leader 的文件工作区权限，否则缺 dataset_id 时会走 Glob/Read 探测并卡在确认。
-                "permission_context": _bi_worker_permission_context(),
+                # BI/Report worker 都是业务边界内 worker，不应该继承 leader 的文件工作区权限。
+                "permission_context": permission_context,
                 "override_leader_mode": True,
                 "extend_leader_permission_rules": False,
                 "extend_leader_working_directories": False,
@@ -92,21 +97,28 @@ class AgentTeamWorkerTemplateSpec:
         )
 
 
-def _load_bi_worker_permission_context() -> PermissionContext:
-    """从外部 JSON 文件加载 BI Worker 权限上下文，便于运维修改。"""
-    conf_path = Path(__file__).resolve().parent.parent.parent.parent / "conf" / "bi_worker_permissions.json"
+def _load_worker_permission_context(filename: str, *, worker_label: str) -> PermissionContext:
+    """从外部 JSON 文件加载 worker 权限上下文，便于运维修改。"""
+
+    conf_path = Path(__file__).resolve().parent.parent.parent.parent / "conf" / filename
     try:
         with open(conf_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return PermissionContext.model_validate(data)
     except FileNotFoundError:
-        logger.warning(f"BI Worker 权限配置文件未找到: {conf_path}，使用默认 fail-closed 配置")
+        logger.warning(f"{worker_label} 权限配置文件未找到: {conf_path}，使用默认 fail-closed 配置")
         return PermissionContext(mode=PermissionMode.DONT_ASK)
 
 
 def _bi_worker_permission_context() -> PermissionContext:
     """BI worker 的权限上下文：只放行团队汇报和 Datalogue Dataset 查询，其他未匹配工具一律拒绝。"""
-    return _load_bi_worker_permission_context()
+    return _load_worker_permission_context("bi_worker_permissions.json", worker_label="BI Worker")
+
+
+def _report_worker_permission_context() -> PermissionContext:
+    """Report worker 的权限上下文：只放行 artifact 报告读取和团队汇报，其他工具 fail-closed。"""
+
+    return _load_worker_permission_context("report_worker_permissions.json", worker_label="Report Worker")
 
 
 def build_datalogue_worker_template_specs() -> list[AgentTeamWorkerTemplateSpec]:
