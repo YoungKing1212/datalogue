@@ -128,10 +128,10 @@ def test_datasource(ds_id: int, db: Session = Depends(get_db)):
         logger.warning(f"数据源不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据源不存在")
     result = test_connection(ds)
-    ds.last_test_result = result  # type: ignore[assignment]
-    ds.last_error_code = result.get("code")  # type: ignore[assignment]
-    ds.last_error_message = None if result.get("ok") else result.get("message")  # type: ignore[assignment]
-    ds.status = "connected" if result.get("ok") else "disconnected"  # type: ignore[assignment]
+    ds.last_test_result = result
+    ds.last_error_code = result.get("code")
+    ds.last_error_message = None if result.get("ok") else result.get("message")
+    ds.status = "connected" if result.get("ok") else "disconnected"
     db.commit()
     if not result.get("ok"):
         logger.error(f"数据源连接失败: ds_id={ds_id}, error={result.get('message')}")
@@ -158,7 +158,7 @@ def get_datasource_schemas(ds_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{ds_id}/schema")
-def get_datasource_schema(ds_id: int, schema: str = None, db: Session = Depends(get_db)):
+def get_datasource_schema(ds_id: int, schema: str | None = None, db: Session = Depends(get_db)):
     """通过 SQLAlchemy inspect 自动提取指定 schema 的表、字段、主键和外键信息。"""
     logger.info(f"获取Schema详情: ds_id={ds_id}, schema={schema}")
     ds = db.get(models.Datasource, ds_id)
@@ -303,7 +303,7 @@ def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{ds_id}/source-tables")
-def list_datasource_source_tables(ds_id: int, schema: str = None, db: Session = Depends(get_db)):
+def list_datasource_source_tables(ds_id: int, schema: str | None = None, db: Session = Depends(get_db)):
     """获取数据源下已同步的 source_table 列表。"""
     logger.info(f"获取数据源表列表: ds_id={ds_id}, schema={schema}")
     ds = db.get(models.Datasource, ds_id)

@@ -375,14 +375,17 @@ class DatasourceAdapter:
     def _row_count(self, conn, schema: str | None, table: str, db_type: str) -> int | None:
         try:
             if is_mysql_protocol_type(db_type):
-                return conn.execute(text(f"SELECT COUNT(*) FROM `{table}`")).scalar()
+                value = conn.execute(text(f"SELECT COUNT(*) FROM `{table}`")).scalar()
+                return int(value) if value is not None else None
             if db_type == "sqlite":
-                return conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar()
+                value = conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar()
+                return int(value) if value is not None else None
             if db_type in {"postgres", "postgresql"}:
-                return conn.execute(
+                value = conn.execute(
                     text("SELECT reltuples::bigint FROM pg_class WHERE relname = :t AND relkind = 'r'"),
                     {"t": table},
                 ).scalar()
+                return int(value) if value is not None else None
         except Exception:
             return None
         return None
