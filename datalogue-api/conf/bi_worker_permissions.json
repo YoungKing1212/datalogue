@@ -1,0 +1,61 @@
+{
+  "mode": "dont_ask",
+  "allow_rules": {
+    "datalogue_prepare_query_context": [
+      {
+        "tool_name": "datalogue_prepare_query_context",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-bi-worker-template"
+      }
+    ],
+    "datalogue_search_assets": [
+      {
+        "tool_name": "datalogue_search_assets",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-bi-worker-template"
+      }
+    ],
+    "datalogue_request_schema_slice": [
+      {
+        "tool_name": "datalogue_request_schema_slice",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-bi-worker-template"
+      }
+    ],
+    "datalogue_execute_query_plan_bundle": [
+      {
+        "tool_name": "datalogue_execute_query_plan_bundle",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-bi-worker-template"
+      }
+    ],
+    "datalogue_repair_query_plan": [
+      {
+        "tool_name": "datalogue_repair_query_plan",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-bi-worker-template"
+      }
+    ],
+    "datalogue_select_candidate_datasets": [
+      {
+        "tool_name": "datalogue_select_candidate_datasets",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-bi-worker-template"
+      }
+    ],
+    "TeamSay": [
+      {
+        "tool_name": "TeamSay",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-bi-worker-template"
+      }
+    ]
+  }
+}

@@ -14,14 +14,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from agentscope.app import SubAgentTemplate
 from agentscope.permission import (
-    PermissionBehavior,
     PermissionContext,
     PermissionMode,
-    PermissionRule,
 )
 
 from app.prompts.agent_team import (
@@ -31,6 +32,8 @@ from app.prompts.agent_team import (
     PYTHON_WORKER_PROMPT,
     REPORT_WORKER_PROMPT,
 )
+
+logger = logging.getLogger(__name__)
 
 LEADER_AGENT_NAME = "Datalogue Agent Team Leader"
 
@@ -89,73 +92,21 @@ class AgentTeamWorkerTemplateSpec:
         )
 
 
+def _load_bi_worker_permission_context() -> PermissionContext:
+    """从外部 JSON 文件加载 BI Worker 权限上下文，便于运维修改。"""
+    conf_path = Path(__file__).resolve().parent.parent.parent / "conf" / "bi_worker_permissions.json"
+    try:
+        with open(conf_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return PermissionContext.model_validate(data)
+    except FileNotFoundError:
+        logger.warning(f"BI Worker 权限配置文件未找到: {conf_path}，使用默认 fail-closed 配置")
+        return PermissionContext(mode=PermissionMode.DONT_ASK)
+
+
 def _bi_worker_permission_context() -> PermissionContext:
     """BI worker 的权限上下文：只放行团队汇报和 Datalogue Dataset 查询，其他未匹配工具一律拒绝。"""
-
-    return PermissionContext(
-        mode=PermissionMode.DONT_ASK,
-        allow_rules={
-            # 查询工具按合并后的职责授权；worker 仍不能继承 leader 的文件/命令权限。
-            "datalogue_prepare_query_context": [
-                PermissionRule(
-                    tool_name="datalogue_prepare_query_context",
-                    rule_content=None,
-                    behavior=PermissionBehavior.ALLOW,
-                    source="datalogue-bi-worker-template",
-                )
-            ],
-            "datalogue_search_assets": [
-                PermissionRule(
-                    tool_name="datalogue_search_assets",
-                    rule_content=None,
-                    behavior=PermissionBehavior.ALLOW,
-                    source="datalogue-bi-worker-template",
-                )
-            ],
-            "datalogue_request_schema_slice": [
-                PermissionRule(
-                    tool_name="datalogue_request_schema_slice",
-                    rule_content=None,
-                    behavior=PermissionBehavior.ALLOW,
-                    source="datalogue-bi-worker-template",
-                )
-            ],
-            "datalogue_execute_query_plan_bundle": [
-                PermissionRule(
-                    tool_name="datalogue_execute_query_plan_bundle",
-                    rule_content=None,
-                    behavior=PermissionBehavior.ALLOW,
-                    source="datalogue-bi-worker-template",
-                )
-            ],
-            "datalogue_repair_query_plan": [
-                PermissionRule(
-                    tool_name="datalogue_repair_query_plan",
-                    rule_content=None,
-                    behavior=PermissionBehavior.ALLOW,
-                    source="datalogue-bi-worker-template",
-                )
-            ],
-            # 缺 dataset_id 时，BI worker 只能通过这个安全工具筛选候选卡，不允许读文件或扫描工作区。
-            "datalogue_select_candidate_datasets": [
-                PermissionRule(
-                    tool_name="datalogue_select_candidate_datasets",
-                    rule_content=None,
-                    behavior=PermissionBehavior.ALLOW,
-                    source="datalogue-bi-worker-template",
-                )
-            ],
-            # worker 完成、失败或缺参时必须能回报 leader，否则会被 DONT_ASK 阻断。
-            "TeamSay": [
-                PermissionRule(
-                    tool_name="TeamSay",
-                    rule_content=None,
-                    behavior=PermissionBehavior.ALLOW,
-                    source="datalogue-bi-worker-template",
-                )
-            ],
-        },
-    )
+    return _load_bi_worker_permission_context()
 
 
 def build_datalogue_worker_template_specs() -> list[AgentTeamWorkerTemplateSpec]:
