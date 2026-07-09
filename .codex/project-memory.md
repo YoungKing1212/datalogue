@@ -449,3 +449,10 @@
   2. `bundle size` warning 是既有情况；`emacs-lisp-C9PiwqqW.js`(779kB) / `mermaid-parser.core-*.js`(678kB) 大 chunk 来自 shiki + mermaid，未做 dynamic import 优化。
   3. `DatalogueSubAgentMessages` 是本地只读组件；如 assistant-ui 后续官方 primitives 自动渲染 `part.messages`，可撤除该组件回归官方路径。
   4. 阶段 5 `useLegacyMessage` feature flag 保留 30 天左右；页面回归稳定后再删除旧 `AIMessage` 相关代码。
+
+### 2026-07-09 12:18 · Datalogue 目录治理 Phase A/B 完成记录
+
+- 涉及文件：`docs/architecture/目录治理与模块边界.md`、`.omx/context/directory-planning/current-directory-snapshot.md`、`datalogue-api/app/domains/**`、`datalogue-api/app/agentscope_runtime/**`、`datalogue-api/tests/test_directory_facades.py`、`.codex/project-memory.md`。
+- 关键改动：Phase A 完成目录治理设计落档，新增架构文档说明当前目录边界、模块职责和迁移约束，并在 `.omx` ignored 上下文中记录当前目录快照；Phase B 新增 `domains` 与 `agentscope_runtime` facade-first 包骨架，用轻量门面先稳定未来迁移入口，同时补 `test_directory_facades.py` 固化导入边界。全程不移动旧源码、不改旧调用方导入、不改变 AgentScope 主链、不改变 BI Worker 查询语义。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile $(find app/domains app/agentscope_runtime -name '*.py' | sort) tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py`，结果为 `4 passed, 2 warnings in 0.02s`。
+- 残留风险或后续事项：本轮只是目录治理 Phase A/B 的文档与 facade 骨架，不做旧源码搬迁和调用方切换；后续如推进真实模块迁移，需要继续保持 facade-first、分批改导入、补回归测试，并确认 AgentScope 主链与 BI Worker 查询语义不发生漂移。
