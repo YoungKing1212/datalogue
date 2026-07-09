@@ -4,6 +4,10 @@
 
 ## 📋 文档索引
 
+### 入口与当前上下文
+- [AI Agent 上下文入口](上下文入口.md) — 当前主链、常用命令、文档导航和上下文边界
+- [目录治理与模块边界](architecture/目录治理与模块边界.md) — 后端、前端、文档、运行产物的渐进迁移边界
+
 ### 架构设计
 - [系统架构](architecture/系统架构.md) — 整体架构、分层、组件
 - [执行链路](architecture/执行链路.md) — Agent Team 端到端执行流程
@@ -21,5 +25,16 @@
 - [开发环境搭建](开发指南.md)
 - [代码规范](开发指南.md#代码规范)
 
+### 资产与交付物
+- [E2E 截图资产清单](assets/screenshots/e2e/README.md) — 需要长期保留的真实页面和端到端验证截图
+- `assets/screenshots/user-manual/` — 用户手册截图资产
+- `assets/diagrams/` — 架构图和链路图源文件
+- `deliverables/` — 对外交付文档
+- `test-reports/` — 历史测试报告和验收记录
+
 ### 历史归档
-> 旧版 LangGraph 架构文档已归档至 `archive/old-architecture/`，仅供历史参考。
+> `archive/` 是只读历史归档区，不作为 Codex / Claude 的常规上下文入口；只有追溯旧 LangGraph、Langfuse 下线或历史交付背景时才按需读取。
+
+- `archive/old-architecture/` — 旧版 LangGraph 架构材料
+- `archive/2026-07-01-langfuse-removal/` — Langfuse 下线相关历史材料
+- `archive/2026-06-legacy-docx/` — 早期 docx 交付源文件
