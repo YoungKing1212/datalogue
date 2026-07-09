@@ -12,8 +12,6 @@ export default defineConfig({
     include: [
       '@streamdown/code',
       '@streamdown/math',
-      '@streamdown/mermaid',
-      '@streamdown/cjk',
     ],
   },
   test: {
