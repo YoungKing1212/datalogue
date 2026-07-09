@@ -1,21 +1,29 @@
 # ============================================================
 # File Name   : __init__.py
 # Description:
-#   Agent Team 领域门面包，聚合 AgentScope Agent Team 相关的门面。
+#   Datalogue Agent Team 业务域包。
 #
 # Responsibilities:
-#   - 指向 `app.agentscope_service` 与 `app.agents` 中的既有 Agent Team 实现
-#   - 兼容迁移中，不承载新业务逻辑
+#   - 声明对外 Agent Team task 真相源、Workbench view/retry 和事件 envelope 投影边界。
+#   - 保持 AgentScope Service runtime / registry / runner 归 `app.agentscope_runtime` 所有。
+#   - 兼容迁移期允许旧 facade 共存，但本包新增业务入口只放 Datalogue 对外契约。
 #
 # Author      : KenYang
 # Created On  : 2026-07-09
 # ============================================================
 
-"""Agent Team 领域门面包。
+"""Datalogue Agent Team 业务域包。
 
-本包只暴露 Agent Team 的既有能力（团队装配、Leader/Worker 编排等），
-实现全部保留在 `app.agentscope_service` 与 `app.agents.bi_agent` 中；
-不承载新业务逻辑。
+本包的 canonical 入口只覆盖 Datalogue 对外 task 真相源、Workbench 视图/重试
+动作，以及 AgentScope event 到 Datalogue event envelope 的投影。AgentScope
+官方 Service 的 app factory、registry、runner、worker middleware 等运行时能力归
+`app.agentscope_runtime`，避免运行时框架接入与业务状态真相源混在同一层。
 """
 
-__all__: list[str] = []
+__all__ = [
+    "contracts",
+    "event_projection",
+    "retry_actions",
+    "task_runtime",
+    "workbench_view",
+]

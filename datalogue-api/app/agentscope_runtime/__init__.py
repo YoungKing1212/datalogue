@@ -28,7 +28,7 @@ from app.runtime.engine.registry import (
     build_datalogue_worker_template_specs,
 )
 from app.runtime.engine.runner import DEFAULT_LEADER_AGENT_ID, AgentTeamTaskRunner
-from app.domains.agent_team.worker_logging import build_datalogue_extra_agent_middlewares
+from app.agentscope_runtime.worker_logging import build_datalogue_extra_agent_middlewares
 
 __all__ = [
     "create_embedded_runtime_app",

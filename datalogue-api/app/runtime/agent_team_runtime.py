@@ -24,12 +24,14 @@ from typing import Any, Protocol
 from agentscope.message import UserMsg
 from sqlalchemy.orm import Session
 
-from app.core.events.projection import build_task_envelope, project_agentscope_event
 from app.core.middlewares.lifecycle import log_lifecycle, log_output
-from app.core.models.agent_team_task import AgentTeamTask
 from app.runtime.thread_resolver import new_runtime_thread_id
-from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
-from app.core.schemas.bi_workbench import DatalogueEventEnvelope
+from app.domains.agent_team.contracts import AgentTeamTask, AgentTeamTaskRequest
+from app.domains.agent_team.event_projection import (
+    DatalogueEventEnvelope,
+    build_task_envelope,
+    project_agentscope_event,
+)
 from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,

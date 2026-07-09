@@ -201,3 +201,39 @@ def test_domains_bi_boundary_is_canonical_source_for_bi_capabilities():
     assert worker_contracts.BIWorkerQueryPlan.__module__ == "app.domains.bi.worker.contracts"
     assert worker_runtime.BIWorkerQueryRuntime.__module__ == "app.domains.bi.worker.runtime"
     assert runtime_context.build_bi_runtime_context.__module__ == "app.domains.bi.agent.runtime_context"
+
+
+def test_domains_agent_team_boundary_exposes_datalogue_task_workbench_and_event_projection():
+    """Phase E: domains/agent_team 只新增 Datalogue task、Workbench view/retry 与事件 envelope 边界。"""
+
+    package = importlib.import_module("app.domains.agent_team")
+    contracts = importlib.import_module("app.domains.agent_team.contracts")
+    event_projection = importlib.import_module("app.domains.agent_team.event_projection")
+    retry_actions = importlib.import_module("app.domains.agent_team.retry_actions")
+    task_runtime = importlib.import_module("app.domains.agent_team.task_runtime")
+    workbench_view = importlib.import_module("app.domains.agent_team.workbench_view")
+
+    core_task_schema = importlib.import_module("app.core.schemas.agentscope_agent_team_task")
+    core_task_model = importlib.import_module("app.core.models.agent_team_task")
+    core_event_projection = importlib.import_module("app.core.events.projection")
+    runtime = importlib.import_module("app.runtime.agent_team_runtime")
+    workbench_actions = importlib.import_module("app.domains.workbench.actions")
+    workbench_view_model = importlib.import_module("app.domains.workbench.view_model")
+
+    assert package.__all__ == [
+        "contracts",
+        "event_projection",
+        "retry_actions",
+        "task_runtime",
+        "workbench_view",
+    ]
+    assert contracts.AgentTeamTask is core_task_model.AgentTeamTask
+    assert contracts.AgentTeamTaskRequest is core_task_schema.AgentTeamTaskRequest
+    assert contracts.AgentTeamTaskStreamEvent is core_task_schema.AgentTeamTaskStreamEvent
+    assert event_projection.build_task_envelope is core_event_projection.build_task_envelope
+    assert event_projection.project_agentscope_event is core_event_projection.project_agentscope_event
+    assert task_runtime.AgentTeamTaskRuntime is runtime.AgentTeamTaskRuntime
+    assert retry_actions.request_controlled_retry is workbench_actions.request_controlled_retry
+    assert retry_actions.validate_retry_checkpoint is workbench_actions.validate_retry_checkpoint
+    assert workbench_view.build_workbench_thread_view is workbench_view_model.build_workbench_thread_view
+    assert workbench_view.build_workbench_artifact_view is workbench_view_model.build_workbench_artifact_view
