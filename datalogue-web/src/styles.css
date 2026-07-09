@@ -7762,6 +7762,30 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 }
 
 /* refs */
+
+.artifact-card-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.artifact-card-metrics span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.artifact-card-metrics strong {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
 .artifact-card-refs {
   display: flex;
   align-items: center;
