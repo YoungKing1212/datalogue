@@ -579,3 +579,12 @@
 - 关键改动：新增 `report_input` 安全投影，三处 `sql_result` 写入点统一写入 `report_input_meta` 与裁剪后的用户可见 rows/columns；新增 `datalogue_get_artifact_report_input` 工具，只按 artifact_ref 读取并校验报告输入，不查业务库、不接收 SQL/schema/raw rows；新增 `resolve_team_worker_type`，按 team agent system_prompt marker fail-closed 区分 BI/Report worker，Report Worker 只拿报告读取工具并使用独立权限上下文；Leader prompt 支持 BI 成功后按用户语义和结果复杂度自主决策是否生成报告，Report Worker 输出中文 Markdown，并允许 Mermaid/ECharts 图表；前端 Markdown fallback 与 Streamdown 主路径都支持 `mermaid`/`echarts` fenced code block，ECharts 仅接受纯 JSON option 并拒绝原型污染键。
 - 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_report_worker_artifact_input.py datalogue-api/tests/test_agentscope_service_tools.py datalogue-api/tests/test_agentscope_static_agent_registry.py -q`，结果 `33 passed`；执行 `pytest datalogue-api/tests/test_artifact_api.py datalogue-api/tests/test_bi_lead_agent_native_handoff.py datalogue-api/tests/test_agentscope_service_worker_logging.py -q`，结果 `53 passed`；执行 `cd datalogue-web && npm run test -- DatalogueMessage.test.jsx`，结果 `6 passed`；执行 `npm run lint`，结果 0 errors、13 个既有 warnings；执行 `npm run build` 成功，保留现有大 chunk warning；调用 Claude Code review，结论为无阻塞问题，并按建议补强了 report input 边界测试与 `create_query_artifact` 链路。
 - 残留风险或后续事项：本轮不新增报告持久化表、不新增报告文件 artifact 类型、不新增 Workbench 报告面板；Leader 何时派生 Report Worker 仍依赖模型遵循 prompt，后续如需更强确定性，可在 Agent Team runner 层增加成功查询后的策略性 report worker 创建闸门。
+
+### 2026-07-09 17:30 · Doris/Oracle 数据源问数链路集成基线验证
+
+- 完成时间：2026-07-09 17:30。
+- 功能名称：Doris/Oracle 数据源问数链路集成基线验证。
+- 涉及文件：`docs/test-reports/2026-07-09-doris-oracle-datasource-verification.md`、`.codex/project-memory.md`。
+- 关键改动：新增集成验证记录，明确只读规划来源、Doris/Oracle 完整问数链路验收点、当前基线命令结果，以及上游实现完成后的复验清单；当前 worktree 中 `doris` 全仓命中为 0，Oracle capability/SQL Guard 已有基础覆盖，但 QueryPlan compiler/adapter 仍只支持 `mysql/sqlite`，`oracle` 当前仍按 unsupported fail-closed 处理，因此本轮不把完整 Doris/Oracle 链路写成已完成。
+- 验证方式：执行 `cd datalogue-api && python3 -m pytest ... -q` 覆盖 datasource/query_execution/preview/analysis_blueprint，结果 `17 passed, 10 warnings`；执行 BI Worker runtime targeted pytest，结果 `7 passed, 2 warnings`；前端初次 targeted vitest 因 `vitest: command not found` 失败，执行 `cd datalogue-web && npm install` 后复验 artifact/workbench 测试 `31 passed`；执行 `npm run lint` 为 `0 errors, 13 warnings`，执行 `npm run build` 成功。
+- 残留风险或后续事项：Doris capability、服务端执行方言归一化、Oracle compiler/adapter/URL/preview/BI runtime 完整链路仍需后续实现并复验；真实 Doris/Oracle 连接验收仅能连接用户已有环境，不在本轮本地搭建数据库。
