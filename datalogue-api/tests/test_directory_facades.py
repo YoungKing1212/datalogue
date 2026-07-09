@@ -79,6 +79,25 @@ def test_agentscope_runtime_facade_exposes_only_service_runtime_boundary():
     assert not hasattr(facade, "build_datalogue_extra_agent_tools")
 
 
+def test_agentscope_runtime_covered_callers_import_new_facade():
+    """G054: 已有测试覆盖的生产调用方必须通过 agentscope_runtime facade 进入 Service runtime。"""
+
+    api_root = Path(__file__).resolve().parents[1] / "app"
+    covered_callers = [
+        api_root / "main.py",
+        api_root / "api" / "agent_team.py",
+        api_root / "api" / "agentscope_control_plane.py",
+        api_root / "api" / "llm.py",
+        api_root / "core" / "llm_config.py",
+    ]
+
+    for caller in covered_callers:
+        source = caller.read_text(encoding="utf-8")
+        assert "app.agentscope_runtime" in source
+        assert "from app.runtime.engine" not in source
+        assert "import app.runtime.engine" not in source
+
+
 def test_data_source_implementation_lives_in_domain_modules():
     """Phase F: 数据源实现完全在 domains/data_source/，无 legacy facade。"""
 

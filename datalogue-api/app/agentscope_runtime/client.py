@@ -13,6 +13,6 @@
 
 from __future__ import annotations
 
-from app.runtime.engine.client import AgentScopeServiceClient
+from app.runtime.engine.client import DEFAULT_AGENTSCOPE_USER_ID, AgentScopeServiceClient
 
-__all__ = ["AgentScopeServiceClient"]
+__all__ = ["DEFAULT_AGENTSCOPE_USER_ID", "AgentScopeServiceClient"]
