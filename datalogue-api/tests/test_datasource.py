@@ -15,6 +15,9 @@
 数据源管理 API 测试
 """
 
+import importlib.util
+from pathlib import Path
+
 from app.core.models.datasource import Datasource
 from app.core.security import encrypt_password
 from app.domains.data_source import service as datasource_service
@@ -261,6 +264,22 @@ def test_build_datasource_context_normalizes_doris_stale_dialect():
     assert context["dialect"] == "mysql"
     assert context["allowed_tables"] == ["orders"]
     assert context["query_timeout_seconds"] == 45
+
+
+def test_datasource_capability_migration_backfills_doris_defaults():
+    """历史 datasource 能力字段迁移也要把 Doris 回填为 MySQL 执行方言。"""
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "d2e3f4a5b6c7_add_datasource_capability_fields.py"
+    )
+    spec = importlib.util.spec_from_file_location("datasource_capability_migration", migration_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.CAPABILITY_DEFAULTS["doris"] == ("mysql", "pymysql", None)
 
 
 def test_doris_adapter_builds_mysql_compatible_url_and_timeout(monkeypatch):
