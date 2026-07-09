@@ -41,6 +41,8 @@ class AgentScopeChatBridgeContext(BaseModel):
     user_message_id: str | None = None
     assistant_message_id: str | None = None
     is_legacy_read_only: bool = False
+    user_text: str = ""
+    legacy_conversation_id: int | None = None
 
 
 def begin_chat_turn(
@@ -57,6 +59,8 @@ def begin_chat_turn(
         return AgentScopeChatBridgeContext(  # conv_* 只读回放，不伪造 AgentScope session/message。
             thread_id=thread_ref.thread_id,
             is_legacy_read_only=True,
+            user_text=user_text,
+            legacy_conversation_id=metadata.get("legacy_conversation_id"),
         )
     if thread_text and not thread_text.startswith("as_"):
         thread_text = None
@@ -88,6 +92,8 @@ def begin_chat_turn(
         user_message_id=user_message.message_id,
         assistant_message_id=assistant_message.message_id,
         is_legacy_read_only=False,
+        user_text=user_text,
+        legacy_conversation_id=metadata.get("legacy_conversation_id"),
     )
 
 
@@ -116,12 +122,25 @@ def complete_chat_turn(
 ):
     if context.is_legacy_read_only or not context.assistant_message_id:
         return None
-    return mark_message_completed(
+    result = mark_message_completed(
         db,
         message_id=context.assistant_message_id,
         content_summary=final_summary[:1000],
         payload=_safe_final_payload(final_payload),
     )
+    # 异步触发标题生成
+    if context.user_text and final_summary and not context.is_legacy_read_only:
+        try:
+            from app.services.title_generator import maybe_auto_title_async
+            maybe_auto_title_async(
+                context.thread_id,
+                context.user_text,
+                final_summary,
+                legacy_conversation_id=context.legacy_conversation_id,
+            )
+        except Exception:
+            pass
+    return result
 
 
 def fail_chat_turn(
