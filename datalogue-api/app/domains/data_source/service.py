@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from app.domains.data_source.adapters.base import DatasourceAdapter
+from app.domains.data_source.adapters.base import DatasourceAdapter, is_mysql_protocol_type
 from app.domains.data_source.adapters.hive import HiveAdapter
 from app.domains.data_source.adapters.oracle import OracleAdapter
 from app.domains.data_source.adapters.registry import (
@@ -86,8 +86,7 @@ def enrich_datasource_defaults(data: dict[str, Any]) -> dict[str, Any]:
     capability = CAPABILITIES.get(db_type)
     if not capability:
         return data
-    if not data.get("dialect"):
-        data["dialect"] = capability.dialect
+    data["dialect"] = normalize_execution_dialect(db_type, data.get("dialect"))
     if not data.get("driver"):
         data["driver"] = capability.driver
     if data.get("port") in (None, 0) and capability.default_port:
@@ -103,6 +102,17 @@ def enrich_datasource_defaults(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def normalize_execution_dialect(db_type: str | None, dialect: str | None = None) -> str:
+    """归一化真实执行方言；Doris 产品类型固定落到 MySQL 执行方言。"""
+    normalized_db_type = normalize_db_type(db_type)
+    if normalized_db_type == "doris":
+        return "mysql"
+    if dialect:
+        return str(dialect).strip().lower()
+    capability = CAPABILITIES.get(normalized_db_type)
+    return capability.dialect if capability else normalized_db_type
+
+
 def build_datasource_context(
     ds: Datasource | None,
     *,
@@ -114,7 +124,10 @@ def build_datasource_context(
         return None
     db_type = normalize_db_type(getattr(ds, "db_type", None))
     capability = CAPABILITIES.get(db_type)
-    dialect = getattr(ds, "dialect", None) or (capability.dialect if capability else db_type)
+    dialect = normalize_execution_dialect(
+        db_type,
+        getattr(ds, "dialect", None) or (capability.dialect if capability else db_type),
+    )
     context = DatasourceContext(
         datasource_id=getattr(ds, "id", None),
         db_type=db_type,
@@ -214,7 +227,7 @@ def quote_identifier(name: str, db_type: str | None) -> str:
     if not name:
         return name
     normalized = normalize_db_type(db_type)
-    if normalized == "mysql":
+    if is_mysql_protocol_type(normalized):
         return f"`{name}`"
     if normalized in {"hive", "trino", "presto", "bigquery", "clickhouse"}:
         return f"`{name}`"
@@ -225,7 +238,7 @@ def quote_identifier(name: str, db_type: str | None) -> str:
 
 def _table_ref(schema: str | None, table: str, db_type: str | None) -> str:
     table_q = quote_identifier(table, db_type)
-    if schema and normalize_db_type(db_type) not in {"mysql", "sqlite"}:
+    if schema and not is_mysql_protocol_type(db_type) and normalize_db_type(db_type) != "sqlite":
         return f"{quote_identifier(schema, db_type)}.{table_q}"
     return table_q
 
