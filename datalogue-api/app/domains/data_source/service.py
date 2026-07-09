@@ -20,21 +20,15 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from app.domains.data_source.adapters.base import DatasourceAdapter, is_mysql_protocol_type
-from app.domains.data_source.adapters.hive import HiveAdapter
-from app.domains.data_source.adapters.oracle import OracleAdapter
+from app.domains.data_source.adapters.base import is_mysql_protocol_type
 from app.domains.data_source.adapters.registry import (
     ADAPTERS,
-    ALIASES,
     CAPABILITIES,
     get_adapter,
     normalize_db_type,
 )
-from app.domains.data_source.capabilities import DatasourceCapability
 from app.domains.data_source.context import DatasourceContext
 from app.domains.data_source.diagnostics import (
-    DIAGNOSTIC_META,
-    DatasourceDiagnostic,
     _classify_exception,
     _diagnostic,
 )

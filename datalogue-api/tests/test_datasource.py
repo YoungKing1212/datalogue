@@ -376,3 +376,52 @@ def test_preview_table_uses_mysql_protocol_sql_for_doris(monkeypatch):
     assert captured["params"] == {"limit": 10}
     assert captured["disposed"] is True
     assert result == {"columns": ["id"], "rows": [{"id": 1}]}
+
+
+def test_preview_table_uses_oracle_fetch_first_and_schema_qualifier(monkeypatch):
+    """Oracle 表预览使用 schema 限定和 FETCH FIRST，避免误走 LIMIT 分支。"""
+    captured = {}
+
+    class FakeResult:
+        def keys(self):
+            return ["ID"]
+
+        def fetchall(self):
+            return [(1,)]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return FakeResult()
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+        def dispose(self):
+            captured["disposed"] = True
+
+    ds = Datasource(
+        name="Oracle",
+        db_type="oracle",
+        host="127.0.0.1",
+        port=1521,
+        database_name="ORCLPDB1",
+        username="user",
+        password_enc=encrypt_password("pass"),
+    )
+    monkeypatch.setattr(datasource_service, "create_engine_for_datasource", lambda _ds: FakeEngine())
+
+    result = datasource_service.preview_table(ds, "EDMADMIN", "ORDERS", 10)
+
+    assert captured["sql"] == 'SELECT * FROM "EDMADMIN"."ORDERS" FETCH FIRST :limit ROWS ONLY'
+    assert captured["params"] == {"limit": 10}
+    assert captured["disposed"] is True
+    assert result == {"columns": ["ID"], "rows": [{"ID": 1}]}

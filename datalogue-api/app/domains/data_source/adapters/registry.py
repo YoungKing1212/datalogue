@@ -13,8 +13,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.domains.data_source.adapters.base import DatasourceAdapter
 from app.domains.data_source.adapters.hive import HiveAdapter
 from app.domains.data_source.adapters.oracle import OracleAdapter
