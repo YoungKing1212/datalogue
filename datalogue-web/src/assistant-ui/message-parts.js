@@ -28,7 +28,14 @@ export const UNSAFE_FIELD_NAMES = new Set([
 const UNSAFE_TEXT_RE =
   /\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with|schema|raw_rows|raw_result|repair_patch|control_plane|dsl)\b|[`;]/i;
 
+// safeMarkdownText 专用：允许 Markdown 常用符号（反引号短代码、分号），
+// 只拦截控制面 / 查询计划关键字，保证 reasoning summary 可以用 Markdown 表达列表 / 链接 / 短代码块。
+const UNSAFE_MARKDOWN_RE =
+  /\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|schema|raw_rows|raw_result|repair_patch|control_plane|query_plan|dsl)\b/i;
+
 const THINK_BLOCK_RE = /<think\b[^>]*>[\s\S]*?(?:<\/think\s*>|$)/gi;
+// 捕获 <think> 内容的正则（惰性匹配到闭合标签或流式末尾），用于剥离时同步收集正文外的自吐推理。
+const THINK_CAPTURE_RE = /<think\b[^>]*>([\s\S]*?)(?:<\/think\s*>|$)/gi;
 const MAX_TEXT_LENGTH = 220;
 const MAX_REF_LENGTH = 160;
 
@@ -42,8 +49,35 @@ export function balanceMarkdownFences(value = '') {
   return fences % 2 === 1 ? `${text}\n\`\`\`` : text;
 }
 
+/**
+ * sanitizeThinkAndMarkdown —— 统一的 <think> 剥离 + Markdown 预处理入口。
+ *
+ * 用于让旧 MyMessage 和新 DatalogueMessage / DatalogueReasoning 共用同一份
+ * <think> 处理逻辑，避免正文和思考折叠框之间行为漂移。
+ *
+ * 返回：
+ * - mainMarkdown: 去掉全部 <think>...</think> 之后的正文（未闭合的 <think> 也会
+ *   被剥离，防止流式中间态把后续内容一起吞掉）；同时补齐奇数个 ``` 围栏。
+ * - thinkBlocks: 每个 <think> 块内部内容按顺序返回；空块自动丢弃。这些内容
+ *   仅供 reasoning 折叠框展示，且必须显式标注是模型自吐 <think>，不是后端
+ *   经过治理的安全 reasoning_summary。
+ */
+export function sanitizeThinkAndMarkdown(value = '') {
+  const raw = String(value ?? '');
+  const thinkBlocks = [];
+  const stripped = raw.replace(THINK_CAPTURE_RE, (_, inner) => {
+    const text = String(inner || '').trim();
+    if (text) thinkBlocks.push(text);
+    return '';
+  });
+  return {
+    mainMarkdown: balanceMarkdownFences(stripped.trim()),
+    thinkBlocks,
+  };
+}
+
 export function preprocessDatalogueMarkdown(value = '') {
-  return balanceMarkdownFences(stripThinkBlocks(value));
+  return sanitizeThinkAndMarkdown(value).mainMarkdown;
 }
 
 export function isUnsafeKey(key) {
@@ -74,6 +108,34 @@ export function safeVisibleText(value, fallback = null) {
 export function firstSafeText(values, fallback = null) {
   for (const value of values) {
     const text = safeVisibleText(value);
+    if (text) return text;
+  }
+  return fallback;
+}
+
+/**
+ * safeMarkdownText —— 保留换行/多空白的安全 Markdown 文本。
+ *
+ * 与 safeVisibleText 的区别：不把连续空白折叠成一个空格，用于 reasoning
+ * summary 这类希望渲染为 Markdown 列表 / 表格 / 短代码块的字段。仍然会先
+ * 剥离 <think> 段并按 UNSAFE_TEXT_RE 拒绝 SQL / schema / raw_rows / query_plan
+ * 等控制面关键字，避免通过 Markdown 通道回落到界面上。
+ */
+export function safeMarkdownText(value, fallback = null) {
+  if (value == null) return fallback;
+  const stripped = stripThinkBlocks(String(value));
+  if (!stripped) return fallback;
+  if (UNSAFE_MARKDOWN_RE.test(stripped)) return fallback;
+  return stripped;
+}
+
+/**
+ * firstSafeMarkdown —— 按顺序挑选第一个安全的 Markdown 源。
+ * 用于 DatalogueReasoning 的 reasoning_summary > text > <think> 兜底优先级。
+ */
+export function firstSafeMarkdown(values, fallback = null) {
+  for (const value of values) {
+    const text = safeMarkdownText(value);
     if (text) return text;
   }
   return fallback;
@@ -143,7 +205,12 @@ export function normalizeStatus(partOrStatus, result = {}) {
       ? partOrStatus
       : partOrStatus?.status?.type || partOrStatus?.status || result?.status || result?.state || '';
   const value = String(rawStatus || '').toLowerCase();
-  if (value === 'requires-action' || value === 'confirmation' || value === 'confirm') {
+  if (
+    value === 'requires-action'
+    || value === 'requires_action'
+    || value === 'confirmation'
+    || value === 'confirm'
+  ) {
     return 'confirmation';
   }
   if (value === 'running' || value === 'pending' || value === 'in_progress' || value === 'generating') {

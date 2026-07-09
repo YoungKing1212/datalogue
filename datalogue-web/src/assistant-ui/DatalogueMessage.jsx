@@ -4,8 +4,10 @@
 import React from 'react';
 import { MessagePrimitive, groupPartByType, useAuiState } from '@assistant-ui/react';
 import ArtifactCard from '../components/artifact-card';
+import { DatalogueDataUI } from './DatalogueDataUI';
 import { DatalogueMarkdown } from './DatalogueMarkdown';
 import { DatalogueReasoning } from './DatalogueReasoning';
+import { DatalogueSubAgentMessages } from './DatalogueSubAgentMessages';
 import { DatalogueToolGroup } from './DatalogueToolGroup';
 import { DatalogueToolUI } from './DatalogueToolUI';
 
@@ -28,6 +30,29 @@ function customMetadata(message) {
   return message?.metadata?.custom || message?.custom || {};
 }
 
+// 阶段 4：从 metadata.custom.subAgentMessages 与 tool-call parts 的 `messages` 中
+// 收敛去重后的 sub-agent messages。首选 metadata（chat-adapter 生成的全集），tool-call
+// 的 messages 是 assistant-ui ToolCallMessagePart 契约补齐——两者按 workerSessionId 去重。
+function collectSubAgentMessages(custom = {}, parts = []) {
+  const seen = new Set();
+  const result = [];
+  const push = (message) => {
+    if (!message) return;
+    const workerSessionId = message?.metadata?.custom?.workerSessionId || message?.id;
+    if (!workerSessionId || seen.has(workerSessionId)) return;
+    seen.add(workerSessionId);
+    result.push(message);
+  };
+  const metadataList = Array.isArray(custom?.subAgentMessages) ? custom.subAgentMessages : [];
+  metadataList.forEach(push);
+  parts.forEach((part) => {
+    if (!part || part.type !== 'tool-call') return;
+    const nested = Array.isArray(part.messages) ? part.messages : [];
+    nested.forEach(push);
+  });
+  return result;
+}
+
 function renderLegacyPart(part, index) {
   if (!part) return null;
   if (part.type === 'text') {
@@ -44,6 +69,9 @@ function renderLegacyPart(part, index) {
   }
   if (part.type === 'tool-call' || part.type === 'tool') {
     return <DatalogueToolUI key={`tool-${index}`} part={part} />;
+  }
+  if (part.type === 'data') {
+    return <DatalogueDataUI key={`data-${index}`} part={part} />;
   }
   if (part.type === 'artifact') {
     return <ArtifactCard key={`artifact-${index}`} artifact={part.artifact || part} />;
@@ -68,6 +96,8 @@ function RuntimeParts() {
             return <DatalogueReasoning part={part} />;
           case 'tool-call':
             return <DatalogueToolUI part={part} />;
+          case 'data':
+            return <DatalogueDataUI part={part} />;
           default:
             return null;
         }
@@ -84,6 +114,15 @@ function DatalogueMessageBody({ message }) {
     : Array.isArray(message?.parts)
       ? message.parts
       : [];
+  // 兼容旧路径：只有当消息里没有 datalogue-artifact-card DataMessagePart 时，才回退
+  // 使用 metadata.custom.artifactCard，避免同一个卡片渲染两次。
+  const hasArtifactDataPart = parts.some(
+    (part) => part && part.type === 'data' && part.name === 'datalogue-artifact-card',
+  );
+  // 阶段 4：sub-agent 消息优先取 metadata.custom.subAgentMessages（chat-adapter 生成），
+  // 否则从 tool-call parts 的 `messages` 字段（assistant-ui ToolCallMessagePart.messages 契约）
+  // 合并去重，避免同一 workerSessionId 重复渲染。
+  const subAgentMessages = collectSubAgentMessages(custom, parts);
 
   return (
     <>
@@ -104,7 +143,12 @@ function DatalogueMessageBody({ message }) {
         ) : (
           <>
             {parts.length ? parts.map(renderLegacyPart) : <RuntimeParts />}
-            <ArtifactCard artifact={custom.artifactCard || custom.artifact_card} />
+            {subAgentMessages.length > 0 && (
+              <DatalogueSubAgentMessages messages={subAgentMessages} />
+            )}
+            {!hasArtifactDataPart && (
+              <ArtifactCard artifact={custom.artifactCard || custom.artifact_card} />
+            )}
           </>
         )}
       </div>

@@ -16,12 +16,15 @@ import {
 import { StreamdownTextPrimitive } from '@assistant-ui/react-streamdown';
 import { code } from '@streamdown/code';
 import { math } from '@streamdown/math';
+import { mermaid } from '@streamdown/mermaid';
+import { cjk } from '@streamdown/cjk';
 import { Collapse, Timeline, Tag, Typography } from 'antd';
 import 'katex/dist/katex.min.css';
 import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
 import ArtifactCard from '../components/artifact-card';
 import { getArtifact } from '../api/client';
+import { sanitizeThinkAndMarkdown } from '../assistant-ui/message-parts';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
@@ -63,8 +66,6 @@ const NODE_ICONS = {
   report_generator: 'chart_bar',
 };
 
-const THINK_OPEN_RE = /<think\b[^>]*>/i;
-const THINK_CLOSE_RE = /<\/think\s*>/i;
 const REASONING_LABEL_BLOCKED_RE = /\b(select|insert|update|delete|from|join|where|schema|raw_rows?|raw_result|query_plan|field_patch|repair_patch|control_plane)\b|[`;]/i;
 
 // 推理标签专用清洗：空值或疑似 SQL/schema 等内部字段不作为标签。
@@ -86,27 +87,19 @@ function reasoningStepLabel(part, node) {
     return part.agentName || (part.agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
   }
   if (node === 'reasoning_summary') {
-    // 最终摘要每条自带业务标题（如“识别任务”“生成结果”），优先使用，避免全部退化为“任务处理”。
+    // 最终摘要每条自带业务标题（如"识别任务""生成结果"），优先使用，避免全部退化为"任务处理"。
     return safeReasoningLabelText(part.title) || NODE_STEP_NAMES.reasoning_summary;
   }
   return NODE_STEP_NAMES[node] || safeReasoningLabelText(part.title) || '任务处理';
 }
 
-function stripThink(raw = '') {
-  const openMatch = THINK_OPEN_RE.exec(raw);
-  if (!openMatch) return raw;
-  const before = raw.slice(0, openMatch.index);
-  const rest = raw.slice(openMatch.index + openMatch[0].length);
-  const closeMatch = THINK_CLOSE_RE.exec(rest);
-  if (!closeMatch) return before;
-  return (before + rest.slice(closeMatch.index + closeMatch[0].length)).trim();
+// 兼容旧签名保留：内部委派给共享 sanitizeThinkAndMarkdown，避免正文和折叠框漂移。
+function preprocessAssistantMarkdown(text) {
+  // MessageTextPart 只关心去掉 <think> 后的正文；剥出的 think 内容由 ReasoningText 单独展示。
+  return sanitizeThinkAndMarkdown(text || '').mainMarkdown;
 }
 
-function balanceFences(src = '') {
-  const fences = (src.match(/```/g) || []).length;
-  return fences % 2 === 1 ? `${src}\n\`\`\`` : src;
-}
-
+// react-markdown 的元素映射：链接安全打开新标签、表格外壳，供 StreamdownTextPrimitive 复用。
 const markdownComponents = {
   a: ({ href, children }) => (
     <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
@@ -116,8 +109,31 @@ const markdownComponents = {
   ),
 };
 
-function preprocessAssistantMarkdown(text) {
-  return balanceFences(stripThink(text || ''));
+// Mermaid 渲染失败时的降级组件：不阻断回答，退回到源码 <pre>，用户可复制排查。
+function AssistantMermaidErrorFallback({ chart, error }) {
+  return (
+    <pre className="streamdown-mermaid-fallback" aria-label="Mermaid 图表渲染失败">
+      <div className="streamdown-mermaid-fallback-hint">
+        Mermaid 图表渲染失败：{error || '未知错误'}
+      </div>
+      {chart}
+    </pre>
+  );
+}
+
+// StreamdownTextPrimitive 配置常量：插件 + Mermaid 降级 + controls，供 MessageTextPart 复用。
+const ASSISTANT_STREAMDOWN_PLUGINS = { code, math, mermaid, cjk };
+const ASSISTANT_STREAMDOWN_MERMAID_OPTIONS = { errorComponent: AssistantMermaidErrorFallback };
+const ASSISTANT_STREAMDOWN_CONTROLS = { table: true, code: true, mermaid: true };
+
+// 按消息 status/agentRole 计算轻量状态色 class，仅影响外观，不改动文本处理。
+function assistantMessageStateClass(status, agentRole) {
+  const type = status?.type;
+  if (type === 'running') return 'assistant-message--streaming';
+  if (type === 'requires-action') return 'assistant-message--waiting';
+  if (type === 'incomplete' || status?.reason === 'error') return 'assistant-message--error';
+  if (agentRole === 'worker') return 'assistant-message--worker';
+  return 'assistant-message--idle';
 }
 
 /**
@@ -163,6 +179,8 @@ function splitThinkingSegments(text) {
 
 function ReasoningText({ part }) {
   // BI Worker 调试原文分支：保留原始换行/JSON/列表结构，不走分段渲染，避免 <span> 拍平。
+  // 这条分支来自 raw debug gate（bi_worker_raw_thinking_delta），是有意保真的调试通道，
+  // 阶段 2 不改动它。
   const isRawDebug =
     part.debugRaw === true ||
     part.reasoningKind === 'bi_worker_raw_thinking_delta';
@@ -176,27 +194,58 @@ function ReasoningText({ part }) {
       </pre>
     );
   }
-  const segments = splitThinkingSegments(part.text);
-  if (segments.length <= 1) {
-    // 短文本不拆分，pre-wrap 保留原有换行。
+
+  // 非 raw debug 分支：把可能被模型强行输出的 <think> 段从 part.text 剥离，
+  // 剩下的主体文本走原有分段展示，剥出的 <think> 单独作为「模型自吐」子块，
+  // 避免安全字段（reasoning_summary）与模型 <think> 混淆。
+  const { mainMarkdown, thinkBlocks } = sanitizeThinkAndMarkdown(part.text || '');
+  const segments = splitThinkingSegments(mainMarkdown);
+
+  const bodyNode = (() => {
+    if (!mainMarkdown && !thinkBlocks.length) {
+      return null;
+    }
+    if (segments.length <= 1) {
+      // 短文本不拆分，pre-wrap 保留原有换行。
+      return (
+        <Typography.Text
+          className="cot-ant-text"
+          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+        >
+          {mainMarkdown}
+        </Typography.Text>
+      );
+    }
     return (
-      <Typography.Text
-        className="cot-ant-text"
-        style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-      >
-        {part.text}
-      </Typography.Text>
+      <div className="cot-ant-segments">
+        {segments.map((seg, index) => (
+          <div key={index} className="cot-ant-segment">
+            <span className="cot-ant-segment-dot" />
+            <span className="cot-ant-segment-text">{seg}</span>
+          </div>
+        ))}
+      </div>
     );
-  }
+  })();
+
   return (
-    <div className="cot-ant-segments">
-      {segments.map((seg, index) => (
-        <div key={index} className="cot-ant-segment">
-          <span className="cot-ant-segment-dot" />
-          <span className="cot-ant-segment-text">{seg}</span>
+    <>
+      {bodyNode}
+      {thinkBlocks.length > 0 && (
+        <div className="cot-ant-think" data-testid="reasoning-think-blocks">
+          <div className="cot-ant-think-label">模型自吐 &lt;think&gt;</div>
+          {thinkBlocks.map((block, index) => (
+            <Typography.Text
+              key={index}
+              className="cot-ant-think-text"
+              style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', display: 'block' }}
+            >
+              {block}
+            </Typography.Text>
+          ))}
         </div>
-      ))}
-    </div>
+      )}
+    </>
   );
 }
 
@@ -258,7 +307,12 @@ function MessageTextPart() {
   return (
     <StreamdownTextPrimitive
       containerClassName="ai-message md-body"
-      plugins={{ code, math }}
+      plugins={ASSISTANT_STREAMDOWN_PLUGINS}
+      controls={ASSISTANT_STREAMDOWN_CONTROLS}
+      mermaid={ASSISTANT_STREAMDOWN_MERMAID_OPTIONS}
+      smooth={true}
+      caret="block"
+      defer={true}
       components={markdownComponents}
       preprocess={preprocessAssistantMarkdown}
     />
@@ -949,6 +1003,8 @@ export function AIMessage() {
   const isStreaming = message?.status?.type === 'running';
   const timing = useMessageTiming();
   const custom = message?.metadata?.custom || {};
+  const agentRole = custom.agentRole || message?.metadata?.agentRole || null;
+  const stateClass = assistantMessageStateClass(message?.status, agentRole);
   const chartType = custom.chartType || null;
   const chartTitle = custom.chartTitle || null;
   const chartSubtitle = custom.chartSubtitle || null;
@@ -1014,7 +1070,7 @@ export function AIMessage() {
   };
 
   return (
-    <div className="msg-row msg-ai">
+    <div className={`msg-row msg-ai ${stateClass}`}>
       <div className="ai-head">
         <div className="ai-mark" />
         <span className="name">数语</span>

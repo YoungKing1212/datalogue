@@ -3,5 +3,6 @@
 
 export { DatalogueComposer, DatasetChip, ModelChip } from './DatalogueComposer';
 export { DatalogueActionBar } from './DatalogueActionBar';
+export { DatalogueSubAgentMessages } from './DatalogueSubAgentMessages';
 export { DatalogueThread, DatalogueTraceProvider } from './DatalogueThread';
 export { DatalogueThreadList } from './DatalogueThreadList';

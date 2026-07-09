@@ -259,6 +259,49 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(pre.className).toContain('cot-ant-raw');
   });
 
+  it('strips <think>...</think> from reasoning body and surfaces it in a separate 模型自吐 block', () => {
+    setMockMessage();
+    mockMessageState.message.content = [
+      {
+        type: 'reasoning',
+        text: '<think>secret plan</think>Answer',
+        parentId: 'reasoning_summary',
+        title: '任务思考',
+        status: 'completed',
+      },
+      { type: 'text', text: '外部答案' },
+    ];
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByText('推理摘要'));
+
+    // 正文里应看到 Answer（<think> 剥离后剩余的部分），不应包含 secret plan。
+    expect(screen.getByText(/Answer/)).toBeInTheDocument();
+
+    // 模型自吐 <think> 子块单独出现，且明确带上 secret plan。
+    const thinkBlock = screen.getByTestId('reasoning-think-blocks');
+    expect(thinkBlock).toHaveTextContent('secret plan');
+    expect(thinkBlock).toHaveTextContent('模型自吐');
+  });
+
+  it('does not render 模型自吐 block when no <think> segments are present in reasoning text', () => {
+    setMockMessage();
+    mockMessageState.message.content = [
+      {
+        type: 'reasoning',
+        text: '普通推理摘要，无 think 段。',
+        parentId: 'reasoning_summary',
+        title: '推理',
+        status: 'completed',
+      },
+      { type: 'text', text: '答案' },
+    ];
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByText('推理摘要'));
+    expect(screen.queryByTestId('reasoning-think-blocks')).not.toBeInTheDocument();
+  });
+
   it('uses each final reasoning summary title instead of the generic fallback label', () => {
     setMockMessage();
     mockMessageState.message.content = [
