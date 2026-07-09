@@ -16,9 +16,10 @@ import {
 
 const navigateSpy = vi.hoisted(() => vi.fn());
 const composerHistoryKeyDownSpy = vi.hoisted(() => vi.fn());
+const paramsMock = vi.hoisted(() => ({ id: undefined }));
 
 vi.mock('react-router-dom', () => ({
-  useParams: () => ({}),
+  useParams: () => paramsMock,
   useNavigate: () => navigateSpy,
 }));
 
@@ -94,6 +95,7 @@ vi.mock('./icons', () => ({
 afterEach(() => {
   window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = null;
   composerHistoryKeyDownSpy.mockClear();
+  paramsMock.id = undefined;
   vi.restoreAllMocks();
 });
 
@@ -128,6 +130,24 @@ describe('ChatPage', () => {
     fireEvent.keyDown(input, { key: 'ArrowUp' });
 
     expect(composerHistoryKeyDownSpy).toHaveBeenCalled();
+    expect(screen.queryByTestId('workbench-panel')).not.toBeInTheDocument();
+  });
+
+  it('does not mount the workbench panel on /chat/:id either', async () => {
+    paramsMock.id = '25';
+
+    render(
+      <ChatPage
+        traceOpen={false}
+        setTraceOpen={vi.fn()}
+        showFollowups={false}
+        agentVerbosity="normal"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('workbench-panel')).not.toBeInTheDocument();
+    });
   });
 });
 

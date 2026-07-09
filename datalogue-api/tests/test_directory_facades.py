@@ -14,6 +14,7 @@
 """typed worker lane facade-first 目录骨架导入测试。"""
 
 import importlib
+import inspect
 
 
 def test_target_packages_are_importable():
@@ -80,6 +81,28 @@ def test_data_source_implementation_lives_in_domain_modules():
     assert registry.get_adapter.__module__ == "app.domains.data_source.adapters.registry"
     assert service.test_connection.__module__ == "app.domains.data_source.service"
     assert service.preview_table.__module__ == "app.domains.data_source.service"
+
+    assert inspect.getsourcefile(capabilities.DatasourceCapability).endswith(
+        "app/domains/data_source/capabilities.py"
+    )
+    assert inspect.getsourcefile(context.DatasourceContext).endswith("app/domains/data_source/context.py")
+    assert inspect.getsourcefile(diagnostics.DatasourceDiagnostic).endswith(
+        "app/domains/data_source/diagnostics.py"
+    )
+    assert inspect.getsourcefile(base.DatasourceAdapter).endswith(
+        "app/domains/data_source/adapters/base.py"
+    )
+    assert inspect.getsourcefile(hive.HiveAdapter).endswith("app/domains/data_source/adapters/hive.py")
+    assert inspect.getsourcefile(oracle.OracleAdapter).endswith(
+        "app/domains/data_source/adapters/oracle.py"
+    )
+    assert inspect.getsourcefile(registry.get_adapter).endswith(
+        "app/domains/data_source/adapters/registry.py"
+    )
+    assert "class DatasourceAdapter" in inspect.getsource(base.DatasourceAdapter)
+    assert "class HiveAdapter" in inspect.getsource(hive.HiveAdapter)
+    assert "class OracleAdapter" in inspect.getsource(oracle.OracleAdapter)
+    assert "def get_adapter" in inspect.getsource(registry.get_adapter)
 
     # 旧入口复用新领域对象，避免迁移期出现两套注册表或两套服务函数。
     assert legacy.test_connection is service.test_connection

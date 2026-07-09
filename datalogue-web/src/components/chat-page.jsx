@@ -5,7 +5,7 @@
 // 3. 监听 SSE 'datalogue:trace' 事件，向 AgentPanel 推数据
 // 4. 维护 datasetList / selectedDs 顶层状态（保持跨 thread 不变）
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   AssistantRuntimeProvider,
@@ -25,7 +25,6 @@ import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
 import { getConversation, listAgentScopeChatModels, listDatasets } from '../api/client';
 import { normalizeWorkbenchThreadId } from '../assistant/workbench-api';
-import WorkbenchPanel from './workbench-panel';
 
 // 单例 adapter（避免每次渲染重建）
 const threadListAdapter = new DatalogueThreadListAdapter();
@@ -352,7 +351,6 @@ function ChatPageInner({
   setTraceOpen,
   showFollowups,
   agentVerbosity,
-  chatModelAdapter,
   modelConfigIdRef,
 }) {
   const previewSkin = useMemo(() => (
@@ -554,31 +552,9 @@ function ChatPageInner({
     return () => window.removeEventListener('datalogue:trace', handler);
   }, [datasetList]);
 
-  // 切换 thread 时重置 trace 数据
   const mainThreadId = useAuiState((s) => s.threads?.mainThreadId);
-  const remoteId = useAuiState((s) => {
-    const id = s.threads?.mainThreadId;
-    const item = s.threads?.threadItems?.find((t) => t.id === id);
-    return item?.remoteId;
-  });
-  const [resolvedWorkbenchThreadId, setResolvedWorkbenchThreadId] = useState(null);
-  const workbenchThreadId = resolveWorkbenchThreadId(routeId, remoteId, resolvedWorkbenchThreadId);
 
-  useEffect(() => {
-    const onResolvedThread = (event) => {
-      const { localThreadId, threadId } = event.detail || {};
-      if (!shouldAcceptResolvedWorkbenchThread({
-        routeId,
-        threadId,
-        mainThreadId,
-        localThreadId,
-      })) return;
-      setResolvedWorkbenchThreadId(threadId); // 新会话 final 返回 as_* 后，右侧工作台立即切到 AgentScope 真相源。
-    };
-    window.addEventListener('datalogue:thread-resolved', onResolvedThread);
-    return () => window.removeEventListener('datalogue:thread-resolved', onResolvedThread);
-  }, [mainThreadId, routeId]);
-
+  // 切换 thread 时重置 trace 数据
   useEffect(() => {
     setTraceSteps([]);
     setIntent(null);
@@ -586,7 +562,6 @@ function ChatPageInner({
     setGenerationMode(null);
     setSqlResult(null);
     setTraceMeta(null);
-    setResolvedWorkbenchThreadId(null); // 切换会话时必须让 route/remoteId 重新决定 Panel source，避免串旧 as_*。
   }, [mainThreadId]);
 
   // 开始新 run 时清空 trace
@@ -612,9 +587,6 @@ function ChatPageInner({
 
   // 监听标题自动更新事件（首条消息后端写入 title 后）— 触发 thread list 重新拉取
   const aui = useAui();
-  const handleWorkbenchRetryRun = useCallback((taskRequest) => {
-    submitWorkbenchRetryRun(taskRequest, { chatModelAdapter });
-  }, [chatModelAdapter]);
   useEffect(() => {
     const onRename = (event) => {
       const remoteId = event.detail?.remoteId ? String(event.detail.remoteId) : null;
@@ -674,12 +646,6 @@ function ChatPageInner({
           }
         />
 
-        {workbenchThreadId && (
-          <aside className="workbench-side-panel" aria-label="Workbench">
-            <WorkbenchPanel threadId={workbenchThreadId} onRetryRun={handleWorkbenchRetryRun} />
-          </aside>
-        )}
-
         <AgentPanel
           open={traceOpen}
           onClose={() => setTraceOpen(false)}
@@ -728,7 +694,6 @@ export function ChatPage({ traceOpen, setTraceOpen, showFollowups, agentVerbosit
         setTraceOpen={setTraceOpen}
         showFollowups={showFollowups}
         agentVerbosity={agentVerbosity}
-        chatModelAdapter={chatModelAdapter}
         modelConfigIdRef={modelConfigIdRef}
       />
     </AssistantRuntimeProvider>

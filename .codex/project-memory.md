@@ -456,3 +456,13 @@
 - 关键改动：Phase A 完成目录治理设计落档，新增架构文档说明当前目录边界、模块职责和迁移约束，并在 `.omx` ignored 上下文中记录当前目录快照；Phase B 新增 `domains` 与 `agentscope_runtime` facade-first 包骨架，用轻量门面先稳定未来迁移入口，同时补 `test_directory_facades.py` 固化导入边界。全程不移动旧源码、不改旧调用方导入、不改变 AgentScope 主链、不改变 BI Worker 查询语义。
 - 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile $(find app/domains app/agentscope_runtime -name '*.py' | sort) tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py`，结果为 `4 passed, 2 warnings in 0.02s`。
 - 残留风险或后续事项：本轮只是目录治理 Phase A/B 的文档与 facade 骨架，不做旧源码搬迁和调用方切换；后续如推进真实模块迁移，需要继续保持 facade-first、分批改导入、补回归测试，并确认 AgentScope 主链与 BI Worker 查询语义不发生漂移。
+
+
+### 2026-07-09 12:45 · 数据源适配 domain 下沉与 Workbench 挂载源收口
+
+- 完成时间：2026-07-09 12:45。
+- 功能名称：数据源适配 domain 下沉与 Workbench 挂载源收口。
+- 涉及文件：`.gitignore`、`datalogue-api/app/domains/data_source/adapters/base.py`、`datalogue-api/app/domains/data_source/adapters/hive.py`、`datalogue-api/app/domains/data_source/adapters/oracle.py`、`datalogue-api/app/domains/data_source/adapters/registry.py`、`datalogue-api/app/domains/data_source/service.py`、`datalogue-api/tests/test_directory_facades.py`、`datalogue-web/src/assistant/workbench-mount-source.js`、`datalogue-web/src/assistant/workbench-mount-source.test.js`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/components/workbench-route.jsx`，并删除根目录临时验收截图 `chat-e2e-initial.png`、`chat-e2e-thread.png`。
+- 关键改动：将数据源能力、上下文、诊断、adapter 注册和 Oracle/Hive 连接逻辑继续下沉到 `domains/data_source/adapters` 边界，`service.py` 收敛为面向 API 的应用服务入口；补强目录 facade 测试，确保旧服务入口仍能稳定导入；前端新增 `workbench-mount-source` 统一判断 Workbench 挂载来源，Chat 页面和 Workbench 路由按同一来源语义展示/挂载，避免页面侧重复推断；`.gitignore` 补充 E2E 临时图规则并移除已追踪临时截图。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/services/datasource.py $(find app/domains/data_source -name '*.py' | sort) tests/test_directory_facades.py` 通过；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_datasource.py -q`，结果 `14 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_dataset.py -q -k "sql_preview or datasource"`，结果 `6 passed, 27 deselected, 10 warnings`。
+- 残留风险或后续事项：本轮只验证后端数据源与 dataset SQL preview 相关子集，未重新跑前端 lint/build 或浏览器 smoke；Ultragoal 的 `G032-G035/G039` checkpoint 因当前 Codex `get_goal` 返回 `null` 暂未补 complete，已在 `.omx/state/ultragoal-state.json` 标记 `checkpoint_blocked`，待恢复兼容 goal snapshot 后再补 Ledger。

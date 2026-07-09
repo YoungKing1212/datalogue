@@ -12,6 +12,7 @@
 skills-lock.json
 feishu-cli-auth-qrcode.png
 outputs
+.omx
 
 # Python
 __pycache__/

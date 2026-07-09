@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : oracle.py
 # Description:
-#   Oracle 数据源适配器兼容导出。
+#   Oracle 数据源适配器真实实现。
 #
 # Responsibilities:
-#   - 暴露 OracleAdapter 专属导入路径，支撑数据源 adapter 分目录迁移。
-#   - 复用领域 service 中的同一类对象，避免迁移期出现双实现。
+#   - 使用 Oracle 数据字典读取 schema 可见性和 owner 列表。
+#   - 复用通用 SQLAlchemy adapter 的连接、表结构和同步能力。
 #
 # Author      : KenYang
 # Created On  : 2026-07-09
@@ -13,10 +13,39 @@
 
 from __future__ import annotations
 
-from app.domains.data_source.service import OracleAdapter  # noqa: F401
+from sqlalchemy import text
 
-# 低风险拆分阶段先复用同一类对象，仅调整可观测归属；后续可继续把类体下沉到本文件。
-OracleAdapter.__module__ = __name__
+from app.domains.data_source.adapters.base import DatasourceAdapter
+from app.models.datasource import Datasource
+
+
+class OracleAdapter(DatasourceAdapter):
+    """Oracle 适配器，优先使用 SQLAlchemy Inspector，失败时回退数据字典。"""
+
+    def schema_readable(self, conn) -> bool:
+        try:
+            conn.execute(text("SELECT owner FROM all_tables WHERE rownum = 1")).fetchone()
+            return True
+        except Exception:
+            return False
+
+    def get_schemas(self, ds: Datasource) -> list[str]:
+        engine = self.create_engine(ds)
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        """
+                        SELECT DISTINCT owner
+                        FROM all_tables
+                        WHERE owner NOT IN ('SYS', 'SYSTEM', 'XDB', 'CTXSYS', 'MDSYS')
+                        ORDER BY owner
+                        """
+                    )
+                ).fetchall()
+                return [str(row[0]) for row in rows]
+        finally:
+            engine.dispose()
+
 
 __all__ = ["OracleAdapter"]
-
