@@ -22,10 +22,10 @@ from uuid import uuid4
 from agentscope.message import UserMsg
 from sqlalchemy.orm import Session
 
-from app.models.dataset import AnalysisBlueprint, SemanticDataset
-from app.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
+from app.core.models.dataset import AnalysisBlueprint, SemanticDataset
+from app.core.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
 from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
-from app.middlewares.lifecycle import log_lifecycle
+from app.core.middlewares.lifecycle import log_lifecycle
 from app.prompts import NATIVE_HANDOFF_CHILD_MESSAGE_TEMPLATE
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.domains.query_execution.artifact_store import ArtifactStore

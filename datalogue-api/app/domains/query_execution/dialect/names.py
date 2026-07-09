@@ -19,8 +19,8 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.dataset import SemanticDataset
-from app.models.datasource import Datasource
+from app.core.models.dataset import SemanticDataset
+from app.core.models.datasource import Datasource
 from app.services.datasource import build_datasource_context, normalize_db_type
 
 logger = logging.getLogger(__name__)

@@ -15,7 +15,7 @@
 
 import pytest
 
-from app.utils.json_utils import safe_json_parse
+from app.core.utils.json_utils import safe_json_parse
 
 
 class TestSafeJsonParse:

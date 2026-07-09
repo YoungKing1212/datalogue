@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from app import models
+from app.core import models
 from app.services.agentscope_mirror import (
     append_user_message,
     create_agentscope_session,

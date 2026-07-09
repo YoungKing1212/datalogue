@@ -21,7 +21,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
 from app.core.llm import get_llm
-from app.utils import safe_json_parse
+from app.core.utils import safe_json_parse
 from app.prompts import BLUEPRINT_SQL_ANALYSIS_SYSTEM, BLUEPRINT_DESCRIPTION_SYSTEM
 
 

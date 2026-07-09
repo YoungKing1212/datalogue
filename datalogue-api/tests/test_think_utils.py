@@ -11,7 +11,7 @@
 # Created On  : 2026-06-15
 # ============================================================
 
-from app.utils.think import (
+from app.core.utils.think import (
     filter_think_stream_chunk,
     flush_think_stream_state,
     new_think_stream_state,

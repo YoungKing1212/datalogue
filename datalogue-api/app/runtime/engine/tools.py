@@ -41,8 +41,8 @@ from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
 from app.domains.bi.worker.validator import ProgressiveContextState
 from app.domains.agent_team.progress_bridge import publish_agent_event
 from app.core.database import SessionLocal
-from app.models.dataset import SemanticDataset
-from app.schemas.bi_workbench import sanitize_event_payload
+from app.core.models.dataset import SemanticDataset
+from app.core.schemas.bi_workbench import sanitize_event_payload
 
 AgentToolFactory = Callable[[str | None, str | None, str | None], Awaitable[list[ToolBase]]]
 logger = logging.getLogger(__name__)

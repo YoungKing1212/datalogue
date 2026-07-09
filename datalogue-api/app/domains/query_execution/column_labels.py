@@ -17,7 +17,7 @@ from typing import Dict
 
 from sqlalchemy.orm import Session
 
-from app.models import SemanticDataset, DatasetSourceTable
+from app.core.models import SemanticDataset, DatasetSourceTable
 
 
 def build_column_labels(db: Session, dataset_id: int | None) -> Dict[str, str]:
@@ -45,7 +45,7 @@ def build_column_labels(db: Session, dataset_id: int | None) -> Dict[str, str]:
         for link in db.query(DatasetSourceTable).filter_by(dataset_id=dataset_id).all()
     ]
     if source_table_ids:
-        from app.models import SourceColumn
+        from app.core.models import SourceColumn
         cols = (
             db.query(SourceColumn)
             .filter(SourceColumn.table_id.in_(source_table_ids))

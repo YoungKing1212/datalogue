@@ -17,14 +17,14 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from app.models.agentscope_workbench import (
+from app.core.models.agentscope_workbench import (
     AgentScopeEvent,
     AgentScopeMessage,
     AgentScopeRef,
     AgentScopeSession,
 )
 from app.runtime.thread_resolver import new_runtime_thread_id, normalize_thread_id
-from app.schemas.agentscope_workbench import AgentScopeMessageStatus
+from app.core.schemas.agentscope_workbench import AgentScopeMessageStatus
 
 _FORBIDDEN_KEY_FRAGMENTS = (
     "sql",

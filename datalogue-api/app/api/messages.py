@@ -14,7 +14,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app import schemas
+from app.core import schemas
 from app.core.database import get_db
 from app.services.message_feedback import submit_message_feedback
 

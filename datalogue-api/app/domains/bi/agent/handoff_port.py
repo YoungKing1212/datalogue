@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
+from app.core.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
 
 
 class BIHandoffPort(Protocol):

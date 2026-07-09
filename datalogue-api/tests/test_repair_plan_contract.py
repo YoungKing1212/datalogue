@@ -19,7 +19,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.repair_plan import (
+from app.core.schemas.repair_plan import (
     RepairAction,
     RepairFailureClass,
     RepairPlan,

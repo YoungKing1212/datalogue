@@ -13,8 +13,8 @@
 
 from datetime import datetime, timezone
 
-from app.models.agentscope_workbench import AgentScopeMessage
-from app.schemas.agentscope_workbench import WorkbenchRetryRequest
+from app.core.models.agentscope_workbench import AgentScopeMessage
+from app.core.schemas.agentscope_workbench import WorkbenchRetryRequest
 from app.services.agentscope_mirror import create_agentscope_session, record_agentscope_ref
 from app.services.workbench_actions import request_controlled_retry
 

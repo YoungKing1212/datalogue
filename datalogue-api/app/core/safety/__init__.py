@@ -11,7 +11,7 @@
 # Created On  : 2026-07-04
 # ============================================================
 
-from app.safety.payload_sanitizer import (
+from app.core.safety.payload_sanitizer import (
     DataloguePayloadSanitizer,
     contains_internal_task_payload,
     sanitize_datalogue_payload,

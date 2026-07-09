@@ -13,8 +13,8 @@
 
 import pytest
 
-from app.schemas.bi_workbench import build_datalogue_event_envelope
-from app.events.projection import (
+from app.core.schemas.bi_workbench import build_datalogue_event_envelope
+from app.core.events.projection import (
     extract_refs_from_envelope,
     project_event_envelope_to_agentscope,
 )
@@ -207,6 +207,6 @@ def test_project_error_event_keeps_candidate_summary_and_drops_schema_metadata(d
 
 
 def session_refs(db_session, thread_id):
-    from app.models.agentscope_workbench import AgentScopeRef
+    from app.core.models.agentscope_workbench import AgentScopeRef
 
     return db_session.query(AgentScopeRef).filter(AgentScopeRef.thread_id == thread_id).all()

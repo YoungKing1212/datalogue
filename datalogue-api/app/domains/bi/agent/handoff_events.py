@@ -19,8 +19,8 @@ from typing import Any
 
 from agentscope.message import TextBlock, ToolResultBlock
 
-from app.schemas.bi_agent import BIHandoffStatus
-from app.safety import DataloguePayloadSanitizer
+from app.core.schemas.bi_agent import BIHandoffStatus
+from app.core.safety import DataloguePayloadSanitizer
 
 
 _ALLOWED_NATIVE_EVENT_FIELDS = {

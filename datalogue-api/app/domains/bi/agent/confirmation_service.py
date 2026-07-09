@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.models.bi_agent import BIAgentConfirmation, BIAgentRun
-from app.schemas.bi_agent import ConfirmBIAgentRunRequest
+from app.core.models.bi_agent import BIAgentConfirmation, BIAgentRun
+from app.core.schemas.bi_agent import ConfirmBIAgentRunRequest
 
 
 class BIAgentConfirmationService:

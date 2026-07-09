@@ -28,7 +28,7 @@ from typing import Dict, Any, List, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.models.dataset import SourceTable, SourceColumn
+from app.core.models.dataset import SourceTable, SourceColumn
 from app.core.llm import get_llm
 from app.prompts import ANNOTATION_SYSTEM_PROMPT, TABLE_ANNOTATION_PROMPT
 from langchain_core.messages import SystemMessage, HumanMessage

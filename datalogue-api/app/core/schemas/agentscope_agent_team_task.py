@@ -17,8 +17,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.schemas.bi_workbench import DatalogueEventEnvelope
-from app.safety import contains_internal_task_payload
+from app.core.schemas.bi_workbench import DatalogueEventEnvelope
+from app.core.safety import contains_internal_task_payload
 
 AgentTeamTaskSource = Literal["chat", "workbench", "api"]
 AgentTeamTaskType = Literal["bi_query", "report", "python_analysis", "audit", "unsupported"]

@@ -26,8 +26,8 @@ from agentscope.permission import PermissionBehavior, PermissionContext, Permiss
 from agentscope.tool import ToolBase, Toolkit
 from sqlalchemy.orm import Session
 
-from app.models.dataset import AnalysisBlueprint, SemanticDataset
-from app.safety import DataloguePayloadSanitizer
+from app.core.models.dataset import AnalysisBlueprint, SemanticDataset
+from app.core.safety import DataloguePayloadSanitizer
 from app.domains.query_execution.artifact_store import ArtifactStore
 from app.domains.query_execution.compiler import compile_query_plan_to_sql
 

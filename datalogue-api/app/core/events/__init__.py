@@ -11,7 +11,7 @@
 # Created On  : 2026-07-02
 # ============================================================
 
-from app.events.projection import (
+from app.core.events.projection import (
     build_task_envelope,
     extract_refs_from_envelope,
     extract_refs_from_payload,

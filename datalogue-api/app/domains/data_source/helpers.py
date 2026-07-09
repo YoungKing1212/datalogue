@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models.datasource import Datasource
+from app.core.models.datasource import Datasource
 
 
 SYSTEM_SCHEMAS = {

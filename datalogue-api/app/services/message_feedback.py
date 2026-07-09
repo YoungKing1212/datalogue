@@ -19,7 +19,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app import models
+from app.core import models
 
 ACTION_TO_SCORE = {
     "approve": 1,

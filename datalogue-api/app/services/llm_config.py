@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.runtime.engine.client import DEFAULT_AGENTSCOPE_USER_ID
 from app.core.config import Settings
-from app.models.llm import LLMModelConfig
+from app.core.models.llm import LLMModelConfig
 
 DEFAULT_LLM_ROLE = "default"
 DEFAULT_MODEL_CREDENTIAL_ID = "datalogue-openai-compatible-lead-agent"

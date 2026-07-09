@@ -22,8 +22,8 @@ from agentscope.event import ExternalExecutionResultEvent, RequireExternalExecut
 from agentscope.message import ToolResultBlock
 from sqlalchemy.orm import Session
 
-from app.models.agentscope_workbench import AgentScopeEvent
-from app.schemas.bi_workbench import (
+from app.core.models.agentscope_workbench import AgentScopeEvent
+from app.core.schemas.bi_workbench import (
     DatalogueEventEnvelope,
     DatalogueEventType,
     build_datalogue_event_envelope,

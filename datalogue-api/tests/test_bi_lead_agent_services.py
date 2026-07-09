@@ -13,9 +13,9 @@
 
 import pytest
 
-from app.models.bi_agent import BIAgentHandoff, BIAgentRun
-from app.schemas.bi_agent import BIAgentHandoffResult
-from app.schemas.bi_agent import ConfirmBIAgentRunRequest, DatasetCapabilitySummary
+from app.core.models.bi_agent import BIAgentHandoff, BIAgentRun
+from app.core.schemas.bi_agent import BIAgentHandoffResult
+from app.core.schemas.bi_agent import ConfirmBIAgentRunRequest, DatasetCapabilitySummary
 from app.domains.bi.agent.confirmation_service import BIAgentConfirmationService
 from app.domains.bi.agent.handoff_service import BIAgentHandoffService
 from app.domains.bi.agent.run_service import BIAgentRunService

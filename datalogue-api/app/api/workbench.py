@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.schemas.agentscope_workbench import (
+from app.core.schemas.agentscope_workbench import (
     WorkbenchArtifactView,
     WorkbenchRetryRequest,
     WorkbenchRetryResponse,

@@ -14,7 +14,7 @@
 from sqlalchemy import Boolean, Column, Float, Integer, JSON, String, Text
 
 from app.core.database import Base
-from app.models.base import TimestampMixin
+from app.core.models.base import TimestampMixin
 
 
 class LLMModelConfig(Base, TimestampMixin):

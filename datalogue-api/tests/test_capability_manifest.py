@@ -13,7 +13,7 @@
 
 import pytest
 
-from app import models
+from app.core import models
 from app.services.capability_manifest import (
     assert_manifest_payload_safe,
     build_dataset_capability_manifest,
@@ -61,7 +61,7 @@ def test_capability_manifest_uses_business_summaries_only(db_session, sample_dat
 
 
 def test_capability_manifest_safety_rejects_internal_keys(sample_dataset):
-    from app.schemas.capability_manifest import CapabilityManifest
+    from app.core.schemas.capability_manifest import CapabilityManifest
 
     manifest = CapabilityManifest(
         dataset_id=sample_dataset.id,

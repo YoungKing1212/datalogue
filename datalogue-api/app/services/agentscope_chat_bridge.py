@@ -16,8 +16,8 @@ import re
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.schemas.bi_workbench import DatalogueEventEnvelope
-from app.events.projection import project_event_envelope_to_agentscope
+from app.core.schemas.bi_workbench import DatalogueEventEnvelope
+from app.core.events.projection import project_event_envelope_to_agentscope
 from app.services.agentscope_mirror import (
     append_user_message,
     create_agentscope_session,

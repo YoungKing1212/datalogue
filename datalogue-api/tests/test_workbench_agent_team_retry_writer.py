@@ -13,8 +13,8 @@
 
 from __future__ import annotations
 
-from app.models.agentscope_workbench import AgentScopeEvent
-from app.schemas.agentscope_workbench import WorkbenchRetryRequest
+from app.core.models.agentscope_workbench import AgentScopeEvent
+from app.core.schemas.agentscope_workbench import WorkbenchRetryRequest
 from app.services.agentscope_mirror import (
     create_agentscope_session,
     create_running_assistant_message,

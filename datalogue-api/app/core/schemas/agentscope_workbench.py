@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 
 
 class AgentScopeThreadKind(str, Enum):

@@ -234,7 +234,7 @@ def _blueprint_payload():
 
 def test_extract_blueprint_params_from_chinese_year_and_person():
     """蓝图执行参数：从中文年份和姓名问法中提取日期范围与人员。"""
-    from app.models.dataset import AnalysisBlueprint
+    from app.core.models.dataset import AnalysisBlueprint
     from app.services.analysis_blueprint import extract_blueprint_params
 
     bp = AnalysisBlueprint(
@@ -255,7 +255,7 @@ def test_extract_blueprint_params_from_chinese_year_and_person():
 
 def test_extract_blueprint_params_from_chinese_month_range():
     """蓝图执行参数：从中文月份问法中提取月初和月末。"""
-    from app.models.dataset import AnalysisBlueprint
+    from app.core.models.dataset import AnalysisBlueprint
     from app.services.analysis_blueprint import extract_blueprint_params
 
     bp = AnalysisBlueprint(
@@ -276,7 +276,7 @@ def test_extract_blueprint_params_from_chinese_month_range():
 
 def test_extract_blueprint_params_from_work_log_question():
     """蓝图执行参数：工作日志问法也应提取人员和年份。"""
-    from app.models.dataset import AnalysisBlueprint
+    from app.core.models.dataset import AnalysisBlueprint
     from app.services.analysis_blueprint import extract_blueprint_params
 
     bp = AnalysisBlueprint(
@@ -299,7 +299,7 @@ def test_extract_blueprint_params_from_last_year_work_log(monkeypatch):
     """蓝图执行参数：去年应按当前日期解析为上一整年。"""
     from datetime import date
 
-    from app.models.dataset import AnalysisBlueprint
+    from app.core.models.dataset import AnalysisBlueprint
     from app.services import analysis_blueprint
     from app.services.analysis_blueprint import extract_blueprint_params
 
@@ -841,7 +841,7 @@ def test_blueprint_test_masks_sensitive_rows(client, sample_dataset):
 
 
 def test_execute_blueprint_timeout_returns_diagnosis(db_session, sample_dataset, monkeypatch):
-    from app.models.dataset import AnalysisBlueprint, BlueprintUsageLog
+    from app.core.models.dataset import AnalysisBlueprint, BlueprintUsageLog
     from app.services.analysis_blueprint import BlueprintExecutionTimeout, execute_analysis_blueprint
 
     bp = AnalysisBlueprint(

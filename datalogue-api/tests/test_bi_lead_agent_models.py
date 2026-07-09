@@ -14,7 +14,7 @@
 from sqlalchemy import inspect, select, text
 
 from app.core.database import Base
-from app.models.bi_agent import BIAgentHandoff, BIAgentConfirmation, BIAgentRun
+from app.core.models.bi_agent import BIAgentHandoff, BIAgentConfirmation, BIAgentRun
 
 
 def test_bi_lead_agent_models_persist_k1_contract(db_session):

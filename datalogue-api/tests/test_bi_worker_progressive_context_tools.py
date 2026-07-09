@@ -14,7 +14,7 @@
 import pytest
 
 from app.domains.bi.worker.context import BIWorkerContextProvider
-from app.models.dataset import (
+from app.core.models.dataset import (
     DatasetSourceTable,
     SemanticDataset,
     SourceColumn,
@@ -302,7 +302,7 @@ def _make_wide_table(
 def test_l2_returns_blueprint_join_relationships_from_call_template(db_session, sample_datasource):
     """从蓝图 call_template 解析真实 LEFT JOIN 得到 blueprint_join 关系。"""
 
-    from app.models.dataset import AnalysisBlueprint
+    from app.core.models.dataset import AnalysisBlueprint
 
     dataset = SemanticDataset(
         name="蓝图 join 测试集",
@@ -370,7 +370,7 @@ def test_l2_returns_blueprint_join_relationships_from_call_template(db_session, 
 def test_l2_ignores_malformed_blueprint_sql(db_session, sample_datasource):
     """蓝图 call_template 无法解析时不抛异常，也不产出 blueprint_join。"""
 
-    from app.models.dataset import AnalysisBlueprint
+    from app.core.models.dataset import AnalysisBlueprint
 
     dataset = SemanticDataset(
         name="蓝图坏 SQL 测试集",
@@ -426,7 +426,7 @@ def test_l2_ignores_malformed_blueprint_sql(db_session, sample_datasource):
 def test_l2_ignores_non_equi_join(db_session, sample_datasource):
     """ON 里非等值条件（>/</!=）不算 join_keys，跳过该 blueprint。"""
 
-    from app.models.dataset import AnalysisBlueprint
+    from app.core.models.dataset import AnalysisBlueprint
 
     dataset = SemanticDataset(
         name="非等值 join 测试集",
@@ -476,7 +476,7 @@ def test_l2_ignores_non_equi_join(db_session, sample_datasource):
 def test_l2_multi_join_and_inner_join(db_session, sample_datasource):
     """同一蓝图内的 INNER JOIN + LEFT JOIN 分别落成两条 blueprint_join。"""
 
-    from app.models.dataset import AnalysisBlueprint
+    from app.core.models.dataset import AnalysisBlueprint
 
     dataset = SemanticDataset(
         name="多 join 混合测试集",

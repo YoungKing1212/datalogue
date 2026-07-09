@@ -22,9 +22,9 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.middlewares.lifecycle import log_lifecycle
+from app.core.middlewares.lifecycle import log_lifecycle
 from app.runtime.agent_team_runtime import AgentTeamTaskRuntime
-from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest, AgentTeamTaskStreamEvent
+from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest, AgentTeamTaskStreamEvent
 
 router = APIRouter()
 

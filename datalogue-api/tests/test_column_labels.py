@@ -18,7 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models import (
+from app.core.models import (
     SemanticDataset,
     SemanticDimension,
     SemanticMetric,
@@ -27,7 +27,7 @@ from app.models import (
     SourceColumn,
     DatasetSourceTable,
 )
-from app.models.base import TimestampMixin
+from app.core.models.base import TimestampMixin
 from app.domains.query_execution.column_labels import build_column_labels
 
 

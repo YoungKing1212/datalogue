@@ -18,8 +18,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app import models
-from app.schemas.capability_manifest import CapabilityManifest, CapabilityManifestSummary
+from app.core import models
+from app.core.schemas.capability_manifest import CapabilityManifest, CapabilityManifestSummary
 
 FORBIDDEN_VISIBLE_KEYS = {
     "raw_sql",

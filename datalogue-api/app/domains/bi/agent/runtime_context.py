@@ -19,8 +19,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
-from app.models.dataset import SemanticDataset
-from app.models.datasource import Datasource
+from app.core.models.dataset import SemanticDataset
+from app.core.models.datasource import Datasource
 from app.domains.query_execution.preview import preview_dataset_sql
 from app.domains.query_execution.compiler_context import build_query_plan_compiler_context
 

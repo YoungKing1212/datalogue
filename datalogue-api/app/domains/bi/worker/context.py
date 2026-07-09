@@ -28,7 +28,7 @@ from app.domains.bi.worker.contracts import (
     SchemaSliceContext,
     ValueProfileContext,
 )
-from app.models.dataset import SemanticDataset, SourceColumn, SourceTable
+from app.core.models.dataset import SemanticDataset, SourceColumn, SourceTable
 
 
 logger = logging.getLogger(__name__)

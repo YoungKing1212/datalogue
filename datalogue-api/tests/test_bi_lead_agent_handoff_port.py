@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.schemas.bi_agent import (
+from app.core.schemas.bi_agent import (
     BIAgentHandoffResult,
     ConfirmBIAgentRunRequest,
     DatasetCapabilitySummary,

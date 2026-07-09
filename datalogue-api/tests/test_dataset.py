@@ -18,7 +18,7 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
-from app import models
+from app.core import models
 
 
 class TestDatasetAPI:

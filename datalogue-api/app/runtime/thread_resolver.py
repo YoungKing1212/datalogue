@@ -15,7 +15,7 @@
 import re
 import uuid
 
-from app.schemas.agentscope_workbench import AgentScopeThreadKind, ThreadRef
+from app.core.schemas.agentscope_workbench import AgentScopeThreadKind, ThreadRef
 
 _LEGACY_NUMERIC_RE = re.compile(r"^\d+$")
 _LEGACY_THREAD_RE = re.compile(r"^conv_(\d+)$")

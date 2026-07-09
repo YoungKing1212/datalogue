@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from langchain_core.messages import HumanMessage
 from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app.core import models, schemas
 from app.runtime.engine.client import AgentScopeServiceClient
 from app.core.config import get_settings
 from app.core.database import get_db

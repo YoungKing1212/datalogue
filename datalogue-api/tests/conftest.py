@@ -89,7 +89,7 @@ def client(db_session):
 @pytest.fixture
 def sample_datasource(db_session):
     """创建一个示例数据源。"""
-    from app.models.datasource import Datasource
+    from app.core.models.datasource import Datasource
     from app.core.security import encrypt_password
 
     ds = Datasource(
@@ -111,7 +111,7 @@ def sample_datasource(db_session):
 @pytest.fixture
 def sample_dataset(db_session, sample_datasource):
     """创建一个示例数据集（含指标和维度）。"""
-    from app.models.dataset import SemanticDataset, SemanticMetric, SemanticDimension
+    from app.core.models.dataset import SemanticDataset, SemanticMetric, SemanticDimension
 
     dataset = SemanticDataset(
         name="测试数据集",

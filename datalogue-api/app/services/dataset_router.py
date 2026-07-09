@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app import models
+from app.core import models
 from app.core.config import get_settings
 from app.services.dataset_manifest import score_manifest_question
 

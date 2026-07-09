@@ -15,8 +15,8 @@ import logging
 
 import pytest
 
-from app.models.agent_team_task import AgentTeamTask
-from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.core.models.agent_team_task import AgentTeamTask
+from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 from app.runtime import AgentTeamTaskRuntime
 
 
@@ -181,7 +181,7 @@ async def test_agent_team_task_runtime_completes_task(db_session):
 
 @pytest.mark.asyncio
 async def test_agent_team_task_runtime_lets_bi_worker_report_dataset_candidates(db_session, sample_datasource):
-    from app.models.dataset import SemanticDataset
+    from app.core.models.dataset import SemanticDataset
 
     db_session.add_all(
         [

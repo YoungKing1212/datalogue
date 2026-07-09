@@ -14,7 +14,7 @@
 from sqlalchemy import Column, Integer, String, Text, JSON
 
 from app.core.database import Base
-from app.models.base import TimestampMixin
+from app.core.models.base import TimestampMixin
 
 
 class Datasource(Base, TimestampMixin):

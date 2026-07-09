@@ -24,7 +24,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app import schemas, models
+from app.core import schemas, models
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.services.blueprint_analyzer import (
     analyze_description_for_blueprint,

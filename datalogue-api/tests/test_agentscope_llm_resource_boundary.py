@@ -16,7 +16,7 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage
 
 from app.core.config import Settings
-from app.models.llm import LLMModelConfig
+from app.core.models.llm import LLMModelConfig
 from app.services.llm_config import credential_id_for_model_config, resolve_llm_config
 
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from app.domains.data_source.adapters.base import DatasourceAdapter
-from app.models.datasource import Datasource
+from app.core.models.datasource import Datasource
 
 
 class OracleAdapter(DatasourceAdapter):

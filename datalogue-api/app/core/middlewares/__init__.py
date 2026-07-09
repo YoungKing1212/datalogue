@@ -11,8 +11,8 @@
 # Created On  : 2026-07-02
 # ============================================================
 
-from app.middlewares.dataset_tool_logging import DatasetRuntimeToolLoggingMiddleware
-from app.middlewares.lifecycle import log_lifecycle, log_output
+from app.core.middlewares.dataset_tool_logging import DatasetRuntimeToolLoggingMiddleware
+from app.core.middlewares.lifecycle import log_lifecycle, log_output
 
 __all__ = [
     "DatasetRuntimeToolLoggingMiddleware",

@@ -36,7 +36,7 @@ from app.domains.bi.worker.validator import (
 )
 from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.domains.bi.toolkit import build_bi_atomic_toolkit
-from app.models.dataset import SemanticDataset
+from app.core.models.dataset import SemanticDataset
 
 logger = logging.getLogger(__name__)
 

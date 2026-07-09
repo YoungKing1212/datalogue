@@ -24,7 +24,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import QueryArtifact
+from app.core.models import QueryArtifact
 
 ArtifactKind = Literal["sql_result", "report", "subagent_result", "repair_plan"]
 

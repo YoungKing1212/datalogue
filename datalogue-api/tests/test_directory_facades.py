@@ -120,8 +120,8 @@ def test_query_execution_guard_and_dialect_implementation_lives_in_domain_module
     assert domain_names.sanitize_filter_sql.__module__ == "app.domains.query_execution.dialect.names"
 
     # utils facade 必须转发到同领域对象
-    from app.utils import SQLGuardResult, guard_readonly_sql
-    from app.utils import quote_ident, sanitize_filter_sql
+    from app.core.utils import SQLGuardResult, guard_readonly_sql
+    from app.core.utils import quote_ident, sanitize_filter_sql
 
     assert SQLGuardResult is domain_guard.SQLGuardResult
     assert guard_readonly_sql is domain_guard.guard_readonly_sql

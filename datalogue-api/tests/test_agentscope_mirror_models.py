@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models.agentscope_workbench import AgentScopeRef
+from app.core.models.agentscope_workbench import AgentScopeRef
 from app.services.agentscope_mirror import (
     append_user_message,
     create_agentscope_session,

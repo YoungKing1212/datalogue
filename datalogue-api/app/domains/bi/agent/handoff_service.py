@@ -17,9 +17,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.models.bi_agent import BIAgentHandoff, BIAgentRun
-from app.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
-from app.middlewares.lifecycle import log_lifecycle
+from app.core.models.bi_agent import BIAgentHandoff, BIAgentRun
+from app.core.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
+from app.core.middlewares.lifecycle import log_lifecycle
 from app.domains.bi.agent.confirmation_service import BIAgentConfirmationService
 from app.domains.bi.agent.handoff_port import BIHandoffPort
 from app.domains.bi.agent.run_service import BIAgentRunService

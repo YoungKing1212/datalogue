@@ -20,7 +20,7 @@ from typing import Any, cast
 
 from fastapi.encoders import jsonable_encoder
 
-from app.schemas.repair_plan import RepairAction, RepairFailureClass, RepairPlan
+from app.core.schemas.repair_plan import RepairAction, RepairFailureClass, RepairPlan
 
 
 class RepairPlanValidationError(ValueError):

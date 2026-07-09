@@ -28,7 +28,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
-from app.models.base import TimestampMixin
+from app.core.models.base import TimestampMixin
 
 
 class SemanticDataset(Base, TimestampMixin):

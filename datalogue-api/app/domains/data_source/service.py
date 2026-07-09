@@ -38,7 +38,7 @@ from app.domains.data_source.diagnostics import (
     _classify_exception,
     _diagnostic,
 )
-from app.models.datasource import Datasource
+from app.core.models.datasource import Datasource
 
 
 def get_capabilities() -> list[dict[str, Any]]:

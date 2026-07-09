@@ -25,10 +25,10 @@ from agentscope.message import TextBlock, ToolCallBlock, ToolResultBlock, ToolRe
 from agentscope.permission import PermissionBehavior, PermissionContext, PermissionDecision
 from agentscope.tool import ToolBase
 
-from app.middlewares import DatasetRuntimeToolLoggingMiddleware
-from app.middlewares.lifecycle import log_lifecycle
+from app.core.middlewares import DatasetRuntimeToolLoggingMiddleware
+from app.core.middlewares.lifecycle import log_lifecycle
 from app.domains.bi.toolkit import DatalogueBIAtomicToolkit
-from app.safety import DataloguePayloadSanitizer
+from app.core.safety import DataloguePayloadSanitizer
 
 
 logger = logging.getLogger(__name__)

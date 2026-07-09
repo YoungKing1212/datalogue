@@ -25,8 +25,8 @@
 # Phase B: SQL 工具实体已迁至 app.domains.query_execution
 # 本文件保留为兼容 facade
 
-from app.utils.json_utils import safe_json_parse
-from app.utils.token import extract_token_usage, merge_token_usage
+from app.core.utils.json_utils import safe_json_parse
+from app.core.utils.token import extract_token_usage, merge_token_usage
 from app.domains.query_execution.sql_diagnosis import classify_sql_execution_error, merge_llm_sql_diagnosis
 from app.domains.query_execution.sample_data import fetch_sample_rows
 from app.domains.query_execution.column_labels import build_column_labels

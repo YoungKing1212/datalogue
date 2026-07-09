@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from app.schemas.bi_agent import BIAgentCapability, DatasetCapabilitySummary
+from app.core.schemas.bi_agent import BIAgentCapability, DatasetCapabilitySummary
 
 SAFE_MAPPING_LABEL_KEYS = ("display_name", "name", "title", "question")
 

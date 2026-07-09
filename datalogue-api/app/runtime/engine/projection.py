@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.events.projection import build_task_envelope
-from app.schemas.bi_workbench import (
+from app.core.events.projection import build_task_envelope
+from app.core.schemas.bi_workbench import (
     DatalogueEventEnvelope,
     DatalogueEventType,
     sanitize_event_payload,

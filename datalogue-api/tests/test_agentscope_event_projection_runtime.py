@@ -14,7 +14,7 @@
 from agentscope.event import ExternalExecutionResultEvent, RequireExternalExecutionEvent
 from agentscope.message import TextBlock, ToolCallBlock, ToolResultBlock, ToolResultState
 
-from app.events.projection import (
+from app.core.events.projection import (
     build_task_envelope,
     project_agentscope_event,
 )

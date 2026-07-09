@@ -19,8 +19,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.models.bi_agent import BIAgentHandoff, BIAgentRun
-from app.schemas.bi_agent import (
+from app.core.models.bi_agent import BIAgentHandoff, BIAgentRun
+from app.core.schemas.bi_agent import (
     BIAgentHandoffResult,
     BIAgentRunPhase,
     BIAgentRunResponse,

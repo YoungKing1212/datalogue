@@ -26,7 +26,7 @@ from sqlalchemy.engine import Engine
 from app.core.security import decrypt_password
 from app.domains.data_source.capabilities import DatasourceCapability
 from app.domains.data_source.diagnostics import _diagnostic
-from app.models.datasource import Datasource
+from app.core.models.datasource import Datasource
 
 SYSTEM_SCHEMAS = {
     "information_schema",

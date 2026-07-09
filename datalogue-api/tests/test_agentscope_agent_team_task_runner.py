@@ -19,7 +19,7 @@ import httpx
 import pytest
 from agentscope.message import UserMsg
 
-from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 
 
 class FakeClient:
@@ -268,7 +268,7 @@ async def test_agentscope_service_task_runner_default_model_comes_from_agentscop
 async def test_agentscope_service_task_runner_default_model_comes_from_database_config(db_session):
     from app.core.config import Settings
     from app.runtime.engine.runner import AgentScopeServiceTaskRunner
-    from app.models.llm import LLMModelConfig
+    from app.core.models.llm import LLMModelConfig
     from app.services.llm_config import credential_id_for_model_config
 
     config = LLMModelConfig(

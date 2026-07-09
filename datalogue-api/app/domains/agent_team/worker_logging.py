@@ -29,7 +29,7 @@ from agentscope.middleware import MiddlewareBase, TracingMiddleware
 from app.domains.bi.worker.timeline_cache import store_bi_worker_timeline
 from app.domains.agent_team.progress_bridge import publish_agent_progress
 from app.domains.agent_team.task_context import resolve_task_context
-from app.middlewares.lifecycle import raw_agent_logs_enabled
+from app.core.middlewares.lifecycle import raw_agent_logs_enabled
 
 AgentMiddlewareFactory = Callable[
     [str | None, str | None, str | None], Awaitable[list[MiddlewareBase]]

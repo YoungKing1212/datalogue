@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from app import models
+from app.core import models
 
 
 def test_legacy_conversation_replay_does_not_backfill_artifact_card(client, db_session, sample_dataset):

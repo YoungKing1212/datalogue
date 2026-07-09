@@ -20,7 +20,7 @@ from typing import Any, cast
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
-from app.models import (
+from app.core.models import (
     AgentScopeEvent,
     AgentScopeMessage,
     AgentScopeRef,
@@ -28,7 +28,7 @@ from app.models import (
     Conversation,
     Message,
 )
-from app.schemas.agentscope_workbench import (
+from app.core.schemas.agentscope_workbench import (
     WorkbenchActionView,
     WorkbenchArtifactView,
     WorkbenchMessageView,
