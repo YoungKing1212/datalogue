@@ -413,6 +413,13 @@
 - 验证方式：`pytest tests/test_agentscope_service_worker_logging.py`（33/33 通过，含新增 `test_bi_worker_thinking_debug_merges_tokenizer_split_deltas`）；`black + ruff` 无 diff/告警；前端 `vitest run src/assistant/chat-adapter.test.js src/assistant/MyMessage.test.jsx`（50/50 通过）；`eslint` 4 个改动文件全绿。
 - 残留风险：如果 LLM 供应商返回的单个 chunk **本身**就带前导空格（例如 `left_al` + ` ias`），后端缓冲策略无法在不误伤合法空格（如 `alias: "p"`）的前提下消除该空格；这类情况需在后端"完整 thinking end-only 一次性 emit"通道另行处理。
 
+### 2026-07-09 10:55 · 旧 LangGraph checkpoint 表清理
+
+- 涉及文件：`datalogue-api/alembic/versions/z6a7b8c9d0e1_drop_langgraph_checkpoint_tables.py`、`datalogue-api/tests/test_dictionary_column_comments.py`、`.codex/project-memory.md`。
+- 关键改动：新增 Alembic head `z6a7b8c9d0e1`，只对白名单内旧 LangGraph runtime 残留表执行 drop：`checkpoint_writes`、`checkpoint_blobs`、`checkpoints`、`checkpoint_migrations`；不清理 AgentScope mirror、BI Agent handoff、LLM 模型配置、observability、SQL diagnosis 等仍有代码引用或审计价值的表。降级不伪造旧 checkpoint schema，因为这组表不是 Datalogue Alembic 的业务建表来源。
+- 验证方式：先补失败测试 `test_checkpoint_cleanup_migration_targets_only_langgraph_runtime_tables` 确认 migration 文件缺失会失败；实现后执行 `cd datalogue-api && source .venv/bin/activate && pytest tests/test_dictionary_column_comments.py -q` 为 `4 passed, 2 warnings`；执行 `alembic heads` 和 `alembic current` 均确认 `z6a7b8c9d0e1 (head)`；执行 `alembic upgrade head` 已在本地库完成清理，`pg_tables where tablename like 'checkpoint%'` 查询无返回。
+- 残留风险：旧 checkpoint 数据已按本地库清理，不再保留可回滚数据；如果后续需要恢复旧 LangGraph checkpoint 链路，应通过旧 runtime 重新初始化其自有表，而不是依赖当前 Datalogue migration 降级。
+
 ### 2026-07-09 11:40 · assistant-ui 迁移全五阶段（Streamdown + Tool UI + Multi-Agent nested + 主入口切换）
 
 - 涉及文件：
