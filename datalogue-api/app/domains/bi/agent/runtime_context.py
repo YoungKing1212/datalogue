@@ -23,6 +23,7 @@ from app.core.models.dataset import SemanticDataset
 from app.core.models.datasource import Datasource
 from app.domains.query_execution.preview import preview_dataset_sql
 from app.domains.query_execution.compiler_context import build_query_plan_compiler_context
+from app.domains.query_execution.dialect.adapter import normalize_execution_dialect
 
 
 def build_bi_runtime_context(
@@ -41,11 +42,12 @@ def build_bi_runtime_context(
     _bind_query_executor(db=db, bridge=bridge, dataset=dataset, question=question)
     allowed_tables, sql_generation_context = allowed_tables_and_sql_context(dataset)
     datasource = db.get(Datasource, dataset.datasource_id)
-    datasource_dialect = (
+    raw_datasource_dialect = (
         getattr(datasource, "dialect", None)
         or getattr(datasource, "db_type", None)
         or "sqlite"
     )
+    datasource_dialect = normalize_execution_dialect(raw_datasource_dialect) or str(raw_datasource_dialect).lower()
     return {
         "dataset": dataset,
         "session_kwargs": {

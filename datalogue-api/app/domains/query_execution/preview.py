@@ -27,6 +27,7 @@ from app.core import models
 from app.domains.data_source.service import create_engine_for_datasource, normalize_db_type
 from app.domains.query_execution.query_constraints import normalize_query_constraints
 from app.domains.query_execution.guard import guard_readonly_sql
+from app.domains.query_execution.dialect.adapter import normalize_execution_dialect
 
 logger = logging.getLogger(__name__)
 
@@ -130,11 +131,12 @@ def preview_dataset_sql(
             error="当前数据集未选择可查询的数据表，无法执行 SQL 预览",
         )
 
-    dialect = (
+    raw_dialect = (
         getattr(datasource, "dialect", None)
         or normalize_db_type(getattr(datasource, "db_type", None))
         or "postgres"
     )
+    dialect = normalize_execution_dialect(raw_dialect) or str(raw_dialect).lower()
     constraints = _preview_constraints(dataset, limit)
     # 这里是 Hermes 直连问数的核心边界：先静态校验只读、单语句、授权表和 LIMIT，再连接数据源。
     guard_result = guard_readonly_sql(
