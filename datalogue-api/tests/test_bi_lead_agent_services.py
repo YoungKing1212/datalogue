@@ -16,9 +16,9 @@ import pytest
 from app.models.bi_agent import BIAgentHandoff, BIAgentRun
 from app.schemas.bi_agent import BIAgentHandoffResult
 from app.schemas.bi_agent import ConfirmBIAgentRunRequest, DatasetCapabilitySummary
-from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService
-from app.agents.bi_agent.handoff_service import BIAgentHandoffService
-from app.agents.bi_agent.run_service import BIAgentRunService
+from app.domains.bi.agent.confirmation_service import BIAgentConfirmationService
+from app.domains.bi.agent.handoff_service import BIAgentHandoffService
+from app.domains.bi.agent.run_service import BIAgentRunService
 
 
 def _confirmation_request(

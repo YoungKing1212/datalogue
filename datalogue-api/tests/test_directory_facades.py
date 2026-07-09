@@ -25,7 +25,7 @@ def test_target_packages_are_importable():
         "app.domains.query_execution",
         "app.domains.agent_team",
         "app.domains.bi",
-        "app.agentscope_runtime",
+        "app.runtime.engine",
     ]:
         assert importlib.import_module(module_name)
 
@@ -50,13 +50,11 @@ def test_query_execution_preview_facade_reexports_legacy_function():
     assert facade.preview_dataset_sql is legacy.preview_dataset_sql
 
 
-def test_agentscope_runtime_app_factory_facade_reexports_legacy_function():
-    """AgentScope app_factory facade 必须指向旧嵌入式应用工厂入口。"""
+def test_runtime_engine_app_factory_is_direct_source():
+    """runtime.engine.app_factory 是 create_embedded_agentscope_app 的直接实体，不再经过中间 facade。"""
 
-    legacy = importlib.import_module("app.agentscope_service.app_factory")
-    facade = importlib.import_module("app.agentscope_runtime.app_factory")
-
-    assert facade.create_embedded_agentscope_app is legacy.create_embedded_agentscope_app
+    engine = importlib.import_module("app.runtime.engine.app_factory")
+    assert callable(engine.create_embedded_agentscope_app)
 
 
 def test_data_source_implementation_lives_in_domain_modules():
@@ -111,11 +109,9 @@ def test_data_source_implementation_lives_in_domain_modules():
 
 
 def test_query_execution_guard_and_dialect_implementation_lives_in_domain_modules():
-    """G040 要求 SQL guard / dialect 纯工具迁入 query_execution，旧 utils 路径只做兼容门面。"""
+    """Phase B: SQL guard / dialect 实体已直接迁入 query_execution，旧 utils 路径通过 facade 转发。"""
 
-    legacy_guard = importlib.import_module("app.utils.sql_guard")
     domain_guard = importlib.import_module("app.domains.query_execution.guard")
-    legacy_dialect = importlib.import_module("app.utils.sql_dialect")
     domain_names = importlib.import_module("app.domains.query_execution.dialect.names")
 
     assert domain_guard.SQLGuardResult.__module__ == "app.domains.query_execution.guard"
@@ -123,11 +119,14 @@ def test_query_execution_guard_and_dialect_implementation_lives_in_domain_module
     assert domain_names.quote_ident.__module__ == "app.domains.query_execution.dialect.names"
     assert domain_names.sanitize_filter_sql.__module__ == "app.domains.query_execution.dialect.names"
 
-    # 旧路径必须复用新领域对象，避免目录迁移期间出现两套 SQL 安全规则。
-    assert legacy_guard.SQLGuardResult is domain_guard.SQLGuardResult
-    assert legacy_guard.guard_readonly_sql is domain_guard.guard_readonly_sql
-    assert legacy_dialect.quote_ident is domain_names.quote_ident
-    assert legacy_dialect.sanitize_filter_sql is domain_names.sanitize_filter_sql
+    # utils facade 必须转发到同领域对象
+    from app.utils import SQLGuardResult, guard_readonly_sql
+    from app.utils import quote_ident, sanitize_filter_sql
+
+    assert SQLGuardResult is domain_guard.SQLGuardResult
+    assert guard_readonly_sql is domain_guard.guard_readonly_sql
+    assert quote_ident is domain_names.quote_ident
+    assert sanitize_filter_sql is domain_names.sanitize_filter_sql
 
     assert inspect.getsourcefile(domain_guard.guard_readonly_sql).endswith(
         "app/domains/query_execution/guard.py"

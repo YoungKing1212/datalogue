@@ -20,8 +20,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.agents.bi_agent.runtime_context import build_bi_runtime_context
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.agent.runtime_context import build_bi_runtime_context
+from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     BIWorkerQueryResult,
     FAILURE_DIAGNOSIS_MAP,
@@ -30,12 +30,12 @@ from app.agentscope_service.bi_worker_contracts import (
     QueryEntity,
     RepairRequest,
 )
-from app.agentscope_service.bi_worker_validator import (
+from app.domains.bi.worker.validator import (
     BIWorkerQueryValidator,
     ProgressiveContextState,
 )
-from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
-from app.bi.toolkit import build_bi_atomic_toolkit
+from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
+from app.domains.bi.toolkit import build_bi_atomic_toolkit
 from app.models.dataset import SemanticDataset
 
 logger = logging.getLogger(__name__)

@@ -52,7 +52,7 @@ class _NoClientStorage:
 
 
 def test_timeline_key_uses_datalogue_namespace():
-    from app.agentscope_service.bi_worker_timeline_cache import _timeline_key
+    from app.domains.bi.worker.timeline_cache import _timeline_key
 
     assert (
         _timeline_key("session-bi-1", "reply-1")
@@ -62,7 +62,7 @@ def test_timeline_key_uses_datalogue_namespace():
 
 @pytest.mark.asyncio
 async def test_store_bi_worker_timeline_writes_json_payload_with_ttl():
-    from app.agentscope_service.bi_worker_timeline_cache import store_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import store_bi_worker_timeline
 
     fake_redis = FakeRedis()
     storage = FakeStorage(fake_redis)
@@ -87,7 +87,7 @@ async def test_store_bi_worker_timeline_writes_json_payload_with_ttl():
 
 @pytest.mark.asyncio
 async def test_store_bi_worker_timeline_respects_custom_ttl():
-    from app.agentscope_service.bi_worker_timeline_cache import store_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import store_bi_worker_timeline
 
     fake_redis = FakeRedis()
     await store_bi_worker_timeline(
@@ -102,7 +102,7 @@ async def test_store_bi_worker_timeline_respects_custom_ttl():
 
 @pytest.mark.asyncio
 async def test_store_bi_worker_timeline_skips_when_storage_has_no_redis_client():
-    from app.agentscope_service.bi_worker_timeline_cache import store_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import store_bi_worker_timeline
 
     # storage 无 get_client → 不抛异常、不写入。
     await store_bi_worker_timeline(
@@ -115,7 +115,7 @@ async def test_store_bi_worker_timeline_skips_when_storage_has_no_redis_client()
 
 @pytest.mark.asyncio
 async def test_store_bi_worker_timeline_swallows_redis_errors():
-    from app.agentscope_service.bi_worker_timeline_cache import store_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import store_bi_worker_timeline
 
     fake_redis = FakeRedis()
     fake_redis.set_error = RuntimeError("redis down")
@@ -130,7 +130,7 @@ async def test_store_bi_worker_timeline_swallows_redis_errors():
 
 @pytest.mark.asyncio
 async def test_read_bi_worker_timeline_returns_stored_timeline():
-    from app.agentscope_service.bi_worker_timeline_cache import (
+    from app.domains.bi.worker.timeline_cache import (
         read_bi_worker_timeline,
         store_bi_worker_timeline,
     )
@@ -150,7 +150,7 @@ async def test_read_bi_worker_timeline_returns_stored_timeline():
 
 @pytest.mark.asyncio
 async def test_read_bi_worker_timeline_returns_empty_when_missing():
-    from app.agentscope_service.bi_worker_timeline_cache import read_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import read_bi_worker_timeline
 
     result = await read_bi_worker_timeline(
         FakeStorage(FakeRedis()), worker_session_id="s", reply_id="r"
@@ -160,7 +160,7 @@ async def test_read_bi_worker_timeline_returns_empty_when_missing():
 
 @pytest.mark.asyncio
 async def test_read_bi_worker_timeline_returns_empty_on_invalid_json():
-    from app.agentscope_service.bi_worker_timeline_cache import read_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import read_bi_worker_timeline
 
     fake_redis = FakeRedis()
     fake_redis.store["datalogue:bi_worker_timeline:s:r"] = "not-json"
@@ -172,7 +172,7 @@ async def test_read_bi_worker_timeline_returns_empty_on_invalid_json():
 
 @pytest.mark.asyncio
 async def test_read_bi_worker_timeline_returns_empty_when_payload_shape_unexpected():
-    from app.agentscope_service.bi_worker_timeline_cache import read_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import read_bi_worker_timeline
 
     fake_redis = FakeRedis()
     # timeline 字段不是 list。
@@ -185,7 +185,7 @@ async def test_read_bi_worker_timeline_returns_empty_when_payload_shape_unexpect
 
 @pytest.mark.asyncio
 async def test_read_bi_worker_timeline_swallows_redis_errors():
-    from app.agentscope_service.bi_worker_timeline_cache import read_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import read_bi_worker_timeline
 
     fake_redis = FakeRedis()
     fake_redis.get_error = RuntimeError("redis down")
@@ -197,7 +197,7 @@ async def test_read_bi_worker_timeline_swallows_redis_errors():
 
 @pytest.mark.asyncio
 async def test_read_bi_worker_timeline_skips_when_storage_has_no_redis_client():
-    from app.agentscope_service.bi_worker_timeline_cache import read_bi_worker_timeline
+    from app.domains.bi.worker.timeline_cache import read_bi_worker_timeline
 
     result = await read_bi_worker_timeline(
         _NoClientStorage(),  # type: ignore[arg-type]

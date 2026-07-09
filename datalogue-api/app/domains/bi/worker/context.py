@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from sqlglot import exp
 from sqlglot.errors import ParseError, SqlglotError
 
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.worker.contracts import (
     DatasetCapabilityContext,
     QueryAssetContext,
     SchemaSliceContext,

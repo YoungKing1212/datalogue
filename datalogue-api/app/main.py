@@ -21,7 +21,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api import router as api_router
 from app.agentscope_service import create_embedded_agentscope_app
-from app.agentscope_service.otel_setup import setup_agentscope_tracing
+from app.runtime.engine.otel_setup import setup_agentscope_tracing
 
 # 初始化带颜色的日志，可选持久化到文件
 settings = get_settings()

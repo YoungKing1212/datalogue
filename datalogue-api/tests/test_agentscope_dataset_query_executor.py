@@ -27,7 +27,7 @@ async def test_dataset_query_executor_commits_artifact_when_it_owns_session(
     monkeypatch,
     tmp_path,
 ):
-    from app.agentscope_service import dataset_query_executor as executor
+    from app.domains.bi.worker import dataset_query as executor
 
     engine = create_engine(
         f"sqlite:///{tmp_path / 'artifact_commit.db'}",

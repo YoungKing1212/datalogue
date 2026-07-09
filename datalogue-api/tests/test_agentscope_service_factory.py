@@ -24,7 +24,7 @@ from app.core.config import Settings
 def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, tmp_path):
     """factory 只负责装配官方 AgentScope 基础组件，不在构造阶段连接 Redis。"""
 
-    from app.agentscope_service import app_factory
+    from app.runtime.engine import app_factory
 
     calls: dict[str, object] = {}
 

@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.domains.data_source.service import create_engine_for_datasource, normalize_db_type
-from app.utils.query_constraints import normalize_query_constraints
+from app.domains.query_execution.query_constraints import normalize_query_constraints
 from app.domains.query_execution.guard import guard_readonly_sql
 
 logger = logging.getLogger(__name__)

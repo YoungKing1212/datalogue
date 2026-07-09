@@ -11,11 +11,11 @@
 # Created On  : 2026-07-02
 # ============================================================
 
-from app.agents.bi_agent.capabilities import build_bi_agent_capabilities, sanitize_dataset_capability
-from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService
-from app.agents.bi_agent.handoff_service import BIAgentHandoffService
-from app.agents.bi_agent.run_service import BIAgentRunService
-from app.bi.skill import DatasetQuerySkill
+from app.domains.bi.agent.capabilities import build_bi_agent_capabilities, sanitize_dataset_capability
+from app.domains.bi.agent.confirmation_service import BIAgentConfirmationService
+from app.domains.bi.agent.handoff_service import BIAgentHandoffService
+from app.domains.bi.agent.run_service import BIAgentRunService
+from app.domains.bi.skill import DatasetQuerySkill
 
 __all__ = [
     "BIAgentConfirmationService",

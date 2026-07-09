@@ -11,7 +11,7 @@
 # Created On  : 2026-07-06
 # ============================================================
 
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     FieldTarget,
     JoinRequirement,
@@ -23,7 +23,7 @@ from app.agentscope_service.bi_worker_contracts import (
     QuerySelect,
     ResultShape,
 )
-from app.agentscope_service.bi_worker_validator import (
+from app.domains.bi.worker.validator import (
     BIWorkerQueryValidator,
     ProgressiveContextState,
 )

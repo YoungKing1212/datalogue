@@ -18,11 +18,11 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
+from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.models.dataset import SemanticDataset
 from app.models.datasource import Datasource
 from app.domains.query_execution.preview import preview_dataset_sql
-from app.utils.compiler_context import build_query_plan_compiler_context
+from app.domains.query_execution.compiler_context import build_query_plan_compiler_context
 
 
 def build_bi_runtime_context(

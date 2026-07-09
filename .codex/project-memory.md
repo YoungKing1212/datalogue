@@ -476,6 +476,15 @@
 - 验证方式：执行 `cd datalogue-web && npm test -- src/assistant/workbench-retention-gate.test.js src/assistant/MyMessage.test.jsx`，结果 `25 passed`；执行 `cd datalogue-web && npm run lint`，结果 0 errors、14 个既有 warnings；执行 `cd datalogue-web && npm run build` 成功产出前端构建。
 - 残留风险或后续事项：`expected_artifact_detail_total` 目前支持显式输入与前端投影式兜底两种口径，后续若要接入真实埋点，还需要把 Chat 侧 artifact 详情“应出现”指标标准化到统一事件名；`/workbench` 隐藏壳与 `/api/workbench/*` 仍保留，需等主路径流量归零后再做最终退役。
 
+### 2026-07-09 14:42 · Workbench retention gate 标准事件测试补强
+
+- 完成时间：2026-07-09 14:42。
+- 功能名称：Workbench retention gate 标准事件测试补强。
+- 涉及文件：`datalogue-web/src/assistant/workbench-retention-gate.js`、`datalogue-web/src/assistant/workbench-retention-gate.test.js`、`.codex/project-memory.md`。
+- 关键改动：`workbench-retention-gate.test.js` 引入 `buildArtifactDetailExpectedEvent` 与 `buildArtifactDetailViewEvent`，补齐标准 Chat 侧 `artifact_detail_expected/artifact_detail_view` 事件能驱动退役闸门通过的覆盖；新增恢复/旧镜像来源误计数回归，确保 `/workbench` 来源即使带标准详情事件名，也不能被算作 Chat 侧详情承接。`workbench-retention-gate.js` 将 expected/actual artifact 详情统计收紧为普通 `/chat` 路由和 `ordinary_chat/ordinary_chat_history` 来源，避免 Workbench 隐藏恢复壳或 legacy mirror 事件反向证明主路径已完成承接。
+- 验证方式：先执行 `cd datalogue-web && npm test -- src/assistant/workbench-retention-gate.test.js`，新增回归用例按预期失败，错误为 `expected true to be false`；实现后同一命令通过，结果 `7 passed`。继续执行 `cd datalogue-web && npm test -- src/assistant/workbench-retention-gate.test.js src/assistant/workbench-retention-events.test.js src/assistant/MyMessage.test.jsx`，结果 `31 passed`；执行 `cd datalogue-web && npm run lint`，结果 0 errors、14 个既有 warnings；执行 `cd datalogue-web && npm run build` 成功。
+- 残留风险或后续事项：当前闸门仍依赖前端 UI/API 事件输入，尚未接入真实线上 analytics；后续做最终退役时，需要用真实 14 天窗口事件数据喂给 `evaluateWorkbenchRetentionGate`，并继续保留隐藏恢复壳的恢复流量统计。
+
 
 ### 2026-07-09 15:15 · ArtifactStore 与 RepairPlan 服务 domain 下沉
 

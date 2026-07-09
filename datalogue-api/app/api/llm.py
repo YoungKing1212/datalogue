@@ -20,10 +20,10 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.agentscope_service.client import AgentScopeServiceClient
+from app.runtime.engine.client import AgentScopeServiceClient
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.graph.llm import AgentScopeChatClient, _llm_call_policy, build_llm_model_kwargs
+from app.core.llm import AgentScopeChatClient, _llm_call_policy, build_llm_model_kwargs
 from app.services.llm_config import (
     DEFAULT_LLM_ROLE,
     ResolvedLLMConfig,

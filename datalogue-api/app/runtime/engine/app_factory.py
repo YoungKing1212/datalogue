@@ -23,10 +23,10 @@ from agentscope.app.message_bus import RedisMessageBus
 from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 
-from app.agentscope_service.tools import build_datalogue_extra_agent_tools
-from app.agentscope_service.team_templates import build_datalogue_subagent_templates
-from app.agentscope_service.worker_logging import build_datalogue_extra_agent_middlewares
-from app.agentscope_service.credentials import DatalogueLLMCredential
+from app.runtime.engine.tools import build_datalogue_extra_agent_tools
+from app.domains.agent_team.team_templates import build_datalogue_subagent_templates
+from app.domains.agent_team.worker_logging import build_datalogue_extra_agent_middlewares
+from app.runtime.engine.credentials import DatalogueLLMCredential
 from app.core.config import Settings
 
 

@@ -26,9 +26,9 @@ from agentscope.app.storage import StorageBase
 from agentscope.message import AssistantMsg
 from agentscope.middleware import MiddlewareBase, TracingMiddleware
 
-from app.agentscope_service.bi_worker_timeline_cache import store_bi_worker_timeline
-from app.agentscope_service.progress_bridge import publish_agent_progress
-from app.agentscope_service.task_context import resolve_task_context
+from app.domains.bi.worker.timeline_cache import store_bi_worker_timeline
+from app.domains.agent_team.progress_bridge import publish_agent_progress
+from app.domains.agent_team.task_context import resolve_task_context
 from app.middlewares.lifecycle import raw_agent_logs_enabled
 
 AgentMiddlewareFactory = Callable[

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     BIWorkerQueryResult,
     FieldTarget,
@@ -29,9 +29,9 @@ from app.agentscope_service.bi_worker_contracts import (
     QuerySelect,
     ResultShape,
 )
-from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
-from app.agentscope_service.bi_worker_validator import ProgressiveContextState
-from app.agentscope_service.dataset_query_executor import (
+from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
+from app.domains.bi.worker.validator import ProgressiveContextState
+from app.domains.bi.worker.dataset_query import (
     execute_dataset_query_for_agent_team_direct_fallback,
 )
 from app.services.query_plan_compiler import compile_query_plan_to_sql
@@ -305,7 +305,7 @@ async def test_empty_filters_without_suggested_filters_executes_normally(monkeyp
 
 
 def test_query_plan_conversion_preserves_table_name_for_detail_sql():
-    from app.agentscope_service.bi_worker_contracts import JoinKey
+    from app.domains.bi.worker.contracts import JoinKey
 
     runtime = BIWorkerQueryRuntime(db=None)
 
@@ -430,7 +430,7 @@ async def test_execute_plan_passes_through_bridge_blocked_failure_type(monkeypat
     runtime = BIWorkerQueryRuntime(db=None)
 
     async def _return_blocked_result(*args, **kwargs):
-        from app.agentscope_service.bi_worker_contracts import FAILURE_DIAGNOSIS_MAP
+        from app.domains.bi.worker.contracts import FAILURE_DIAGNOSIS_MAP
 
         diagnosis = FAILURE_DIAGNOSIS_MAP["FIELD_NOT_FOUND"]
         return BIWorkerQueryResult(
@@ -459,7 +459,7 @@ async def test_execute_plan_passes_through_bridge_blocked_failure_type(monkeypat
 
 def test_map_bridge_code_to_failure_maps_execute_blocked_by_keywords():
     """_map_bridge_code_to_failure 复用 _map_exception 的关键字表；EXECUTE_BLOCKED 默认落回 FIELD_NOT_FOUND。"""
-    from app.agentscope_service.bi_worker_runtime import _map_bridge_code_to_failure
+    from app.domains.bi.worker.runtime import _map_bridge_code_to_failure
 
     assert (
         _map_bridge_code_to_failure(code="EXECUTE_BLOCKED", error_summary="") == "FIELD_NOT_FOUND"
@@ -484,7 +484,7 @@ def test_map_bridge_code_to_failure_maps_execute_blocked_by_keywords():
 
 def test_query_plan_supports_join_keys_and_legacy_dsl_includes_join_requirements():
     """JoinRequirement 支持 join_keys 声明字段，legacy DSL 透传给下游编译器。"""
-    from app.agentscope_service.bi_worker_contracts import JoinKey
+    from app.domains.bi.worker.contracts import JoinKey
 
     runtime = BIWorkerQueryRuntime(db=None)
     plan = _plan()
@@ -524,7 +524,7 @@ def test_query_plan_to_legacy_dsl_includes_left_and_right_table_from_alias():
 
 def test_end_to_end_join_keys_to_sql_via_compiler():
     """端到端：JoinKey → legacy DSL → 编译器 → 生成合法 LEFT JOIN SQL。"""
-    from app.agentscope_service.bi_worker_contracts import JoinKey
+    from app.domains.bi.worker.contracts import JoinKey
 
     runtime = BIWorkerQueryRuntime(db=None)
     plan = _plan()
@@ -563,7 +563,7 @@ def test_end_to_end_join_keys_to_sql_via_compiler():
 
 def test_schema_qualified_table_refs_resolve_alias_tables_for_join_sql():
     """L2 返回 table:schema.table 时，runtime 应能反查 alias→物理表并编译 JOIN。"""
-    from app.agentscope_service.bi_worker_contracts import JoinKey
+    from app.domains.bi.worker.contracts import JoinKey
 
     runtime = BIWorkerQueryRuntime(db=None)
     plan = BIWorkerQueryPlan(
@@ -864,7 +864,7 @@ async def test_execute_query_plan_field_not_in_dataset_still_fails(monkeypatch):
 
 def test_derive_dataset_field_refs_covers_all_columns_and_table():
     """active 表所有列 + 表级 ref 都在集合内;deleted 表完全排除。"""
-    from app.agentscope_service.bi_worker_runtime import _derive_dataset_field_refs
+    from app.domains.bi.worker.runtime import _derive_dataset_field_refs
 
     dataset = _mock_dataset(
         tables=[
@@ -887,7 +887,7 @@ def test_derive_dataset_field_refs_handles_none_dataset():
     """selected_tables 为 None 或 [] 应返回空集合(fail-closed)。"""
     from types import SimpleNamespace
 
-    from app.agentscope_service.bi_worker_runtime import _derive_dataset_field_refs
+    from app.domains.bi.worker.runtime import _derive_dataset_field_refs
 
     assert _derive_dataset_field_refs(SimpleNamespace(selected_tables=None)) == set()
     assert _derive_dataset_field_refs(SimpleNamespace(selected_tables=[])) == set()

@@ -22,7 +22,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError, SqlglotError
 
-from app.utils.query_constraints import normalize_query_constraints
+from app.domains.query_execution.query_constraints import normalize_query_constraints
 from app.domains.query_execution.dialect.names import sanitize_filter_sql
 
 

@@ -23,7 +23,7 @@ from agentscope.model import OpenAIChatModel
 from agentscope.tool import Toolkit
 
 from app.core.config import get_settings
-from app.bi.skill.runtime_bridge import (
+from app.domains.bi.skill.runtime_bridge import (
     AgentScopeDatasetRuntimeSession,
     build_dataset_agentscope_tools,
 )

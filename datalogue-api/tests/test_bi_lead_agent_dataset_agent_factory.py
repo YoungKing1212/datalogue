@@ -17,9 +17,9 @@ from types import SimpleNamespace
 
 from agentscope.middleware import TracingMiddleware
 
-from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeSession
-from app.agents.bi_agent import dataset_agent_factory
-from app.agents.bi_agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
+from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeSession
+from app.domains.bi.agent import dataset_agent_factory
+from app.domains.bi.agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
 
 
 def test_dataset_agent_factory_attaches_agentscope_tracing_middleware(monkeypatch, db_session):

@@ -19,8 +19,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.bi.toolkit import DatalogueBIAtomicToolkit, build_bi_atomic_toolkit
-from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
+from app.domains.bi.toolkit import DatalogueBIAtomicToolkit, build_bi_atomic_toolkit
+from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 
 
 class DatasetQuerySkill:

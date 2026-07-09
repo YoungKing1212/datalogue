@@ -17,7 +17,7 @@
 `app.agentscope_service.dataset_query_executor`；本文件只做 re-export。
 """
 
-from app.agentscope_service.dataset_query_executor import (  # noqa: F401  兼容迁移中，保留公开导出
+from app.domains.bi.worker.dataset_query import (  # noqa: F401  兼容迁移中，保留公开导出
     AgentTeamDatasetQueryResult,
     execute_dataset_query_for_agent_team_direct_fallback,
 )

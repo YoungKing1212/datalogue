@@ -27,7 +27,7 @@ def __getattr__(name: str):
     """兼容迁移中按需加载旧 Runner，避免导入领域包时触发旧运行时循环依赖。"""
 
     if name in __all__:
-        from app.agentscope_service import runner as legacy_runner  # 兼容层只转发旧实现，不承载新逻辑
+        from app.runtime.engine import runner as legacy_runner  # 兼容层只转发旧实现，不承载新逻辑
 
         return getattr(legacy_runner, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -14,7 +14,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     BIWorkerQueryResult,
     QuerySupportValidation,
@@ -207,7 +207,7 @@ def test_safe_result_payload_contains_artifact_card_only():
 )
 def test_field_target_accepts_full_field_ref(asset_ref):
     """asset_ref 白名单前缀 + `.` 分隔路径应全部通过。"""
-    from app.agentscope_service.bi_worker_contracts import FieldTarget
+    from app.domains.bi.worker.contracts import FieldTarget
 
     target = FieldTarget(asset_ref=asset_ref, alias="main", field="rzrq")
     assert target.asset_ref == asset_ref
@@ -224,7 +224,7 @@ def test_field_target_accepts_full_field_ref(asset_ref):
 )
 def test_field_target_rejects_bad_formats(asset_ref):
     """非白名单前缀或缺少 "." 分隔路径的 asset_ref 应被 pydantic 拒绝。"""
-    from app.agentscope_service.bi_worker_contracts import FieldTarget
+    from app.domains.bi.worker.contracts import FieldTarget
 
     with pytest.raises(ValidationError):
         FieldTarget(asset_ref=asset_ref, alias="main", field="rzrq")
@@ -232,7 +232,7 @@ def test_field_target_rejects_bad_formats(asset_ref):
 
 def test_normalized_field_ref_from_table_ref():
     """表级 ref + field 应组合为字段级 ref,供 L4 命中 field_refs。"""
-    from app.agentscope_service.bi_worker_contracts import FieldTarget
+    from app.domains.bi.worker.contracts import FieldTarget
 
     target = FieldTarget(asset_ref="table:pm_tenant.log", alias="main", field="rzrq")
     assert target.normalized_field_ref == "table:pm_tenant.log.rzrq"
@@ -240,7 +240,7 @@ def test_normalized_field_ref_from_table_ref():
 
 def test_normalized_field_ref_from_field_ref():
     """已是字段级 ref 原样返回,避免重复追加 field 段。"""
-    from app.agentscope_service.bi_worker_contracts import FieldTarget
+    from app.domains.bi.worker.contracts import FieldTarget
 
     target = FieldTarget(asset_ref="table:pm_tenant.log.rzrq", alias="main", field="rzrq")
     assert target.normalized_field_ref == "table:pm_tenant.log.rzrq"
@@ -248,7 +248,7 @@ def test_normalized_field_ref_from_field_ref():
 
 def test_field_not_found_recommended_action_covers_new_symptoms():
     """FIELD_NOT_FOUND 引导应覆盖 table: 规范格式 + context_state/field_refs 合并。"""
-    from app.agentscope_service.bi_worker_contracts import FAILURE_DIAGNOSIS_MAP
+    from app.domains.bi.worker.contracts import FAILURE_DIAGNOSIS_MAP
 
     action = FAILURE_DIAGNOSIS_MAP["FIELD_NOT_FOUND"]["recommended_action"]
     assert "table:" in action

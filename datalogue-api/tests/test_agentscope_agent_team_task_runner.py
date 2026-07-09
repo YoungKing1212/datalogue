@@ -110,7 +110,7 @@ class AgentNotFoundThenRecoveredClient(FakeClient):
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_uses_agentscope_model_selection_without_local_config():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = FakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -170,7 +170,7 @@ async def test_agentscope_service_task_runner_uses_agentscope_model_selection_wi
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_refreshes_default_leader_when_session_agent_missing():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = AgentNotFoundThenRecoveredClient()
     runner = AgentScopeServiceTaskRunner(
@@ -211,7 +211,7 @@ async def test_agentscope_service_task_runner_refreshes_default_leader_when_sess
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_default_model_comes_from_agentscope_credential():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = FakeClient()
     client.credentials = [
@@ -267,7 +267,7 @@ async def test_agentscope_service_task_runner_default_model_comes_from_agentscop
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_default_model_comes_from_database_config(db_session):
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
     from app.models.llm import LLMModelConfig
     from app.services.llm_config import credential_id_for_model_config
 
@@ -327,7 +327,7 @@ async def test_agentscope_service_task_runner_default_model_comes_from_database_
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_upserts_missing_default_credential_from_settings():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = FakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -380,7 +380,7 @@ async def test_agentscope_service_task_runner_upserts_missing_default_credential
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_reports_missing_default_credential_without_api_key():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = FakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -415,7 +415,7 @@ async def test_agentscope_service_task_runner_reports_missing_default_credential
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_session():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = FakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -488,7 +488,7 @@ async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_ses
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_treats_selected_dataset_as_confirmed():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = FakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -556,7 +556,7 @@ class TeamDelegationFakeClient(FakeClient):
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_waits_for_worker_report_after_agent_create():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = TeamDelegationFakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -605,7 +605,7 @@ class WorkerProgressFakeClient(TeamDelegationFakeClient):
     user_id = "datalogue-agent-team"
 
     async def stream_session(self, session_id, *, agent_id=None):
-        from app.agentscope_service.progress_bridge import publish_agent_progress
+        from app.domains.agent_team.progress_bridge import publish_agent_progress
 
         self.stream_requests.append({"session_id": session_id, "agent_id": agent_id})
         yield {
@@ -669,7 +669,7 @@ class WorkerCandidateFallbackFakeClient(TeamDelegationFakeClient):
     user_id = "datalogue-agent-team"
 
     async def stream_session(self, session_id, *, agent_id=None):
-        from app.agentscope_service.progress_bridge import publish_agent_event
+        from app.domains.agent_team.progress_bridge import publish_agent_event
 
         self.stream_requests.append({"session_id": session_id, "agent_id": agent_id})
         yield {
@@ -727,7 +727,7 @@ class ConfirmedDatasetMissingArtifactFakeClient(TeamDelegationFakeClient):
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_merges_worker_progress_before_final():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = WorkerProgressFakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -781,7 +781,7 @@ async def test_agentscope_service_task_runner_merges_worker_progress_before_fina
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_uses_worker_candidate_fallback_as_final():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = WorkerCandidateFallbackFakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -825,7 +825,7 @@ async def test_agentscope_service_task_runner_uses_worker_candidate_fallback_as_
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_keeps_stream_open_for_pending_worker_tool_call():
     from app.core.config import Settings
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     client = WorkerPendingToolCallFakeClient()
     runner = AgentScopeServiceTaskRunner(
@@ -869,8 +869,8 @@ async def test_agentscope_service_task_runner_keeps_stream_open_for_pending_work
 @pytest.mark.asyncio
 async def test_agentscope_service_task_runner_falls_back_when_confirmed_dataset_has_no_artifact(monkeypatch):
     from app.core.config import Settings
-    from app.agentscope_service import runner as runner_module
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine import runner as runner_module
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     async def fake_execute_dataset_query_for_agent_team_direct_fallback(**kwargs):
         assert kwargs["dataset_id"] == 10

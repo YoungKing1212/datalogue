@@ -4,6 +4,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { evaluateWorkbenchRetentionGate } from './workbench-retention-gate.js';
+import {
+  buildArtifactDetailExpectedEvent,
+  buildArtifactDetailViewEvent,
+} from './workbench-retention-events.js';
 
 function buildWindow(overrides = {}) {
   return {
@@ -100,6 +104,55 @@ describe('WorkbenchRetentionGate', () => {
     expect(result.metrics.chat_artifact_detail_total).toBe(2);
   });
 
+  it('passes retirement with standard Chat-side artifact detail events', () => {
+    const artifactCard = {
+      title: '查询结果',
+      actions: [{ action_type: 'view', ref: 'artifact:result-1' }],
+    };
+    const result = evaluateWorkbenchRetentionGate(
+      buildWindow({
+        ui_events: [
+          buildArtifactDetailExpectedEvent({
+            artifactCard,
+            messageId: 'msg-1',
+            routePath: '/chat/conv_1',
+          }),
+          buildArtifactDetailViewEvent({
+            artifactRef: 'artifact:result-1',
+            messageId: 'msg-1',
+            routePath: '/chat/conv_1',
+          }),
+        ],
+      }),
+    );
+
+    expect(result.pass).toBe(true);
+    expect(result.metrics.expected_artifact_detail_total).toBe(1);
+    expect(result.metrics.chat_artifact_detail_total).toBe(1);
+  });
+
+  it('does not count workbench-origin detail view events as Chat-side detail coverage', () => {
+    const result = evaluateWorkbenchRetentionGate(
+      buildWindow({
+        ui_events: [
+          {
+            ...buildArtifactDetailViewEvent({
+              artifactRef: 'artifact:result-1',
+              messageId: 'msg-1',
+              routePath: '/workbench/thread/conv_1',
+            }),
+            source_kind: 'legacy_mirror',
+          },
+        ],
+        expected_artifact_detail_total: 1,
+      }),
+    );
+
+    expect(result.pass).toBe(false);
+    expect(result.metrics.chat_artifact_detail_total).toBe(0);
+    expect(result.reasons.join('\n')).toContain('artifact_detail_mismatch');
+  });
+
   it('requires one full release window of zero main-path traffic before retirement', () => {
     const result = evaluateWorkbenchRetentionGate(
       buildWindow({
@@ -133,4 +186,3 @@ describe('WorkbenchRetentionGate', () => {
     expect(result.reasons.join('\n')).toContain('artifact_detail_mismatch');
   });
 });
-

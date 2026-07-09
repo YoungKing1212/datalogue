@@ -30,16 +30,16 @@ from agentscope.permission import (
 from agentscope.tool import FunctionTool, ToolBase, ToolChunk
 from pydantic import ValidationError
 
-from app.agentscope_service.bi_worker_context import BIWorkerContextProvider
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.worker.context import BIWorkerContextProvider
+from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     BIWorkerQueryResult,
     FAILURE_DIAGNOSIS_MAP,
     RepairRequest,
 )
-from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
-from app.agentscope_service.bi_worker_validator import ProgressiveContextState
-from app.agentscope_service.progress_bridge import publish_agent_event
+from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
+from app.domains.bi.worker.validator import ProgressiveContextState
+from app.domains.agent_team.progress_bridge import publish_agent_event
 from app.core.database import SessionLocal
 from app.models.dataset import SemanticDataset
 from app.schemas.bi_workbench import sanitize_event_payload

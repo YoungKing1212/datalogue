@@ -20,9 +20,9 @@ from sqlalchemy.orm import Session
 from app.models.bi_agent import BIAgentHandoff, BIAgentRun
 from app.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
 from app.middlewares.lifecycle import log_lifecycle
-from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService
-from app.agents.bi_agent.handoff_port import BIHandoffPort
-from app.agents.bi_agent.run_service import BIAgentRunService
+from app.domains.bi.agent.confirmation_service import BIAgentConfirmationService
+from app.domains.bi.agent.handoff_port import BIHandoffPort
+from app.domains.bi.agent.run_service import BIAgentRunService
 
 
 _TERMINAL_HANDOFF_STATUS_TO_RUN_STATUS = {
@@ -137,6 +137,6 @@ class BIAgentHandoffService:
 
 
 def _default_handoff_port(db: Session) -> BIHandoffPort:
-    from app.agents.bi_agent.native_handoff import AgentScopeNativeBIHandoff
+    from app.domains.bi.agent.native_handoff import AgentScopeNativeBIHandoff
 
     return AgentScopeNativeBIHandoff.from_db(db)

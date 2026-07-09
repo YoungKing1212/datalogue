@@ -1,15 +1,5 @@
-# ============================================================
-# File Name   : __init__.py
-# Description:
-#   BI Agent Skill 公开入口。
-#
-# Responsibilities:
-#   - 暴露 BI Agent 可注册的 Dataset 查询 Skill。
-#   - 将 Toolkit、Toolchain 和 AgentScope bridge 组装从旧 service 工厂中收口。
-#
-# Author      : yangkai
-# Created On  : 2026-07-02
-# ============================================================
+# BI Skill 领域入口
+# 实体从 app/bi/skill/ 迁入
 
 from app.domains.bi.skill.dataset_query import DatasetQuerySkill
 from app.domains.bi.skill.runtime_bridge import (

@@ -97,7 +97,7 @@ async def _execute_dataset_query_with_db(
     trace_id: str | None,
 ) -> AgentTeamDatasetQueryResult:
     """委托 BIWorkerQueryRuntime 执行 fallback 查询。"""
-    from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
+    from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
 
     runtime = BIWorkerQueryRuntime(db)
     result = await runtime.execute_fallback(

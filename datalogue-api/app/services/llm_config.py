@@ -17,7 +17,7 @@ from typing import Optional
 import httpx
 from sqlalchemy.orm import Session
 
-from app.agentscope_service.client import DEFAULT_AGENTSCOPE_USER_ID
+from app.runtime.engine.client import DEFAULT_AGENTSCOPE_USER_ID
 from app.core.config import Settings
 from app.models.llm import LLMModelConfig
 

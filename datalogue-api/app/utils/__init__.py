@@ -22,11 +22,14 @@
 # - sample_data   : 给 SQL 审计 Agent 提供真实表样例
 # - column_labels : 语义层 → 中文列头映射
 
+# Phase B: SQL 工具实体已迁至 app.domains.query_execution
+# 本文件保留为兼容 facade
+
 from app.utils.json_utils import safe_json_parse
 from app.utils.token import extract_token_usage, merge_token_usage
-from app.utils.sql_diagnosis import classify_sql_execution_error, merge_llm_sql_diagnosis
-from app.utils.sample_data import fetch_sample_rows
-from app.utils.column_labels import build_column_labels
+from app.domains.query_execution.sql_diagnosis import classify_sql_execution_error, merge_llm_sql_diagnosis
+from app.domains.query_execution.sample_data import fetch_sample_rows
+from app.domains.query_execution.column_labels import build_column_labels
 
 __all__ = [
     "safe_json_parse",
@@ -55,11 +58,11 @@ def __getattr__(name: str):
         "resolve_dialect",
         "sanitize_filter_sql",
     }:
-        from app.utils import sql_dialect
+        from app.domains.query_execution import sql_dialect
 
         return getattr(sql_dialect, name)
     if name in {"SQLGuardResult", "guard_readonly_sql"}:
-        from app.utils import sql_guard
+        from app.domains.query_execution import sql_guard
 
         return getattr(sql_guard, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

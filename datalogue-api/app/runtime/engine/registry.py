@@ -94,7 +94,7 @@ class AgentTeamWorkerTemplateSpec:
 
 def _load_bi_worker_permission_context() -> PermissionContext:
     """从外部 JSON 文件加载 BI Worker 权限上下文，便于运维修改。"""
-    conf_path = Path(__file__).resolve().parent.parent.parent / "conf" / "bi_worker_permissions.json"
+    conf_path = Path(__file__).resolve().parent.parent.parent.parent / "conf" / "bi_worker_permissions.json"
     try:
         with open(conf_path, "r", encoding="utf-8") as f:
             data = json.load(f)

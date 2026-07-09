@@ -92,11 +92,33 @@ function isChatArtifactApiPath(path) {
   return String(path || '').startsWith('/api/artifacts/');
 }
 
+function isChatUiPath(path) {
+  return String(path || '').startsWith('/chat');
+}
+
+function isChatSideUiEvent(event) {
+  return (
+    isChatUiPath(event?.route_path)
+    && isMainPathSourceKind(event?.source_kind)
+    && !isExcludedFromMainPath(event)
+  );
+}
+
+function isChatSideArtifactApiEvent(event) {
+  return (
+    isChatArtifactApiPath(event?.api_path)
+    && isMainPathSourceKind(event?.source_kind)
+    && !isExcludedFromMainPath(event)
+  );
+}
+
 function countExpectedArtifactDetails(input, uiEvents) {
   if (isFiniteNumber(input?.expected_artifact_detail_total)) {
     return input.expected_artifact_detail_total;
   }
   return sumBy(uiEvents, (event) => {
+    // 去常驻化只认可普通 Chat 的 artifact 详情投影，恢复壳/旧镜像不能反向证明主路径已承接。
+    if (!isChatSideUiEvent(event)) return false;
     if (event?.artifact_detail_expected === true || event?.expected_artifact_detail === true) return true;
     if (ARTIFACT_DETAIL_EXPECTED_EVENT_NAMES.has(String(event?.event_name || ''))) return true;
     const artifactCard = event?.artifact_card || event?.artifactCard;
@@ -106,11 +128,14 @@ function countExpectedArtifactDetails(input, uiEvents) {
 
 function countActualArtifactDetails(uiEvents, apiEvents) {
   const uiTotal = sumBy(uiEvents, (event) => (
-    event?.artifact_detail_visible === true
-    || event?.artifact_detail_shown === true
-    || ARTIFACT_DETAIL_ACTUAL_EVENT_NAMES.has(String(event?.event_name || ''))
+    isChatSideUiEvent(event)
+    && (
+      event?.artifact_detail_visible === true
+      || event?.artifact_detail_shown === true
+      || ARTIFACT_DETAIL_ACTUAL_EVENT_NAMES.has(String(event?.event_name || ''))
+    )
   ));
-  const apiTotal = sumBy(apiEvents, (event) => isChatArtifactApiPath(event?.api_path));
+  const apiTotal = sumBy(apiEvents, isChatSideArtifactApiEvent);
   return uiTotal + apiTotal;
 }
 

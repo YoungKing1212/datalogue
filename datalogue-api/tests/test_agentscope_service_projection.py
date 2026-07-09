@@ -17,7 +17,7 @@ import json
 
 
 def test_projection_filters_sensitive_payload_with_lead_agent_sanitizer():
-    from app.agentscope_service.projection import project_agentscope_service_event
+    from app.runtime.engine.projection import project_agentscope_service_event
 
     envelope = project_agentscope_service_event(
         {
@@ -58,7 +58,7 @@ def test_projection_filters_sensitive_payload_with_lead_agent_sanitizer():
 def test_projection_preserves_message_delta_whitespace():
     """message.delta 增量必须保留 token 边界空格/换行，避免英文被 strip 粘成一坨。"""
 
-    from app.agentscope_service.projection import project_agentscope_service_event
+    from app.runtime.engine.projection import project_agentscope_service_event
 
     first = project_agentscope_service_event(
         {"event_type": "message.delta", "payload": {"content": " Now I need to"}},
@@ -79,7 +79,7 @@ def test_projection_preserves_message_delta_whitespace():
 
 
 def test_projection_maps_terminal_and_tool_events_to_stable_event_types():
-    from app.agentscope_service.projection import project_agentscope_service_event
+    from app.runtime.engine.projection import project_agentscope_service_event
 
     completed = project_agentscope_service_event(
         {"event_type": "ReplyEndEvent", "payload": {"summary": "任务已完成", "artifact_ref": "artifact:2"}},
@@ -101,7 +101,7 @@ def test_projection_maps_terminal_and_tool_events_to_stable_event_types():
 
 
 def test_projection_preserves_agent_progress_as_realtime_safe_event():
-    from app.agentscope_service.projection import project_agentscope_service_event
+    from app.runtime.engine.projection import project_agentscope_service_event
 
     envelope = project_agentscope_service_event(
         {
@@ -141,7 +141,7 @@ def test_projection_preserves_agent_progress_as_realtime_safe_event():
 
 
 def test_projection_preserves_worker_dataset_candidates_safely():
-    from app.agentscope_service.projection import project_agentscope_service_event
+    from app.runtime.engine.projection import project_agentscope_service_event
 
     envelope = project_agentscope_service_event(
         {
@@ -199,7 +199,7 @@ def test_projection_preserves_worker_dataset_candidates_safely():
 
 
 def test_projection_does_not_treat_block_end_events_as_message_completed():
-    from app.agentscope_service.projection import project_agentscope_service_event
+    from app.runtime.engine.projection import project_agentscope_service_event
 
     for raw_type in ("TextBlockEndEvent", "ThinkingBlockEndEvent", "ModelCallEndEvent"):
         envelope = project_agentscope_service_event(
@@ -215,7 +215,7 @@ def test_projection_does_not_treat_block_end_events_as_message_completed():
 def test_projection_never_maps_thinking_delta_to_message_delta():
     """ThinkingBlockDeltaEvent.delta 是 raw thinking，不能绕过 debug gate 进入 message.delta。"""
 
-    from app.agentscope_service.projection import project_agentscope_service_event
+    from app.runtime.engine.projection import project_agentscope_service_event
 
     envelope = project_agentscope_service_event(
         {
@@ -241,7 +241,7 @@ def test_projection_never_maps_thinking_delta_to_message_delta():
 
 
 def test_projection_maps_subagent_hitl_custom_event_to_confirmation_required():
-    from app.agentscope_service.projection import project_agentscope_service_event
+    from app.runtime.engine.projection import project_agentscope_service_event
 
     envelope = project_agentscope_service_event(
         {

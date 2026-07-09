@@ -24,19 +24,19 @@ from sqlalchemy.orm import Session
 
 from app.models.dataset import AnalysisBlueprint, SemanticDataset
 from app.schemas.bi_agent import BIAgentHandoffRequest, BIAgentHandoffResult
-from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
+from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.middlewares.lifecycle import log_lifecycle
 from app.prompts import NATIVE_HANDOFF_CHILD_MESSAGE_TEMPLATE
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.domains.query_execution.artifact_store import ArtifactStore
-from app.agents.bi_agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
-from app.agents.bi_agent.handoff_events import (
+from app.domains.bi.agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
+from app.domains.bi.agent.handoff_events import (
     collect_native_handoff_payload,
     native_status_or_default,
     safe_native_failure_result_payload,
 )
-from app.bi.skill import DatasetQuerySkill
-from app.agents.bi_agent.runtime_context import (
+from app.domains.bi.skill import DatasetQuerySkill
+from app.domains.bi.agent.runtime_context import (
     allowed_tables_and_sql_context,
     build_bi_runtime_context,
 )

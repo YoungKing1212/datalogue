@@ -24,7 +24,7 @@ def __getattr__(name: str):
     """兼容迁移中按需加载旧投影函数，避免导入领域包时触发旧运行时循环依赖。"""
 
     if name in __all__:
-        from app.agentscope_service import projection as legacy_projection  # 兼容层只转发旧实现，不承载新逻辑
+        from app.runtime.engine import projection as legacy_projection  # 兼容层只转发旧实现，不承载新逻辑
 
         return getattr(legacy_projection, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

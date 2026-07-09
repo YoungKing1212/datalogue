@@ -28,7 +28,7 @@ from app.models import (
     DatasetSourceTable,
 )
 from app.models.base import TimestampMixin
-from app.utils.column_labels import build_column_labels
+from app.domains.query_execution.column_labels import build_column_labels
 
 
 @pytest.fixture

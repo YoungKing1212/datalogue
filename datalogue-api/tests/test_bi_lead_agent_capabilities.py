@@ -15,7 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.bi_agent import BIAgentCapability
-from app.agents.bi_agent.capabilities import (
+from app.domains.bi.agent.capabilities import (
     build_bi_agent_capabilities,
     sanitize_dataset_capability,
 )

@@ -36,7 +36,7 @@ def _sse_data(payload: dict) -> dict:
 def build_agent_team_task_runner(*, base_url: str, db: Session):
     """生产默认 runner：Agent Team 主链交给 AgentScope Service leader session。"""
 
-    from app.agentscope_service.runner import AgentScopeServiceTaskRunner
+    from app.runtime.engine.runner import AgentScopeServiceTaskRunner
 
     return AgentScopeServiceTaskRunner(base_url=base_url, db=db, settings=get_settings())
 

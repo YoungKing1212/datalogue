@@ -27,7 +27,7 @@ from agentscope.tool import ToolBase
 
 from app.middlewares import DatasetRuntimeToolLoggingMiddleware
 from app.middlewares.lifecycle import log_lifecycle
-from app.bi.toolkit import DatalogueBIAtomicToolkit
+from app.domains.bi.toolkit import DatalogueBIAtomicToolkit
 from app.safety import DataloguePayloadSanitizer
 
 

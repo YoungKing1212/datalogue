@@ -34,7 +34,7 @@ FORBIDDEN_DATALOGUE_ORCHESTRATION_TOKENS = (
 
 
 def test_agent_team_registry_contains_fixed_worker_templates():
-    from app.agentscope_service.registry import build_datalogue_worker_template_specs
+    from app.runtime.engine.registry import build_datalogue_worker_template_specs
 
     specs = build_datalogue_worker_template_specs()
     by_type = {item.worker_type: item for item in specs}
@@ -46,7 +46,7 @@ def test_agent_team_registry_contains_fixed_worker_templates():
 
 
 def test_agent_team_prompts_allow_official_team_tools_only():
-    from app.agentscope_service.registry import build_datalogue_worker_template_specs
+    from app.runtime.engine.registry import build_datalogue_worker_template_specs
 
     specs = build_datalogue_worker_template_specs()
     combined = "\n".join(item.system_prompt_template for item in specs)
@@ -63,7 +63,7 @@ def test_agent_team_prompts_allow_official_team_tools_only():
 def test_worker_template_specs_convert_to_agentscope_subagent_templates():
     from agentscope.app import SubAgentTemplate
     from agentscope.permission import PermissionBehavior, PermissionMode
-    from app.agentscope_service.registry import build_datalogue_worker_template_specs
+    from app.runtime.engine.registry import build_datalogue_worker_template_specs
 
     template = build_datalogue_worker_template_specs()[0].to_subagent_template()
     expected_allow_rules = {
@@ -93,7 +93,7 @@ def test_worker_template_specs_convert_to_agentscope_subagent_templates():
 
 
 def test_bi_worker_prompt_template_is_agentscope_format_safe():
-    from app.agentscope_service.registry import build_datalogue_worker_template_specs
+    from app.runtime.engine.registry import build_datalogue_worker_template_specs
 
     template = build_datalogue_worker_template_specs()[0].to_subagent_template()
 
@@ -112,7 +112,7 @@ def test_bi_worker_prompt_template_is_agentscope_format_safe():
 
 @pytest.mark.asyncio
 async def test_extra_agent_tools_registers_progressive_tools_without_legacy_dataset_query():
-    from app.agentscope_service import tools as datalogue_tools
+    from app.runtime.engine import tools as datalogue_tools
 
     class FakeStorage:
         async def get_agent(self, user_id, agent_id):
@@ -139,8 +139,8 @@ async def test_extra_agent_tools_registers_progressive_tools_without_legacy_data
 def test_prompt_and_tool_boundary_forbid_private_tokens():
     from pathlib import Path
 
-    from app.agentscope_service.registry import BI_WORKER_PROMPT, LEADER_AGENT_SYSTEM_PROMPT
-    from app.agentscope_service import dataset_query_executor
+    from app.runtime.engine.registry import BI_WORKER_PROMPT, LEADER_AGENT_SYSTEM_PROMPT
+    from app.domains.bi.worker import dataset_query as dataset_query_executor
 
     prompt_text = f"{LEADER_AGENT_SYSTEM_PROMPT}\n{BI_WORKER_PROMPT}"
     for forbidden in (
@@ -187,7 +187,7 @@ def test_prompt_and_tool_boundary_forbid_private_tokens():
 def test_tools_module_does_not_return_accepted_placeholder():
     from pathlib import Path
 
-    from app.agentscope_service import tools as datalogue_tools
+    from app.runtime.engine import tools as datalogue_tools
 
     source = Path(datalogue_tools.__file__).read_text(encoding="utf-8")
     assert '"status": "accepted"' not in source

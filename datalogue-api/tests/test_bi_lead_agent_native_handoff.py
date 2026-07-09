@@ -21,12 +21,12 @@ import pytest
 from app.models.dataset import AnalysisBlueprint
 from app.schemas.bi_agent import BIAgentHandoffRequest
 from app.services.artifact_store import ArtifactStore
-from app.agents.bi_agent.handoff_events import (
+from app.domains.bi.agent.handoff_events import (
     collect_native_handoff_payload,
     map_native_handoff_event,
     safe_native_failure_result_payload,
 )
-from app.agents.bi_agent.native_handoff import (
+from app.domains.bi.agent.native_handoff import (
     AgentScopeNativeBIHandoff,
     _native_allowed_tables_and_sql_context,
 )
@@ -247,7 +247,7 @@ async def test_agentscope_native_handoff_returns_safe_failure_when_session_start
     bridge = FailingStartBridge()
     native = AgentScopeNativeBIHandoff(bridge=bridge, dataset_agent_factory=FakeFactory())
 
-    with caplog.at_level(logging.DEBUG, logger="app.agents.bi_agent.native_handoff"):
+    with caplog.at_level(logging.DEBUG, logger="app.domains.bi.agent.native_handoff"):
         result = await native.query_dataset(_handoff_request(), task_id="task-native")
 
     assert result.handoff_status == "failed"
@@ -264,7 +264,7 @@ async def test_agentscope_native_handoff_logs_build_runtime_context_failure_stag
     bridge = FakeBridge()
     native = FailingRuntimeContextHandoff(bridge=bridge, dataset_agent_factory=FakeFactory())
 
-    with caplog.at_level(logging.DEBUG, logger="app.agents.bi_agent.native_handoff"):
+    with caplog.at_level(logging.DEBUG, logger="app.domains.bi.agent.native_handoff"):
         result = await native.query_dataset(_handoff_request(), task_id="task-native")
 
     assert result.handoff_status == "failed"
@@ -323,7 +323,7 @@ async def test_agentscope_native_handoff_logs_missing_terminal_evidence_blocked(
     )
     native = AgentScopeNativeBIHandoff(bridge=bridge, dataset_agent_factory=FakeFactory())
 
-    with caplog.at_level(logging.DEBUG, logger="app.agents.bi_agent.native_handoff"):
+    with caplog.at_level(logging.DEBUG, logger="app.domains.bi.agent.native_handoff"):
         result = await native.query_dataset(_handoff_request(), task_id="task-native")
 
     assert result.handoff_status == "blocked"
@@ -399,7 +399,7 @@ async def test_agentscope_native_handoff_completes_with_controlled_blueprint_whe
             "execution_time_ms": 12,
         }
 
-    monkeypatch.setattr("app.agents.bi_agent.native_handoff.execute_analysis_blueprint", fake_execute)
+    monkeypatch.setattr("app.domains.bi.agent.native_handoff.execute_analysis_blueprint", fake_execute)
     native = AgentScopeNativeBIHandoff(bridge=bridge, dataset_agent_factory=FakeFactory(), db=db_session)
     request = _handoff_request().model_copy(
         update={"dataset_id": sample_dataset.id, "confirmed_question": "查询杨凯2025年的工作日志"}

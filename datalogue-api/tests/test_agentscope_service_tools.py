@@ -32,7 +32,7 @@ AGENTSCOPE_SERVICE_BUILTIN_TOOL_NAMES = {
 
 @pytest.mark.asyncio
 async def test_extra_agent_tools_hides_dataset_tool_from_leader():
-    from app.agentscope_service.tools import build_datalogue_extra_agent_tools
+    from app.runtime.engine.tools import build_datalogue_extra_agent_tools
 
     class FakeAgentRecord:
         source = "user"
@@ -53,7 +53,7 @@ async def test_extra_agent_tools_hides_dataset_tool_from_leader():
 
 @pytest.mark.asyncio
 async def test_extra_agent_tools_returns_dataset_tool_for_team_worker_only():
-    from app.agentscope_service.tools import build_datalogue_extra_agent_tools
+    from app.runtime.engine.tools import build_datalogue_extra_agent_tools
 
     class FakeAgentRecord:
         source = "team"
@@ -83,7 +83,7 @@ async def test_extra_agent_tools_returns_dataset_tool_for_team_worker_only():
 
 @pytest.mark.asyncio
 async def test_extra_agent_tools_fail_closed_without_agent_record():
-    from app.agentscope_service.tools import build_datalogue_extra_agent_tools
+    from app.runtime.engine.tools import build_datalogue_extra_agent_tools
 
     class FakeStorage:
         async def get_agent(self, user_id, agent_id):
@@ -97,7 +97,7 @@ async def test_extra_agent_tools_fail_closed_without_agent_record():
 
 
 def test_bi_worker_progressive_tools_are_registered_for_team_worker():
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(
         worker_context={
@@ -120,7 +120,7 @@ def test_bi_worker_progressive_tools_are_registered_for_team_worker():
 
 @pytest.mark.asyncio
 async def test_execute_query_plan_returns_repair_payload_after_repeated_contract_errors():
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
     execute_tool = next(
@@ -192,7 +192,7 @@ async def test_execute_query_plan_returns_repair_payload_after_repeated_contract
 
 @pytest.mark.asyncio
 async def test_query_plan_contract_hint_points_to_real_operator_and_join_shape():
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
     execute_tool = next(
@@ -299,7 +299,7 @@ async def test_query_plan_contract_hint_points_to_real_operator_and_join_shape()
 
 @pytest.mark.asyncio
 async def test_query_plan_contract_details_explain_legacy_join_fields():
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
     execute_tool = next(
@@ -384,7 +384,7 @@ async def test_query_plan_contract_details_explain_legacy_join_fields():
 
 @pytest.mark.asyncio
 async def test_query_plan_contract_total_attempts_stop_retry_across_changed_error_signatures():
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
     execute_tool = next(
@@ -457,8 +457,8 @@ async def test_query_plan_contract_total_attempts_stop_retry_across_changed_erro
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_bi_worker_candidate_dataset_tool_returns_safe_candidates(monkeypatch):
-    from app.agentscope_service import tools as tools_module
-    from app.agentscope_service.tools import build_datalogue_extra_agent_tools
+    from app.runtime.engine import tools as tools_module
+    from app.runtime.engine.tools import build_datalogue_extra_agent_tools
 
     class FakeAgentData:
         name = "bi-worker"
@@ -525,9 +525,9 @@ async def test_bi_worker_candidate_dataset_tool_returns_safe_candidates(monkeypa
 
 @pytest.mark.asyncio
 async def test_bi_worker_candidate_dataset_tool_publishes_safe_final_event(monkeypatch):
-    from app.agentscope_service import tools as tools_module
-    from app.agentscope_service.progress_bridge import agent_progress_subscription
-    from app.agentscope_service.tools import build_datalogue_extra_agent_tools
+    from app.runtime.engine import tools as tools_module
+    from app.domains.agent_team.progress_bridge import agent_progress_subscription
+    from app.runtime.engine.tools import build_datalogue_extra_agent_tools
 
     class FakeAgentData:
         name = "bi-worker"
@@ -580,7 +580,7 @@ async def test_bi_worker_candidate_dataset_tool_publishes_safe_final_event(monke
 
 def test_plan_contract_error_expected_guides_join_condition_to_join_keys():
     """LLM 常见错误：塞 join_condition SQL 片段。hint 需引导改用 join_keys。"""
-    from app.agentscope_service.tools import _plan_contract_error_expected
+    from app.runtime.engine.tools import _plan_contract_error_expected
 
     expected = _plan_contract_error_expected(
         code="extra_forbidden",
@@ -594,8 +594,8 @@ def test_plan_contract_error_expected_guides_join_condition_to_join_keys():
 @pytest.mark.asyncio
 async def test_execute_query_plan_bundle_accepts_join_keys_field():
     """契约扩展后，join_requirements 允许携带 join_keys；不再报 extra_forbidden。"""
-    from app.agentscope_service import tools as tools_module
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine import tools as tools_module
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     async def fake_execute(*args, **kwargs):
         return {
@@ -607,7 +607,7 @@ async def test_execute_query_plan_bundle_accepts_join_keys_field():
             "summary": "OK",
         }
 
-    from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
+    from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
 
     # monkeypatch execute_query_plan：只验证契约 model_validate 通过、能进入执行分支。
     original = BIWorkerQueryRuntime.execute_query_plan
@@ -675,12 +675,12 @@ async def test_execute_query_plan_bundle_logs_runtime_exception(caplog):
     import json
     import logging
 
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     async def fake_execute(*args, **kwargs):
         raise TypeError("unsupported operand type(s) for |: 'list' and 'set'")
 
-    from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
+    from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
 
     original = BIWorkerQueryRuntime.execute_query_plan
     BIWorkerQueryRuntime.execute_query_plan = fake_execute  # type: ignore[assignment]
@@ -689,7 +689,7 @@ async def test_execute_query_plan_bundle_logs_runtime_exception(caplog):
         execute_tool = next(
             tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle"
         )
-        with caplog.at_level(logging.ERROR, logger="app.agentscope_service.tools"):
+        with caplog.at_level(logging.ERROR, logger="app.runtime.engine.tools"):
             result_chunk = await execute_tool(
                 dataset_id=1,
                 confirmed_question="查询日志",
@@ -738,7 +738,7 @@ async def test_execute_query_plan_bundle_logs_runtime_exception(caplog):
 @pytest.mark.asyncio
 async def test_describe_tables_tool_rejects_empty_table_names():
     """describe_tables 工具要求 table_names 为非空 list,否则拒绝并返回 code。"""
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
     describe_tool = next(tool for tool in tools if tool.name == "datalogue_describe_tables")
@@ -756,7 +756,7 @@ async def test_describe_tables_tool_rejects_empty_table_names():
 
 def test_progressive_bi_worker_tools_include_describe_tables():
     """describe_tables 工具应注册并紧跟 request_schema_slice 之后。"""
-    from app.agentscope_service.tools import build_datalogue_progressive_bi_worker_tools
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
 
     tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
     names = [tool.name for tool in tools]
@@ -775,7 +775,7 @@ async def test_progressive_readonly_tools_bypass_permission_engine():
     """
     from agentscope.permission import PermissionBehavior, PermissionContext
 
-    from app.agentscope_service.tools import (
+    from app.runtime.engine.tools import (
         DatalogueBIWorkerReadOnlyTool,
         build_datalogue_progressive_bi_worker_tools,
         build_datalogue_search_assets_tool,

@@ -42,7 +42,7 @@ from app.services.dataset_manifest import (
 )
 from app.services.capability_manifest import build_dataset_capability_manifest
 from app.domains.query_execution.preview import preview_dataset_sql
-from app.utils.query_constraints import normalize_query_constraints
+from app.domains.query_execution.query_constraints import normalize_query_constraints
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

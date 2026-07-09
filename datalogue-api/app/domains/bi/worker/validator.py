@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields
 from typing import Any, Iterator
 
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     FieldTarget,
     QuerySupportValidation,

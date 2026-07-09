@@ -15,6 +15,6 @@ from __future__ import annotations
 
 from agentscope.app import SubAgentTemplate
 
-from app.agentscope_service.registry import build_datalogue_subagent_templates
+from app.runtime.engine.registry import build_datalogue_subagent_templates
 
 __all__ = ["SubAgentTemplate", "build_datalogue_subagent_templates"]

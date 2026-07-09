@@ -11,7 +11,7 @@
 # Created On  : 2026-06-09
 # ============================================================
 
-from app.utils.sql_guard import guard_readonly_sql
+from app.domains.query_execution.sql_guard import guard_readonly_sql
 
 
 def test_guard_allows_readonly_select_and_adds_limit():

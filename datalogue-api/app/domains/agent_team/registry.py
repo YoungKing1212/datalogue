@@ -18,7 +18,7 @@ Leader / Worker 的实际定义与权限装配仍在
 `app.agentscope_service.registry`；本文件只做 re-export。
 """
 
-from app.agentscope_service.registry import (  # noqa: F401  兼容迁移中，保留公开导出
+from app.runtime.engine.registry import (  # noqa: F401  兼容迁移中，保留公开导出
     LEADER_AGENT_NAME,
     AgentTeamLeaderSpec,
     AgentTeamWorkerTemplateSpec,

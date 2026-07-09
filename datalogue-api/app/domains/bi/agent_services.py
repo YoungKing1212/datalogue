@@ -17,6 +17,6 @@
 re-export，不承载新业务逻辑。
 """
 
-from app.agents.bi_agent.run_service import BIAgentRunService  # noqa: F401  兼容迁移中，保留公开导出
+from app.domains.bi.agent.run_service import BIAgentRunService  # noqa: F401  兼容迁移中，保留公开导出
 
 __all__ = ["BIAgentRunService"]

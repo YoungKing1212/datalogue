@@ -13,7 +13,7 @@
 
 import pytest
 
-from app.agentscope_service.bi_worker_context import BIWorkerContextProvider
+from app.domains.bi.worker.context import BIWorkerContextProvider
 from app.models.dataset import (
     DatasetSourceTable,
     SemanticDataset,

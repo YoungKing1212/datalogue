@@ -27,12 +27,12 @@ from sqlalchemy.orm import Session
 
 from redis.asyncio import Redis
 
-from app.agentscope_service.client import AgentScopeServiceClient
-from app.agentscope_service.dataset_query_executor import execute_dataset_query_for_agent_team_direct_fallback
-from app.agentscope_service.progress_bridge import agent_progress_subscription
-from app.agentscope_service.projection import project_agentscope_service_event
-from app.agentscope_service.registry import build_datalogue_leader_agent_spec
-from app.agentscope_service.task_context import store_task_context
+from app.runtime.engine.client import AgentScopeServiceClient
+from app.domains.bi.worker.dataset_query import execute_dataset_query_for_agent_team_direct_fallback
+from app.domains.agent_team.progress_bridge import agent_progress_subscription
+from app.runtime.engine.projection import project_agentscope_service_event
+from app.runtime.engine.registry import build_datalogue_leader_agent_spec
+from app.domains.agent_team.task_context import store_task_context
 from app.core.config import Settings, get_settings
 from app.middlewares.lifecycle import log_lifecycle
 from app.models.agent_team_task import AgentTeamTask
