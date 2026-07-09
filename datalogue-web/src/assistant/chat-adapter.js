@@ -441,12 +441,11 @@ function sanitizeLiveThinkingText(text) {
 
 function appendRawThinkingDelta(previous = '', delta = '') {
   const next = String(delta || '');
-  if (!previous || !next) return `${previous}${next}`;
-  // AgentScope raw thinking 有时按英文词片段吐出且不带前导空格；调试视图按可读文本恢复词边界。
-  if (/\s$/.test(previous) || /^\s/.test(next)) return `${previous}${next}`;
-  if (/[A-Za-z0-9]$/.test(previous) && /^[A-Za-z0-9]/.test(next)) {
-    return `${previous} ${next}`;
-  }
+  if (!previous) return next;
+  if (!next) return previous;
+  // AgentScope raw thinking delta 的切分边界不是自然语言词边界；补空格会破坏
+  // 标识符、数字与 SQL 关键字（例如 plan_task_d + aily_record、202 + 5、LIM + IT）。
+  // 前端只做忠实拼接，可读性由 bi_worker_thinking_summary 通道保证。
   return `${previous}${next}`;
 }
 

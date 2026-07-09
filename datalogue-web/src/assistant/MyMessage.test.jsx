@@ -236,6 +236,29 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
   });
 
+  it('renders BI Worker raw thinking part as a monospace pre block', () => {
+    setMockMessage();
+    mockMessageState.message.content = [
+      {
+        type: 'reasoning',
+        reasoningKind: 'bi_worker_raw_thinking_delta',
+        debugRaw: true,
+        rawDelta: '主表：plan_task_daily_record\nLIMIT 100',
+        text: 'BI Worker 调试原文：主表：plan_task_daily_record\nLIMIT 100',
+        parentId: 'agent-worker-raw-thinking:reply-1:think-raw',
+      },
+      { type: 'text', text: '正在处理…' },
+    ];
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByText('推理摘要'));
+
+    const pre = screen.getByLabelText('BI Worker 调试原文');
+    expect(pre.tagName).toBe('PRE');
+    expect(pre.textContent).toBe('主表：plan_task_daily_record\nLIMIT 100');
+    expect(pre.className).toContain('cot-ant-raw');
+  });
+
   it('uses each final reasoning summary title instead of the generic fallback label', () => {
     setMockMessage();
     mockMessageState.message.content = [

@@ -162,6 +162,20 @@ function splitThinkingSegments(text) {
 }
 
 function ReasoningText({ part }) {
+  // BI Worker 调试原文分支：保留原始换行/JSON/列表结构，不走分段渲染，避免 <span> 拍平。
+  const isRawDebug =
+    part.debugRaw === true ||
+    part.reasoningKind === 'bi_worker_raw_thinking_delta';
+  if (isRawDebug) {
+    const rawText = typeof part.rawDelta === 'string' && part.rawDelta.length
+      ? part.rawDelta
+      : String(part.text || '').replace(/^BI Worker 调试原文：/, '');
+    return (
+      <pre className="cot-ant-raw" aria-label="BI Worker 调试原文">
+        {rawText}
+      </pre>
+    );
+  }
   const segments = splitThinkingSegments(part.text);
   if (segments.length <= 1) {
     // 短文本不拆分，pre-wrap 保留原有换行。

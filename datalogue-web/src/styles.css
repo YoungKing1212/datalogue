@@ -6976,6 +6976,21 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   word-break: break-word;
   white-space: pre-wrap;
 }
+.cot-ant-raw {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: rgba(15, 23, 42, 0.82);
+  background: rgba(15, 23, 42, 0.04);
+  border-radius: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
 
 /* ─── COMPOSER FAB（圆形浮动发送/停止按钮） ─── */
 .composer-fab {

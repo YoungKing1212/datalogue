@@ -371,7 +371,7 @@ describe('chat-adapter C-ready metadata', () => {
     });
   });
 
-  it('preserves readable spaces between english BI Worker raw thinking deltas', async () => {
+  it('concatenates BI Worker raw thinking deltas without inserting spaces', async () => {
     streamAgentTeamTask.mockReturnValue(events([
       {
         event_envelope: {
@@ -438,10 +438,87 @@ describe('chat-adapter C-ready metadata', () => {
       part.type === 'reasoning' && part.reasoningKind === 'bi_worker_raw_thinking_delta'
     ));
 
+    // 前端不再补空格：'The' + 'user' 之间不插入空格；第 3 段自带前导空格予以保留。
     expect(rawReasoning).toMatchObject({
       parentId: 'agent-worker-raw-thinking:reply-1:think-english-debug',
       debugRaw: true,
-      text: 'BI Worker 调试原文：The user wants',
+      text: 'BI Worker 调试原文：Theuser wants',
+    });
+  });
+
+  it('preserves identifiers and numbers across raw thinking delta boundaries', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking-ident-debug',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 调试原文',
+            summary: '调试原文流式片段。',
+            reasoning_kind: 'bi_worker_raw_thinking_delta',
+            stream_group_id: 'reply-1:think-ident-debug',
+            sequence: 1,
+            debug_raw: true,
+            raw_delta: 'plan_task_d',
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking-ident-debug',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 调试原文',
+            summary: '调试原文流式片段。',
+            reasoning_kind: 'bi_worker_raw_thinking_delta',
+            stream_group_id: 'reply-1:think-ident-debug',
+            sequence: 2,
+            debug_raw: true,
+            raw_delta: 'aily_record 202',
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-thinking-ident-debug',
+          payload: {
+            agent_role: 'worker',
+            agent_name: 'BI Worker',
+            phase: 'thinking',
+            status: 'running',
+            title: 'BI Worker 调试原文',
+            summary: '调试原文流式片段。',
+            reasoning_kind: 'bi_worker_raw_thinking_delta',
+            stream_group_id: 'reply-1:think-ident-debug',
+            sequence: 3,
+            debug_raw: true,
+            raw_delta: '5 LIMIT',
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 10 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询杨凯2025年日志' }));
+    const rawReasoning = chunks.at(-1).content.find((part) => (
+      part.type === 'reasoning' && part.reasoningKind === 'bi_worker_raw_thinking_delta'
+    ));
+
+    // 标识符 plan_task_daily_record、数字 2025、SQL 关键字 LIMIT 都不能被中间空格破坏；
+    // 段内自带的空格（"_record " / "2025 "）保留。
+    expect(rawReasoning).toMatchObject({
+      parentId: 'agent-worker-raw-thinking:reply-1:think-ident-debug',
+      debugRaw: true,
+      text: 'BI Worker 调试原文：plan_task_daily_record 2025 LIMIT',
     });
   });
 

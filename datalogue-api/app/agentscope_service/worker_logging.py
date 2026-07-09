@@ -157,7 +157,7 @@ class BIWorkerProgressMiddleware(MiddlewareBase):
         )
         agent_name = _safe_context_text(_safe_getattr(agent, "name")) or "BI Worker"
         reply_msg = None
-        thinking_state: dict[str, int] = {}
+        thinking_state: dict[str, Any] = {}
         try:
             async for event in next_handler(**input_kwargs):
                 reply_msg = _append_event_to_reply_msg(reply_msg, event, agent_name=agent_name)
@@ -182,6 +182,11 @@ class BIWorkerProgressMiddleware(MiddlewareBase):
                 summary="BI Worker 处理过程中发生错误，内部细节已隐藏。",
             )
             raise
+        # 主循环走完时 flush 所有残留的 raw delta 缓冲，防止 ThinkingBlockEndEvent 缺失导致尾段被吞。
+        _flush_all_thinking_raw_buffers(
+            worker_context=self.worker_context,
+            state=thinking_state,
+        )
         _log_raw_debug_blocks_if_enabled(msg=reply_msg, log_name="agentscope.bi_worker.raw_debug")
         await _cache_bi_worker_timeline_if_enabled(
             storage=self.storage,
@@ -690,7 +695,7 @@ def _publish_thinking_progress(
     *,
     worker_context: dict[str, str | None],
     event: Any,
-    state: dict[str, int],
+    state: dict[str, Any],
 ) -> None:
     """把 AgentScope thinking 事件投影为前端可消费的安全推理摘要进度。"""
 
@@ -716,6 +721,13 @@ def _publish_thinking_progress(
         )
         return
     if phase == "end":
+        # 结束时先把残留的 raw delta buffer 刷出去，避免尾段被吞。
+        _flush_thinking_raw_buffer(
+            worker_context=worker_context,
+            state=state,
+            stream_group_id=stream_group_id,
+            block_id=block_id,
+        )
         sequence = _next_thinking_sequence(state, stream_group_id)
         _publish_worker_progress(
             worker_context=worker_context,
@@ -734,6 +746,15 @@ def _publish_thinking_progress(
     raw_delta = _safe_getattr(event, "delta")
     if raw_delta in (None, ""):
         return
+    # LLM 供应商流式 chunk 常常按 tokenizer 边界切分并在词内插空格
+    # (例如 `left_al` + ` ias`、`de` + `pt code`)。这里按 stream_group_id 累积
+    # 到自然停顿(空白/标点/换行)或长度阈值再 emit，尽量让 UI 看到连贯的字段名。
+    buffer_key = _thinking_raw_buffer_key(stream_group_id)
+    buffered = str(state.get(buffer_key) or "") + str(raw_delta)
+    if not _should_flush_thinking_raw_buffer(buffered):
+        state[buffer_key] = buffered
+        return
+    state.pop(buffer_key, None)
     sequence = _next_thinking_sequence(state, stream_group_id)
     _publish_worker_progress(
         worker_context=worker_context,
@@ -746,8 +767,80 @@ def _publish_thinking_progress(
         sequence=sequence,
         block_id=block_id,
         debug_raw=True,
-        raw_delta=str(raw_delta),
+        raw_delta=buffered,
     )
+
+
+def _thinking_raw_buffer_key(stream_group_id: str) -> str:
+    """把 raw delta buffer 编码到同一份 state 字典中，避免和 sequence 计数冲突。"""
+
+    return f"{stream_group_id}::raw_buffer"
+
+
+_RAW_THINKING_FLUSH_TAIL_CHARS = frozenset(" \t\n\r　。！？；：，、!?;:,.）)]}】》」』")
+_RAW_THINKING_FLUSH_LENGTH = 64
+
+
+def _should_flush_thinking_raw_buffer(buffered: str) -> bool:
+    """判定累积的 raw delta 是否已到自然停顿点或长度阈值。"""
+
+    if not buffered:
+        return False
+    if len(buffered) >= _RAW_THINKING_FLUSH_LENGTH:
+        return True
+    return buffered[-1] in _RAW_THINKING_FLUSH_TAIL_CHARS
+
+
+def _flush_thinking_raw_buffer(
+    *,
+    worker_context: dict[str, str | None],
+    state: dict[str, Any],
+    stream_group_id: str,
+    block_id: str | None,
+) -> None:
+    """强制把 stream_group_id 对应的 raw delta 缓冲 emit 一次并清空。"""
+
+    if not _debug_stream_raw_thinking_enabled():
+        return
+    buffer_key = _thinking_raw_buffer_key(stream_group_id)
+    buffered = str(state.get(buffer_key) or "")
+    if not buffered:
+        return
+    state.pop(buffer_key, None)
+    sequence = _next_thinking_sequence(state, stream_group_id)
+    _publish_worker_progress(
+        worker_context=worker_context,
+        phase="thinking",
+        status="running",
+        title="BI Worker 调试原文",
+        summary="调试原文流式更新。",
+        reasoning_kind="bi_worker_raw_thinking_delta",
+        stream_group_id=stream_group_id,
+        sequence=sequence,
+        block_id=block_id,
+        debug_raw=True,
+        raw_delta=buffered,
+    )
+
+
+def _flush_all_thinking_raw_buffers(
+    *,
+    worker_context: dict[str, str | None],
+    state: dict[str, Any],
+) -> None:
+    """兜底刷新所有 stream_group_id 的 raw delta 缓冲；用于 reply 完全结束时。"""
+
+    pending_keys = [key for key in list(state.keys()) if key.endswith("::raw_buffer")]
+    for key in pending_keys:
+        stream_group_id = key[: -len("::raw_buffer")]
+        # 兜底时 block_id 已不可考，从 stream_group_id 后缀解析（`agent-worker-thinking:reply:block`）。
+        block_id_part = stream_group_id.rsplit(":", 1)[-1] or None
+        _flush_thinking_raw_buffer(
+            worker_context=worker_context,
+            state=state,
+            stream_group_id=stream_group_id,
+            block_id=block_id_part,
+        )
 
 
 def _stream_group_id(*, reply_id: str | None, block_id: str | None) -> str:

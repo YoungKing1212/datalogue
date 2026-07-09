@@ -390,9 +390,73 @@ async def test_bi_worker_thinking_debug_flag_streams_raw_delta(monkeypatch):
     assert "raw_delta" not in str(safe_payloads)
 
 
-def test_bi_worker_thinking_debug_flag_reads_settings_when_env_not_exported(
-    monkeypatch, tmp_path
-):
+@pytest.mark.asyncio
+async def test_bi_worker_thinking_debug_merges_tokenizer_split_deltas(monkeypatch):
+    """LLM 供应商按 tokenizer 边界切碎的 delta 应先在后端合并到自然停顿再 emit。"""
+
+    from agentscope.event import (
+        ReplyEndEvent,
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+    )
+
+    from app.agentscope_service.progress_bridge import agent_progress_subscription
+    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING", "true")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+
+    # 前两段没有触发 flush 的字符，应该被缓冲；第三段以句号收尾，触发一次 emit。
+    # 结束事件负责兜底 flush 掉最后一段无标点的 tail。
+    fragments = ["plan_task_d", "aily_record ", "202", "5 finished. ", "tail"]
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        for frag in fragments:
+            yield ThinkingBlockDeltaEvent(reply_id="reply-1", block_id="think-1", delta=frag)
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
+        yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
+
+    async with agent_progress_subscription(user_id="user-1") as queue:
+        async for _event in middleware.on_reply(
+            agent=agent,
+            input_kwargs={"inputs": "查询杨凯2025年日志"},
+            next_handler=next_handler,
+        ):
+            pass
+        progress_events = [queue.get_nowait() for _ in range(queue.qsize())]
+
+    raw_payloads = [
+        event["payload"]
+        for event in progress_events
+        if event["payload"].get("reasoning_kind") == "bi_worker_raw_thinking_delta"
+    ]
+    # 期望三次 emit：前两段合并到 `aily_record ` 末尾空格触发 flush；`202`+`5 finished. `
+    # 空格再触发；`tail` 走 end 兜底。所有词根 identifier / 数字都不再被拆开。
+    raw_deltas = [payload["raw_delta"] for payload in raw_payloads]
+    assert raw_deltas == [
+        "plan_task_daily_record ",
+        "2025 finished. ",
+        "tail",
+    ]
+    assert "plan_task_d aily_record" not in "".join(raw_deltas)
+    for payload in raw_payloads:
+        assert payload["debug_raw"] is True
+        assert payload["stream_group_id"] == "agent-worker-thinking:reply-1:think-1"
+
+
+def test_bi_worker_thinking_debug_flag_reads_settings_when_env_not_exported(monkeypatch, tmp_path):
     """写在 .env 但未导出到 os.environ 时，也要能开启前端 raw delta 调试通道。"""
     from app.agentscope_service.worker_logging import _debug_stream_raw_thinking_enabled
     from app.core.config import get_settings

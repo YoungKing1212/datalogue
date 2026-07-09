@@ -402,3 +402,13 @@
 - 关键改动：按用户明确要求，为 6 个 BI Worker 单工具分别使用 Image Gen 生成 raster 内部执行链路图，并复制到每个工具目录的 `assets/` 下；每份工具设计文档的“内部执行链路图”章节现在优先展示 Image Gen 图片，原 Mermaid 图仅保留为后续可维护的结构化补充。
 - 验证方式：复制后检查 6 张 PNG 均存在；使用 `rg -n "Image Gen 生成的工具内部执行链路图|internal_chain.png" .../工具链路文档/datalogue_*/*.md` 确认 6 份文档均引用对应图片。
 - 残留风险：Image Gen 图片是位图资产，文字和节点排版不可像 Mermaid 一样直接版本化编辑；后续如果代码链路变化，需要重新生成图片或同步维护下方 Mermaid。
+
+### 2026-07-09 09:40 · BI Worker 调试原文格式错乱修复（前端保真 + 后端 delta 缓冲）
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/styles.css`、`datalogue-api/app/agentscope_service/worker_logging.py`、`datalogue-api/tests/test_agentscope_service_worker_logging.py`。
+- 关键改动：
+  - 前端 `appendRawThinkingDelta` 收敛为纯拼接，删除按 `[A-Za-z0-9]` 边界补空格的分支，避免破坏 `plan_task_daily_record`/`2025`/`LIMIT` 等标识符/数字/关键字。
+  - 前端 `ReasoningText` 增加 raw debug 分支：`part.debugRaw === true || part.reasoningKind === 'bi_worker_raw_thinking_delta'` 命中时用 `<pre className="cot-ant-raw" aria-label="BI Worker 调试原文">` 忠实渲染，跳过 `splitThinkingSegments`；新增 `.cot-ant-raw` 等宽 + `pre-wrap` + 320px 最大高度样式。
+  - 后端 `_publish_thinking_progress` 引入 per-stream_group_id raw delta 缓冲：delta 累积到"结尾为空白/中英标点/换行"或"长度 ≥ 64"才 emit，`phase='end'` 与 `on_reply` 主循环走完后各兜底 flush 一次，解决模型 API 按 tokenizer 边界切碎 delta 导致 UI 词内断裂。
+- 验证方式：`pytest tests/test_agentscope_service_worker_logging.py`（33/33 通过，含新增 `test_bi_worker_thinking_debug_merges_tokenizer_split_deltas`）；`black + ruff` 无 diff/告警；前端 `vitest run src/assistant/chat-adapter.test.js src/assistant/MyMessage.test.jsx`（50/50 通过）；`eslint` 4 个改动文件全绿。
+- 残留风险：如果 LLM 供应商返回的单个 chunk **本身**就带前导空格（例如 `left_al` + ` ias`），后端缓冲策略无法在不误伤合法空格（如 `alias: "p"`）的前提下消除该空格；这类情况需在后端"完整 thinking end-only 一次性 emit"通道另行处理。
