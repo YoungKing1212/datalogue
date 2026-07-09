@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Icon } from './icons';
 import { del as apiDelete, get, patch, post } from '../api/client';
+import { useAuth } from '../auth/auth-context';
 
 // Settings — account, workspace, model, integrations, API keys.
 
@@ -95,24 +96,35 @@ function Toggle({ value, onChange }) {
 
 // ── Sections ────────────────────────────────────────────────────
 function AccountSection() {
+  const { user } = useAuth();
+  const displayName = user?.full_name || user?.username || '-';
+  const displayEmail = user?.email || '-';
+  const displayRole = user?.is_superuser
+    ? '超级管理员'
+    : user?.role === 'admin'
+      ? '管理员'
+      : '普通用户';
+  const avatarText = (displayName || '?').trim().slice(0, 1).toUpperCase();
+
   return (
     <>
       <SetSection title="账号与个人资料" desc="这些信息会显示给团队其他成员。">
         <div className="st-card">
           <div className="st-profile">
-            <div className="avatar lg">YL</div>
+            <div className="avatar lg">{avatarText}</div>
             <div className="st-profile-info">
-              <div className="st-profile-name">Yan Lin</div>
-              <div className="st-profile-email">yan.lin@datalogue.cn</div>
-              <div className="st-profile-org">运营 · 华东区 · Datalogue 工作区</div>
+              <div className="st-profile-name">{displayName}</div>
+              <div className="st-profile-email">{displayEmail}</div>
+              <div className="st-profile-org">当前角色：{displayRole}</div>
             </div>
             <button className="btn ghost"><Icon name="upload" />更换头像</button>
           </div>
         </div>
 
         <div className="st-form">
-          <SetRow label="姓名" hint="显示在会话与协作中" control={<input className="st-input" defaultValue="Yan Lin" />} />
-          <SetRow label="邮箱" hint="登录与通知地址" control={<input className="st-input" defaultValue="yan.lin@datalogue.cn" />} />
+          <SetRow label="姓名" hint="显示在会话与协作中" control={<input className="st-input" value={displayName} readOnly />} />
+          <SetRow label="邮箱" hint="登录与通知地址" control={<input className="st-input" value={displayEmail} readOnly />} />
+          <SetRow label="角色" hint="角色由管理员统一分配" control={<input className="st-input" value={displayRole} readOnly />} />
           <SetRow label="语言" control={
             <select className="st-input">
               <option>简体中文</option><option>English</option><option>日本語</option>

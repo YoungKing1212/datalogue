@@ -258,6 +258,55 @@
 - 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentscope_service_tools.py -q` 为 `10 passed, 2 warnings`；执行 `cd datalogue-api && .venv/bin/ruff check app/agentscope_service/tools.py tests/test_agentscope_service_tools.py` 通过；执行 `git diff --check -- datalogue-api/app/agentscope_service/tools.py datalogue-api/tests/test_agentscope_service_tools.py` 通过。
 - 残留风险：本轮只增强工具返回的安全诊断 payload，未做真实页面 smoke；如果前端需要把 `validation_error_details` 做成可视化折叠面板，还需另补 UI 展示和前端测试。
 
+### 2026-07-09 16:05 · 用户管理列表页与新建用户弹框
+
+- 涉及文件：`datalogue-api/app/api/auth.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-web/src/components/user-create.jsx`、`datalogue-web/src/api/client.js`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：后端新增 `GET /api/auth/users`（管理员权限、支持 `limit/offset`）用于用户列表；前端将原“新建用户独立页”改为“用户管理页”，展示用户表格（用户名/姓名/邮箱/角色/状态），顶部按钮打开“新建用户”弹框，提交后调用注册接口并自动刷新列表；系统管理导航文案改为“用户管理”，路由统一为 `/users`。
+- 验证方式：执行 `cd datalogue-web && npm run lint` 两次，结果均为 `0 errors, 14 warnings`（均为仓库既有告警，无本次新增错误）。
+- 残留风险：当前后端注册接口 `POST /api/auth/register` 仍未限制为管理员调用；虽然列表接口已做管理员鉴权，但如普通登录态可直接调用注册接口，仍有越权创建用户风险。
+
+### 2026-07-09 16:34 · 角色权限与默认超级管理员初始化
+
+- 涉及文件：`datalogue-api/app/models/user.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/app/api/deps.py`、`datalogue-api/app/main.py`、`datalogue-api/alembic/versions/a8b9c0d1e2f3_add_user_role.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/components/user-create.jsx`、`.codex/project-memory.md`
+- 关键改动：新增用户角色字段 `role`（字典：`admin`/`user`）；注册接口收口为管理员权限；管理员鉴权支持 `is_superuser=true` 或 `role=admin`；启动初始化在空库时固定创建 `admin/admin` 且 `role=admin,is_superuser=true` 的超级管理员；前端“用户管理”菜单与 `/users` 路由都增加管理员可见控制，普通用户不可见且不可直接访问。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `4 passed`；执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）。
+- 残留风险：新增 `role` 字段需要执行 Alembic 迁移后数据库才会持久化该字段；若环境未升级到新 revision，会出现模型与库表结构不一致。
+
+### 2026-07-09 17:02 · 用户管理编辑能力与账号资料同步
+
+- 涉及文件：`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/api/client.js`、`datalogue-web/src/components/user-create.jsx`、`datalogue-web/src/components/settings.jsx`、`.codex/project-memory.md`
+- 关键改动：后端新增管理员用户管理接口（`PATCH /api/auth/users/{id}` 编辑信息/角色/状态、`POST /api/auth/users/{id}/reset-password` 重置密码、`DELETE /api/auth/users/{id}` 删除用户）；前端用户管理页新增“编辑/重置密码/删除”操作和对应弹框；“账号与个人资料”页面改为读取当前登录用户，姓名/邮箱/角色与登录态实时一致，不再使用静态演示数据。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `5 passed`（新增用户管理接口回归用例）；执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）。
+- 残留风险：当前“删除用户”对超级管理员做了硬性保护，若未来需要多超级管理员治理（可转移 owner 后删除旧 owner），需补充更细粒度策略与审计流程。
+
+### 2026-07-09 17:18 · 重置密码规则与密码存储 base64 包装
+
+- 涉及文件：`datalogue-api/app/core/security.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/api/client.js`、`datalogue-web/src/components/user-create.jsx`、`.codex/project-memory.md`
+- 关键改动：重置密码接口改为固定规则，管理员触发重置后目标用户密码统一变为“用户名 + @123456”；前端重置弹框改为确认提示，不再手工输入新密码。密码存储策略改为“pbkdf2 哈希后再做 base64 包装入库（`b64$` 前缀）”，并兼容历史未包装哈希的登录校验，避免旧数据失效。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `5 passed`；执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）。
+- 残留风险：base64 仅是编码包装，不是可替代密码学加密；安全性核心仍依赖 pbkdf2 哈希。若后续有更高合规要求，建议升级为 Argon2 并配套密码轮换策略。
+
+### 2026-07-09 17:33 · 登录请求前后端联合加解密改造
+
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/core/security.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/api/client.js`、`.codex/project-memory.md`
+- 关键改动：登录接口从明文 `password` 改为仅接收密文 `password_enc`；前端通过 Web Crypto（AES-GCM）用 `VITE_AUTH_TRANSPORT_KEY` 对密码加密后提交，后端用 `AUTH_TRANSPORT_KEY` 解密再进行密码校验。密码存储取消旧格式兼容，统一要求 `b64$` 包装后的 pbkdf2 哈希。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `6 passed`（新增“明文登录请求应失败”用例）；执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）。
+- 残留风险：前后端传输密钥必须保持一致（`AUTH_TRANSPORT_KEY == VITE_AUTH_TRANSPORT_KEY`），若环境变量不一致会导致登录返回“密码密文无效”。
+
+### 2026-07-09 17:42 · 启动时默认管理员账号强制校准
+
+- 涉及文件：`datalogue-api/app/main.py`、`.codex/project-memory.md`
+- 关键改动：`_bootstrap_admin_if_needed` 从“仅空库创建 admin”改为“启动时确保 admin 存在且可登录”：若不存在则创建；若已存在则强制校准为 `admin/admin`、`role=admin`、`is_superuser=true`、`is_active=true`，避免历史密码存储格式导致管理员无法登录。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `6 passed`。
+- 残留风险：该策略会在每次启动重置 admin 密码为默认值，仅适合当前上线初期；后续进入生产阶段需切换为一次性初始化或受控运维重置流程。
+
+### 2026-07-09 00:10 · 登录认证设计方案文档整理
+
+- 涉及文件：`docs/登录认证设计方案.md`、`.codex/project-memory.md`
+- 关键改动：新增登录认证方案文档，基于当前项目实际技术栈给出可落地路线：后端采用同步 SQLAlchemy 兼容的轻量 JWT 方案（Access + Refresh）、前端沿用 Ant Design 体系实现登录页与路由守卫，并补充 CORS/Cookie、安全边界、分阶段实施清单与验收标准。
+- 验证方式：检查目标文档已在 `docs/` 落盘并完成内容复核（背景、选型结论、后端改造点、前端改造点、安全要求、验收标准完整）。
+- 残留风险：本次仅产出设计文档，尚未落地代码与自动化测试；后续实施阶段需同步补齐 Alembic 迁移、后端鉴权测试与前端登录流程回归。
+
 ### 2026-07-07 18:07 · BI Worker Timeline 临时 Redis 调试缓存
 
 - 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_timeline_cache.py`（新增）、`datalogue-api/app/agentscope_service/worker_logging.py`、`datalogue-api/tests/test_bi_worker_timeline_cache.py`（新增）、`datalogue-api/tests/test_agentscope_service_worker_logging.py`、`datalogue-api/app/agentscope_service/tools.py`（顺带修复 `DatalogueSearchAssetsTool.check_permissions` 签名错误：由 `(self, **kwargs)` 改为 `(self, tool_input, context)` 与 `ToolBase` 基类一致，解决 `TypeError: takes 1 positional argument but 3 were given`）。
@@ -494,3 +543,30 @@
 - 关键改动：将 `ArtifactStore`、`ArtifactPayloadTooLargeError` 与 `ArtifactKind` 真实实现下沉到 `domains/query_execution/artifact_store.py`；将 RepairPlan 分类、校验、脱敏摘要与 artifact payload 清洗能力下沉到 `domains/query_execution/repair_plan.py`；旧 `app/services/artifact_store.py`、`app/services/repair_plan.py` 改为兼容 re-export 门面；Artifacts API、Workbench ViewModel、BI native handoff、BI Toolkit 内部调用切到 domain 实现源；补 facade 测试确保旧 service 与新 domain 对象同源，避免 Artifact/RepairPlan 出现两套安全边界。
 - 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/artifact_store.py app/domains/query_execution/repair_plan.py app/services/artifact_store.py app/services/repair_plan.py app/api/artifacts.py app/services/workbench_view_model.py app/agents/bi_agent/native_handoff.py app/bi/toolkit/atomic.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_artifact_api.py tests/test_repair_plan_contract.py -q`，结果 `29 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_workbench_view_api.py tests/test_agentscope_dataset_query_executor.py tests/test_bi_lead_agent_native_handoff.py tests/test_bi_worker_query_runtime.py -q`，结果 `45 passed, 2 warnings`。
 - 残留风险或后续事项：本轮完成 G043；G044-G048 将继续以测试闸门形式复核 SQL Guard、方言适配、QueryPlan 编译、BI worker runtime 与 SQL/artifact 安全边界。
+### 2026-07-09 15:16 · 管理员密码手动重置
+
+- 涉及文件：`.codex/project-memory.md`
+- 关键改动：通过一次性数据库脚本将 `admin` 用户 `hashed_password` 重置为 `admin` 对应哈希，避免因历史引导密码与 `.env` 预期不一致导致登录 401。
+- 验证方式：执行 `python -c` 重置后即时调用 `verify_password('admin', u.hashed_password)`，输出 `reset_done=True`。
+- 残留风险：`admin/admin` 仅适用于本地临时调试，后续应尽快改回强密码并通过环境变量/运维流程管理。
+
+### 2026-07-09 15:28 · 新建用户功能页面上线
+
+- 涉及文件：`datalogue-web/src/components/user-create.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/api/client.js`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：新增独立页面 `/users-new`，提供用户名、邮箱、姓名、初始密码表单并调用 `/api/auth/register` 创建用户；侧边栏“系统管理”新增“新建用户”入口；顶部面包屑补充用户管理路径；客户端新增 `createUserAccount` API 方法。
+- 验证方式：执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）；新页面编译无异常。
+- 残留风险：当前后端 `register` 仍未加管理员鉴权，理论上任意登录态均可调用；后续建议把创建用户能力限制为管理员角色。
+
+### 2026-07-09 01:05 · 登录认证功能第一阶段落地
+
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/core/security.py`、`datalogue-api/app/models/user.py`、`datalogue-api/app/models/__init__.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/api/deps.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/app/api/__init__.py`、`datalogue-api/app/main.py`、`datalogue-api/alembic/versions/z6a7b8c9d0e1_add_app_user.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/api/client.js`、`datalogue-web/src/auth/auth-context.jsx`、`datalogue-web/src/components/login-page.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：后端新增 `app_user` 用户模型与 Alembic 迁移，落地 `/api/auth/register|login|refresh|logout|me` 认证接口、Bearer 鉴权依赖与启动管理员引导；配置新增 token/cookie/cors 认证参数并在主应用切换到可携带 Cookie 的白名单 CORS。前端新增 AuthContext、登录页、路由守卫、顶部退出入口，并把 API 客户端改为自动注入 Access Token、401 静默 refresh 后重放请求。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q` 结果 `3 passed`；执行 `cd datalogue-web && npm run lint` 结果 `0 errors, 14 warnings`（均为历史告警）；执行 `cd datalogue-web && npm run build` 构建通过。
+- 残留风险：业务路由尚未全面接入 `get_current_user` 强制鉴权（当前先完成认证能力与前端登录闭环）；`BOOTSTRAP_ADMIN_PASSWORD`、`SECRET_KEY` 仍需部署环境变量覆盖；迁移文件已新增但生产环境需手动执行 `alembic upgrade head`。
+
+### 2026-07-09 15:08 · 登录页视觉升级（现代双栏）
+
+- 涉及文件：`datalogue-web/src/components/login-page.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：登录页由单卡片升级为双栏布局（左侧品牌价值展示 + 右侧登录表单卡片），新增分层背景光晕、玻璃感容器、表单按钮视觉强化与移动端响应式适配；保持现有 Ant Design 技术栈与登录逻辑不变。
+- 验证方式：执行 `cd datalogue-web && npm run lint` 与 `cd datalogue-web && npm run build` 均通过（lint 仅保留仓库既有 warnings，无新增 errors）。
+- 残留风险：当前仅完成视觉升级，未接入品牌插画或动态运营素材；如需进一步品牌化，可追加自定义 SVG 背景和轻量入场动画。

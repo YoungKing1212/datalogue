@@ -95,6 +95,14 @@ from .bi_workbench import (
 )
 from .repair_plan import RepairAction, RepairFailureClass, RepairPlan, RepairStatus
 from .llm import LLMModelConfigCreate, LLMModelConfigOut, LLMModelConfigUpdate, LLMTestResultOut
+from .auth import (
+    LoginIn,
+    RegisterIn,
+    TokenOut,
+    UserManageItemOut,
+    UserOut,
+    UserUpdateIn,
+)
 
 __all__ = [
     "DatasourceCreate",
@@ -178,4 +186,10 @@ __all__ = [
     "LLMModelConfigOut",
     "LLMModelConfigUpdate",
     "LLMTestResultOut",
+    "LoginIn",
+    "RegisterIn",
+    "TokenOut",
+    "UserManageItemOut",
+    "UserUpdateIn",
+    "UserOut",
 ]
