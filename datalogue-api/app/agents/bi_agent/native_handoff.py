@@ -28,7 +28,7 @@ from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.middlewares.lifecycle import log_lifecycle
 from app.prompts import NATIVE_HANDOFF_CHILD_MESSAGE_TEMPLATE
 from app.services.analysis_blueprint import execute_analysis_blueprint
-from app.services.artifact_store import ArtifactStore
+from app.domains.query_execution.artifact_store import ArtifactStore
 from app.agents.bi_agent.dataset_agent_factory import AgentScopeDatasetAgentFactory
 from app.agents.bi_agent.handoff_events import (
     collect_native_handoff_payload,

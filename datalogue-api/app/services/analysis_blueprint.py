@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from app.models.dataset import AnalysisBlueprint, BlueprintUsageLog, SemanticDataset
 from app.models.datasource import Datasource
 from app.services.datasource import build_datasource_context, create_engine_for_datasource
-from app.utils.sql_guard import guard_readonly_sql
+from app.domains.query_execution.guard import guard_readonly_sql
 
 logger = logging.getLogger(__name__)
 

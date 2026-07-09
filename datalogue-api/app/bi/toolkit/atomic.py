@@ -28,8 +28,8 @@ from sqlalchemy.orm import Session
 
 from app.models.dataset import AnalysisBlueprint, SemanticDataset
 from app.safety import DataloguePayloadSanitizer
-from app.services.artifact_store import ArtifactStore
-from app.services.query_plan_compiler import compile_query_plan_to_sql
+from app.domains.query_execution.artifact_store import ArtifactStore
+from app.domains.query_execution.compiler import compile_query_plan_to_sql
 
 
 logger = logging.getLogger(__name__)

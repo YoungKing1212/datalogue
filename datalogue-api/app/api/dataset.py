@@ -41,7 +41,7 @@ from app.services.dataset_manifest import (
     save_manifest_draft,
 )
 from app.services.capability_manifest import build_dataset_capability_manifest
-from app.services.sql_preview import preview_dataset_sql
+from app.domains.query_execution.preview import preview_dataset_sql
 from app.utils.query_constraints import normalize_query_constraints
 
 router = APIRouter()

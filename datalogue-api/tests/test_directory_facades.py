@@ -108,3 +108,100 @@ def test_data_source_implementation_lives_in_domain_modules():
     assert legacy.test_connection is service.test_connection
     assert legacy.get_adapter is registry.get_adapter
     assert legacy.DatasourceAdapter is base.DatasourceAdapter
+
+
+def test_query_execution_guard_and_dialect_implementation_lives_in_domain_modules():
+    """G040 要求 SQL guard / dialect 纯工具迁入 query_execution，旧 utils 路径只做兼容门面。"""
+
+    legacy_guard = importlib.import_module("app.utils.sql_guard")
+    domain_guard = importlib.import_module("app.domains.query_execution.guard")
+    legacy_dialect = importlib.import_module("app.utils.sql_dialect")
+    domain_names = importlib.import_module("app.domains.query_execution.dialect.names")
+
+    assert domain_guard.SQLGuardResult.__module__ == "app.domains.query_execution.guard"
+    assert domain_guard.guard_readonly_sql.__module__ == "app.domains.query_execution.guard"
+    assert domain_names.quote_ident.__module__ == "app.domains.query_execution.dialect.names"
+    assert domain_names.sanitize_filter_sql.__module__ == "app.domains.query_execution.dialect.names"
+
+    # 旧路径必须复用新领域对象，避免目录迁移期间出现两套 SQL 安全规则。
+    assert legacy_guard.SQLGuardResult is domain_guard.SQLGuardResult
+    assert legacy_guard.guard_readonly_sql is domain_guard.guard_readonly_sql
+    assert legacy_dialect.quote_ident is domain_names.quote_ident
+    assert legacy_dialect.sanitize_filter_sql is domain_names.sanitize_filter_sql
+
+    assert inspect.getsourcefile(domain_guard.guard_readonly_sql).endswith(
+        "app/domains/query_execution/guard.py"
+    )
+    assert inspect.getsourcefile(domain_names.quote_ident).endswith(
+        "app/domains/query_execution/dialect/names.py"
+    )
+
+
+def test_query_execution_adapter_and_compiler_implementation_lives_in_domain_modules():
+    """G041 要求 SQL 方言适配器与查询计划编译器进入 query_execution，旧 service 路径只做门面。"""
+
+    legacy_adapter = importlib.import_module("app.services.sql_dialect_adapter")
+    domain_adapter = importlib.import_module("app.domains.query_execution.dialect.adapter")
+    legacy_compiler = importlib.import_module("app.services.query_plan_compiler")
+    domain_compiler = importlib.import_module("app.domains.query_execution.compiler")
+
+    assert domain_adapter.adapt_sql_for_execution.__module__ == (
+        "app.domains.query_execution.dialect.adapter"
+    )
+    assert domain_adapter.quote_identifier.__module__ == "app.domains.query_execution.dialect.adapter"
+    assert domain_compiler.compile_query_plan_to_sql.__module__ == "app.domains.query_execution.compiler"
+
+    # 旧 service 路径复用 domain 对象，避免迁移期间出现两套 SQL 编译/适配规则。
+    assert legacy_adapter.adapt_sql_for_execution is domain_adapter.adapt_sql_for_execution
+    assert legacy_adapter.quote_identifier is domain_adapter.quote_identifier
+    assert legacy_compiler.compile_query_plan_to_sql is domain_compiler.compile_query_plan_to_sql
+
+    assert inspect.getsourcefile(domain_adapter.adapt_sql_for_execution).endswith(
+        "app/domains/query_execution/dialect/adapter.py"
+    )
+    assert inspect.getsourcefile(domain_compiler.compile_query_plan_to_sql).endswith(
+        "app/domains/query_execution/compiler.py"
+    )
+
+
+def test_query_execution_preview_implementation_lives_in_domain_module():
+    """G042 要求 SQL preview 实现进入 query_execution，旧 service 路径只做兼容门面。"""
+
+    legacy = importlib.import_module("app.services.sql_preview")
+    domain = importlib.import_module("app.domains.query_execution.preview")
+
+    assert domain.preview_dataset_sql.__module__ == "app.domains.query_execution.preview"
+    assert legacy.preview_dataset_sql is domain.preview_dataset_sql
+    assert inspect.getsourcefile(domain.preview_dataset_sql).endswith(
+        "app/domains/query_execution/preview.py"
+    )
+
+
+def test_query_execution_artifact_and_repair_implementation_lives_in_domain_modules():
+    """G043 要求 ArtifactStore 与 RepairPlan 服务进入 query_execution，旧 service 路径只做门面。"""
+
+    legacy_artifact = importlib.import_module("app.services.artifact_store")
+    domain_artifact = importlib.import_module("app.domains.query_execution.artifact_store")
+    legacy_repair = importlib.import_module("app.services.repair_plan")
+    domain_repair = importlib.import_module("app.domains.query_execution.repair_plan")
+
+    assert domain_artifact.ArtifactStore.__module__ == "app.domains.query_execution.artifact_store"
+    assert domain_repair.validate_repair_plan.__module__ == "app.domains.query_execution.repair_plan"
+    assert domain_repair.sanitize_repair_plan_artifact_payload.__module__ == (
+        "app.domains.query_execution.repair_plan"
+    )
+
+    # 旧 service 路径必须复用新领域对象，避免 Artifact/RepairPlan 出现两套安全边界。
+    assert legacy_artifact.ArtifactStore is domain_artifact.ArtifactStore
+    assert legacy_artifact.ArtifactPayloadTooLargeError is domain_artifact.ArtifactPayloadTooLargeError
+    assert legacy_repair.validate_repair_plan is domain_repair.validate_repair_plan
+    assert legacy_repair.sanitize_repair_plan_artifact_payload is (
+        domain_repair.sanitize_repair_plan_artifact_payload
+    )
+
+    assert inspect.getsourcefile(domain_artifact.ArtifactStore).endswith(
+        "app/domains/query_execution/artifact_store.py"
+    )
+    assert inspect.getsourcefile(domain_repair.validate_repair_plan).endswith(
+        "app/domains/query_execution/repair_plan.py"
+    )

@@ -24,14 +24,6 @@
 
 from app.utils.json_utils import safe_json_parse
 from app.utils.token import extract_token_usage, merge_token_usage
-from app.utils.sql_dialect import (
-    resolve_dialect,
-    quote_ident,
-    sanitize_filter_sql,
-    contains_forbidden_keyword,
-    FORBIDDEN_SQL_KEYWORDS,
-)
-from app.utils.sql_guard import SQLGuardResult, guard_readonly_sql
 from app.utils.sql_diagnosis import classify_sql_execution_error, merge_llm_sql_diagnosis
 from app.utils.sample_data import fetch_sample_rows
 from app.utils.column_labels import build_column_labels
@@ -52,3 +44,22 @@ __all__ = [
     "fetch_sample_rows",
     "build_column_labels",
 ]
+
+
+def __getattr__(name: str):
+    """按需导出 SQL 迁移相关能力，避免 utils 包初始化阶段触发循环导入。"""
+    if name in {
+        "FORBIDDEN_SQL_KEYWORDS",
+        "contains_forbidden_keyword",
+        "quote_ident",
+        "resolve_dialect",
+        "sanitize_filter_sql",
+    }:
+        from app.utils import sql_dialect
+
+        return getattr(sql_dialect, name)
+    if name in {"SQLGuardResult", "guard_readonly_sql"}:
+        from app.utils import sql_guard
+
+        return getattr(sql_guard, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

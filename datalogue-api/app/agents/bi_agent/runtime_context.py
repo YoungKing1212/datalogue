@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.models.dataset import SemanticDataset
 from app.models.datasource import Datasource
-from app.services.sql_preview import preview_dataset_sql
+from app.domains.query_execution.preview import preview_dataset_sql
 from app.utils.compiler_context import build_query_plan_compiler_context
 
 

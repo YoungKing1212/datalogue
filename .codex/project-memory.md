@@ -420,6 +420,13 @@
 - 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile $(find app/domains app/agentscope_runtime -name '*.py' | sort) tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py`，结果为 `4 passed, 2 warnings in 0.02s`。
 - 残留风险或后续事项：本轮只是目录治理 Phase A/B 的文档与 facade 骨架，不做旧源码搬迁和调用方切换；后续如推进真实模块迁移，需要继续保持 facade-first、分批改导入、补回归测试，并确认 AgentScope 主链与 BI Worker 查询语义不发生漂移。
 
+### 2026-07-09 13:50 · Workbench 去常驻化第一批（普通 Chat 退面板 + 隐藏恢复壳分类器）
+
+- 涉及文件：`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/components/workbench-route.jsx`、`datalogue-web/src/assistant/workbench-mount-source.js`、`datalogue-web/src/assistant/workbench-mount-source.test.js`。
+- 关键改动：普通 `/chat` 与 `/chat/:id` 不再默认挂载 `WorkbenchPanel`，把 Workbench 常驻侧栏从 Chat 主链上摘掉；新增 `classifyWorkbenchMountSource` 和 `isAllowedWorkbenchRecoverySource`，把普通聊天、隐藏恢复壳、旧镜像、显式恢复分成 fail-closed 的受控来源；`/workbench` 隐藏路由仍保留，但仅在恢复来源合法时渲染；补测试确认普通 Chat 不再出现工作台面板，同时覆盖普通聊天、隐藏恢复壳、旧镜像、显式恢复与冲突输入的分类结果。
+- 验证方式：`npm test -- --run src/components/chat-page.test.jsx src/components/workbench-route.test.jsx src/assistant/workbench-api.test.js src/assistant/workbench-mount-source.test.js`（34/34 通过）；`npm run lint`（0 errors，保留仓库既有 warnings）；`npm run build` 成功产出前端构建。
+- 残留风险或后续事项：`/workbench` 隐藏壳与 `/api/workbench/*` 仍保留，下一批需要继续收口结果详情/失败态/retry 的 Chat 侧承接，并在主路径流量归零后再走彻底退役；当前 lint 仍存在与本次无关的既有 warnings，未处理仓库历史债务。
+
 
 
 ### 2026-07-09 12:45 · 数据源适配 domain 下沉与 Workbench 挂载源收口
@@ -429,3 +436,52 @@
 - 涉及文件：`.gitignore`、`datalogue-api/app/domains/data_source/adapters/base.py`、`datalogue-api/app/domains/data_source/adapters/hive.py`、`datalogue-api/app/domains/data_source/adapters/oracle.py`、`datalogue-api/app/domains/data_source/adapters/registry.py`、`datalogue-api/app/domains/data_source/service.py`、`datalogue-api/tests/test_directory_facades.py`、`datalogue-web/src/assistant/workbench-mount-source.js`、`datalogue-web/src/assistant/workbench-mount-source.test.js`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/components/workbench-route.jsx`，并删除根目录临时验收截图 `chat-e2e-initial.png`、`chat-e2e-thread.png`。
 - 关键改动：将数据源能力、上下文、诊断、adapter 注册和 Oracle/Hive 连接逻辑继续下沉到 `domains/data_source/adapters` 边界，`service.py` 收敛为面向 API 的应用服务入口；补强目录 facade 测试，确保旧服务入口仍能稳定导入；前端新增 `workbench-mount-source` 统一判断 Workbench 挂载来源，Chat 页面和 Workbench 路由按同一来源语义展示/挂载，避免页面侧重复推断；`.gitignore` 补充 E2E 临时图规则并移除已追踪临时截图。
 - 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/services/datasource.py $(find app/domains/data_source -name '*.py' | sort) tests/test_directory_facades.py` 通过；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_datasource.py -q`，结果 `14 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_dataset.py -q -k "sql_preview or datasource"`，结果 `6 passed, 27 deselected, 10 warnings`。
+
+
+### 2026-07-09 14:10 · 查询执行 SQL Guard 与方言基础工具 domain 下沉
+
+- 完成时间：2026-07-09 14:10。
+- 功能名称：查询执行 SQL Guard 与方言基础工具 domain 下沉。
+- 涉及文件：`datalogue-api/app/domains/query_execution/__init__.py`、`datalogue-api/app/domains/query_execution/guard.py`、`datalogue-api/app/domains/query_execution/dialect/__init__.py`、`datalogue-api/app/domains/query_execution/dialect/names.py`、`datalogue-api/app/utils/__init__.py`、`datalogue-api/app/utils/sql_dialect.py`、`datalogue-api/app/utils/sql_guard.py`、`datalogue-api/app/services/sql_dialect_adapter.py`、`datalogue-api/app/services/sql_preview.py`、`datalogue-api/app/services/analysis_blueprint.py`、`datalogue-api/tests/test_directory_facades.py`。
+- 关键改动：将 `quote_ident`、`resolve_dialect`、`sanitize_filter_sql`、`contains_forbidden_keyword` 等方言基础工具下沉到 `domains/query_execution/dialect/names.py`；将 `SQLGuardResult` 与 `guard_readonly_sql` 的真实实现下沉到 `domains/query_execution/guard.py`；旧 `app/utils/sql_dialect.py`、`app/utils/sql_guard.py` 改为兼容 re-export 门面；`query_execution` 与 `dialect` 包入口改为懒加载，避免新旧路径并存期间触发 query_plan_compiler / sql_guard 循环导入；上层 `sql_dialect_adapter`、`sql_preview`、`analysis_blueprint` 改用 domain 实现源。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_sql_guard.py tests/test_sql_dialect_adapter.py -q`，结果 `24 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/__init__.py app/domains/query_execution/guard.py app/domains/query_execution/dialect/__init__.py app/domains/query_execution/dialect/names.py app/services/sql_dialect_adapter.py app/services/sql_preview.py app/services/analysis_blueprint.py app/utils/__init__.py app/utils/sql_dialect.py app/utils/sql_guard.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_query_plan_compiler.py tests/test_dataset.py -q -k "sql_preview or datasource or dialect"`，结果 `8 passed, 40 deselected, 10 warnings`。
+- 残留风险或后续事项：本轮完成 G040 的纯工具下沉与旧路径 facade；尚未迁移 `sql_dialect_adapter.py`、`query_plan_compiler.py`、`sql_preview.py` 的真实实现主体，对应 G041-G043 仍待后续分批推进。
+
+
+### 2026-07-09 14:35 · 查询计划编译器与 SQL 方言适配器 domain 下沉
+
+- 完成时间：2026-07-09 14:35。
+- 功能名称：查询计划编译器与 SQL 方言适配器 domain 下沉。
+- 涉及文件：`datalogue-api/app/domains/query_execution/compiler.py`、`datalogue-api/app/domains/query_execution/dialect/adapter.py`、`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/app/services/sql_dialect_adapter.py`、`datalogue-api/app/bi/toolkit/atomic.py`、`datalogue-api/tests/test_directory_facades.py`。
+- 关键改动：将 `adapt_sql_for_execution`、`normalize_supported_dialect`、`quote_identifier` 真实实现下沉到 `domains/query_execution/dialect/adapter.py`；将 `compile_query_plan_to_sql` 真实实现下沉到 `domains/query_execution/compiler.py`；旧 `app/services/sql_dialect_adapter.py` 与 `app/services/query_plan_compiler.py` 改为兼容 re-export 门面；BI Toolkit 内部调用切到 domain compiler，测试和历史调用方仍可走旧 service facade；补 facade 测试确保旧路径与新 domain 对象同源，避免迁移期出现两套 SQL 编译/适配规则。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/compiler.py app/domains/query_execution/dialect/adapter.py app/services/query_plan_compiler.py app/services/sql_dialect_adapter.py app/bi/toolkit/atomic.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_sql_dialect_adapter.py tests/test_query_plan_compiler.py -q`，结果 `26 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_dataset.py -q -k "sql_preview or datasource" && ../datalogue-api/.venv/bin/pytest tests/test_bi_worker_query_runtime.py -q`，结果分别为 `6 passed, 27 deselected, 10 warnings` 与 `22 passed, 2 warnings`。
+- 残留风险或后续事项：本轮完成 G041；`sql_preview.py` 真实实现仍在 `app/services`，按计划由 G042 单独迁移，并继续保持执行器通过 `create_engine_for_datasource()`。
+
+
+### 2026-07-09 14:55 · SQL Preview 执行服务 domain 下沉
+
+- 完成时间：2026-07-09 14:55。
+- 功能名称：SQL Preview 执行服务 domain 下沉。
+- 涉及文件：`datalogue-api/app/domains/query_execution/preview.py`、`datalogue-api/app/services/sql_preview.py`、`datalogue-api/app/api/dataset.py`、`datalogue-api/app/agents/bi_agent/runtime_context.py`、`datalogue-api/tests/test_dataset.py`、`datalogue-api/tests/test_directory_facades.py`。
+- 关键改动：将 `preview_dataset_sql` 真实实现下沉到 `domains/query_execution/preview.py`，并继续通过 `domains.data_source.service.create_engine_for_datasource()` 创建数据源执行引擎；旧 `app/services/sql_preview.py` 改为兼容 re-export 门面；Dataset API 与 BI runtime context 改用 domain preview；测试 monkeypatch 路径切到 domain preview 的 `create_engine_for_datasource`，并补 facade 测试确认旧 service 与新 domain 对象同源。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/preview.py app/services/sql_preview.py app/api/dataset.py app/agents/bi_agent/runtime_context.py tests/test_dataset.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_dataset.py -q -k "sql_preview or datasource or query_execution_preview"`，结果 `8 passed, 33 deselected, 10 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_bi_worker_query_runtime.py tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py -q`，结果 `41 passed, 2 warnings`。
+- 残留风险或后续事项：本轮完成 G042；`artifact_store.py`、`repair_plan.py` 仍待 G043 迁移，SQL 不泄露与 artifact ref 约束测试仍在 G048 汇总验证。
+
+### 2026-07-09 14:24 · Workbench 去常驻化第二批（Chat retry 承接 + 退役闸门）
+
+- 完成时间：2026-07-09 14:24。
+- 功能名称：Workbench 去常驻化第二批（Chat retry 承接 + 退役闸门）。
+- 涉及文件：`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/workbench-retention-gate.js`、`datalogue-web/src/assistant/workbench-retention-gate.test.js`。
+- 关键改动：Chat 侧 `ArtifactCard` 的 retry 动作改为先发起受控 `/api/workbench/actions/retry`，成功后把后端返回的 `task_request` 写入 `window.__DATALOGUE_PENDING_WORKBENCH_RETRY__` 并通过 `datalogue:composer-submit` 交给既有 Chat 主链；`chat-adapter` 继续消费 pending retry 并把 `retry_checkpoint_ref` 交给 Agent Team；新增纯函数 `evaluateWorkbenchRetentionGate`，按 14 天 UTC 窗口汇总 `/api/workbench/*` 与 `/workbench/*` 的主路径/恢复流量，并用 Chat 侧 artifact 详情承接总量对比 `expected_artifact_detail_total`，作为 Workbench 彻底退役的机器闸门。
+- 验证方式：执行 `cd datalogue-web && npm test -- src/assistant/workbench-retention-gate.test.js src/assistant/MyMessage.test.jsx`，结果 `25 passed`；执行 `cd datalogue-web && npm run lint`，结果 0 errors、14 个既有 warnings；执行 `cd datalogue-web && npm run build` 成功产出前端构建。
+- 残留风险或后续事项：`expected_artifact_detail_total` 目前支持显式输入与前端投影式兜底两种口径，后续若要接入真实埋点，还需要把 Chat 侧 artifact 详情“应出现”指标标准化到统一事件名；`/workbench` 隐藏壳与 `/api/workbench/*` 仍保留，需等主路径流量归零后再做最终退役。
+
+
+### 2026-07-09 15:15 · ArtifactStore 与 RepairPlan 服务 domain 下沉
+
+- 完成时间：2026-07-09 15:15。
+- 功能名称：ArtifactStore 与 RepairPlan 服务 domain 下沉。
+- 涉及文件：`datalogue-api/app/domains/query_execution/artifact_store.py`、`datalogue-api/app/domains/query_execution/repair_plan.py`、`datalogue-api/app/services/artifact_store.py`、`datalogue-api/app/services/repair_plan.py`、`datalogue-api/app/api/artifacts.py`、`datalogue-api/app/services/workbench_view_model.py`、`datalogue-api/app/agents/bi_agent/native_handoff.py`、`datalogue-api/app/bi/toolkit/atomic.py`、`datalogue-api/tests/test_directory_facades.py`。
+- 关键改动：将 `ArtifactStore`、`ArtifactPayloadTooLargeError` 与 `ArtifactKind` 真实实现下沉到 `domains/query_execution/artifact_store.py`；将 RepairPlan 分类、校验、脱敏摘要与 artifact payload 清洗能力下沉到 `domains/query_execution/repair_plan.py`；旧 `app/services/artifact_store.py`、`app/services/repair_plan.py` 改为兼容 re-export 门面；Artifacts API、Workbench ViewModel、BI native handoff、BI Toolkit 内部调用切到 domain 实现源；补 facade 测试确保旧 service 与新 domain 对象同源，避免 Artifact/RepairPlan 出现两套安全边界。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/artifact_store.py app/domains/query_execution/repair_plan.py app/services/artifact_store.py app/services/repair_plan.py app/api/artifacts.py app/services/workbench_view_model.py app/agents/bi_agent/native_handoff.py app/bi/toolkit/atomic.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_artifact_api.py tests/test_repair_plan_contract.py -q`，结果 `29 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_workbench_view_api.py tests/test_agentscope_dataset_query_executor.py tests/test_bi_lead_agent_native_handoff.py tests/test_bi_worker_query_runtime.py -q`，结果 `45 passed, 2 warnings`。
+- 残留风险或后续事项：本轮完成 G043；G044-G048 将继续以测试闸门形式复核 SQL Guard、方言适配、QueryPlan 编译、BI worker runtime 与 SQL/artifact 安全边界。

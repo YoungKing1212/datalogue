@@ -4,7 +4,7 @@
 // 图表、产物引用和业务卡片从 metadata.custom 取，由 chat-adapter.js 在 final 事件时写入。
 // 普通 Chat 用户可见层不展示 SQL 文本，SQL 仅保留在后端 control/trace 面。
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   useAuiState,
   useAui,
@@ -22,6 +22,12 @@ import { Icon } from '../components/icons';
 import { LineChart, Donut, GroupedBar } from '../components/charts';
 import ArtifactCard from '../components/artifact-card';
 import { getArtifact } from '../api/client';
+import { requestWorkbenchRetry } from './workbench-api';
+import {
+  buildArtifactDetailExpectedEvent,
+  buildArtifactDetailViewEvent,
+  emitWorkbenchRetentionUiEvent,
+} from './workbench-retention-events';
 
 // ── Step 节点名称映射（agent panel 兼容） ──
 const NODE_STEP_NAMES = {
@@ -981,6 +987,41 @@ export function AIMessage() {
     api.message().reload();
   };
 
+  useEffect(() => {
+    const event = buildArtifactDetailExpectedEvent({
+      artifactCard,
+      messageId: message?.id,
+    });
+    emitWorkbenchRetentionUiEvent(event); // 退役 gate 的“应出现详情”只以 Chat 侧 artifact 投影为准，不再从 Workbench 旧日志倒推。
+  }, [artifactCard, message?.id]);
+
+  useEffect(() => {
+    const onArtifactAction = async (event) => {
+      const detail = event?.detail || {};
+      if (detail.actionType !== 'retry' || !detail.checkpointRef) return;
+      try {
+        const response = await requestWorkbenchRetry({
+          checkpoint_ref: detail.checkpointRef, // 只把检查点交给后端，由后端恢复完整上下文。
+          selected_action: 'retry_last_step',
+        });
+        const taskRequest = response?.accepted ? response?.task_request || null : null;
+        if (!taskRequest) return;
+        window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = taskRequest;
+        window.dispatchEvent(
+          new CustomEvent('datalogue:composer-submit', {
+            detail: {
+              text: taskRequest.question || taskRequest.display_text || '重试上一步',
+            },
+          }),
+        );
+      } catch (error) {
+        console.error('[artifact-card] retry request failed', error);
+      }
+    };
+    window.addEventListener('datalogue:artifact-action', onArtifactAction);
+    return () => window.removeEventListener('datalogue:artifact-action', onArtifactAction);
+  }, []);
+
   const handleArtifactAction = async (action) => {
     const actionType = action?.actionType || action?.action_type || action?.action_id || action?.actionId;
     if (actionType === 'copy') {
@@ -1001,6 +1042,11 @@ export function AIMessage() {
     }
 
     setArtifactDetail({ status: 'loading', ref });
+    emitWorkbenchRetentionUiEvent(buildArtifactDetailViewEvent({
+      artifactRef: ref,
+      messageId: message?.id,
+      status: 'opened',
+    })); // 用户已在 Chat 侧打开详情，作为 Workbench 退役 gate 的实际承接证据。
     try {
       const artifact = await getArtifact(ref);
       setArtifactDetail({ status: 'ready', ref, artifact });

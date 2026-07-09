@@ -584,6 +584,8 @@ function safeArtifactCard(artifactCard) {
           ) || null,
           label: safeDisplayText(action?.label) || null,
           ref: action?.ref || action?.payload_ref || action?.payloadRef || '',
+          checkpoint_ref: action?.checkpoint_ref || action?.checkpointRef || action?.payload_ref || action?.payloadRef || null,
+          disabled_reason: safeDisplayText(action?.disabled_reason || action?.disabledReason) || null,
           disabled: Boolean(action?.disabled || action?.enabled === false),
         }))
       : [],

@@ -127,7 +127,7 @@ class TestDatasetAPI:
                 )
             )
         monkeypatch.setattr(
-            "app.services.sql_preview.create_engine_for_datasource",
+            "app.domains.query_execution.preview.create_engine_for_datasource",
             lambda _datasource: engine,
         )
         return engine

@@ -36,8 +36,8 @@ from app.schemas.agentscope_workbench import (
     WorkbenchThreadView,
     WorkbenchTimelineItem,
 )
-from app.services.artifact_store import ArtifactStore
-from app.services.repair_plan import sanitize_repair_plan_artifact_payload
+from app.domains.query_execution.artifact_store import ArtifactStore
+from app.domains.query_execution.repair_plan import sanitize_repair_plan_artifact_payload
 
 
 class WorkbenchViewNotFoundError(LookupError):
