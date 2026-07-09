@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core import schemas
 from app.core.database import get_db
-from app.services.message_feedback import submit_message_feedback
+from app.domains.agent_team.message_feedback import submit_message_feedback
 
 router = APIRouter()
 

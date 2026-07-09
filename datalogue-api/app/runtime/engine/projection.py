@@ -25,7 +25,7 @@ from app.core.schemas.bi_workbench import (
 )
 
 
-def project_agentscope_service_event(
+def project_runtime_event(
     event: dict[str, Any],
     *,
     task_id: str,

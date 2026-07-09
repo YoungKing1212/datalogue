@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 
 
-def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, tmp_path):
+def test_create_embedded_runtime_app_wires_redis_and_workspace(monkeypatch, tmp_path):
     """factory 只负责装配官方 AgentScope 基础组件，不在构造阶段连接 Redis。"""
 
     from app.runtime.engine import app_factory
@@ -60,7 +60,7 @@ def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, t
         AGENTSCOPE_WORKSPACE_TTL_SECONDS=120.5,
     )
 
-    app = app_factory.create_embedded_agentscope_app(settings)
+    app = app_factory.create_embedded_runtime_app(settings)
 
     assert app.title == "fake-agentscope"
     assert calls["storage_kwargs"] == {
@@ -107,14 +107,14 @@ def test_main_mounts_agentscope_service_only_when_enabled(monkeypatch):
 
     mounted: dict[str, object] = {}
 
-    def fake_create_embedded_agentscope_app(settings):
+    def fake_create_embedded_runtime_app(settings):
         mounted["settings"] = settings
         return FastAPI(title="fake-agentscope")
 
     monkeypatch.setattr(
         main_module,
-        "create_embedded_agentscope_app",
-        fake_create_embedded_agentscope_app,
+        "create_embedded_runtime_app",
+        fake_create_embedded_runtime_app,
         raising=False,
     )
 
@@ -146,14 +146,14 @@ def test_main_lifespan_enters_mounted_agentscope_service_lifespan(monkeypatch):
         yield
         events.append("child-exit")
 
-    def fake_create_embedded_agentscope_app(_settings):
+    def fake_create_embedded_runtime_app(_settings):
         return FastAPI(title="fake-agentscope", lifespan=fake_child_lifespan)
 
     monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)
     monkeypatch.setattr(
         main_module,
-        "create_embedded_agentscope_app",
-        fake_create_embedded_agentscope_app,
+        "create_embedded_runtime_app",
+        fake_create_embedded_runtime_app,
         raising=False,
     )
 
@@ -185,24 +185,24 @@ def test_main_lifespan_initializes_agentscope_otel_before_child_lifespan(monkeyp
         yield
         events.append("child-exit")
 
-    def fake_create_embedded_agentscope_app(_settings):
+    def fake_create_embedded_runtime_app(_settings):
         return FastAPI(title="fake-agentscope", lifespan=fake_child_lifespan)
 
-    def fake_setup_agentscope_tracing(settings):
+    def fake_setup_runtime_tracing(settings):
         assert settings is main_module.settings
         events.append("otel")
 
     monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)
     monkeypatch.setattr(
         main_module,
-        "create_embedded_agentscope_app",
-        fake_create_embedded_agentscope_app,
+        "create_embedded_runtime_app",
+        fake_create_embedded_runtime_app,
         raising=False,
     )
     monkeypatch.setattr(
         main_module,
-        "setup_agentscope_tracing",
-        fake_setup_agentscope_tracing,
+        "setup_runtime_tracing",
+        fake_setup_runtime_tracing,
         raising=False,
     )
 

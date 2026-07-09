@@ -31,6 +31,6 @@ def test_agentscope_service_dependencies_import_with_project_dependency_set():
 def test_datalogue_agentscope_service_factory_is_importable():
     """主应用通过该 factory 嵌入 AgentScope Service。"""
 
-    from app.runtime.engine.app_factory import create_embedded_agentscope_app
+    from app.runtime.engine.app_factory import create_embedded_runtime_app
 
-    assert create_embedded_agentscope_app is not None
+    assert create_embedded_runtime_app is not None

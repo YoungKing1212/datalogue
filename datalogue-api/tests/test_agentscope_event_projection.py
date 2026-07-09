@@ -18,7 +18,7 @@ from app.core.events.projection import (
     extract_refs_from_envelope,
     project_event_envelope_to_agentscope,
 )
-from app.services.agentscope_mirror import create_agentscope_session, create_running_assistant_message
+from app.services.runtime_mirror import create_agentscope_session, create_running_assistant_message
 
 
 def test_project_event_envelope_to_agentscope_event_and_refs(db_session):

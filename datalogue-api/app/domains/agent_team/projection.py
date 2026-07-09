@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : projection.py
 # Description:
-#   Agent Team 事件投影门面，re-export project_agentscope_service_event。
+#   Agent Team 事件投影门面，re-export project_runtime_event。
 #
 # Responsibilities:
 #   - 暴露 AgentScope Service 事件到 Datalogue 事件的投影函数
@@ -17,7 +17,7 @@
 `app.agentscope_service.projection`；本文件只做懒加载 re-export。
 """
 
-__all__ = ["project_agentscope_service_event"]
+__all__ = ["project_runtime_event"]
 
 
 def __getattr__(name: str):

@@ -28,7 +28,7 @@ from app.core.schemas.bi_workbench import (
     DatalogueEventType,
     build_datalogue_event_envelope,
 )
-from app.services.agentscope_mirror import record_agentscope_event, record_agentscope_ref
+from app.services.runtime_mirror import record_agentscope_event, record_agentscope_ref
 
 
 USER_VISIBLE_EVENT_TYPES = {

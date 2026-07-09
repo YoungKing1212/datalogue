@@ -26,7 +26,7 @@ from app.core.schemas.agentscope_workbench import (
     WorkbenchRetryResponse,
     WorkbenchRetryRunRequest,
 )
-from app.services.agentscope_mirror import (
+from app.services.runtime_mirror import (
     create_running_assistant_message,
     find_expired_running_messages,
     record_agentscope_event,

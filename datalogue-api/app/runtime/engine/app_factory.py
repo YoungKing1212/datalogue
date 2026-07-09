@@ -63,7 +63,7 @@ def _redis_kwargs(settings: Settings) -> dict[str, Any]:
     }
 
 
-def create_embedded_agentscope_app(settings: Settings) -> FastAPI:
+def create_embedded_runtime_app(settings: Settings) -> FastAPI:
     """创建可挂载到 Datalogue 主应用下的官方 AgentScope Service 子应用。"""
 
     redis_kwargs = _redis_kwargs(settings)

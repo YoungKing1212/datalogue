@@ -1,5 +1,5 @@
 # ============================================================
-# File Name   : agentscope_chat_bridge.py
+# File Name   : chat_bridge.py
 # Description:
 #   Chat turn 到 AgentScope 工作台会话镜像的桥接服务。
 #
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.schemas.bi_workbench import DatalogueEventEnvelope
 from app.core.events.projection import project_event_envelope_to_agentscope
-from app.services.agentscope_mirror import (
+from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,
     create_running_assistant_message,
@@ -131,7 +131,7 @@ def complete_chat_turn(
     # 异步触发标题生成
     if context.user_text and final_summary and not context.is_legacy_read_only:
         try:
-            from app.services.title_generator import maybe_auto_title_async
+            from app.domains.agent_team.title_generator import maybe_auto_title_async
             maybe_auto_title_async(
                 context.thread_id,
                 context.user_text,

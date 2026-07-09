@@ -24,7 +24,7 @@ from app.core.config import Settings
 logger = logging.getLogger(__name__)
 
 
-def setup_agentscope_tracing(settings: Settings) -> None:
+def setup_runtime_tracing(settings: Settings) -> None:
     """根据配置初始化 AgentScope OTel TracerProvider。
 
     仅在 AGENTSCOPE_OTEL_TRACING_ENABLED=true 时生效。
@@ -66,7 +66,7 @@ def setup_agentscope_tracing(settings: Settings) -> None:
         logger.exception("Failed to initialize AgentScope OTel tracing.")
 
 
-def agentscope_otel_enabled() -> bool:
+def runtime_otel_enabled() -> bool:
     """返回当前是否有有效的 TracerProvider（非 no-op proxy）。
 
     可在中间件中用于判断是否设置自定义 span 属性。

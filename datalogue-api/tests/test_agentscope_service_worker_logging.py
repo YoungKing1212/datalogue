@@ -1191,7 +1191,7 @@ def test_agentscope_otel_config_defaults(tmp_path, monkeypatch):
     assert settings.AGENTSCOPE_OTEL_SERVICE_NAME == "datalogue-api"
 
 
-def test_setup_agentscope_tracing_attaches_logging_exporter_when_otlp_disabled(monkeypatch):
+def test_setup_runtime_tracing_attaches_logging_exporter_when_otlp_disabled(monkeypatch):
     """只启用 tracing、不启用 OTLP 时，也要把 span 输出到后端日志。"""
     from opentelemetry import trace
 
@@ -1221,7 +1221,7 @@ def test_setup_agentscope_tracing_attaches_logging_exporter_when_otlp_disabled(m
         AGENTSCOPE_OTEL_EXPORTER_ENDPOINT=None,
     )
 
-    otel_setup.setup_agentscope_tracing(settings)
+    otel_setup.setup_runtime_tracing(settings)
 
     assert calls["provider"] is calls["logging_provider"]
     assert calls["logging_enabled"] is True

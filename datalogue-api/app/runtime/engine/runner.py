@@ -30,7 +30,7 @@ from redis.asyncio import Redis
 from app.runtime.engine.client import AgentScopeServiceClient
 from app.domains.bi.worker.dataset_query import execute_dataset_query_for_agent_team_direct_fallback
 from app.domains.agent_team.progress_bridge import agent_progress_subscription
-from app.runtime.engine.projection import project_agentscope_service_event
+from app.runtime.engine.projection import project_runtime_event
 from app.runtime.engine.registry import build_datalogue_leader_agent_spec
 from app.domains.agent_team.task_context import store_task_context
 from app.core.config import Settings, get_settings
@@ -46,7 +46,7 @@ _FORBIDDEN_MODEL_PARAMETER_KEYS = {"api_key", "base_url", "credential_id", "mode
 logger = logging.getLogger(__name__)
 
 
-class AgentScopeServiceTaskRunner:
+class AgentTeamTaskRunner:
     """Agent Team 默认 runner：只代理 AgentScope Service，不执行 Datalogue 自研 Agent loop。"""
 
     def __init__(
@@ -128,7 +128,7 @@ class AgentScopeServiceTaskRunner:
                         if _is_agent_create_event(event):
                             current_reply_spawned_worker = True
                         current_reply_text += _event_text(event)
-                        envelope = project_agentscope_service_event(
+                        envelope = project_runtime_event(
                             event,
                             task_id=task.task_id,
                             trace_id=task.trace_id,
@@ -194,7 +194,7 @@ class AgentScopeServiceTaskRunner:
             )
             return session_id, agent_id
         except httpx.HTTPStatusError as exc:
-            if self.leader_agent_id or not _is_agentscope_agent_not_found(exc):
+            if self.leader_agent_id or not _is_agent_not_found(exc):
                 raise
             logger.warning(
                 "AgentScope leader agent not found when creating session; refreshing leader once: "
@@ -341,7 +341,7 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
     return "\n".join(lines)
 
 
-def _is_agentscope_agent_not_found(exc: httpx.HTTPStatusError) -> bool:
+def _is_agent_not_found(exc: httpx.HTTPStatusError) -> bool:
     """判断 AgentScope Service 是否因为 agent_id 不存在而拒绝创建 session。"""
 
     if exc.response.status_code != 404:

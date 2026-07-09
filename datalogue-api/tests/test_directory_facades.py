@@ -51,10 +51,10 @@ def test_query_execution_preview_facade_reexports_legacy_function():
 
 
 def test_runtime_engine_app_factory_is_direct_source():
-    """runtime.engine.app_factory 是 create_embedded_agentscope_app 的直接实体，不再经过中间 facade。"""
+    """runtime.engine.app_factory 是 create_embedded_runtime_app 的直接实体，不再经过中间 facade。"""
 
     engine = importlib.import_module("app.runtime.engine.app_factory")
-    assert callable(engine.create_embedded_agentscope_app)
+    assert callable(engine.create_embedded_runtime_app)
 
 
 def test_data_source_implementation_lives_in_domain_modules():

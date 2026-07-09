@@ -15,16 +15,16 @@ from __future__ import annotations
 
 from app.core.models.agentscope_workbench import AgentScopeEvent
 from app.core.schemas.agentscope_workbench import WorkbenchRetryRequest
-from app.services.agentscope_mirror import (
+from app.services.runtime_mirror import (
     create_agentscope_session,
     create_running_assistant_message,
     mark_message_failed,
     record_agentscope_ref,
 )
-from app.services.workbench_actions import request_controlled_retry
+from app.domains.workbench.actions import request_controlled_retry
 
 
-def test_workbench_retry_request_is_written_to_agentscope_mirror_event(db_session):
+def test_workbench_retry_request_is_written_to_runtime_mirror_event(db_session):
     session = create_agentscope_session(
         db_session,
         thread_id="as_14141414-1414-1414-1414-141414141414",

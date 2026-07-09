@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 
 from app.core.models.agentscope_workbench import AgentScopeMessage
 from app.core.schemas.agentscope_workbench import WorkbenchRetryRequest
-from app.services.agentscope_mirror import create_agentscope_session, record_agentscope_ref
-from app.services.workbench_actions import request_controlled_retry
+from app.services.runtime_mirror import create_agentscope_session, record_agentscope_ref
+from app.domains.workbench.actions import request_controlled_retry
 
 
 def test_workbench_retry_returns_agent_team_task_request(db_session):

@@ -1,7 +1,7 @@
 # ============================================================
 # File Name   : runner.py
 # Description:
-#   Agent Team 任务运行门面，re-export AgentScopeServiceTaskRunner。
+#   Agent Team 任务运行门面，re-export AgentTeamTaskRunner。
 #
 # Responsibilities:
 #   - 暴露 AgentScope Service 侧的 Agent Team 流式任务 Runner
@@ -19,7 +19,7 @@
 
 __all__ = [
     "DEFAULT_LEADER_AGENT_ID",
-    "AgentScopeServiceTaskRunner",
+    "AgentTeamTaskRunner",
 ]
 
 

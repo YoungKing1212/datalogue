@@ -30,7 +30,7 @@ from app.core.models.agent_team_task import AgentTeamTask
 from app.runtime.thread_resolver import new_runtime_thread_id
 from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 from app.core.schemas.bi_workbench import DatalogueEventEnvelope
-from app.services.agentscope_mirror import (
+from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,
     create_running_assistant_message,
@@ -506,7 +506,7 @@ class AgentTeamTaskRuntime:
             # 自动生成会话标题（在后台线程执行，不阻塞主链路）
             if not getattr(task, "_title_generated", False):
                 try:
-                    from app.services.title_generator import maybe_auto_title_async
+                    from app.domains.agent_team.title_generator import maybe_auto_title_async
 
                     maybe_auto_title_async(
                         session.thread_id,  # type: ignore[arg-type]
