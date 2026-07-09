@@ -2,7 +2,7 @@
 
 日期：2026-07-09 17:30  
 执行者：OMX team `leader-worktree-doris-8419a349` / `worker-4`  
-状态：**集成基线已验证；目标实现未全部落地，Doris/Oracle 完整问数链路仍需上游实现后复验。**
+状态：**leader HEAD 复核已确认 Doris/Oracle 代码与 targeted tests 已集成通过；真实 Doris/Oracle 数据库验收仍保留为用户已有环境手册/脚本证据位。**
 
 ## 1. 范围与依据
 
@@ -18,7 +18,7 @@
 3. 最终 answer 与 Workbench artifact 均能看到安全结果引用、行列数和预览。
 4. 不搭建真实 Doris/Oracle 数据库；真实环境验收仅连接用户已有环境并沉淀手册/脚本证据。
 
-## 2. 当前集成闸门结论
+## 2. 初始 detached HEAD 集成闸门结论（已由第 7 节 leader HEAD 复核更新）
 
 | 闸门 | 当前证据 | 结论 |
 |---|---|---|
@@ -130,6 +130,62 @@ cd datalogue-web && npm run build
 
 ## 6. 协调风险
 
-- 当前 worktree 尚不能声明 Doris/Oracle 完整问数链路完成；Doris 无代码命中，Oracle compiler/adapter 仍 fail-closed。
-- worker-4 的本轮产物是集成闸门与基线证据，后续需要 worker1/worker2/worker3 或 leader 集成实现后再把本报告更新为通过记录。
+- 初始 detached HEAD 曾显示 Doris 无代码命中、Oracle compiler/adapter fail-closed；该结论已被第 7 节基于 leader HEAD `adddfd24` 的复核更新。
 - 真实数据库验收仍依赖用户已有环境；本报告不把 mock/单元测试写成真实 Doris/Oracle 连通性证据。
+
+
+## 7. 2026-07-09 17:31 leader HEAD 复核补证
+
+leader 指令要求基于当前 leader HEAD 重新确认 Doris/Oracle 代码是否已集成。由于 team branch `codex/doris-oracle-datasource-team` 正被 leader worktree 占用，本 worker 以 detached 方式检出该分支 commit `adddfd24` 进行只读复核。
+
+### 7.1 代码集成证据
+
+当前 leader HEAD 已包含以下关键实现/测试面：
+
+- `datalogue-api/app/domains/data_source/adapters/registry.py` 已注册 `db_type=doris` capability，默认 `dialect=mysql`、`driver=pymysql`、`default_port=9030`。
+- `datalogue-api/app/domains/data_source/service.py` 已新增/使用 `normalize_execution_dialect(db_type, dialect)`，Doris 持久化和上下文输出归一为 `mysql`。
+- `datalogue-api/app/api/datasource.py` 的部分更新路径会结合持久化 `db_type` 兜住 Doris stale dialect。
+- `datalogue-api/app/domains/query_execution/dialect/adapter.py` 已把 `doris` alias 到 `mysql`，并将 `_SUPPORTED_DIALECTS` 扩展为 `{"mysql", "oracle", "sqlite"}`。
+- `datalogue-api/app/domains/query_execution/compiler.py` 已覆盖 Oracle `FETCH FIRST ... ROWS ONLY` limit 渲染。
+- `datalogue-api/app/domains/query_execution/preview.py`、`datalogue-api/app/domains/bi/agent/runtime_context.py`、`datalogue-api/app/services/analysis_blueprint.py` 已在真实执行叶子/运行时上下文/蓝图路径使用方言归一化。
+- `datalogue-web/src/components/datasources.jsx` 与测试已覆盖 Doris 展示为独立产品类型、执行方言显示为 MySQL 兼容；artifact/DatalogueMessage 测试覆盖 Doris/Oracle result ref 的用户可见投影与 raw SQL 不泄露。
+
+### 7.2 后端 targeted 复验
+
+```bash
+cd datalogue-api && python3 -m pytest \
+  tests/test_datasource.py::TestDatasourceAPI::test_list_datasource_capabilities \
+  tests/test_datasource.py::TestDatasourceAPI::test_create_doris_datasource_normalizes_execution_dialect \
+  tests/test_datasource.py::TestDatasourceAPI::test_update_doris_datasource_rejects_stale_dialect_on_partial_update \
+  tests/test_datasource.py::test_build_datasource_context_normalizes_doris_stale_dialect \
+  tests/test_datasource.py::test_doris_adapter_builds_mysql_compatible_url_and_timeout \
+  tests/test_datasource.py::test_oracle_adapter_build_url_prefers_explicit_service_name_over_sid \
+  tests/test_datasource.py::test_oracle_adapter_build_url_supports_sid_without_service_name \
+  tests/test_datasource.py::test_preview_table_uses_mysql_protocol_sql_for_doris \
+  tests/test_datasource.py::test_preview_table_uses_oracle_fetch_first_and_schema_qualifier \
+  tests/test_doris_oracle_query_execution_chain.py \
+  tests/test_sql_dialect_adapter.py::test_sql_dialect_adapter_accepts_oracle_readonly_sql_with_fetch_first \
+  tests/test_sql_dialect_adapter.py::test_sql_dialect_adapter_normalizes_doris_to_mysql_execution_dialect \
+  tests/test_query_plan_compiler.py::test_compiles_oracle_limit_as_fetch_first \
+  tests/test_query_plan_compiler.py::test_compiles_doris_stale_dialect_as_mysql_limit \
+  -q
+```
+
+结果：`16 passed, 6 warnings in 0.31s`。
+
+覆盖：Doris capability/default/update stale dialect、`build_datasource_context`、`build_bi_runtime_context`、`analysis_blueprint` stale Doris timeout、`preview_dataset_sql` guard dialect、`preview_table` Doris SQL、Oracle service_name/SID URL、Oracle `FETCH FIRST`、Doris-as-MySQL compiler/adapter。
+
+### 7.3 前端 targeted 复验
+
+```bash
+cd datalogue-web && npm test -- src/components/datasources.test.jsx src/components/artifact-card.test.jsx src/assistant-ui/DatalogueMessage.test.jsx
+```
+
+结果：`3 passed (3), 28 passed (28)`。
+
+覆盖：Doris/Oracle 数据源展示辅助逻辑、artifact card 用户可见 refs、DatalogueMessage artifact card 投影；Doris 样例中 raw SQL 不出现在用户可见卡片。
+
+### 7.4 当前剩余验收位
+
+- 本地未搭建真实 Doris/Oracle 数据库，符合任务约束；真实连接验收仍需连接用户已有环境。
+- 当前复核是代码与自动化 targeted tests 通过；最终用户页面 answer + Workbench artifact 的真实数据库截图/payload 仍需在用户已有 Doris/Oracle 环境中补证。

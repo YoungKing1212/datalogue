@@ -588,3 +588,13 @@
 - 关键改动：新增集成验证记录，明确只读规划来源、Doris/Oracle 完整问数链路验收点、当前基线命令结果，以及上游实现完成后的复验清单；当前 worktree 中 `doris` 全仓命中为 0，Oracle capability/SQL Guard 已有基础覆盖，但 QueryPlan compiler/adapter 仍只支持 `mysql/sqlite`，`oracle` 当前仍按 unsupported fail-closed 处理，因此本轮不把完整 Doris/Oracle 链路写成已完成。
 - 验证方式：执行 `cd datalogue-api && python3 -m pytest ... -q` 覆盖 datasource/query_execution/preview/analysis_blueprint，结果 `17 passed, 10 warnings`；执行 BI Worker runtime targeted pytest，结果 `7 passed, 2 warnings`；前端初次 targeted vitest 因 `vitest: command not found` 失败，执行 `cd datalogue-web && npm install` 后复验 artifact/workbench 测试 `31 passed`；执行 `npm run lint` 为 `0 errors, 13 warnings`，执行 `npm run build` 成功。
 - 残留风险或后续事项：Doris capability、服务端执行方言归一化、Oracle compiler/adapter/URL/preview/BI runtime 完整链路仍需后续实现并复验；真实 Doris/Oracle 连接验收仅能连接用户已有环境，不在本轮本地搭建数据库。
+
+
+### 2026-07-09 17:31 · Doris/Oracle leader HEAD 集成复核补证
+
+- 完成时间：2026-07-09 17:31。
+- 功能名称：Doris/Oracle 数据源问数链路 leader HEAD 复核补证。
+- 涉及文件：`docs/test-reports/2026-07-09-doris-oracle-datasource-verification.md`、`.codex/project-memory.md`。
+- 关键改动：根据 leader mailbox 指令，以 detached commit `adddfd24` 复核当前 team branch，确认 Doris capability、服务端执行方言归一化、Oracle compiler/adapter、preview_dataset_sql、build_bi_runtime_context、analysis_blueprint、preview_table、前端 datasources 与 artifact/DatalogueMessage 可见性测试已集成；同步修正早前基于旧 detached HEAD 的 Doris 0 命中/Oracle fail-closed 结论。
+- 验证方式：执行 Doris/Oracle 后端 targeted pytest，覆盖 datasource capability/defaults/update stale dialect、build_datasource_context、build_bi_runtime_context、analysis_blueprint timeout stale path、preview_dataset_sql guard dialect、preview_table Doris SQL、Oracle FETCH FIRST 和 URL，结果 `16 passed, 6 warnings`；执行 `cd datalogue-web && npm test -- src/components/datasources.test.jsx src/components/artifact-card.test.jsx src/assistant-ui/DatalogueMessage.test.jsx`，结果 `3 passed / 28 passed`。
+- 残留风险或后续事项：仍未搭建真实 Doris/Oracle 数据库，真实页面最终 answer 与 Workbench artifact 截图/payload 需连接用户已有环境补证；当前自动化证明代码路径和用户可见投影基线通过。
