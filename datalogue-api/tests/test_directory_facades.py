@@ -1,0 +1,87 @@
+# ============================================================
+# File Name   : test_directory_facades.py
+# Description:
+#   验证 typed worker lane 目标目录 facade 能与旧模块入口并存。
+#
+# Responsibilities:
+#   - 覆盖后端 facade-first 包骨架的导入兼容性，避免目录迁移期间破坏旧调用方。
+#   - 确认关键 facade 仅复用旧实现对象，不在新目录承载业务逻辑。
+#
+# Author      : KenYang
+# Created On  : 2026-07-09
+# ============================================================
+
+"""typed worker lane facade-first 目录骨架导入测试。"""
+
+import importlib
+
+
+def test_target_packages_are_importable():
+    """目标领域包先作为兼容层存在，迁移期不要求承载新业务逻辑。"""
+
+    for module_name in [
+        "app.domains.data_source",
+        "app.domains.query_execution",
+        "app.domains.agent_team",
+        "app.domains.bi",
+        "app.agentscope_runtime",
+    ]:
+        assert importlib.import_module(module_name)
+
+
+def test_data_source_service_facade_reexports_legacy_public_capabilities():
+    """data_source.service 必须复用旧 datasource 服务对象，保证新旧入口同源。"""
+
+    legacy = importlib.import_module("app.services.datasource")
+    facade = importlib.import_module("app.domains.data_source.service")
+
+    assert facade.create_engine_for_datasource is legacy.create_engine_for_datasource
+    assert facade.test_connection is legacy.test_connection
+    assert facade.sync_source_tables is legacy.sync_source_tables
+
+
+def test_query_execution_preview_facade_reexports_legacy_function():
+    """SQL preview facade 必须指向旧实现，避免迁移期复制执行逻辑。"""
+
+    legacy = importlib.import_module("app.services.sql_preview")
+    facade = importlib.import_module("app.domains.query_execution.preview")
+
+    assert facade.preview_dataset_sql is legacy.preview_dataset_sql
+
+
+def test_agentscope_runtime_app_factory_facade_reexports_legacy_function():
+    """AgentScope app_factory facade 必须指向旧嵌入式应用工厂入口。"""
+
+    legacy = importlib.import_module("app.agentscope_service.app_factory")
+    facade = importlib.import_module("app.agentscope_runtime.app_factory")
+
+    assert facade.create_embedded_agentscope_app is legacy.create_embedded_agentscope_app
+
+
+def test_data_source_implementation_lives_in_domain_modules():
+    """Phase C 要求数据源实现进入统一领域目录，同时旧入口保持同源兼容。"""
+
+    legacy = importlib.import_module("app.services.datasource")
+    service = importlib.import_module("app.domains.data_source.service")
+    capabilities = importlib.import_module("app.domains.data_source.capabilities")
+    context = importlib.import_module("app.domains.data_source.context")
+    diagnostics = importlib.import_module("app.domains.data_source.diagnostics")
+    registry = importlib.import_module("app.domains.data_source.adapters.registry")
+    base = importlib.import_module("app.domains.data_source.adapters.base")
+    hive = importlib.import_module("app.domains.data_source.adapters.hive")
+    oracle = importlib.import_module("app.domains.data_source.adapters.oracle")
+
+    assert capabilities.DatasourceCapability.__module__ == "app.domains.data_source.capabilities"
+    assert context.DatasourceContext.__module__ == "app.domains.data_source.context"
+    assert diagnostics.DatasourceDiagnostic.__module__ == "app.domains.data_source.diagnostics"
+    assert base.DatasourceAdapter.__module__ == "app.domains.data_source.adapters.base"
+    assert hive.HiveAdapter.__module__ == "app.domains.data_source.adapters.hive"
+    assert oracle.OracleAdapter.__module__ == "app.domains.data_source.adapters.oracle"
+    assert registry.get_adapter.__module__ == "app.domains.data_source.adapters.registry"
+    assert service.test_connection.__module__ == "app.domains.data_source.service"
+    assert service.preview_table.__module__ == "app.domains.data_source.service"
+
+    # 旧入口复用新领域对象，避免迁移期出现两套注册表或两套服务函数。
+    assert legacy.test_connection is service.test_connection
+    assert legacy.get_adapter is registry.get_adapter
+    assert legacy.DatasourceAdapter is base.DatasourceAdapter
