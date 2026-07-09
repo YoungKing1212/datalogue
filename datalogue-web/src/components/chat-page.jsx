@@ -19,8 +19,8 @@ import { makeChatAdapter } from '../assistant/chat-adapter';
 import {
   DatalogueComposer,
   DatalogueThread as Thread,
-  DatalogueThreadList as ThreadList,
 } from '../assistant-ui';
+import { ThreadList } from '../assistant/ThreadList';
 import { Icon } from './icons';
 import { AgentPanel } from './agent-panel';
 import { getConversation, listAgentScopeChatModels, listDatasets } from '../api/client';

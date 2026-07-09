@@ -24,6 +24,16 @@ vi.mock('react-router-dom', () => ({
 }));
 
 vi.mock('@assistant-ui/react', () => {
+  const ThreadListItemPrimitiveTrigger = ({ children, className, ...props }) => (
+    <button type="button" className={className} {...props}>{children}</button>
+  );
+  const ThreadListItemPrimitiveRoot = ({ children, className }) => (
+    <div className={className}>{children}</div>
+  );
+  const ThreadListItemPrimitiveDelete = ({ children, className, ...props }) => (
+    <button type="button" className={className} {...props}>{children}</button>
+  );
+  const ThreadListItemPrimitiveTitle = ({ fallback }) => <span>{fallback}</span>;
   return {
     AssistantRuntimeProvider: ({ children }) => <>{children}</>,
     useLocalRuntime: () => ({ kind: 'local-runtime' }),
@@ -36,6 +46,7 @@ vi.mock('@assistant-ui/react', () => {
       threads: () => ({
         reload: vi.fn().mockResolvedValue(undefined),
         switchToThread: vi.fn().mockResolvedValue(undefined),
+        switchToNewThread: vi.fn().mockResolvedValue(undefined),
       }),
     }),
     useAuiState: (selector) => selector({
@@ -44,7 +55,35 @@ vi.mock('@assistant-ui/react', () => {
         mainThreadId: 'local-thread',
         threadItems: [{ id: 'local-thread', remoteId: null }],
       },
+      threadListItem: {
+        id: 'local-thread',
+        remoteId: null,
+      },
     }),
+    ThreadListPrimitive: {
+      Root: ({ children, className }) => <div className={className}>{children}</div>,
+      New: ({ children, onClick }) => (
+        <button type="button" onClick={onClick}>{children}</button>
+      ),
+      Items: ({ children, components: { ThreadListItem } }) => (
+        <>{ThreadListItem ? <ThreadListItem /> : children}</>
+      ),
+      LoadMore: ({ children, className }) => (
+        <button type="button" className={className}>{children}</button>
+      ),
+    },
+    ThreadListItemPrimitive: {
+      Root: ThreadListItemPrimitiveRoot,
+      Trigger: ThreadListItemPrimitiveTrigger,
+      Title: ThreadListItemPrimitiveTitle,
+      Delete: ThreadListItemPrimitiveDelete,
+      Archive: ({ children, className, ...props }) => (
+        <button type="button" className={className} {...props}>{children}</button>
+      ),
+      Unarchive: ({ children, className, ...props }) => (
+        <button type="button" className={className} {...props}>{children}</button>
+      ),
+    },
     unstable_useComposerInputHistory: () => ({ onKeyDown: composerHistoryKeyDownSpy }),
   };
 });
