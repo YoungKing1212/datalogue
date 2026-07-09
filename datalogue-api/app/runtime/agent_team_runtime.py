@@ -508,17 +508,19 @@ class AgentTeamTaskRuntime:
             # 自动生成会话标题（在后台线程执行，不阻塞主链路）
             if not getattr(task, "_title_generated", False):
                 try:
+                    from app.core.config import get_settings
                     from app.domains.agent_team.title_generator import maybe_auto_title_async
 
-                    maybe_auto_title_async(
-                        session.thread_id,  # type: ignore[arg-type]
-                        request.question,
-                        final_answer,
-                        legacy_conversation_id=request.conversation_id,
-                    )
-                    task._title_generated = True  # type: ignore[attr-defined]
-                    self.db.add(task)
-                    self.db.commit()
+                    if get_settings().DATALOGUE_AUTO_TITLE_ENABLED:
+                        maybe_auto_title_async(
+                            session.thread_id,  # type: ignore[arg-type]
+                            request.question,
+                            final_answer,
+                            legacy_conversation_id=request.conversation_id,
+                        )
+                        task._title_generated = True  # type: ignore[attr-defined]
+                        self.db.add(task)
+                        self.db.commit()
                 except Exception:
                     pass
             self._record_completion_refs(
