@@ -34,3 +34,23 @@ def test_datalogue_agentscope_service_factory_is_importable():
     from app.runtime.engine.app_factory import create_embedded_runtime_app
 
     assert create_embedded_runtime_app is not None
+
+
+def test_datalogue_agentscope_runtime_facade_is_importable():
+    """目录治理新入口先作为 facade 存在，后续迁移调用方时可从这里稳定导入。"""
+
+    from app.agentscope_runtime.app_factory import create_embedded_runtime_app
+    from app.agentscope_runtime.client import AgentScopeServiceClient
+    from app.agentscope_runtime.credentials import DatalogueLLMCredential
+    from app.agentscope_runtime.projection import project_runtime_event
+    from app.agentscope_runtime.registry import build_datalogue_subagent_templates
+    from app.agentscope_runtime.runner import AgentTeamTaskRunner
+    from app.agentscope_runtime.worker_logging import build_datalogue_extra_agent_middlewares
+
+    assert create_embedded_runtime_app is not None
+    assert AgentScopeServiceClient is not None
+    assert DatalogueLLMCredential is not None
+    assert project_runtime_event is not None
+    assert build_datalogue_subagent_templates is not None
+    assert AgentTeamTaskRunner is not None
+    assert build_datalogue_extra_agent_middlewares is not None

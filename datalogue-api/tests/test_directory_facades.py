@@ -25,6 +25,7 @@ def test_target_packages_are_importable():
         "app.domains.query_execution",
         "app.domains.agent_team",
         "app.domains.bi",
+        "app.agentscope_runtime",
         "app.runtime.engine",
     ]:
         assert importlib.import_module(module_name)
@@ -51,6 +52,30 @@ def test_runtime_engine_app_factory_is_direct_source():
 
     engine = importlib.import_module("app.runtime.engine.app_factory")
     assert callable(engine.create_embedded_runtime_app)
+
+
+def test_agentscope_runtime_facade_exposes_only_service_runtime_boundary():
+    """Phase E: agentscope_runtime 先作为 AgentScope Service 嵌入边界 facade，不承载 BI 工具业务。"""
+
+    facade = importlib.import_module("app.agentscope_runtime")
+    legacy = importlib.import_module("app.runtime.engine")
+    worker_logging = importlib.import_module("app.agentscope_runtime.worker_logging")
+    legacy_worker_logging = importlib.import_module("app.domains.agent_team.worker_logging")
+
+    assert facade.create_embedded_runtime_app is legacy.create_embedded_runtime_app
+    assert facade.AgentScopeServiceClient is legacy.AgentScopeServiceClient
+    assert facade.AgentTeamTaskRunner is legacy.AgentTeamTaskRunner
+    assert facade.project_runtime_event is legacy.project_runtime_event
+    assert facade.setup_runtime_tracing is legacy.setup_runtime_tracing
+    assert facade.build_datalogue_extra_agent_middlewares is (
+        legacy_worker_logging.build_datalogue_extra_agent_middlewares
+    )
+    assert worker_logging.build_datalogue_extra_agent_middlewares is (
+        legacy_worker_logging.build_datalogue_extra_agent_middlewares
+    )
+    # BI worker 工具链仍在 runtime.engine.tools / domains.bi 内；新 facade 暂不把业务工具暴露为顶层 API。
+    assert "build_datalogue_extra_agent_tools" not in facade.__all__
+    assert not hasattr(facade, "build_datalogue_extra_agent_tools")
 
 
 def test_data_source_implementation_lives_in_domain_modules():
