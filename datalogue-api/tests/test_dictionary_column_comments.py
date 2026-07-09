@@ -113,3 +113,25 @@ def test_complete_existing_comments_cover_current_known_gaps():
     assert column_comments[("query_artifact", "artifact_id")] == "产物唯一标识"
     assert column_comments[("source_column", "column_comment")] == "数据库原始字段注释"
     assert column_comments[("source_table", "table_comment")] == "数据库原始表注释"
+
+
+def test_checkpoint_cleanup_migration_targets_only_langgraph_runtime_tables():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "z6a7b8c9d0e1_drop_langgraph_checkpoint_tables.py"
+    )
+    spec = spec_from_file_location("drop_langgraph_checkpoint_tables_migration", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.down_revision == "y5z6a7b8c9d0"
+    assert module._DROP_TABLE_NAMES == (
+        "checkpoint_writes",
+        "checkpoint_blobs",
+        "checkpoints",
+        "checkpoint_migrations",
+    )
