@@ -55,7 +55,17 @@ vi.mock('@assistant-ui/react-markdown', () => ({
 
 vi.mock('../components/artifact-card', () => ({
   default: ({ artifact }) => (
-    artifact ? <div data-testid="artifact-card">{artifact.title}</div> : null
+    artifact
+      ? (
+        <div data-testid="artifact-card">
+          <span>{artifact.title}</span>
+          <span>{artifact.summary_for_chat || artifact.summary}</span>
+          <span>{artifact.row_count ?? artifact.preview_payload?.row_count}</span>
+          <span>{artifact.column_count ?? artifact.preview_payload?.column_count}</span>
+          <span>{artifact.primary_ref?.ref_id || artifact.primary_ref}</span>
+        </div>
+      )
+      : null
   ),
 }));
 
@@ -150,6 +160,36 @@ describe('assistant-ui Datalogue message components', () => {
     expect(screen.getByText('checkpoint:retry-1')).toBeInTheDocument();
     expect(screen.queryByText(/select \*/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/orders/)).not.toBeInTheDocument();
+  });
+
+
+  it('keeps Doris/Oracle BI artifact card visible in the final answer surface', () => {
+    render(
+      <DatalogueMessage
+        message={{
+          role: 'assistant',
+          status: { type: 'complete' },
+          content: [{ type: 'text', text: 'Oracle 聚合查询已完成，结果已生成。' }],
+          metadata: {
+            custom: {
+              artifactCard: {
+                title: 'Oracle 查询结果',
+                status: 'completed',
+                summary_for_chat: 'Oracle 聚合查询已完成，共 3 行、2 列。',
+                row_count: 3,
+                column_count: 2,
+                primary_ref: { ref_id: 'artifact:oracle-result-1', ref_type: 'result' },
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Oracle 聚合查询已完成，结果已生成。')).toBeInTheDocument();
+    expect(screen.getByTestId('artifact-card')).toHaveTextContent('Oracle 查询结果');
+    expect(screen.getByTestId('artifact-card')).toHaveTextContent('Oracle 聚合查询已完成，共 3 行、2 列。');
+    expect(screen.getByTestId('artifact-card')).toHaveTextContent('artifact:oracle-result-1');
   });
 
   it('renders legacy user and assistant message parts without runtime wiring', () => {
