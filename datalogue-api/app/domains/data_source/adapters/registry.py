@@ -33,6 +33,17 @@ CAPABILITIES: dict[str, DatasourceCapability] = {
         stable=True,
         test_sql="SELECT 1",
     ),
+    "doris": DatasourceCapability(
+        db_type="doris",
+        label="Apache Doris",
+        dialect="mysql",
+        driver="pymysql",
+        driver_module="pymysql",
+        sqlalchemy_driver="mysql+pymysql",
+        default_port=9030,
+        stable=True,
+        test_sql="SELECT 1",
+    ),
     "postgres": DatasourceCapability(
         db_type="postgres",
         label="PostgreSQL",

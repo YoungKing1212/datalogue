@@ -51,12 +51,17 @@ def _normalize_db_type(value: str | None) -> str:
     return normalize_db_type(value)
 
 
+def is_mysql_protocol_type(db_type: str | None) -> bool:
+    """判断数据源是否走 MySQL 协议语义；Doris 第一阶段复用 MySQL 通路。"""
+    return _normalize_db_type(db_type) in {"mysql", "doris"}
+
+
 def _quote_identifier(name: str, db_type: str | None) -> str:
     """adapter 内部采样查询使用的标识符引用规则，与服务层 preview 规则保持一致。"""
     if not name:
         return name
     normalized = _normalize_db_type(db_type)
-    if normalized in {"mysql", "hive", "trino", "presto", "bigquery", "clickhouse"}:
+    if is_mysql_protocol_type(normalized) or normalized in {"hive", "trino", "presto", "bigquery", "clickhouse"}:
         return f"`{name}`"
     if normalized == "sqlserver":
         return f"[{name}]"
@@ -66,7 +71,7 @@ def _quote_identifier(name: str, db_type: str | None) -> str:
 def _table_ref(schema: str | None, table: str, db_type: str | None) -> str:
     """生成带 schema 的表引用；MySQL/SQLite 沿用历史单表引用行为。"""
     table_q = _quote_identifier(table, db_type)
-    if schema and _normalize_db_type(db_type) not in {"mysql", "sqlite"}:
+    if schema and not is_mysql_protocol_type(db_type) and _normalize_db_type(db_type) != "sqlite":
         return f"{_quote_identifier(schema, db_type)}.{table_q}"
     return table_q
 
@@ -128,10 +133,16 @@ class DatasourceAdapter:
             return f"sqlite:///{ds.database_name}"
         if db_type == "oracle":
             options = _connection_options(ds)
-            service_name = options.get("service_name") or ds.database_name
+            service_name = options.get("service_name")
             sid = options.get("sid")
+            if service_name:
+                return (
+                    f"oracle+oracledb://{username}:{password}@{host}:{port}/"
+                    f"?service_name={quote_plus(str(service_name))}"
+                )
             if sid:
                 return f"oracle+oracledb://{username}:{password}@{host}:{port}/?sid={quote_plus(str(sid))}"
+            service_name = ds.database_name
             return (
                 f"oracle+oracledb://{username}:{password}@{host}:{port}/"
                 f"?service_name={quote_plus(str(service_name))}"
@@ -162,7 +173,7 @@ class DatasourceAdapter:
         db_type = self.capability.db_type
         if db_type == "sqlite":
             connect_args["check_same_thread"] = False
-        elif db_type in {"mysql", "postgres", "postgresql"}:
+        elif is_mysql_protocol_type(db_type) or db_type in {"postgres", "postgresql"}:
             connect_args["connect_timeout"] = timeout
         elif db_type == "oracle":
             connect_args["tcp_connect_timeout"] = timeout
@@ -196,7 +207,7 @@ class DatasourceAdapter:
     def version(self, conn) -> str | None:
         try:
             db_type = self.capability.db_type
-            if db_type in {"postgres", "postgresql", "mysql"}:
+            if is_mysql_protocol_type(db_type) or db_type in {"postgres", "postgresql"}:
                 return str(conn.execute(text("SELECT version()")).scalar())
             if db_type == "sqlite":
                 return str(conn.execute(text("SELECT sqlite_version()")).scalar())
@@ -363,7 +374,7 @@ class DatasourceAdapter:
 
     def _row_count(self, conn, schema: str | None, table: str, db_type: str) -> int | None:
         try:
-            if db_type == "mysql":
+            if is_mysql_protocol_type(db_type):
                 return conn.execute(text(f"SELECT COUNT(*) FROM `{table}`")).scalar()
             if db_type == "sqlite":
                 return conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar()
@@ -378,7 +389,7 @@ class DatasourceAdapter:
 
     def _ddl(self, conn, table: str, db_type: str) -> str | None:
         try:
-            if db_type == "mysql":
+            if is_mysql_protocol_type(db_type):
                 result = conn.execute(text(f"SHOW CREATE TABLE `{table}`")).fetchone()
                 return result[1] if result else None
         except Exception:
@@ -386,4 +397,4 @@ class DatasourceAdapter:
         return None
 
 
-__all__ = ["DatasourceAdapter"]
+__all__ = ["DatasourceAdapter", "is_mysql_protocol_type"]

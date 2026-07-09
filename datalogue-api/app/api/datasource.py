@@ -28,6 +28,7 @@ from app.domains.data_source.service import (
     get_capabilities,
     get_schema,
     get_schemas,
+    normalize_execution_dialect,
     preview_table,
     sync_source_tables,
     test_connection,
@@ -87,7 +88,11 @@ def update_datasource(ds_id: int, payload: schemas.DatasourceUpdate, db: Session
         raise HTTPException(status_code=404, detail="数据源不存在")
     data = payload.model_dump(exclude_unset=True)
     if "db_type" in data:
-        data = enrich_datasource_defaults(data)
+        data = enrich_datasource_defaults(data)  # 切换数据源类型时补齐端口/驱动等服务端默认值。
+    target_db_type = data.get("db_type", ds.db_type)
+    target_dialect = data.get("dialect", ds.dialect)
+    if target_db_type or target_dialect:
+        data["dialect"] = normalize_execution_dialect(target_db_type, target_dialect)  # 部分更新也兜住 Doris 历史脏 dialect。
     if "password" in data:
         pwd = data.pop("password")
         if pwd:
