@@ -836,7 +836,6 @@ function structuredEventSummary(event = {}) {
     timing: safeTiming(event.timing),
     refs: safeRefs(event.refs),
     rowCount: event.rowCount ?? event.row_count ?? null,
-    columnCount: event.columnCount ?? event.column_count ?? null,
   });
 }
 
@@ -873,77 +872,38 @@ function isPreservedStreamingReasoning(part = {}) {
     || part.reasoningKind === 'bi_worker_raw_thinking_delta';
 }
 
-// tool-call part 对外契约状态枚举——阶段 4 会以这四个值消费，避免下游用 lifecycle 原始词。
-// running:    工具正在执行；complete: 已完成；error: 执行失败；requires_action: 等待人类/UI 确认。
-const TOOL_PART_STATUS = {
-  RUNNING: 'running',
-  COMPLETE: 'complete',
-  ERROR: 'error',
-  REQUIRES_ACTION: 'requires_action',
-};
-
-function mapToolPartStatus(rawStatus = '') {
-  const value = String(rawStatus || '').toLowerCase();
-  if (value === 'requires_action' || value === 'requires-action' || value === 'confirmation' || value === 'confirm') {
-    return TOOL_PART_STATUS.REQUIRES_ACTION;
-  }
-  if (value === 'failed' || value === 'error' || value === 'incomplete') return TOOL_PART_STATUS.ERROR;
-  if (value === 'running' || value === 'pending' || value === 'in_progress' || value === 'started') {
-    return TOOL_PART_STATUS.RUNNING;
-  }
-  if (value === 'completed' || value === 'complete' || value === 'success' || value === 'done') {
-    return TOOL_PART_STATUS.COMPLETE;
-  }
-  return TOOL_PART_STATUS.RUNNING;
-}
-
 function upsertToolCallPart(toolParts, event = {}) {
   const summary = structuredEventSummary(event);
   const toolName = summary.toolName || 'dataset_tool';
   const toolCallId = event.toolCallId || event.tool_call_id || `${toolName}-${toolParts.length + 1}`;
-  const partStatus = mapToolPartStatus(summary.status);
-  // args 只保留可安全外露的结构化字段；SQL/schema/raw_rows/query_plan 由 structuredEventSummary
-  // 已拦截，这里再做一次白名单收敛，防止未来新字段直通到 DOM。
   const args = compactObject({
     kind: 'tool',
     status: summary.status,
     title: summary.title || toolName,
     summary: summary.summary,
     agent: summary.agent,
-    agentRole: summary.agentRole,
-    agentName: summary.agentName,
     toolName,
     timing: summary.timing,
     refs: summary.refs,
     rowCount: summary.rowCount,
-    columnCount: summary.columnCount,
-    replyId: summary.replyId,
-    workerSessionId: summary.workerSessionId,
   });
-  const result = partStatus === TOOL_PART_STATUS.COMPLETE || partStatus === TOOL_PART_STATUS.ERROR
+  const result = summary.status === 'completed' || summary.status === 'failed'
     ? compactObject({
         kind: 'tool',
         status: summary.status,
         summary: summary.summary,
         refs: summary.refs,
         rowCount: summary.rowCount,
-        columnCount: summary.columnCount,
       })
     : undefined;
   const nextPart = compactObject({
     type: 'tool-call',
     toolCallId,
     toolName,
-    // 阶段 4 契约字段：稳定枚举，供折叠、Data UI、Workbench 入口判断。
-    status: partStatus,
-    agentRole: summary.agentRole,
-    agentName: summary.agentName,
-    workerSessionId: summary.workerSessionId,
-    replyId: summary.replyId,
     args,
     argsText: JSON.stringify(args),
     result,
-    isError: partStatus === TOOL_PART_STATUS.ERROR,
+    isError: summary.status === 'failed',
     timing: summary.timing,
     parentId: 'dataset_tool_group',
   });
@@ -963,149 +923,22 @@ function upsertToolCallPart(toolParts, event = {}) {
   return existingIndex >= 0 ? toolParts[existingIndex] : nextPart;
 }
 
-// 阶段 4：把同一 workerSessionId 下的 agent_handoff/agent_progress/tool_call 聚合成
-// 只读 sub-agent ThreadMessage：一个 workerSessionId 对应一条 assistant 消息，
-// content 由 reasoning / tool-call parts 组成。这里生成的结构对齐 assistant-ui
-// `ThreadMessage`（role/content/status/metadata.custom），便于挂到 ToolCallMessagePart.messages
-// 或本地 DatalogueSubAgentMessages 组件递归渲染。
-//
-// 严格约束：
-//   - 只吸收 structuredEventSummary 已通过白名单的字段（SQL/schema/raw_rows/query_plan 已拦）；
-//   - Leader 事件（agentRole !== 'worker' 且没有 workerSessionId）直接跳过，保持主线消息干净；
-//   - tool-call part 复用 upsertToolCallPart 生成过的对象，避免字段漂移。
-function subAgentMessageIdFor(workerSessionId) {
-  return `subagent:${workerSessionId}`;
-}
-
-function ensureSubAgentMessage(subAgentMessages, workerSessionId) {
-  let message = subAgentMessages.get(workerSessionId);
-  if (message) return message;
-  message = {
-    id: subAgentMessageIdFor(workerSessionId),
-    role: 'assistant',
-    content: [],
-    status: { type: 'running' },
-    metadata: {
-      custom: {
-        workerSessionId,
-        agentRole: null,
-        agentName: null,
-      },
-    },
-  };
-  subAgentMessages.set(workerSessionId, message);
-  return message;
-}
-
-function updateSubAgentMeta(message, summary) {
-  const custom = message.metadata.custom;
-  if (summary.agentRole && !custom.agentRole) custom.agentRole = summary.agentRole;
-  if (summary.agentName && !custom.agentName) custom.agentName = summary.agentName;
-  if (summary.replyId && !custom.replyId) custom.replyId = summary.replyId;
-}
-
-// upsertSubAgentReasoning：把 agent_progress / agent_handoff 落到子消息 reasoning 列表；
-// 分组键沿用主线 reasoningGroupKey，让同一 worker 内相似阶段折叠成一条。
-function upsertSubAgentReasoning(subAgentMessages, event = {}, part = null) {
-  const summary = structuredEventSummary(event);
-  const workerSessionId = summary.workerSessionId;
-  if (!workerSessionId) return null; // 只聚合 Worker 事件；Leader 独白仍留在主消息里。
-  const message = ensureSubAgentMessage(subAgentMessages, workerSessionId);
-  updateSubAgentMeta(message, summary);
-  const reasoningPart = part || buildStructuredReasoningPart(event);
-  const key = reasoningGroupKey(reasoningPart);
-  const index = message.content.findIndex(
-    (existing) => existing.type === 'reasoning' && reasoningGroupKey(existing) === key,
-  );
-  if (index >= 0) {
-    message.content[index] = { ...message.content[index], ...reasoningPart };
-  } else {
-    message.content.push(reasoningPart);
-  }
-  return message;
-}
-
-// upsertSubAgentToolCall：把 tool-call part 直接挂到对应 worker 子消息。
-// 消费的是已经 upsertToolCallPart 生成/更新过的对象，避免字段发散。
-function upsertSubAgentToolCall(subAgentMessages, toolPart) {
-  const workerSessionId = toolPart?.workerSessionId;
-  if (!workerSessionId) return null;
-  const message = ensureSubAgentMessage(subAgentMessages, workerSessionId);
-  updateSubAgentMeta(message, {
-    agentRole: toolPart.agentRole,
-    agentName: toolPart.agentName,
-    replyId: toolPart.replyId,
-  });
-  const index = message.content.findIndex(
-    (existing) => existing.type === 'tool-call' && existing.toolCallId === toolPart.toolCallId,
-  );
-  if (index >= 0) {
-    message.content[index] = { ...toolPart };
-  } else {
-    message.content.push({ ...toolPart });
-  }
-  const runningToolCall = toolPart.status === 'running' || toolPart.status === 'requires_action';
-  const failedToolCall = toolPart.status === 'error';
-  message.status = failedToolCall
-    ? { type: 'incomplete', reason: 'error' }
-    : runningToolCall
-      ? { type: 'running' }
-      : { type: 'complete', reason: 'stop' };
-  return message;
-}
-
-// finalizeSubAgentMessages：final 到来时统一收敛 status，避免残留 running。
-function finalizeSubAgentMessages(subAgentMessages) {
-  for (const message of subAgentMessages.values()) {
-    if (message.status?.type === 'running') {
-      message.status = { type: 'complete', reason: 'stop' };
-    }
-  }
-}
-
-// attachSubAgentMessagesToToolParts：把每个 worker 子消息挂到该 worker 名下最后一个
-// tool-call part 的 `messages` 字段（assistant-ui ToolCallMessagePart.messages 契约），
-// 保证 assistant-ui 原生渲染路径能感知嵌套消息，不改动其他 tool-call 的 shape。
-function attachSubAgentMessagesToToolParts(toolParts, subAgentMessages) {
-  if (!subAgentMessages.size || !toolParts.length) return;
-  const lastToolCallByWorker = new Map();
-  toolParts.forEach((part, index) => {
-    if (part.workerSessionId) lastToolCallByWorker.set(part.workerSessionId, index);
-  });
-  for (const [workerSessionId, subMessage] of subAgentMessages.entries()) {
-    const index = lastToolCallByWorker.get(workerSessionId);
-    if (index == null) continue;
-    toolParts[index] = { ...toolParts[index], messages: [subMessage] };
-  }
-}
-
 function upsertToolGroup(toolGroups, event = {}) {
   const summary = structuredEventSummary(event);
   const toolName = summary.toolName || 'dataset_tool';
-  // 分组键：优先按 worker session / reply 分，让多 Agent 场景下的连续调用能自然折叠；
-  // 缺失时退回到 agent+tool 组合，兼容 Leader-only 场景。
-  const groupKey = summary.workerSessionId
-    ? `worker:${summary.workerSessionId}`
-    : summary.replyId
-      ? `reply:${summary.replyId}`
-      : `${summary.agent || 'agent'}:${toolName}`;
-  const existing = toolGroups.find((group) => group.groupId === groupKey);
+  const key = `${summary.agent || 'agent'}:${toolName}`;
+  const existing = toolGroups.find((group) => group.groupId === key);
   const next = compactObject({
-    groupId: groupKey,
+    groupId: key,
     kind: 'tool_group',
     status: summary.status,
     title: summary.title || toolName,
     summary: summary.summary,
     agent: summary.agent,
-    agentRole: summary.agentRole,
-    agentName: summary.agentName,
-    workerSessionId: summary.workerSessionId,
-    replyId: summary.replyId,
     toolName,
     timing: summary.timing,
     refs: summary.refs,
     rowCount: summary.rowCount,
-    columnCount: summary.columnCount,
   });
   if (existing) {
     Object.assign(existing, compactObject({
@@ -1243,9 +1076,6 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
       const toolGroups = [];
       const confirmations = [];
       const stepTrace = [];
-      // sub-agent messages：按 workerSessionId 分组的只读 ThreadMessage 集合，供
-      // ToolCallMessagePart.messages 与 DatalogueSubAgentMessages 组件递归渲染。
-      const subAgentMessages = new Map();
       let accText = '';      // 已累积的 text（final 收敛与兜底用）
       let liveThinkingText = ''; // 流式 Leader 独白，只进思考链，不铺回答正文
       let finalPayload = null;
@@ -1303,7 +1133,6 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         } else if (ev.type === 'agent_handoff') {
           emitTrace(ev);
           upsertReasoningPart(reasonings, buildStructuredReasoningPart(ev));
-          upsertSubAgentReasoning(subAgentMessages, ev);
           upsertTaskTimelineEvent(taskTimeline, {
             type: 'task_understood',
             label: '任务理解',
@@ -1320,9 +1149,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             rawThinkingDeltas.set(key, nextRaw);
             progressEvent = { ...ev, rawDelta: nextRaw };
           }
-          const reasoningPart = buildStructuredReasoningPart(progressEvent);
-          upsertReasoningPart(reasonings, reasoningPart);
-          upsertSubAgentReasoning(subAgentMessages, progressEvent, reasoningPart);
+          upsertReasoningPart(reasonings, buildStructuredReasoningPart(progressEvent));
           upsertTaskTimelineEvent(taskTimeline, {
             type: ev.agentRole === 'worker' ? 'bi_execution' : 'task_understood',
             label: ev.agentRole === 'worker' ? 'BI 执行' : '任务理解',
@@ -1332,9 +1159,8 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           yield { content: buildContent() };
         } else if (ev.type === 'tool_call') {
           emitTrace(ev);
-          const toolPart = upsertToolCallPart(toolParts, ev);
+          upsertToolCallPart(toolParts, ev);
           upsertToolGroup(toolGroups, ev);
-          upsertSubAgentToolCall(subAgentMessages, toolPart);
           upsertTaskTimelineEvent(taskTimeline, {
             type: 'bi_execution',
             label: 'BI 执行',
@@ -1347,12 +1173,6 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           const confirmation = structuredEventSummary(ev);
           confirmations.push(confirmation);
           upsertReasoningPart(reasonings, buildStructuredReasoningPart(ev));
-          // 只要 confirmation 事件带 toolCallId+toolName，就把它并入 tool-call part，让 Tool UI
-          // 直接进入 requires_action 状态；否则仅作 reasoning 展示，避免出现空壳 tool-call。
-          if (safeDisplayText(ev.toolCallId || ev.tool_call_id) && safeDisplayText(ev.toolName || ev.tool_name)) {
-            const toolPart = upsertToolCallPart(toolParts, ev);
-            upsertSubAgentToolCall(subAgentMessages, toolPart);
-          }
           upsertTaskTimelineEvent(taskTimeline, {
             type: 'next_action',
             label: '下一步',
@@ -1572,37 +1392,10 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           ? [...preservedStreaming, ...finalReasonings]
           : reasonings;
 
-        // Data UI parts：artifact card / 候选数据集这些"非模型工具"业务 payload 用 assistant-ui
-        // DataMessagePart ({ type: 'data', name, data }) 展示，避免误当作模型 tool-call。
-        // 只把已经安全过滤过的对象放进去，SQL/schema/raw_rows 由 safeArtifactCard 拒掉。
-        const safeFinalArtifactCard = safeArtifactCard(artifactCard);
-        const dataParts = [];
-        if (safeFinalArtifactCard) {
-          dataParts.push({
-            type: 'data',
-            name: 'datalogue-artifact-card',
-            data: safeFinalArtifactCard,
-          });
-        }
-        if (candidateDatasets && Array.isArray(candidateDatasets.candidates) && candidateDatasets.candidates.length) {
-          dataParts.push({
-            type: 'data',
-            name: 'datalogue-candidate-datasets',
-            data: candidateDatasets,
-          });
-        }
-
-        // 阶段 4：final 到来时把 sub-agent 消息收敛为完成态，并挂到 ToolCallMessagePart.messages，
-        // 同时保留在 metadata.custom.subAgentMessages 里，供 DatalogueSubAgentMessages 兜底渲染。
-        finalizeSubAgentMessages(subAgentMessages);
-        attachSubAgentMessagesToToolParts(toolParts, subAgentMessages);
-        const subAgentMessagesList = [...subAgentMessages.values()];
-
         yield {
           content: [
             ...mergedReasonings,
             ...toolParts,
-            ...dataParts,
             { type: 'text', text: finalText },
           ],
           status: { type: 'complete', reason: 'stop' },
@@ -1628,14 +1421,12 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
               stepTrace,
               // C-ready 数据结构
               taskTimeline,
-              artifactCard: safeFinalArtifactCard,
+              artifactCard: safeArtifactCard(artifactCard),
               candidateDatasets,
               repairPlan,
               repairTimeline,
               toolGroups,
               confirmations,
-              // 阶段 4：多智能体嵌套消息，兜底给 DatalogueSubAgentMessages 用。
-              subAgentMessages: subAgentMessagesList,
               timing: buildTimingMetadata(finalPayload.timing, toolGroups),
             },
           },

@@ -252,25 +252,12 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
       agent: toAgent,
       from_agent: safeAgentName(payload.from_agent || payload.fromAgent),
       to_agent: toAgent,
-      // 阶段 4：handoff 事件也要携带 worker session/reply/角色信息，
-      // 让下游 sub-agent 聚合能识别 Worker 边界，不再依赖后续 progress 事件。
-      agentRole: safeText(payload.agent_role || payload.agentRole) || null,
-      agentName: safeText(payload.agent_name || payload.agentName) || null,
-      workerSessionId: safeText(payload.worker_session_id || payload.workerSessionId) || null,
-      workerAgentId: safeText(payload.worker_agent_id || payload.workerAgentId) || null,
-      replyId: safeText(payload.reply_id || payload.replyId) || null,
       timing: safeTiming(payload),
       ...baseEvent(streamEvent, envelope),
     };
   }
   if (isToolLifecycle(envelope.event_type)) {
     const refs = safeRefs(payload);
-    // agentRole/agentName/replyId/workerSessionId 是阶段 4 多 Agent 归组契约的一部分，
-    // 缺失时前端要能兜底：Leader 视为 leader；Worker 明确带 role 才折叠到 Worker 分组。
-    const agentRole = safeText(payload.agent_role || payload.agentRole) || null;
-    const agentNameRaw = safeText(
-      payload.agent_name || payload.agentName || payload.agent || payload.worker_agent_name,
-    ) || null;
     return {
       type: 'tool_call',
       kind: 'tool',
@@ -278,17 +265,11 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
       title: safeText(payload.title || payload.tool_name || payload.toolName) || '工具调用',
       summary: safeText(payload.summary || payload.message) || '',
       agent: safeAgentName(payload.agent || payload.agent_name || payload.agentName),
-      agentRole,
-      agentName: agentNameRaw,
       toolName: safeText(payload.tool_name || payload.toolName) || 'dataset_tool',
       toolCallId: safeText(payload.tool_call_id || payload.toolCallId || payload.call_id || payload.callId) || '',
-      replyId: safeText(payload.reply_id || payload.replyId) || null,
-      workerSessionId: safeText(payload.worker_session_id || payload.workerSessionId) || null,
-      workerAgentId: safeText(payload.worker_agent_id || payload.workerAgentId) || null,
       timing: safeTiming(payload),
       refs,
       rowCount: payload.row_count ?? payload.rowCount ?? null,
-      columnCount: payload.column_count ?? payload.columnCount ?? null,
       ...baseEvent(streamEvent, envelope),
     };
   }

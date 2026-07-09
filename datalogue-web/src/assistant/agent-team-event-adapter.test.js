@@ -260,39 +260,6 @@ describe('agentTeamEnvelopeToChatEvent', () => {
     expect(JSON.stringify(event)).not.toMatch(/SELECT|secret_col|hidden_table|schema|raw_sql/i);
   });
 
-  it('propagates stage-4 workerSessionId / agentRole on agent handoff for sub-agent aggregation', () => {
-    const event = agentTeamEnvelopeToChatEvent({
-      task_id: 'task-handoff-4',
-      event_envelope: {
-        event_type: 'agent.handoff.started',
-        task_id: 'task-handoff-4',
-        payload: {
-          from_agent: 'agent_team_leader',
-          to_agent: 'bi-worker',
-          agent_role: 'worker',
-          agent_name: 'BI Worker',
-          worker_session_id: 'worker-session-77',
-          worker_agent_id: 'worker-agent-77',
-          reply_id: 'reply-77',
-          summary: '已切换到 BI Worker。',
-          sql: 'SELECT secret_col FROM hidden_table',
-          schema: { fields: ['secret_col'] },
-          raw_rows: [{ x: 1 }],
-        },
-      },
-    });
-
-    expect(event).toMatchObject({
-      type: 'agent_handoff',
-      agentRole: 'worker',
-      agentName: 'BI Worker',
-      workerSessionId: 'worker-session-77',
-      workerAgentId: 'worker-agent-77',
-      replyId: 'reply-77',
-    });
-    expect(JSON.stringify(event)).not.toMatch(/SELECT|secret_col|hidden_table|raw_rows?|schema/i);
-  });
-
   it('normalizes tool lifecycle envelopes with timing, refs and row count only', () => {
     const event = agentTeamEnvelopeToChatEvent({
       task_id: 'task-2',
@@ -405,48 +372,5 @@ describe('agentTeamEnvelopeToChatEvent', () => {
     const encoded = JSON.stringify(event);
     expect(encoded).not.toMatch(/pattern|input/i);
     expect(encoded).not.toContain('/tmp/private');
-  });
-
-  it('extends tool_call envelope with stage-4 fields (agentRole, workerSessionId, columnCount) and rejects control-plane payload', () => {
-    const event = agentTeamEnvelopeToChatEvent({
-      task_id: 'task-stage3',
-      event_envelope: {
-        event_type: 'tool_call.completed',
-        task_id: 'task-stage3',
-        payload: {
-          tool_name: 'datalogue_execute_query_plan_bundle',
-          tool_call_id: 'bundle-1',
-          agent: 'bi-worker',
-          agent_role: 'worker',
-          agent_name: 'BI Worker',
-          worker_session_id: 'worker-session-42',
-          reply_id: 'reply-42',
-          summary: '已完成 Query Plan Bundle',
-          artifact_ref: 'artifact:bundle-1',
-          row_count: 10,
-          column_count: 5,
-          sql: 'SELECT secret_col FROM hidden_table',
-          schema: { fields: ['secret_col'] },
-          raw_rows: [{ secret_col: 'raw' }],
-          query_plan: { steps: [{ kind: 'sql', sql: 'SELECT x FROM y' }] },
-        },
-      },
-    });
-    expect(event).toMatchObject({
-      type: 'tool_call',
-      status: 'completed',
-      toolName: 'datalogue_execute_query_plan_bundle',
-      toolCallId: 'bundle-1',
-      agentRole: 'worker',
-      agentName: 'BI Worker',
-      workerSessionId: 'worker-session-42',
-      replyId: 'reply-42',
-      rowCount: 10,
-      columnCount: 5,
-    });
-    expect(JSON.stringify(event)).not.toMatch(/select|secret_col|hidden_table|raw_rows?/i);
-    // 检测 schema/query_plan 作为字段名而非 tool 名子串出现（tool 名合法包含 query_plan_bundle）。
-    expect(JSON.stringify(event)).not.toMatch(/"schema"\s*:/);
-    expect(JSON.stringify(event)).not.toMatch(/"query_plan"\s*:/);
   });
 });

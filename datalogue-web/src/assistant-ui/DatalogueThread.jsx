@@ -4,7 +4,6 @@
 import React, { createContext, useContext } from 'react';
 import { ThreadPrimitive } from '@assistant-ui/react';
 import { AIMessage, UserMessage as DefaultUserMessage } from '../assistant/MyMessage';
-import { DatalogueMessage } from './DatalogueMessage';
 
 const TraceContext = createContext({
   traceSteps: [],
@@ -23,10 +22,8 @@ function AssistantMessageWithTrace() {
 }
 
 /**
- * DatalogueThread — P1/P2 Thread 外壳。
- * 默认使用 assistant-ui 迁移后的 DatalogueMessage 渲染主消息（tool-call parts / Data UI / sub-agent messages 全集）。
- * 传入 useLegacyMessage={true} 可以回滚到旧 MyMessage，仅在真实回归时用作 feature flag。
- * 也可以直接通过 AssistantMessage prop 注入自定义组件，测试、Storybook 或 Workbench 独立线程都走这条路径。
+ * DatalogueThread — P1 Thread 外壳。
+ * 默认复用现有 MyMessage 的可见渲染；后续 P2 可通过 props 注入 DatalogueMessage，不在本层暴露内部查询细节。
  */
 export function DatalogueThread({
   empty,
@@ -34,12 +31,8 @@ export function DatalogueThread({
   traceSteps = [],
   agentVerbosity = 'standard',
   UserMessage = DefaultUserMessage,
-  AssistantMessage,
-  useLegacyMessage = false,
+  AssistantMessage = AssistantMessageWithTrace,
 }) {
-  // 默认走新入口 DatalogueMessage；显式 legacy flag 或外部注入优先。
-  const ResolvedAssistantMessage = AssistantMessage
-    || (useLegacyMessage ? AssistantMessageWithTrace : DatalogueMessage);
   return (
     <DatalogueTraceProvider value={{ traceSteps, agentVerbosity }}>
       <ThreadPrimitive.Root className="chat-main">
@@ -51,7 +44,7 @@ export function DatalogueThread({
               <ThreadPrimitive.Messages
                 components={{
                   UserMessage,
-                  AssistantMessage: ResolvedAssistantMessage,
+                  AssistantMessage,
                 }}
               />
             </div>

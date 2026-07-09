@@ -413,42 +413,13 @@
 - 验证方式：`pytest tests/test_agentscope_service_worker_logging.py`（33/33 通过，含新增 `test_bi_worker_thinking_debug_merges_tokenizer_split_deltas`）；`black + ruff` 无 diff/告警；前端 `vitest run src/assistant/chat-adapter.test.js src/assistant/MyMessage.test.jsx`（50/50 通过）；`eslint` 4 个改动文件全绿。
 - 残留风险：如果 LLM 供应商返回的单个 chunk **本身**就带前导空格（例如 `left_al` + ` ias`），后端缓冲策略无法在不误伤合法空格（如 `alias: "p"`）的前提下消除该空格；这类情况需在后端"完整 thinking end-only 一次性 emit"通道另行处理。
 
-### 2026-07-09 11:40 · assistant-ui 迁移全五阶段（Streamdown + Tool UI + Multi-Agent nested + 主入口切换）
-
-- 涉及文件：
-  - 前端（阶段 1）：`datalogue-web/package.json`（新增 `@streamdown/mermaid ^1.0.2`、`@streamdown/cjk ^1.0.3`）、`datalogue-web/package-lock.json`、`datalogue-web/src/assistant-ui/DatalogueMarkdown.jsx`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/styles.css`。
-  - 前端（阶段 2）：`datalogue-web/src/assistant-ui/message-parts.js`（新增共享 `sanitizeThinkAndMarkdown` + `UNSAFE_MARKDOWN_RE`）、`datalogue-web/src/assistant-ui/DatalogueReasoning.jsx`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/assistant-ui/DatalogueMessage.test.jsx`。
-  - 前端（阶段 3）：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/agent-team-event-adapter.js`、`datalogue-web/src/assistant-ui/DatalogueMessage.jsx`、`datalogue-web/src/assistant-ui/DatalogueToolUI.jsx`、`datalogue-web/src/assistant-ui/DatalogueToolGroup.jsx`、新增 `datalogue-web/src/assistant-ui/DatalogueDataUI.jsx`、对应测试。
-  - 前端（阶段 4）：新增 `datalogue-web/src/assistant-ui/DatalogueSubAgentMessages.jsx`、`datalogue-web/src/assistant-ui/index.js`、`chat-adapter.js` 追加 `attachSubAgentMessagesToToolParts`、`agent-team-event-adapter.js` handoff 事件透传 agentRole/agentName/workerSessionId/replyId、`DatalogueMessage.jsx` 集成 sub-agent 展示、对应测试。
-  - 前端（阶段 5）：`datalogue-web/src/assistant-ui/DatalogueThread.jsx`（新增 `useLegacyMessage` feature flag，`AssistantMessage` 默认切到 `DatalogueMessage`；旧 `MyMessage/AIMessage` 作为回滚出口保留）。
-  - 后端：**无改动**（阶段 4 允许后端安全字段扩展，但现有 envelope 已足够，未启用扩展）。
-
-- 关键改动：
-  1. **阶段 1**：`StreamdownTextPrimitive` 插件统一为 `{code, math, mermaid, cjk}`，加 `smooth={true}`/`caret="block"`/`defer={true}`；Mermaid 渲染失败降级到 `<pre>`；`assistant-message--streaming|waiting|error|worker|idle` 状态色 class。
-  2. **阶段 2**：共享 `sanitizeThinkAndMarkdown(value) -> {mainMarkdown, thinkBlocks}` 剥离 `<think>` 到 reasoning 折叠区二级块；`DatalogueReasoning` 升级为 `DatalogueMarkdown` 渲染；`pickReasoningContent` 优先级：安全 `metadata.summary/business_summary/reason` > `part.text` > `<think>` 兜底；`UNSAFE_MARKDOWN_RE` 拦截 SQL/schema/raw_rows/query_plan/control_plane 关键词。
-  3. **阶段 3**：`tool-call` part 契约固化 —— `toolCallId/toolName/status ∈ {running,complete,error,requires_action}/args/argsText/result/agentRole/agentName/workerSessionId/replyId`；`DatalogueToolUI` 支持四态；`DatalogueToolGroup` 按 `worker:<workerSessionId>` > `reply:<replyId>` > `<agent>:<toolName>` 分组；`DataMessagePart` (`type:"data", name:"datalogue-artifact-card|datalogue-candidate-datasets"`) 承载业务卡；`confirmation` 事件带 toolCallId 时合并入 tool-call part 状态。
-  4. **阶段 4**：按 `workerSessionId` 聚合 `agent_handoff/agent_progress/tool_call` 为 sub-agent messages（对齐 assistant-ui `ThreadMessage` shape）；双路挂载：`ToolCallMessagePart.messages`（官方契约 `@assistant-ui/core message.d.ts:167-171`）+ `metadata.custom.subAgentMessages`（供本地 `DatalogueSubAgentMessages` 消费）；每一段 text/reasoning/tool-call 都过阶段 2 的 `UNSAFE_MARKDOWN_RE`。
-  5. **阶段 5**：`DatalogueThread` 加 `useLegacyMessage` prop，默认 `AssistantMessage = DatalogueMessage`；旧 `AIMessage` 保留在 legacy 分支供回滚。
-
-- 验证方式：
-  - `vitest run`：17 test files / **191 tests all passed**（阶段 1 加 3、阶段 2 加 5、阶段 3 加 10、阶段 4 加 7）。
-  - `npm run lint`：**0 errors, 14 warnings（均为既有 legacy warning，本次无新增）**。
-  - `npm run build`：production 构建成功，2.56s；Mermaid parser 独立 chunk（678.04 kB）。
-  - `eslint` 对本次改动的 4 个前端模块全绿。
-  - 前端未连真实 SSE 做端到端页面 smoke（用户方负责启动 dev server 后按 plan 验收清单 L294-L303 走一遍：Mermaid、Tool UI 三态、Multi-Agent nested、Workbench 无回归）。
-
-- 残留风险：
-  1. 后端 envelope 未扩展；如阶段 4 实际使用发现 `worker_session_id / reply_id / tool_call_id` 未一致下发到所有事件，需要另开一轮补齐后端。
-  2. `bundle size` warning 是既有情况；`emacs-lisp-C9PiwqqW.js`(779kB) / `mermaid-parser.core-*.js`(678kB) 大 chunk 来自 shiki + mermaid，未做 dynamic import 优化。
-  3. `DatalogueSubAgentMessages` 是本地只读组件；如 assistant-ui 后续官方 primitives 自动渲染 `part.messages`，可撤除该组件回归官方路径。
-  4. 阶段 5 `useLegacyMessage` feature flag 保留 30 天左右；页面回归稳定后再删除旧 `AIMessage` 相关代码。
-
 ### 2026-07-09 12:18 · Datalogue 目录治理 Phase A/B 完成记录
 
 - 涉及文件：`docs/architecture/目录治理与模块边界.md`、`.omx/context/directory-planning/current-directory-snapshot.md`、`datalogue-api/app/domains/**`、`datalogue-api/app/agentscope_runtime/**`、`datalogue-api/tests/test_directory_facades.py`、`.codex/project-memory.md`。
 - 关键改动：Phase A 完成目录治理设计落档，新增架构文档说明当前目录边界、模块职责和迁移约束，并在 `.omx` ignored 上下文中记录当前目录快照；Phase B 新增 `domains` 与 `agentscope_runtime` facade-first 包骨架，用轻量门面先稳定未来迁移入口，同时补 `test_directory_facades.py` 固化导入边界。全程不移动旧源码、不改旧调用方导入、不改变 AgentScope 主链、不改变 BI Worker 查询语义。
 - 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile $(find app/domains app/agentscope_runtime -name '*.py' | sort) tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py`，结果为 `4 passed, 2 warnings in 0.02s`。
 - 残留风险或后续事项：本轮只是目录治理 Phase A/B 的文档与 facade 骨架，不做旧源码搬迁和调用方切换；后续如推进真实模块迁移，需要继续保持 facade-first、分批改导入、补回归测试，并确认 AgentScope 主链与 BI Worker 查询语义不发生漂移。
+
 
 
 ### 2026-07-09 12:45 · 数据源适配 domain 下沉与 Workbench 挂载源收口
@@ -458,4 +429,3 @@
 - 涉及文件：`.gitignore`、`datalogue-api/app/domains/data_source/adapters/base.py`、`datalogue-api/app/domains/data_source/adapters/hive.py`、`datalogue-api/app/domains/data_source/adapters/oracle.py`、`datalogue-api/app/domains/data_source/adapters/registry.py`、`datalogue-api/app/domains/data_source/service.py`、`datalogue-api/tests/test_directory_facades.py`、`datalogue-web/src/assistant/workbench-mount-source.js`、`datalogue-web/src/assistant/workbench-mount-source.test.js`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/components/workbench-route.jsx`，并删除根目录临时验收截图 `chat-e2e-initial.png`、`chat-e2e-thread.png`。
 - 关键改动：将数据源能力、上下文、诊断、adapter 注册和 Oracle/Hive 连接逻辑继续下沉到 `domains/data_source/adapters` 边界，`service.py` 收敛为面向 API 的应用服务入口；补强目录 facade 测试，确保旧服务入口仍能稳定导入；前端新增 `workbench-mount-source` 统一判断 Workbench 挂载来源，Chat 页面和 Workbench 路由按同一来源语义展示/挂载，避免页面侧重复推断；`.gitignore` 补充 E2E 临时图规则并移除已追踪临时截图。
 - 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/services/datasource.py $(find app/domains/data_source -name '*.py' | sort) tests/test_directory_facades.py` 通过；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_datasource.py -q`，结果 `14 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_dataset.py -q -k "sql_preview or datasource"`，结果 `6 passed, 27 deselected, 10 warnings`。
-- 残留风险或后续事项：本轮只验证后端数据源与 dataset SQL preview 相关子集，未重新跑前端 lint/build 或浏览器 smoke；Ultragoal 的 `G032-G035/G039` checkpoint 因当前 Codex `get_goal` 返回 `null` 暂未补 complete，已在 `.omx/state/ultragoal-state.json` 标记 `checkpoint_blocked`，待恢复兼容 goal snapshot 后再补 Ledger。
