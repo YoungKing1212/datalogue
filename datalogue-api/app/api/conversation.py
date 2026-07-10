@@ -427,14 +427,43 @@ def _agentscope_payload_to_metadata(payload: Any) -> dict[str, Any] | None:
         metadata["task_id"] = payload.get("task_id")
     artifact_ref = payload.get("artifact_ref")
     if artifact_ref:
-        # 前端 resultRef / artifactCard.primary_ref 都用它渲染 ArtifactCard。
-        metadata["result_ref"] = artifact_ref
-        metadata["artifact_card"] = {
+        answer_summary = payload.get("answer_summary")
+        summary_for_chat: str | None = None
+        if isinstance(answer_summary, str) and answer_summary.strip():
+            summary_for_chat = answer_summary.strip()[:120]
+        # 前端 resultRef / artifactCard.primary_ref 都用它渲染 ArtifactCard；
+        # actions 与 chat-adapter.js final 分支保持一致，历史卡片才能点“查看详情”
+        # 触发 ArtifactDetailPanel，否则只会显示 ref 字符串。
+        artifact_card: dict[str, Any] = {
             "title": "查询结果",
             "status": "completed",
             "primary_ref": artifact_ref,
             "related_refs": [],
+            "actions": [
+                {
+                    "action_type": "view",
+                    "label": "查看详情",
+                    "ref": artifact_ref,
+                    "disabled": False,
+                },
+                {
+                    "action_type": "copy",
+                    "label": "复制结果",
+                    "ref": "",
+                    "disabled": False,
+                },
+                {
+                    "action_type": "export",
+                    "label": "导出",
+                    "ref": "",
+                    "disabled": True,
+                },
+            ],
         }
+        if summary_for_chat:
+            artifact_card["summary_for_chat"] = summary_for_chat
+        metadata["result_ref"] = artifact_ref
+        metadata["artifact_card"] = artifact_card
     if payload.get("checkpoint_ref"):
         metadata["checkpoint_ref"] = payload.get("checkpoint_ref")
     return metadata or None

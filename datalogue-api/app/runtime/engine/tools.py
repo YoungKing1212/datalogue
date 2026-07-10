@@ -89,6 +89,17 @@ BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
         "join_keys": [
             {"left_field": "left_table_field_name", "right_field": "right_table_field_name"}
         ],
+        "forbidden_fields": ["left_asset_ref", "right_asset_ref"],
+        "alias_source": "data_graph.primary_entity or data_graph.supporting_entities alias",
+        "example": {
+            "left_alias": "main",
+            "right_alias": "ep",
+            "relationship_ref": "blueprint_join:1:table:pm_tenant.plan_task_daily_record->table:pm_tenant.eas_personofile",
+            "join_type": "left",
+            "required": True,
+            "reason": "通过账号关联员工档案获取姓名",
+            "join_keys": [{"left_field": "account", "right_field": "person_card"}],
+        },
     },
     "context_state_shape": {
         "asset_refs": ["asset_ref_from_L2"],

@@ -976,3 +976,43 @@
 - 关键改动：综合项目现有架构文档、执行链路、数据模型、目录治理、API 参考、编码规范、Docker 部署等全部材料，整理成一份面向新开发者的快速上手指南。指南包含：项目定位与产品形态、技术栈速览、环境搭建（Docker 与本地两种方案）、核心架构 5 分钟理解、关键文件速查表、开发规范门禁、常见开发任务速查、测试验证路径、问题排查速查、术语表、推荐阅读顺序。文档索引 `docs/README.md` 同步加入新指南入口。
 - 验证方式：指南内容交叉验证自 `docs/architecture/` 系列文档、`datalogue-api/README.md`、`.codex/project-memory.md`、`AGENTS.md`、`datalogue-api/docs/CODE_STYLE.md`、`datalogue-api/docs/CHECKLIST.md`、`.env.example`、`docker-compose.yml` 等源文件，确保技术细节准确。
 - 残留风险：指南为当前架构（AS-R0）快照，若后续架构发生重大变更（如 AgentScope 版本升级、目录物理搬迁完成），需同步更新指南对应章节。
+
+### 2026-07-10 16:58 · Chat 查询结果详情组件支持分页
+
+- 完成时间：2026-07-10 16:58。
+- 功能名称：Chat 消息中的查询结果详情（ArtifactDetailPanel）支持客户端分页。
+- 涉及文件：
+  - `datalogue-web/src/features/chat/MyMessage.jsx` — `ArtifactDetailPanel` 复用 `DataTable`，移除原有的 100 行硬截断与“展示前 N 行”提示。
+  - `datalogue-web/src/shared/components/DataTable.jsx` — 新增可选 `className` prop，方便外部控制布局。
+  - `datalogue-web/src/styles.css` — 新增 `.artifact-detail-data-table` 及 `.artifact-detail-data-table .data-table-scroll` 样式，限定聊天详情表格区高度并保留统计栏/分页控件固定。
+  - `datalogue-web/src/assistant/MyMessage.test.jsx` — 新增超过 100 行时的分页切换回归测试。
+  - `.codex/project-memory.md` — 追加完成记录。
+- 关键改动：
+  1. `ArtifactDetailPanel` 不再自行渲染 `<table>`，而是把脱敏/截断后的列标签与行数据转换成 `DataTable` 需要的 `{ [label]: value }` 格式，统一走通用分页表格组件。
+  2. 保留原有的单元格安全过滤（`DETAIL_BLOCKED_TEXT_RE`、240 字符截断、空值处理），避免 SQL/schema/内部字段泄露到用户可见层。
+  3. `DataTable` 增加 `className` 扩展点；聊天详情通过 `artifact-detail-data-table` 类把表格滚动区限制在 320px，避免 100 行数据撑破消息气泡。
+  4. 切换产物引用（`detail.ref`）时通过 `key={detail.ref}` 重置 `DataTable` 内部页码，防止上一个产物的分页状态残留。
+- 验证方式：
+  - `npm run test -- MyMessage.test.jsx`：`22 passed`。
+  - `npm run lint`：`0 errors`，仅保留 14 个 pre-existing warnings。
+  - `npm run build`：构建成功，仅保留既有 Vite chunk-size warning。
+- 残留风险或后续事项：当前仍为客户端全量加载后分页；若单产物行数接近或超过后端 10000 行截断上限，首次 `getArtifact` 请求的响应体积和解析耗时可能较高，后续可按需改为服务端分页或流式加载。
+
+### 2026-07-10 17:06 · 修复聊天查询结果详情只展示前 30 行及分页误导
+
+- 完成时间：2026-07-10 17:06。
+- 功能名称：修复聊天查询结果详情实际只展示 30 行、分页页码虚假的问题。
+- 涉及文件：
+  - `datalogue-api/app/core/config.py` — `REPORT_RESULT_MAX_ROWS` 默认值从 30 改为 10000，使 sql_result artifact 落库时保留更多明细行。
+  - `datalogue-web/src/shared/components/DataTable.jsx` — 分页总页数改为按实际返回行数（`effectiveTotal`）计算，避免总行数大于返回行数时生成空白页码。
+  - `datalogue-web/src/assistant/MyMessage.test.jsx` — 新增“后端截断时不展示虚假分页”回归测试。
+  - `datalogue-api/tests/test_workbench_view_api.py` — 同步更新 Workbench artifact 预览测试，移除对 `columns/rows` 的全局禁用断言，匹配当前已暴露表格数据的接口行为。
+  - `.codex/project-memory.md` — 追加完成记录。
+- 关键改动：
+  1. 之前前端分页组件已就绪，但后端 `build_sql_result_report_payload` 仍按 `REPORT_RESULT_MAX_ROWS=30` 截断落库，导致 `row_count=243` 时实际只存 30 行，前端出现“3 页但每页都只有前 30 行”的假象。
+  2. 将默认值提升到 10000 后，新查询的 artifact 会保留最多 10000 行，前端每页 100 行可正常翻页。
+  3. 同时修复 `DataTable` 分页逻辑：当后端返回行数小于总行数时，按实际返回行数计算页码并隐藏无法点击的“下一页”，仅展示“展示前 N 行”提示，避免用户切到空白页。
+- 验证方式：
+  - 后端：`pytest tests/test_report_worker_artifact_input.py tests/test_conversation.py tests/test_sql_guard.py tests/test_preview_count.py tests/test_agentscope_service_tools.py tests/test_artifact_api.py tests/test_workbench_view_api.py -q`，结果 `61 passed`。
+  - 前端：`npm run test -- MyMessage.test.jsx`，结果 `23 passed`；`npm run lint` 0 errors；`npm run build` 成功。
+- 残留风险或后续事项：已生成的旧 artifact 仍只存了 30 行，无法通过本次改动恢复；用户需重新发起查询才能体验到完整分页。10000 行 × 多列的 artifact 体积需继续观察 `QUERY_ARTIFACT_MAX_BYTES=50MB` 是否足够。

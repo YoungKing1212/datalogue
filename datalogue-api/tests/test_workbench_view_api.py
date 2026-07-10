@@ -39,8 +39,7 @@ FORBIDDEN_KEYS = {
     "field_patch",
     "table_name",
     "column_name",
-    "columns",
-    "rows",
+    # "columns" 和 "rows" 已在 Workbench sql_result 预览中合法暴露，不再列为全局禁止字段。
     "content_json",
     "content_text",
 }
@@ -291,7 +290,14 @@ def test_get_workbench_artifact_returns_sanitized_view(client, db_session, sampl
     assert payload["artifact_ref"] == artifact_ref
     assert payload["kind"] == "query_result"
     assert payload["dataset_id"] == sample_dataset.id
-    assert payload["preview_payload"] == {"summary": "共 10 条工作日志"}
+    assert payload["preview_payload"] == {
+        "summary": "共 10 条工作日志",
+        "columns": ["work_date"],
+        "rows": [{"work_date": "2024-01-01"}],
+        "row_count": 1,
+        "total_row_count": 1,
+        "truncated": False,
+    }
     assert "content_json" not in payload
     assert "content_text" not in payload
     _assert_no_forbidden_keys(payload)
@@ -326,7 +332,14 @@ def test_get_workbench_artifact_can_be_thread_scoped(client, db_session, sample_
     other_response = client.get(f"/api/workbench/artifact/{other_ref}?thread_id={thread.thread_id}")
 
     assert owned_response.status_code == 200
-    assert owned_response.json()["preview_payload"] == {"summary": "当前线程产物"}
+    assert owned_response.json()["preview_payload"] == {
+        "summary": "当前线程产物",
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+        "total_row_count": 0,
+        "truncated": False,
+    }
     assert other_response.status_code == 404
 
 

@@ -111,6 +111,14 @@ def test_get_conversation_reads_agentscope_messages(client, db_session):
     # artifact_ref 映射到 result_ref 与 artifact_card.primary_ref，前端据此渲染 ArtifactCard。
     assert assistant["response_metadata"]["result_ref"] == "artifact:abc123"
     assert assistant["response_metadata"]["artifact_card"]["primary_ref"] == "artifact:abc123"
+    # 历史 ArtifactCard 必须带 view/copy/export actions，缺失时前端只会显示 ref 字符串。
+    card = assistant["response_metadata"]["artifact_card"]
+    action_types = [a.get("action_type") for a in card.get("actions") or []]
+    assert action_types == ["view", "copy", "export"]
+    view_action = next(a for a in card["actions"] if a["action_type"] == "view")
+    assert view_action["ref"] == "artifact:abc123"
+    assert view_action["disabled"] is False
+    assert card.get("summary_for_chat") == "查询已完成"
     assert assistant["response_metadata"]["task_id"] == "task-1"
     # reasoning_summary status completed 必须映射为 done，否则前端不渲染 reasoning part。
     assert [s["status"] for s in assistant["step_trace"]] == ["done", "done"]

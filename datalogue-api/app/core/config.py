@@ -174,7 +174,7 @@ class Settings(BaseSettings):
 
     # --- 报告、解释与 SQL 自动修复 ---
     ANSWER_EXPLANATION_LOW_CONFIDENCE_THRESHOLD: float = 0.75
-    REPORT_RESULT_MAX_ROWS: int = 30
+    REPORT_RESULT_MAX_ROWS: int = 10000
     REPORT_CELL_MAX_CHARS: int = 120
     SQL_MAX_RETRY_COUNT: int = 3
     DSL_FIELD_CATALOG_LIMIT: int = 20

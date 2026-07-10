@@ -8238,6 +8238,16 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   box-shadow: 0 1px 0 var(--hairline);
 }
 
+/* 聊天消息里的查询结果详情复用 DataTable，限定表格区高度，统计栏和分页控件固定在外。 */
+.artifact-detail-data-table {
+  margin: 10px 12px 12px;
+}
+
+.artifact-detail-data-table .data-table-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 /* ================================================
    C3 Workbench Panel — Chat 右侧业务工作台
    ================================================ */

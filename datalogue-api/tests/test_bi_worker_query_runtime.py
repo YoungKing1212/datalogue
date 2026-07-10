@@ -520,6 +520,25 @@ def test_query_plan_join_keys_rejects_empty_list():
         )
 
 
+def test_join_requirement_rejects_asset_ref_fields():
+    """JoinRequirement 是安全契约，禁止混入 left_asset_ref/right_asset_ref 等未声明字段。"""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        JoinRequirement(
+            left_alias="main",
+            right_alias="ep",
+            relationship_ref="blueprint_join:1:table:pm_tenant.plan_task_daily_record->table:pm_tenant.eas_personofile",
+            join_type="left",
+            required=True,
+            reason="关联员工档案",
+            join_keys=[JoinKey(left_field="account", right_field="person_card")],
+            left_asset_ref="table:pm_tenant.plan_task_daily_record",
+            right_asset_ref="table:pm_tenant.eas_personofile",
+        )
+
+
 # ---- alias→table 解析与端到端 JOIN 编译（改动 C 新增）----
 
 

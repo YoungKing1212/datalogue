@@ -360,6 +360,73 @@ describe('MyMessage — C-ready 渲染', () => {
     ))).toBe(true);
   });
 
+  it('paginates query artifact rows in detail panel', async () => {
+    const rows = Array.from({ length: 101 }, (_, i) => ({ v: `r-${i + 1}` }));
+    getArtifact.mockResolvedValue({
+      artifact_ref: 'artifact:paged-1',
+      kind: 'sql_result',
+      content_json: {
+        columns: ['v'],
+        row_count: 101,
+        rows,
+      },
+    });
+    setMockMessage({
+      artifactCard: {
+        title: '查询结果',
+        status: 'completed',
+        primary_ref: 'artifact:paged-1',
+        actions: [
+          { action_type: 'view', label: '查看详情', ref: 'artifact:paged-1' },
+        ],
+      },
+    });
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByRole('button', { name: /查看详情/ }));
+
+    expect(await screen.findByText('查询结果详情')).toBeInTheDocument();
+    // 第一页应展示前 100 行，第 101 行不应出现。
+    expect(screen.getByText('r-1')).toBeInTheDocument();
+    expect(screen.getByText('r-100')).toBeInTheDocument();
+    expect(screen.queryByText('r-101')).not.toBeInTheDocument();
+
+    // 点击下一页切换到第二页。
+    fireEvent.click(screen.getByTitle('下一页'));
+    expect(screen.getByText('r-101')).toBeInTheDocument();
+    expect(screen.queryByText('r-1')).not.toBeInTheDocument();
+  });
+
+  it('does not show fake pages when backend only returns a truncated subset', async () => {
+    getArtifact.mockResolvedValue({
+      artifact_ref: 'artifact:truncated-1',
+      kind: 'sql_result',
+      content_json: {
+        columns: ['v'],
+        row_count: 50,
+        rows: [{ v: 'r-1' }, { v: 'r-2' }, { v: 'r-3' }],
+      },
+    });
+    setMockMessage({
+      artifactCard: {
+        title: '查询结果',
+        status: 'completed',
+        primary_ref: 'artifact:truncated-1',
+        actions: [
+          { action_type: 'view', label: '查看详情', ref: 'artifact:truncated-1' },
+        ],
+      },
+    });
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByRole('button', { name: /查看详情/ }));
+
+    expect(await screen.findByText('查询结果详情')).toBeInTheDocument();
+    // 应提示只展示了一部分，且不应出现可点的分页按钮（避免切到空白页）。
+    expect(screen.getByText(/展示前 3 行/)).toBeInTheDocument();
+    expect(screen.queryByTitle('下一页')).not.toBeInTheDocument();
+  });
+
   it('emits expected artifact detail retention event from Chat-side artifact projection', async () => {
     setMockMessage({
       artifactCard: {

@@ -21,6 +21,7 @@ import 'katex/dist/katex.min.css';
 import { Icon } from '../../shared/components/icons';
 import { LineChart, Donut, GroupedBar } from '../../components/charts';
 import ArtifactCard from '../../components/artifact-card';
+import DataTable from '../../shared/components/DataTable';
 import { getArtifact } from '../../api/client';
 import { requestWorkbenchRetry } from '../../assistant/workbench-api';
 import {
@@ -349,7 +350,6 @@ function toArray(value) {
   return value == null || value === '' ? [] : [value];
 }
 
-const DETAIL_ROW_LIMIT = 100;
 const DETAIL_CELL_LIMIT = 240;
 const DETAIL_BLOCKED_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|field_patch|repair_patch|control_plane)\b/i;
 
@@ -442,9 +442,16 @@ function ArtifactDetailPanel({ detail, onClose }) {
   const artifact = detail.artifact || null;
   const rows = detailRowsFromArtifact(artifact);
   const columns = detailColumnsFromArtifact(artifact);
-  const visibleRows = rows.slice(0, DETAIL_ROW_LIMIT);
   const declaredRowCount = Number(artifact?.content_json?.row_count);
   const rowCount = Number.isFinite(declaredRowCount) ? declaredRowCount : rows.length;
+
+  // 将后端返回的行数据转换成 DataTable 需要的 { [label]: value } 格式，并做单元格脱敏/截断。
+  const tableColumns = columns.map((column) => column.label);
+  const tableRows = rows.map((row) =>
+    Object.fromEntries(
+      columns.map((column) => [column.label, detailCellText(detailRowValue(row, column))]),
+    ),
+  );
 
   return (
     <div className="artifact-detail-panel">
@@ -471,39 +478,15 @@ function ArtifactDetailPanel({ detail, onClose }) {
       )}
 
       {detail.status === 'ready' && rows.length > 0 && columns.length > 0 && (
-        <>
-          <div className="artifact-detail-meta">
-            <span>{rowCount} 行</span>
-            <span>{columns.length} 列</span>
-          </div>
-          <div className="artifact-card-table-wrap artifact-detail-table-wrap">
-            <table className="artifact-card-table">
-              <thead>
-                <tr>
-                  {columns.map((column) => (
-                    <th key={`${column.key}-${column.index}`}>{column.label}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((row, rowIndex) => (
-                  <tr key={rowIndex}>
-                    {columns.map((column) => (
-                      <td key={`${rowIndex}-${column.key}-${column.index}`}>
-                        {detailCellText(detailRowValue(row, column))}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {rowCount > visibleRows.length && (
-            <div className="artifact-card-table-more">
-              当前展示前 {visibleRows.length} 行，共 {rowCount} 行
-            </div>
-          )}
-        </>
+        <div className="artifact-detail-data-table">
+          <DataTable
+            key={detail.ref}
+            columns={tableColumns}
+            rows={tableRows}
+            totalRowCount={rowCount}
+            truncated={artifact?.content_json?.truncated === true}
+          />
+        </div>
       )}
     </div>
   );

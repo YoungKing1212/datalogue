@@ -6,22 +6,19 @@ import React, { useState, useMemo } from 'react';
 
 const PAGE_SIZE = 100;
 
-export default function DataTable({ columns = [], rows = [], totalRowCount, truncated = false }) {
+export default function DataTable({ columns = [], rows = [], totalRowCount, truncated = false, className = '' }) {
   const [currentPage, setCurrentPage] = useState(1);
 
   const total = totalRowCount != null ? totalRowCount : rows.length;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // 实际可分页的数据量：后端已截断时按返回行数分页，避免用总数量生成虚假页码。
+  const effectiveTotal = rows.length >= total ? total : rows.length;
+  const totalPages = Math.max(1, Math.ceil(effectiveTotal / PAGE_SIZE));
 
-  // 当页数据：如果 rows 是完整数据集则前端分页，否则展示当前页
+  // 当页数据：按实际可用行数切片，若后端未返回后续页则 effectiveTotal 会自动限制页码。
   const pageRows = useMemo(() => {
-    if (rows.length >= total) {
-      // 全量数据，客户端分页
-      const start = (currentPage - 1) * PAGE_SIZE;
-      return rows.slice(start, start + PAGE_SIZE);
-    }
-    // 非全量数据（如后端已截断），全部展示
-    return rows;
-  }, [rows, total, currentPage]);
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return rows.slice(start, start + PAGE_SIZE);
+  }, [rows, currentPage]);
 
   const safeCurrentPage = Math.min(currentPage, totalPages);
   if (safeCurrentPage !== currentPage) {
@@ -33,7 +30,7 @@ export default function DataTable({ columns = [], rows = [], totalRowCount, trun
   }
 
   return (
-    <div className="data-table-wrap">
+    <div className={`data-table-wrap ${className}`.trim()}>
       {/* 统计栏 */}
       <div className="data-table-stats">
         <span>
