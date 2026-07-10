@@ -913,3 +913,34 @@
   4. 新增 `tests/test_conversation_history_agentscope.py`：覆盖单 session、多 session 聚合排序、无 agentscope 回退 legacy、无任何消息返回空、reasoning `completed→done` 与 `artifact_ref→result_ref` 映射五种场景。
 - 验证方式：`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m pytest tests/test_conversation_history_agentscope.py -q` 全部通过；Playwright 真机复现 `/chat/200` 会话正常回放 3 轮问答 + artifact 卡片。
 - 残留风险或后续事项：agentscope 侧 `business_payload_json` 仍以 `artifact_ref` 单主 ref 为主，多 artifact 的 `related_refs` 目前不回放；后续若 Report Worker 输出多 artifact 需要一起展示，需要扩 `_agentscope_payload_to_metadata`。
+
+### 2026-07-10 15:25 · 移除 max_limit 硬上限 + 查询结果分页表格
+
+- 完成时间：2026-07-10 15:25。
+- 功能名称：移除 SQL 生成阶段 max_limit 硬上限，改为查询时先 COUNT 再按需截断到 10000；前端产物详情展示分页表格，每页 100 行。
+- 涉及文件：
+  - `datalogue-api/app/core/config.py`、`datalogue-api/app/domains/query_execution/artifact_store.py` — `QUERY_ARTIFACT_MAX_BYTES` 从 2MB 提升到 50MB
+  - `datalogue-api/app/domains/bi/worker/runtime.py` — fallback DSL `limit` 从 500 提升到 10000
+  - `datalogue-api/app/domains/query_execution/query_constraints.py` — `default_limit=10000`、`max_limit=10000`、`max_limit` 上限 10000→1000000000
+  - `datalogue-api/app/domains/query_execution/report_input.py` — `REPORT_RESULT_MAX_ROWS` 默认 30→10000；`total_row_count` 优先取 `execution_result.total_row_count`，同步写回 payload
+  - `datalogue-api/app/domains/workbench/view_model.py` — `_artifact_preview_payload` 对 `sql_result` 返回 `columns/rows/row_count/total_row_count/truncated`；`_FORBIDDEN_OUTPUT_KEYS` 移除 columns/rows 屏蔽，允许前端拿到表格数据
+  - `datalogue-web/src/shared/components/DataTable.jsx` — 新增分页表格组件（100 条/页，含翻页控件和统计栏）
+  - `datalogue-web/src/components/workbench-panel.jsx` — `WorkbenchArtifactDrawer` 检测 `preview_payload` 有表格数据时渲染 DataTable
+  - `datalogue-web/src/styles.css` — DataTable 全部样式
+- 关键改动：
+  - SQL 生成阶段不再硬卡 10000 上限；运行时按查询总量决定是否截断。
+  - 产物的行数上限从 30 行提升到 10000 行，前端客户端分页每页 100 行。
+  - 产物预览增加 `total_row_count` 和 `truncated` 元信息。
+- 验证方式：`pytest tests/test_sql_guard.py -x -q` 14 passed；`pytest tests/test_preview_count.py -x -q` 3 passed；前端 `npm run lint` 0 errors、`npm run build` 成功。
+- 残留风险：10000 写在 `report_input.py` 硬编码值，未抽取为环境变量；10000 行 × 多列的数据在 artifact 存储和传输时带宽/延迟增加，artifact max_bytes=50MB 理论够用但需观察。
+
+### 2026-07-10 12:26 · Preview COUNT(*) 前置修复与回归测试补齐
+
+- 完成时间：2026-07-10 12:26。
+- 功能名称：修复 preview_dataset_sql 前置 COUNT(*) 生成缺少 `*` 的 bug，并补齐三条回归测试。
+- 涉及文件：`datalogue-api/app/domains/query_execution/preview.py`、`datalogue-api/tests/test_preview_count.py`。
+- 关键改动：
+  1. `_build_count_sql` 里 `exp.Count()` 缺 `this=exp.Star()`，导致某些方言渲染为 `SELECT COUNT() FROM (...) cnt`，实际执行必然失败。修复为 `exp.Count(this=exp.Star())`，同时对 `inner.subquery()` 加 `# type: ignore[attr-defined]` 消除 mypy 因 `Expression` 基类无 `subquery` 属性产生的 attr-defined 错误（运行时 Query 子类均实现）。
+  2. 新增 `tests/test_preview_count.py` 三条测试：总量未超过 10,000 时 row_count/total_row_count 都等于真实总量；总量超过 10,000 时实际返回 10,000 行但 row_count 记录真实总量；COUNT 执行失败时降级为直接执行且不报错。fallback 测试的 fake connection 补齐了 `_mapping` 包装，避免 preview 层访问 `row._mapping` 时炸 `'tuple' object has no attribute '_mapping'`。
+- 验证方式：`pytest tests/test_preview_count.py -q` 3 passed；联跑相关测试 48 passed；`black + ruff + mypy` 通过。
+- 残留风险：`_MAX_PREVIEW_ROWS = 10000` 与 `query_constraints.max_limit=10000`、`sql_guard` 默认上限保持一致；如后续调整全局上限，需同步这三处。

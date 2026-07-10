@@ -19,7 +19,7 @@ def test_guard_allows_readonly_select_and_adds_limit():
     result = guard_readonly_sql("SELECT id, name FROM users", dialect="mysql")
 
     assert result.ok is True
-    assert result.normalized_sql == "SELECT id, name FROM users LIMIT 100"
+    assert result.normalized_sql == "SELECT id, name FROM users LIMIT 10000"
     assert result.warnings
 
 
@@ -69,7 +69,7 @@ def test_guard_allows_trailing_semicolon():
     result = guard_readonly_sql("SELECT * FROM users;", dialect="mysql")
 
     assert result.ok is True
-    assert result.normalized_sql == "SELECT * FROM users LIMIT 100"
+    assert result.normalized_sql == "SELECT * FROM users LIMIT 10000"
 
 
 def test_guard_ignores_keywords_in_strings_and_comments():
@@ -80,7 +80,7 @@ def test_guard_ignores_keywords_in_strings_and_comments():
     )
 
     assert result.ok is True
-    assert "LIMIT 100" in result.normalized_sql
+    assert "LIMIT 10000" in result.normalized_sql
 
 
 def test_guard_blocks_dangerous_function():
@@ -146,7 +146,7 @@ def test_guard_allows_tables_inside_dataset_whitelist():
     )
 
     assert result.ok is True
-    assert result.normalized_sql == "SELECT id FROM orders LIMIT 100"
+    assert result.normalized_sql == "SELECT id FROM orders LIMIT 10000"
 
 
 def test_guard_does_not_treat_cte_names_as_unauthorized_tables():

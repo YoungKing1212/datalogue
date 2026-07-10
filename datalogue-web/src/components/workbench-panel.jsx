@@ -4,6 +4,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { fetchWorkbenchArtifact, fetchWorkbenchThread, requestWorkbenchRetry } from '../assistant/workbench-api';
 import { Icon } from './icons';
+import DataTable from '../shared/components/DataTable';
 
 const FORBIDDEN_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|field_patch)\b/i;
 const RUNNING_REFRESH_INTERVAL_MS = 2000;
@@ -254,6 +255,8 @@ export function WorkbenchDiagnosticDrawer({ open = false, diagnostic = null, ret
 export function WorkbenchArtifactDrawer({ artifact = null, artifactRef = null, loading = false, error = null, onClose }) {
   if (!artifact && !loading && !error) return null;
   const refs = artifact?.related_refs || [];
+  const preview = artifact?.preview_payload || {};
+  const hasTableData = Array.isArray(preview?.columns) && preview.columns.length > 0 && Array.isArray(preview?.rows);
   return (
     <section className="workbench-artifact-drawer" data-testid="workbench-artifact-drawer">
       <div className="workbench-artifact-head">
@@ -269,8 +272,19 @@ export function WorkbenchArtifactDrawer({ artifact = null, artifactRef = null, l
       {error && <p className="workbench-error">{artifactErrorMessage(error)}</p>}
       {!loading && !error && artifact && (
         <>
-          <p>{safeText(artifact.preview_payload?.summary || artifact.summary, '产物摘要已生成')}</p>
-          <code>{safeText(artifact.artifact_ref || artifactRef)}</code>
+          {hasTableData ? (
+            <DataTable
+              columns={preview.columns}
+              rows={preview.rows}
+              totalRowCount={preview.total_row_count}
+              truncated={preview.truncated}
+            />
+          ) : (
+            <>
+              <p>{safeText(preview.summary || artifact.summary, '产物摘要已生成')}</p>
+              <code>{safeText(artifact.artifact_ref || artifactRef)}</code>
+            </>
+          )}
         </>
       )}
       {!!refs.length && (

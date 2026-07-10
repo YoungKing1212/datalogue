@@ -80,13 +80,16 @@ def build_sql_result_report_payload(
 
     source = execution_result if isinstance(execution_result, dict) else {}
     resolved_settings = settings or get_settings()
-    row_limit = max(0, int(getattr(resolved_settings, "REPORT_RESULT_MAX_ROWS", 30) or 30))
+    row_limit = max(0, int(getattr(resolved_settings, "REPORT_RESULT_MAX_ROWS", 10000) or 10000))
     cell_max_chars = max(0, int(getattr(resolved_settings, "REPORT_CELL_MAX_CHARS", 120) or 120))
 
     source_columns = source.get("columns")
     columns = _safe_columns(source_columns)
     source_rows = _safe_rows(source.get("rows"))
-    total_row_count = _safe_int(source.get("row_count"), fallback=len(source_rows))
+    total_row_count = _safe_int(
+        source.get("total_row_count") or source.get("row_count"),
+        fallback=len(source_rows),
+    )
     visible_rows = source_rows[:row_limit]
     clip_state = _ClipState()
     clipped_rows = [_clip_cell_value(row, max_chars=cell_max_chars, state=clip_state) for row in visible_rows]
@@ -100,6 +103,7 @@ def build_sql_result_report_payload(
     payload["columns"] = columns
     payload["rows"] = clipped_rows
     payload["row_count"] = total_row_count
+    payload["total_row_count"] = total_row_count
     payload[REPORT_INPUT_META_KEY] = {
         "visible_row_limit": row_limit,
         "visible_cell_max_chars": cell_max_chars,

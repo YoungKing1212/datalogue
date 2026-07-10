@@ -64,8 +64,6 @@ _FORBIDDEN_OUTPUT_KEYS = {
     "blueprintbody",
     "table_name",
     "column_name",
-    "columns",
-    "rows",
     "content_json",
     "content_text",
     "control_plane",
@@ -454,6 +452,21 @@ def _artifact_preview_payload(kind: str, content_json: Any, content_text: str | 
                 "trace_ref": safe.get("trace_ref"),
             }.items()
             if value is not None
+        }
+    if kind == "sql_result" and isinstance(content_json, dict):
+        # 返回查询结果的数据行与元信息，供前端渲染分页表格
+        content_json.pop("report_input_meta", None)  # 移除内部元信息，不暴露给前端
+        columns = content_json.get("columns", [])
+        rows = content_json.get("rows", [])
+        row_count = content_json.get("row_count", len(rows))
+        meta = content_json.get("report_input_meta", {}) if isinstance(content_json.get("report_input_meta"), dict) else {}
+        return {
+            "summary": _safe_text(content_json.get("summary"), fallback="查询产物已生成。"),
+            "columns": columns,
+            "rows": rows,
+            "row_count": row_count,
+            "total_row_count": meta.get("total_row_count", row_count),
+            "truncated": meta.get("truncated", False),
         }
     if isinstance(content_json, dict):
         return {"summary": _safe_text(content_json.get("summary"), fallback="查询产物已生成。")}

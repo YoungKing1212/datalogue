@@ -27,6 +27,8 @@ from app.core import models
 from app.domains.data_source.service import create_engine_for_datasource, normalize_db_type
 from app.domains.query_execution.query_constraints import normalize_query_constraints
 from app.domains.query_execution.guard import guard_readonly_sql
+import sqlglot
+from sqlglot import exp
 from app.domains.query_execution.dialect.adapter import normalize_execution_dialect
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,57 @@ def _preview_constraints(dataset: models.SemanticDataset, limit: int | None) -> 
         # preview 的 limit 只作为本次默认行数；最终仍由 normalize/guard 按 max_limit 裁剪。
         constraints["default_limit"] = max(1, int(limit))
     return normalize_query_constraints(constraints)
+
+
+_MAX_PREVIEW_ROWS = 10000
+
+
+def _parse_sql(sql: str, dialect: str) -> exp.Expression | None:
+    """按目标方言解析 SQL，解析失败返回 None。"""
+    try:
+        parsed = sqlglot.parse_one(sql, read=dialect)
+        return parsed if isinstance(parsed, exp.Expression) else None
+    except (sqlglot.errors.ParseError, sqlglot.errors.SqlglotError, ValueError):
+        return None
+
+
+def _sql_without_limit(expression: exp.Expression) -> exp.Expression:
+    """返回去掉外层 LIMIT/FETCH 的 SQL 表达式副本。"""
+    cloned = expression.copy()
+    cloned.set("limit", None)
+    cloned.set("fetch", None)
+    return cloned
+
+
+def _build_count_sql(expression: exp.Expression, dialect: str) -> str:
+    """把查询包成 SELECT COUNT(*) FROM (... ) cnt，去掉内层 ORDER BY 避免部分数据库报错。"""
+    inner = _sql_without_limit(expression)
+    inner.set("order", None)
+    # 内层可能是 Select/Union；sqlglot 的 subquery() 在 Query 子类上定义，运行时全部实现，
+    # 类型上补一个断言避免 mypy 抱怨 Expression 基类没有该方法。
+    subquery = inner.subquery("cnt")  # type: ignore[attr-defined]
+    count_expr = exp.select(exp.Count(this=exp.Star())).from_(subquery)
+    return count_expr.sql(dialect=dialect)
+
+
+def _apply_max_row_limit(expression: exp.Expression, dialect: str, max_rows: int) -> str:
+    """强制把外层 LIMIT 设为 max_rows。"""
+    expression.set("limit", exp.Limit(expression=exp.Literal.number(max_rows)))
+    expression.set("fetch", None)
+    return expression.sql(dialect=dialect)
+
+
+def _execute_count(conn, count_sql: str) -> int | None:
+    """执行 COUNT(*) SQL，失败返回 None。"""
+    try:
+        result_proxy = conn.execute(text(count_sql))
+        row = result_proxy.fetchone()
+        if row is None:
+            return None
+        value = row[0]
+        return int(value) if value is not None else None
+    except Exception:
+        return None
 
 
 def _jsonable_value(value: Any) -> Any:
@@ -164,6 +217,22 @@ def preview_dataset_sql(
     engine = create_engine_for_datasource(datasource)
     try:
         with engine.connect() as conn:
+            # 先执行 COUNT(*) 获知真实总量；失败时降级为直接执行原 SQL。
+            total_row_count: int | None = None
+            parsed = _parse_sql(normalized_sql, dialect)
+            if parsed is not None:
+                count_sql = _build_count_sql(parsed, dialect)
+                try:
+                    total_row_count = _execute_count(conn, count_sql)
+                except Exception as exc:
+                    logger.warning(
+                        "SQL preview COUNT 执行失败，降级为直接执行: dataset_id=%s error=%s",
+                        dataset_id,
+                        exc,
+                    )
+                if total_row_count is not None and total_row_count > _MAX_PREVIEW_ROWS:
+                    normalized_sql = _apply_max_row_limit(parsed, dialect, _MAX_PREVIEW_ROWS)
+
             result_proxy = conn.execute(text(normalized_sql))
             columns = list(result_proxy.keys())
             rows: list[dict[str, Any]] = []
@@ -171,11 +240,16 @@ def preview_dataset_sql(
                 mapping = row._mapping
                 rows.append({column: _jsonable_value(mapping[column]) for column in columns})
 
+            effective_total_row_count = (
+                total_row_count if total_row_count is not None else len(rows)
+            )
+
         logger.info(
-            "SQL preview 执行成功: dataset_id=%s question=%s row_count=%s",
+            "SQL preview 执行成功: dataset_id=%s question=%s row_count=%s total_row_count=%s",
             dataset_id,
             question,
             len(rows),
+            effective_total_row_count,
         )
         return jsonable_encoder(
             {
@@ -183,7 +257,8 @@ def preview_dataset_sql(
                 "sql": normalized_sql,
                 "columns": columns,
                 "rows": rows,
-                "row_count": len(rows),
+                "row_count": effective_total_row_count,
+                "total_row_count": effective_total_row_count,
                 "sql_guard": guard_payload,
                 "error": None,
             }

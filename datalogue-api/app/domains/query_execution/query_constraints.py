@@ -17,8 +17,8 @@ from typing import Any
 DEFAULT_QUERY_CONSTRAINTS: dict[str, Any] = {
     "enabled": True,
     "default_time_range_days": 30,
-    "default_limit": 100,
-    "max_limit": 1000,
+    "default_limit": 10000,
+    "max_limit": 10000,
 }
 
 
@@ -34,7 +34,7 @@ def normalize_query_constraints(value: dict[str, Any] | None) -> dict[str, Any]:
             parsed = DEFAULT_QUERY_CONSTRAINTS[key]
         return max(minimum, min(maximum, parsed))
 
-    max_limit = _int_value("max_limit", 1, 10000)
+    max_limit = _int_value("max_limit", 1, 1000000000)
     default_limit = min(_int_value("default_limit", 1, max_limit), max_limit)
     default_time_range_days = _int_value("default_time_range_days", 1, 3650)
     return {

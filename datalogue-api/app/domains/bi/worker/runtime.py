@@ -784,6 +784,6 @@ def _build_fallback_dsl(session_kwargs: dict[str, Any] | None) -> dict[str, Any]
         "query_type": "detail_query",
         "selected_assets": selected_assets,
         "limit": min(
-            int(kwargs.get("query_constraints", {}).get("default_limit", 100) or 100), 500
+            int(kwargs.get("query_constraints", {}).get("default_limit", 10000) or 10000), 10000
         ),
     }

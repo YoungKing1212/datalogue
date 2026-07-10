@@ -9307,3 +9307,140 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
     padding-right: 16px;
   }
 }
+
+/* ── DataTable 分页表格 ────────────────────────────────── */
+.data-table-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.data-table-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.data-table-stats strong {
+  color: var(--text);
+}
+
+.data-table-stats-hint {
+  color: var(--text-3);
+  margin-left: 4px;
+}
+
+.data-table-stats-warn {
+  color: var(--warn);
+  font-weight: 500;
+}
+
+.data-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.data-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-weight: 500;
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline-strong);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.data-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.data-table tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table-row-num {
+  width: 40px;
+  min-width: 40px;
+  text-align: right;
+  color: var(--text-3);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.data-table-empty-row {
+  text-align: center;
+  color: var(--text-3);
+  padding: 20px 10px;
+}
+
+.data-table-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+/* 分页控件 */
+.data-table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.data-table-page-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.data-table-page-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.data-table-page-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.data-table-page-info {
+  min-width: 60px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}

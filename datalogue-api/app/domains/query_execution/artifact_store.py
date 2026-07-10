@@ -61,7 +61,7 @@ class ArtifactStore:
         self.max_bytes = int(
             max_bytes
             if max_bytes is not None
-            else getattr(settings, "QUERY_ARTIFACT_MAX_BYTES", 2 * 1024 * 1024)
+            else getattr(settings, "QUERY_ARTIFACT_MAX_BYTES", 50 * 1024 * 1024)
         )
         self.cleanup_interval_seconds = int(
             cleanup_interval_seconds
