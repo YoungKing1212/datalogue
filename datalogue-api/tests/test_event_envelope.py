@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from app.schemas.bi_workbench import (
+from app.core.schemas.bi_workbench import (
     ArtifactCard,
     ArtifactRef,
     DatalogueEventEnvelope,

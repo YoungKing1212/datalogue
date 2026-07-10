@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from app import models
+from app.core import models
 from app.services.dataset_router import route_dataset_for_question
 
 

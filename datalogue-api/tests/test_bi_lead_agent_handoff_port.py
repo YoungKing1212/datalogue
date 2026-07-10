@@ -15,15 +15,15 @@ from __future__ import annotations
 
 import pytest
 
-from app.schemas.bi_agent import (
+from app.core.schemas.bi_agent import (
     BIAgentHandoffResult,
     ConfirmBIAgentRunRequest,
     DatasetCapabilitySummary,
 )
-from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService
-from app.agents.bi_agent.handoff_port import BIHandoffPort
-from app.agents.bi_agent.handoff_service import BIAgentHandoffService, _default_handoff_port
-from app.agents.bi_agent.run_service import BIAgentRunService
+from app.domains.bi.agent.confirmation_service import BIAgentConfirmationService
+from app.domains.bi.agent.handoff_port import BIHandoffPort
+from app.domains.bi.agent.handoff_service import BIAgentHandoffService, _default_handoff_port
+from app.domains.bi.agent.run_service import BIAgentRunService
 
 
 class FakePort:
@@ -105,6 +105,6 @@ def test_default_handoff_port_uses_native_by_default(db_session, monkeypatch):
         def from_db(cls, db):
             return native_port
 
-    monkeypatch.setattr("app.agents.bi_agent.native_handoff.AgentScopeNativeBIHandoff", FakeNativeHandoff)
+    monkeypatch.setattr("app.domains.bi.agent.native_handoff.AgentScopeNativeBIHandoff", FakeNativeHandoff)
 
     assert _default_handoff_port(db_session) is native_port

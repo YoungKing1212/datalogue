@@ -12,6 +12,18 @@ vi.mock('../api/client', () => ({
   del: vi.fn(),
 }));
 
+vi.mock('../auth/auth-context', () => ({
+  useAuth: () => ({
+    user: {
+      username: 'kenyang',
+      full_name: 'Ken Yang',
+      email: 'ken@example.test',
+      role: 'admin',
+      is_superuser: true,
+    },
+  }),
+}));
+
 vi.mock('./icons', () => ({
   Icon: ({ name }) => <span data-testid={`icon-${name}`} />,
 }));
@@ -36,6 +48,8 @@ describe('SettingsScreen LLM 模型配置', () => {
     await waitFor(() => {
       expect(get).toHaveBeenCalledWith('/api/agentscope-control/credentials');
     });
+
+    fireEvent.click(screen.getByRole('button', { name: /新增 credential/ }));
 
     fireEvent.change(screen.getByLabelText('接入模板'), { target: { value: 'custom' } });
     fireEvent.change(screen.getByLabelText('供应商'), { target: { value: 'openai-compatible' } });

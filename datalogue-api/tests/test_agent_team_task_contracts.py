@@ -14,9 +14,9 @@
 
 import pytest
 
-from app.models.agent_team_task import AgentTeamTask
-from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
-from app.schemas.bi_workbench import build_datalogue_event_envelope
+from app.core.models.agent_team_task import AgentTeamTask
+from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.core.schemas.bi_workbench import build_datalogue_event_envelope
 
 
 def test_agent_team_task_request_rejects_internal_payload_keys():

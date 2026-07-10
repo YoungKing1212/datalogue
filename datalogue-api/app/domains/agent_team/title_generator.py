@@ -1,0 +1,259 @@
+# ============================================================
+# File Name   : title_generator.py
+# Description:
+#   对话标题自动生成服务。
+#
+# Responsibilities:
+#   - 在第一轮对话完成后，利用 LLM 从用户问题和 AI 回复生成简短标题。
+#   - 异步执行，不阻塞主链路。
+#
+# Author      : yangkai
+# Created On  : 2026-07-08
+# ============================================================
+
+import logging
+import re
+import threading
+
+import httpx
+from sqlalchemy.orm import Session
+
+from app.core.config import Settings, get_settings
+from app.core.database import SessionLocal
+from app.core.models.agentscope_workbench import AgentScopeSession
+from app.core.models.conversation import Conversation
+from app.core.llm_config import resolve_llm_config
+
+logger = logging.getLogger(__name__)
+
+_TITLE_GENERATION_ROLE = "title_generation"
+
+# 匹配 thinking 块的正则（<think>...</think> 或类似格式）
+_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
+
+
+def _strip_thinking_blocks(text: str) -> str:
+    """移除可能存在的 thinking 块，避免影响标题生成。"""
+    return _THINK_BLOCK_RE.sub("", text).strip()
+
+
+def _postprocess_title(title: str) -> str:
+    """对 LLM 生成的标题进行后处理：移除多余标记、截断长度。"""
+    text = title.strip()
+    # 移除可能的引号包裹
+    if (text.startswith('"') and text.endswith('"')) or (
+        text.startswith("'") and text.endswith("'")
+    ):
+        text = text[1:-1].strip()
+    # 移除可能的 "Title:" 前缀
+    text = re.sub(r"^title\s*[:：]\s*", "", text, flags=re.IGNORECASE).strip()
+    # 限制长度
+    return text[:80].strip()
+
+
+def _extract_title_from_reasoning(text: str) -> str:
+    """从推理模型的 reasoning_content 中提取最终标题。
+
+    推理模型（如 DeepSeek V4 Pro）在 reasoning_content 中输出思考过程，
+    最终的标题通常在末尾用引号包裹或是最后一个句子。
+    """
+    # 策略1：查找最后的引号内容（如 "杨凯2024工作日志查询"）
+    for quote_char in ['"', "'", '"', "'", '「', '」', '『', '』']:
+        parts = text.split(quote_char)
+        if len(parts) >= 3:
+            # 取最后一段引号内容
+            for i in range(len(parts) - 2, 0, -1):
+                candidate = parts[i].strip()
+                if candidate and len(candidate) <= 80:
+                    return candidate
+    # 策略2：取最后一个句子（句号、感叹号后的内容）
+    for sep in ('。', '！', '？', '\n'):
+        segments = text.split(sep)
+        last = segments[-1].strip()
+        if last and len(last) <= 80:
+            return last
+    # 策略3：取最后200字符
+    return text[-200:].strip()
+
+
+def generate_title(
+    user_message: str,
+    assistant_response: str,
+    settings: Settings,
+    db: Session,
+) -> str | None:
+    """调用 LLM 生成对话标题。"""
+    try:
+        config = resolve_llm_config(settings, role=_TITLE_GENERATION_ROLE, db=db)
+        if not config.api_key or not config.base_url:
+            logger.warning("标题生成跳过：缺少 LLM 配置")
+            return None
+
+        user_message_clean = _strip_thinking_blocks(user_message or "")
+        assistant_response_clean = _strip_thinking_blocks(assistant_response or "")
+
+        # 构建 prompt，使用 system 角色引导模型直接输出标题
+        system_prompt = (
+            "You are a title generator. Generate a short, descriptive title (3-7 words) "
+            "for a conversation. The title should capture the main topic or intent. "
+            "Write the title in the same language as the user's message. "
+            "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+        )
+        user_prompt = (
+            "User: {user_message}\n"
+            "Assistant: {assistant_response}"
+        ).format(
+            user_message=user_message_clean[:500],
+            assistant_response=assistant_response_clean[:500],
+        )
+
+        # 标题生成不需要推理能力，使用非推理模型以避免 reasoning_content 问题
+        model = config.model
+        # DeepSeek V4 Pro 是推理模型，其 content 始终为空。标题生成
+        # 只需简单文本输出，改用 deepseek-chat。
+        if "v4" in model.lower() and "pro" in model.lower():
+            model = "deepseek-chat"
+
+        # 调用 LLM
+        with httpx.Client(timeout=15.0) as client:
+            response = client.post(
+                f"{config.base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {config.api_key}"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 100,
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            choices = result.get("choices", [])
+            if not choices or not isinstance(choices, list):
+                logger.warning("标题生成失败：LLM 返回格式异常")
+                return None
+
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                return None
+
+            message = choice.get("message", {})
+            if not isinstance(message, dict):
+                return None
+
+            title_text = message.get("content", "")
+            # 推理模型（如 DeepSeek V4 Pro）可能把所有输出放在
+            # reasoning_content 中，content 始终为空。从 reasoning_content
+            # 末尾提取最终的标题文本。
+            if not title_text:
+                raw = (message.get("reasoning_content") or "").strip()
+                if raw:
+                    # 取 reasoning_content 的最后一个句子或引号内容
+                    title_text = _extract_title_from_reasoning(raw)
+            if not title_text:
+                return None
+
+            title = _postprocess_title(title_text)
+            if title:
+                logger.debug("标题生成成功：%s", title)
+                return title
+            return None
+
+    except httpx.TimeoutException:
+        logger.warning("标题生成跳过：LLM 请求超时")
+        return None
+    except httpx.HTTPStatusError as e:
+        logger.warning("标题生成跳过：LLM 请求失败 %s", e)
+        return None
+    except Exception:
+        logger.exception("标题生成异常")
+        return None
+
+
+def _update_session_title_sync(
+    thread_id: str,
+    title: str,
+    legacy_conversation_id: int | None,
+) -> None:
+    """同步更新会话标题（在后台线程中执行）。"""
+    db = SessionLocal()
+    try:
+        # 更新 AgentScopeSession
+        session = (
+            db.query(AgentScopeSession)
+            .filter(AgentScopeSession.thread_id == thread_id)
+            .one_or_none()
+        )
+        if session and (session.title is None or session.title == "" or len(session.title) <= 80):
+            # 只有当原标题为空或只是简短截取时才更新
+            session.title = title[:200]
+            db.commit()
+
+        # 如果有关联的 legacy conversation，也更新它
+        if legacy_conversation_id:
+            conversation = (
+                db.query(Conversation)
+                .filter(Conversation.id == legacy_conversation_id)
+                .one_or_none()
+            )
+            if conversation:
+                conversation.title = title[:200]
+                db.commit()
+
+    except Exception:
+        logger.exception("更新会话标题失败")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _maybe_auto_title_worker(
+    thread_id: str,
+    user_message: str,
+    assistant_response: str,
+    legacy_conversation_id: int | None = None,
+) -> None:
+    """在后台线程中生成并更新会话标题。"""
+    db = SessionLocal()
+    try:
+        # 检查是否需要生成
+        session = (
+            db.query(AgentScopeSession)
+            .filter(AgentScopeSession.thread_id == thread_id)
+            .one_or_none()
+        )
+        if session is None:
+            return
+        existing_title: str | None = session.title  # type: ignore[assignment]
+        if existing_title and len(existing_title) > 80:
+            return
+
+        settings = get_settings()
+        title = generate_title(user_message, assistant_response, settings, db)
+        if title:
+            _update_session_title_sync(thread_id, title, legacy_conversation_id)
+    except Exception:
+        logger.exception("后台标题生成异常")
+    finally:
+        db.close()
+
+
+def maybe_auto_title_async(
+    thread_id: str,
+    user_message: str,
+    assistant_response: str,
+    legacy_conversation_id: int | None = None,
+) -> None:
+    """启动后台线程尝试自动生成并更新会话标题。"""
+    thread = threading.Thread(
+        target=_maybe_auto_title_worker,
+        args=(thread_id, user_message, assistant_response),
+        kwargs={"legacy_conversation_id": legacy_conversation_id},
+        daemon=True,
+        name="auto-title",
+    )
+    thread.start()

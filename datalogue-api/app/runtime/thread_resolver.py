@@ -15,7 +15,7 @@
 import re
 import uuid
 
-from app.schemas.agentscope_workbench import AgentScopeThreadKind, ThreadRef
+from app.core.schemas.agentscope_workbench import AgentScopeThreadKind, ThreadRef
 
 _LEGACY_NUMERIC_RE = re.compile(r"^\d+$")
 _LEGACY_THREAD_RE = re.compile(r"^conv_(\d+)$")
@@ -60,5 +60,5 @@ def resolve_thread_ref(raw_thread_id: str | int | None) -> ThreadRef | None:
     )
 
 
-def new_agentscope_thread_id() -> str:
+def new_runtime_thread_id() -> str:
     return f"as_{uuid.uuid4()}"

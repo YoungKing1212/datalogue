@@ -12,12 +12,12 @@
 # ============================================================
 
 from app.runtime.agent_team_runtime import AgentTeamTaskRuntime, AgentTeamTaskRunner
-from app.runtime.thread_resolver import new_agentscope_thread_id, normalize_thread_id, resolve_thread_ref
+from app.runtime.thread_resolver import new_runtime_thread_id, normalize_thread_id, resolve_thread_ref
 
 __all__ = [
     "AgentTeamTaskRuntime",
     "AgentTeamTaskRunner",
-    "new_agentscope_thread_id",
+    "new_runtime_thread_id",
     "normalize_thread_id",
     "resolve_thread_ref",
 ]

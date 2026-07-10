@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
-from app.models.agentscope_workbench import AgentScopeEvent, AgentScopeMessage
-from app.services.agentscope_mirror import (
+from app.core.models.agentscope_workbench import AgentScopeEvent, AgentScopeMessage
+from app.services.runtime_mirror import (
     create_agentscope_session,
     create_running_assistant_message,
     mark_message_failed,

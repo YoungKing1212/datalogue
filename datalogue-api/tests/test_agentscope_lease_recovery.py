@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.services.agentscope_mirror import create_agentscope_session, create_running_assistant_message
-from app.services.workbench_actions import run_lease_recovery
+from app.services.runtime_mirror import create_agentscope_session, create_running_assistant_message
+from app.domains.workbench.actions import run_lease_recovery
 
 
 def test_lease_recovery_interrupts_expired_running_message(db_session):

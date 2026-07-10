@@ -7,10 +7,20 @@ const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || 'http://localhost:80
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // 显式声明 streamdown 插件，避免 dev 冷启动 optimizeDeps 漏抓新加的插件
+  optimizeDeps: {
+    include: [
+      '@streamdown/code',
+      '@streamdown/math',
+    ],
+  },
   test: {
     globals: true,
     environment: 'jsdom',
     setupFiles: './tests/setup.js',
+    alias: {
+      echarts: new URL('./tests/mocks/echarts.js', import.meta.url).pathname,
+    },
   },
   server: {
     hmr: {

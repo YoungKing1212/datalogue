@@ -108,6 +108,112 @@ describe('agentTeamEnvelopeToChatEvent', () => {
     expect(event.event_envelope.payload.query_plan).toEqual({ sql: 'SELECT employee_name FROM hidden_table' });
   });
 
+  it('surfaces BI Worker repair request contract paths without leaking private query details', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-repair',
+      event_envelope: {
+        event_type: 'message.completed',
+        task_id: 'task-repair',
+        trace_id: 'trace-repair',
+        payload: {
+          datalogue_event_type: 'bi_worker_repair_request',
+          failure_class: 'query_plan_contract_error',
+          safe_reason: 'Query Plan JSON 未符合 BI Worker 安全契约，查询尚未执行。',
+          validation_error_summary: [
+            'missing:join_requirements.0.left_alias',
+            'missing:join_requirements.0.right_alias',
+            'missing:join_requirements.1.left_alias',
+            'missing:join_requirements.1.right_alias',
+          ],
+          query_plan: { sql: 'SELECT employee_name FROM hidden_table' },
+          raw_rows: [{ employee_name: 'Ken' }],
+          schema: { fields: ['employee_name'] },
+        },
+      },
+    });
+
+    expect(event).toMatchObject({
+      type: 'agent_progress',
+      title: '查询修复',
+      status: 'completed',
+    });
+    expect(event.summary).toContain('Query Plan 契约错误');
+    expect(event.summary).toContain('join_requirements.0.left_alias');
+    expect(event.summary).toContain('join_requirements.0.right_alias');
+    expect(event.summary).toContain('等 4 项');
+    expect(`${event.title} ${event.summary}`).not.toMatch(/SELECT|employee_name|hidden_table|raw_rows|schema/i);
+  });
+
+  it('passes through BI Worker thinking metadata while keeping raw delta debug-only', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-thinking',
+      event_envelope: {
+        event_type: 'agent.progress',
+        task_id: 'task-thinking',
+        trace_id: 'trace-thinking',
+        payload: {
+          agent_role: 'worker',
+          agent_name: 'BI Worker',
+          phase: 'thinking',
+          status: 'running',
+          title: 'BI Worker 思考中',
+          summary: '正在分析问题与可用数据证据。',
+          reasoning_kind: 'bi_worker_thinking_summary',
+          stream_group_id: 'reply-1:think-1',
+          sequence: 3,
+          block_id: 'think-1',
+          raw_delta: 'select * from hidden_table',
+          debug_raw: false,
+        },
+      },
+    });
+
+    expect(event).toMatchObject({
+      type: 'agent_progress',
+      kind: 'agent_progress',
+      agentRole: 'worker',
+      agentName: 'BI Worker',
+      phase: 'thinking',
+      reasoningKind: 'bi_worker_thinking_summary',
+      streamGroupId: 'reply-1:think-1',
+      sequence: 3,
+      blockId: 'think-1',
+    });
+    expect(event.rawDelta).toBeUndefined();
+    expect(JSON.stringify(event)).not.toMatch(/select \* from|hidden_table/i);
+  });
+
+  it('keeps BI Worker raw thinking delta only when debug flag is explicit', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-thinking-debug',
+      event_envelope: {
+        event_type: 'agent.progress',
+        task_id: 'task-thinking-debug',
+        payload: {
+          agent_role: 'worker',
+          agent_name: 'BI Worker',
+          phase: 'thinking',
+          status: 'running',
+          title: 'BI Worker 调试原文',
+          summary: '调试原文流式片段。',
+          reasoning_kind: 'bi_worker_raw_thinking_delta',
+          stream_group_id: 'reply-1:think-raw',
+          sequence: 4,
+          debug_raw: true,
+          raw_delta: '先分析用户问题',
+        },
+      },
+    });
+
+    expect(event).toMatchObject({
+      type: 'agent_progress',
+      reasoningKind: 'bi_worker_raw_thinking_delta',
+      streamGroupId: 'reply-1:think-raw',
+      debugRaw: true,
+      rawDelta: '先分析用户问题',
+    });
+  });
+
   it('keeps repair envelopes as repair events', () => {
     const event = agentTeamEnvelopeToChatEvent({
       task_id: 'task-1',

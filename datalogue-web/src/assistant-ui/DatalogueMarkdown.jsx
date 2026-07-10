@@ -16,6 +16,37 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import { preprocessDatalogueMarkdown } from './message-parts';
+import { EChartsBlock, MermaidBlock } from './DatalogueChartBlocks';
+
+function codeText(children) {
+  if (Array.isArray(children)) return children.join('');
+  return typeof children === 'string' ? children : String(children || '');
+}
+
+function languageFromClassName(className = '') {
+  const match = /language-([A-Za-z0-9_-]+)/.exec(className);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function MarkdownCode({ className, children, ...props }) {
+  const language = languageFromClassName(className);
+  const codeValue = codeText(children).replace(/\n$/, '');
+  if (language === 'mermaid') {
+    return <MermaidBlock code={codeValue} />;
+  }
+  if (language === 'echarts') {
+    return <EChartsBlock code={codeValue} />;
+  }
+  return <code className={className || 'md-inline-code'} {...props}>{children}</code>;
+}
+
+function StreamdownMermaidBlock(props) {
+  return <MermaidBlock {...props} />;
+}
+
+function StreamdownEChartsBlock(props) {
+  return <EChartsBlock {...props} />;
+}
 
 const markdownComponents = {
   a: ({ href, children }) => (
@@ -24,9 +55,12 @@ const markdownComponents = {
   table: ({ children }) => (
     <div className="md-table-wrap"><table>{children}</table></div>
   ),
-  code: ({ className, children, ...props }) => (
-    <code className={className || 'md-inline-code'} {...props}>{children}</code>
-  ),
+  code: MarkdownCode,
+};
+
+const streamdownComponentsByLanguage = {
+  mermaid: { SyntaxHighlighter: StreamdownMermaidBlock },
+  echarts: { SyntaxHighlighter: StreamdownEChartsBlock },
 };
 
 function preprocessMarkdown(text) {
@@ -74,6 +108,7 @@ export function DatalogueMarkdown({
       plugins={{ code, math }}
       controls={{ table: true, code: true }}
       security={{ allowedProtocols: ['http', 'https', 'mailto'], allowDataImages: false }}
+      componentsByLanguage={streamdownComponentsByLanguage}
       preprocess={preprocessMarkdown}
     />
   );

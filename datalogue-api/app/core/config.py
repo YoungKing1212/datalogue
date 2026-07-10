@@ -29,6 +29,16 @@ class Settings(BaseSettings):
 
     SECRET_KEY: str = "change-me"
     AES_KEY: str = "your-32-byte-aes-key-here!!"
+    AUTH_TRANSPORT_KEY: str = "datalogue-auth-transport-key"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    AUTH_COOKIE_NAME: str = "refresh_token"
+    AUTH_COOKIE_SECURE: bool = False
+    AUTH_COOKIE_SAMESITE: str = "lax"
+    AUTH_COOKIE_PATH: str = "/api/auth"
+    BOOTSTRAP_ADMIN_USERNAME: str = "admin"
+    BOOTSTRAP_ADMIN_PASSWORD: str = "admin"
+    CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
@@ -40,6 +50,10 @@ class Settings(BaseSettings):
     LOG_BACKUP_COUNT: int = 7
     # 本地调试开关：打开后打印 Agent 原始 prompt 和返回值。
     AGENT_DEBUG_RAW_LOGS: bool = False
+    # 本地调试开关：打开后允许 BI Worker thinking delta 原文进入前端推理摘要；仅限短时排障。
+    DATALOGUE_DEBUG_STREAM_RAW_THINKING: bool = False
+    # 自动标题后台线程开关；测试或批处理场景可关闭，避免异步 DB 副作用干扰主链验证。
+    DATALOGUE_AUTO_TITLE_ENABLED: bool = True
 
     # ---- AgentScope OpenTelemetry 配置 ----
     # WARNING: TracingMiddleware 会将模型请求/响应内容（messages、tools schema、
@@ -176,6 +190,14 @@ class Settings(BaseSettings):
         normalized = (value or "off").strip().lower()
         if normalized not in {"off", "dev_only"}:
             raise ValueError("BI_LEAD_AGENT_DATASET_FALLBACK_MODE must be 'off' or 'dev_only'")
+        return normalized
+
+    @field_validator("AUTH_COOKIE_SAMESITE")
+    @classmethod
+    def _validate_auth_cookie_samesite(cls, value: str) -> str:
+        normalized = (value or "lax").strip().lower()
+        if normalized not in {"lax", "strict", "none"}:
+            raise ValueError("AUTH_COOKIE_SAMESITE must be 'lax', 'strict' or 'none'")
         return normalized
 
 @lru_cache

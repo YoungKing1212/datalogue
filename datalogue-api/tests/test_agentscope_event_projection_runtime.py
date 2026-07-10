@@ -14,7 +14,7 @@
 from agentscope.event import ExternalExecutionResultEvent, RequireExternalExecutionEvent
 from agentscope.message import TextBlock, ToolCallBlock, ToolResultBlock, ToolResultState
 
-from app.events.projection import (
+from app.core.events.projection import (
     build_task_envelope,
     project_agentscope_event,
 )
@@ -35,7 +35,7 @@ def test_project_require_external_execution_event_to_tool_required():
         trace_id="trace-1",
         thread_id="as_1",
         message_id="msg-1",
-        selected_agent="bi_agent",
+        selected_agent="bi_worker",
     )
 
     assert envelope.event_type == "tool.external_required"
@@ -63,7 +63,7 @@ def test_project_external_execution_result_event_to_tool_result():
         trace_id="trace-1",
         thread_id="as_1",
         message_id="msg-1",
-        selected_agent="bi_agent",
+        selected_agent="bi_worker",
     )
 
     assert envelope.event_type == "tool.result"
@@ -89,7 +89,7 @@ def test_project_legacy_sse_final_to_message_completed():
         trace_id="trace-1",
         thread_id="as_1",
         message_id="msg-1",
-        selected_agent="bi_agent",
+        selected_agent="bi_worker",
     )
 
     assert envelope.event_type == "message.completed"
@@ -109,7 +109,7 @@ def test_project_legacy_answer_completed_envelope_to_message_completed():
         trace_id="trace-1",
         thread_id="as_1",
         message_id="msg-1",
-        selected_agent="bi_agent",
+        selected_agent="bi_worker",
     )
 
     assert envelope.event_type == "message.completed"

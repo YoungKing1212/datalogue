@@ -3,7 +3,7 @@
 
 import React from 'react';
 import { ActionBarPrimitive, AuiIf } from '@assistant-ui/react';
-import { Icon } from '../components/icons';
+import { Icon } from '../shared/components/icons';
 
 function ActionIcon({ name, title, children, ...props }) {
   return (

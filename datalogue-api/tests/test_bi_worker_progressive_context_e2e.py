@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     FieldTarget,
     QueryDataGraph,
@@ -23,8 +23,8 @@ from app.agentscope_service.bi_worker_contracts import (
     QuerySelect,
     ResultShape,
 )
-from app.agentscope_service.bi_worker_runtime import BIWorkerQueryRuntime
-from app.agentscope_service.bi_worker_validator import ProgressiveContextState
+from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
+from app.domains.bi.worker.validator import ProgressiveContextState
 
 
 def _undisclosed_field_target() -> FieldTarget:

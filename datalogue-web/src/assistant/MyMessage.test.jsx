@@ -2,7 +2,7 @@
 // 测试候选数据集确认和 ArtifactCard 在消息中的渲染
 
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 // Mock assistant-ui hooks — AIMessage 依赖这些
@@ -78,7 +78,7 @@ vi.mock('../assistant-ui', () => ({
 }));
 
 // Mock 子组件
-vi.mock('../components/icons', () => ({
+vi.mock('../shared/components/icons', () => ({
   Icon: ({ name, style }) => <span data-testid={`icon-${name}`} style={style} />,
 }));
 
@@ -106,10 +106,29 @@ vi.mock('../components/artifact-card', () => ({
           <button
             key={`${action.action_type || action.action_id || index}`}
             type="button"
-            onClick={() => onAction?.({
-              ...action,
-              actionType: action.action_type || action.action_id,
-            })}
+            onClick={() => {
+              const normalized = {
+                ...action,
+                actionType: action.action_type || action.action_id,
+              };
+              if (normalized.actionType === 'retry') {
+                window.dispatchEvent(
+                  new CustomEvent('datalogue:artifact-action', {
+                    detail: {
+                      actionType: 'retry',
+                      checkpointRef:
+                        normalized.checkpoint_ref
+                        || normalized.checkpointRef
+                        || normalized.payload_ref
+                        || normalized.payloadRef
+                        || null,
+                    },
+                  }),
+                );
+                return;
+              }
+              onAction?.(normalized);
+            }}
           >
             {action.label}
           </button>
@@ -123,9 +142,20 @@ vi.mock('../api/client', () => ({
   submitMessageFeedback: vi.fn().mockResolvedValue({}),
 }));
 
+vi.mock('./workbench-api', () => ({
+  requestWorkbenchRetry: vi.fn(),
+}));
+
 // 需要在 mock 之后导入组件
 import { AIMessage } from './MyMessage';
 import { getArtifact } from '../api/client';
+import { requestWorkbenchRetry } from './workbench-api';
+import {
+  RETENTION_UI_EVENT_NAMES,
+  WORKBENCH_RETENTION_EVENT_TYPE,
+} from './workbench-retention-events';
+
+const nativeDispatchEvent = window.dispatchEvent.bind(window);
 
 function setMockMessage(custom = {}) {
   // 重置
@@ -151,7 +181,7 @@ describe('MyMessage — C-ready 渲染', () => {
   beforeEach(() => {
     // 确保 window 对象可用
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = null;
-    window.dispatchEvent = vi.fn();
+    window.dispatchEvent = vi.fn((event) => nativeDispatchEvent(event));
     window.matchMedia = vi.fn().mockImplementation((query) => ({
       matches: false,
       media: query,
@@ -163,6 +193,7 @@ describe('MyMessage — C-ready 渲染', () => {
       dispatchEvent: vi.fn(),
     }));
     getArtifact.mockReset();
+    requestWorkbenchRetry.mockReset();
   });
 
   it('renders artifact card when artifactCard is provided', () => {
@@ -211,6 +242,52 @@ describe('MyMessage — C-ready 渲染', () => {
 
     expect(screen.getByText('BI Worker')).toBeInTheDocument();
     expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
+  });
+
+  it('labels BI Worker thinking reasoning separately from generic Agent progress', () => {
+    setMockMessage();
+    mockMessageState.message.content = [
+      {
+        type: 'reasoning',
+        text: 'BI Worker 思考中：正在分析问题与可用数据证据。',
+        parentId: 'agent-worker-thinking:reply-1:think-1',
+        reasoningKind: 'bi_worker_thinking_summary',
+        agentRole: 'worker',
+        agentName: 'BI Worker',
+        phase: 'thinking',
+        status: 'running',
+      },
+      { type: 'text', text: '正在处理…' },
+    ];
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByText('推理摘要'));
+
+    expect(screen.getByText('BI Worker 思考')).toBeInTheDocument();
+    expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
+  });
+
+  it('renders BI Worker raw thinking part as a monospace pre block', () => {
+    setMockMessage();
+    mockMessageState.message.content = [
+      {
+        type: 'reasoning',
+        reasoningKind: 'bi_worker_raw_thinking_delta',
+        debugRaw: true,
+        rawDelta: '主表：plan_task_daily_record\nLIMIT 100',
+        text: 'BI Worker 调试原文：主表：plan_task_daily_record\nLIMIT 100',
+        parentId: 'agent-worker-raw-thinking:reply-1:think-raw',
+      },
+      { type: 'text', text: '正在处理…' },
+    ];
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByText('推理摘要'));
+
+    const pre = screen.getByLabelText('BI Worker 调试原文');
+    expect(pre.tagName).toBe('PRE');
+    expect(pre.textContent).toBe('主表：plan_task_daily_record\nLIMIT 100');
+    expect(pre.className).toContain('cot-ant-raw');
   });
 
   it('uses each final reasoning summary title instead of the generic fallback label', () => {
@@ -276,6 +353,82 @@ describe('MyMessage — C-ready 渲染', () => {
     expect(screen.getByText('amount')).toBeInTheDocument();
     expect(screen.getByText('线上')).toBeInTheDocument();
     expect(screen.getByText('18000')).toBeInTheDocument();
+    expect(window.dispatchEvent.mock.calls.some(([event]) => (
+      event.type === WORKBENCH_RETENTION_EVENT_TYPE
+      && event.detail?.event_name === RETENTION_UI_EVENT_NAMES.artifactDetailView
+      && event.detail?.artifact_ref === 'artifact:result-1'
+    ))).toBe(true);
+  });
+
+  it('emits expected artifact detail retention event from Chat-side artifact projection', async () => {
+    setMockMessage({
+      artifactCard: {
+        title: '查询结果',
+        status: 'completed',
+        primary_ref: 'artifact:result-1',
+        actions: [
+          { action_type: 'view', label: '查看详情', ref: 'artifact:result-1' },
+        ],
+      },
+    });
+
+    render(<AIMessage />);
+
+    await waitFor(() => {
+      expect(window.dispatchEvent.mock.calls.some(([event]) => (
+        event.type === WORKBENCH_RETENTION_EVENT_TYPE
+        && event.detail?.event_name === RETENTION_UI_EVENT_NAMES.artifactDetailExpected
+        && event.detail?.artifact_ref === 'artifact:result-1'
+        && event.detail?.message_id === 'msg-1'
+      ))).toBe(true);
+    });
+  });
+
+  it('bridges retry actions to Chat retry request and composer submit', async () => {
+    requestWorkbenchRetry.mockResolvedValue({
+      accepted: true,
+      task_request: {
+        question: '查询杨凯 2024 年工作日志',
+        display_text: '重试上一步',
+        conversation_id: 31,
+        thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        retry_checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
+        dataset_id: 7,
+      },
+    });
+    setMockMessage({
+      artifactCard: {
+        title: '查询结果',
+        status: 'error',
+        summary_for_chat: '执行失败',
+        actions: [
+          {
+            action_type: 'retry',
+            label: '重试',
+            checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
+          },
+        ],
+      },
+    });
+
+    render(<AIMessage />);
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+
+    await waitFor(() => {
+      expect(requestWorkbenchRetry).toHaveBeenCalledWith({
+        checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
+        selected_action: 'retry_last_step',
+      });
+      expect(window.__DATALOGUE_PENDING_WORKBENCH_RETRY__).toEqual({
+        question: '查询杨凯 2024 年工作日志',
+        display_text: '重试上一步',
+        conversation_id: 31,
+        thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        retry_checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
+        dataset_id: 7,
+      });
+      expect(window.dispatchEvent.mock.calls.some(([event]) => event.type === 'datalogue:composer-submit')).toBe(true);
+    });
   });
 
   it('does not render task timeline inside chat message when taskTimeline is provided', () => {

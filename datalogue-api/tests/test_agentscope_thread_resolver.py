@@ -13,7 +13,7 @@
 
 import pytest
 
-from app.schemas.agentscope_workbench import AgentScopeThreadKind
+from app.core.schemas.agentscope_workbench import AgentScopeThreadKind
 from app.runtime import normalize_thread_id, resolve_thread_ref
 
 

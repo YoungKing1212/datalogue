@@ -266,3 +266,361 @@
 - 关键改动：把 P1/P2 审计剩余问题落成仓库治理边界：QueryPlan 是 BI Worker 契约、legacy DSL 是执行器兼容层和迁移债务，中期目标是 QueryPlan 原生执行或 `ControlledQuerySpec`；事件分为用户可见、Workbench、Debug 三层，`legacy_payload` 冻结不再扩字段；assistant-ui 近期只做可见层稳定，禁止 headless primitives / runtime 级大重构；新增运行时健康检查规格；Report/Python/Audit Worker 暂缓并明确解除标准。
 - 验证方式：新增 `datalogue-api/tests/test_architecture_docs_remaining_closure.py`，与 P0 架构文档守护测试一起执行；执行 `python3 -m pytest datalogue-api/tests/test_architecture_docs_p0_closure.py datalogue-api/tests/test_architecture_docs_remaining_closure.py` 与 `git diff --check`。
 - 残留风险：本轮继续保持治理收口，不改 runtime 行为；真正移除 QueryPlan→legacy DSL 转换、实现更完整的机器可读 health endpoint、以及恢复 Report/Python/Audit Worker 扩展，需要后续在 BI 主链稳定证据达标后单独开任务。
+
+
+### 2026-07-07 17:49 · BI Worker Query Plan 契约错误详细诊断
+
+- 涉及文件：`datalogue-api/app/agentscope_service/tools.py`、`datalogue-api/tests/test_agentscope_service_tools.py`、`.codex/project-memory.md`
+- 关键改动：`bi_worker_repair_request` 新增 `validation_error_details`，在保持不回显 SQL、schema、raw input 的前提下，为每个 Query Plan 契约错误输出中文 `message` 和 `expected`；针对 `join_requirements.*.left/right/type` 明确提示应改用 `left_alias/right_alias/join_type`，针对 filter operator 明确提示等值筛选应使用 `=` 而不是 `eq`；顶层额外字段名继续收敛为 `root.extra_field`，避免暴露模
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentscope_service_tools.py -q` 为 `10 passed, 2 warnings`；执行 `cd datalogue-api && .venv/bin/ruff check app/agentscope_service/tools.py tests/test_agentscope_service_tools.py` 通过；执行 `git diff --check -- datalogue-api/app/agentscope_service/tools.py datalogue-api/tests/test_agentscope_service_tools.py` 通过。
+- 残留风险：本轮只增强工具返回的安全诊断 payload，未做真实页面 smoke；如果前端需要把 `validation_error_details` 做成可视化折叠面板，还需另补 UI 展示和前端测试。
+
+### 2026-07-09 16:05 · 用户管理列表页与新建用户弹框
+
+- 涉及文件：`datalogue-api/app/api/auth.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-web/src/components/user-create.jsx`、`datalogue-web/src/api/client.js`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：后端新增 `GET /api/auth/users`（管理员权限、支持 `limit/offset`）用于用户列表；前端将原“新建用户独立页”改为“用户管理页”，展示用户表格（用户名/姓名/邮箱/角色/状态），顶部按钮打开“新建用户”弹框，提交后调用注册接口并自动刷新列表；系统管理导航文案改为“用户管理”，路由统一为 `/users`。
+- 验证方式：执行 `cd datalogue-web && npm run lint` 两次，结果均为 `0 errors, 14 warnings`（均为仓库既有告警，无本次新增错误）。
+- 残留风险：当前后端注册接口 `POST /api/auth/register` 仍未限制为管理员调用；虽然列表接口已做管理员鉴权，但如普通登录态可直接调用注册接口，仍有越权创建用户风险。
+
+### 2026-07-09 16:34 · 角色权限与默认超级管理员初始化
+
+- 涉及文件：`datalogue-api/app/models/user.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/app/api/deps.py`、`datalogue-api/app/main.py`、`datalogue-api/alembic/versions/a8b9c0d1e2f3_add_user_role.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/components/user-create.jsx`、`.codex/project-memory.md`
+- 关键改动：新增用户角色字段 `role`（字典：`admin`/`user`）；注册接口收口为管理员权限；管理员鉴权支持 `is_superuser=true` 或 `role=admin`；启动初始化在空库时固定创建 `admin/admin` 且 `role=admin,is_superuser=true` 的超级管理员；前端“用户管理”菜单与 `/users` 路由都增加管理员可见控制，普通用户不可见且不可直接访问。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `4 passed`；执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）。
+- 残留风险：新增 `role` 字段需要执行 Alembic 迁移后数据库才会持久化该字段；若环境未升级到新 revision，会出现模型与库表结构不一致。
+
+### 2026-07-09 17:02 · 用户管理编辑能力与账号资料同步
+
+- 涉及文件：`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/api/client.js`、`datalogue-web/src/components/user-create.jsx`、`datalogue-web/src/components/settings.jsx`、`.codex/project-memory.md`
+- 关键改动：后端新增管理员用户管理接口（`PATCH /api/auth/users/{id}` 编辑信息/角色/状态、`POST /api/auth/users/{id}/reset-password` 重置密码、`DELETE /api/auth/users/{id}` 删除用户）；前端用户管理页新增“编辑/重置密码/删除”操作和对应弹框；“账号与个人资料”页面改为读取当前登录用户，姓名/邮箱/角色与登录态实时一致，不再使用静态演示数据。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `5 passed`（新增用户管理接口回归用例）；执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）。
+- 残留风险：当前“删除用户”对超级管理员做了硬性保护，若未来需要多超级管理员治理（可转移 owner 后删除旧 owner），需补充更细粒度策略与审计流程。
+
+### 2026-07-09 17:18 · 重置密码规则与密码存储 base64 包装
+
+- 涉及文件：`datalogue-api/app/core/security.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/api/client.js`、`datalogue-web/src/components/user-create.jsx`、`.codex/project-memory.md`
+- 关键改动：重置密码接口改为固定规则，管理员触发重置后目标用户密码统一变为“用户名 + @123456”；前端重置弹框改为确认提示，不再手工输入新密码。密码存储策略改为“pbkdf2 哈希后再做 base64 包装入库（`b64$` 前缀）”，并兼容历史未包装哈希的登录校验，避免旧数据失效。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `5 passed`；执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）。
+- 残留风险：base64 仅是编码包装，不是可替代密码学加密；安全性核心仍依赖 pbkdf2 哈希。若后续有更高合规要求，建议升级为 Argon2 并配套密码轮换策略。
+
+### 2026-07-09 17:33 · 登录请求前后端联合加解密改造
+
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/core/security.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/api/client.js`、`.codex/project-memory.md`
+- 关键改动：登录接口从明文 `password` 改为仅接收密文 `password_enc`；前端通过 Web Crypto（AES-GCM）用 `VITE_AUTH_TRANSPORT_KEY` 对密码加密后提交，后端用 `AUTH_TRANSPORT_KEY` 解密再进行密码校验。密码存储取消旧格式兼容，统一要求 `b64$` 包装后的 pbkdf2 哈希。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `6 passed`（新增“明文登录请求应失败”用例）；执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）。
+- 残留风险：前后端传输密钥必须保持一致（`AUTH_TRANSPORT_KEY == VITE_AUTH_TRANSPORT_KEY`），若环境变量不一致会导致登录返回“密码密文无效”。
+
+### 2026-07-09 17:42 · 启动时默认管理员账号强制校准
+
+- 涉及文件：`datalogue-api/app/main.py`、`.codex/project-memory.md`
+- 关键改动：`_bootstrap_admin_if_needed` 从“仅空库创建 admin”改为“启动时确保 admin 存在且可登录”：若不存在则创建；若已存在则强制校准为 `admin/admin`、`role=admin`、`is_superuser=true`、`is_active=true`，避免历史密码存储格式导致管理员无法登录。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q`，结果 `6 passed`。
+- 残留风险：该策略会在每次启动重置 admin 密码为默认值，仅适合当前上线初期；后续进入生产阶段需切换为一次性初始化或受控运维重置流程。
+
+### 2026-07-09 00:10 · 登录认证设计方案文档整理
+
+- 涉及文件：`docs/登录认证设计方案.md`、`.codex/project-memory.md`
+- 关键改动：新增登录认证方案文档，基于当前项目实际技术栈给出可落地路线：后端采用同步 SQLAlchemy 兼容的轻量 JWT 方案（Access + Refresh）、前端沿用 Ant Design 体系实现登录页与路由守卫，并补充 CORS/Cookie、安全边界、分阶段实施清单与验收标准。
+- 验证方式：检查目标文档已在 `docs/` 落盘并完成内容复核（背景、选型结论、后端改造点、前端改造点、安全要求、验收标准完整）。
+- 残留风险：本次仅产出设计文档，尚未落地代码与自动化测试；后续实施阶段需同步补齐 Alembic 迁移、后端鉴权测试与前端登录流程回归。
+
+### 2026-07-07 18:07 · BI Worker Timeline 临时 Redis 调试缓存
+
+- 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_timeline_cache.py`（新增）、`datalogue-api/app/agentscope_service/worker_logging.py`、`datalogue-api/tests/test_bi_worker_timeline_cache.py`（新增）、`datalogue-api/tests/test_agentscope_service_worker_logging.py`、`datalogue-api/app/agentscope_service/tools.py`（顺带修复 `DatalogueSearchAssetsTool.check_permissions` 签名错误：由 `(self, **kwargs)` 改为 `(self, tool_input, context)` 与 `ToolBase` 基类一致，解决 `TypeError: takes 1 positional argument but 3 were given`）。
+- 关键改动：新增 `bi_worker_timeline_cache` 模块暴露 `store_bi_worker_timeline` / `read_bi_worker_timeline`，key 前缀 `datalogue:bi_worker_timeline:{worker_session_id}:{reply_id}`，TTL 3600s；复用 `StorageBase.get_client()` 复用 AgentScope RedisStorage 连接池，任何 Redis 异常降级 debug 日志不影响主链。`BIWorkerProgressMiddleware` 接收 `storage`，reply 成功后调用 `_cache_bi_worker_timeline_if_enabled`，受 `raw_agent_logs_enabled()` 开关控制，默认关闭避免生产写入含 SQL/表结构/思维链的 raw 内容；`build_datalogue_extra_agent_middlewares` 透传 storage。全链路标 `TODO(后期删除): 由 AgentScope TracingMiddleware / OpenTelemetry 取代`。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_timeline_cache.py tests/test_agentscope_service_worker_logging.py -v` 为 `39 passed, 2 warnings`；`black`、`ruff check`（新增/改动文件）、`mypy app/agentscope_service/bi_worker_timeline_cache.py app/agentscope_service/worker_logging.py` 全部通过；全量 ruff/mypy 剩余错误均为预先存在的历史技术债，非本次引入。
+- 残留风险：raw timeline 含 SQL/表结构/原始思考链，仅依赖 `AGENT_DEBUG_RAW_LOGS` 环境开关（默认关）+ TTL 1h 缓解落盘泄露风险；后期 AgentScope TracingMiddleware / OpenTelemetry 落地后需删除 `bi_worker_timeline_cache` 模块及 `worker_logging._cache_bi_worker_timeline_if_enabled` 调用点。
+
+### 2026-07-07 18:12 · BI Worker 蓝图路径与 display_semantic 校验修复
+
+- 涉及文件：`datalogue-api/app/prompts/agent_team.py`、`datalogue-api/app/agentscope_service/bi_worker_context.py`、`datalogue-api/app/agentscope_service/bi_worker_validator.py`、`datalogue-api/app/agentscope_service/tools.py`、`datalogue-api/tests/test_bi_worker_query_validator.py`、`datalogue-api/tests/test_bi_worker_progressive_context_tools.py`、`.codex/project-memory.md`
+- 关键改动：根据 BI Worker raw timeline 定位到蓝图提示词与真实工具签名不一致：prompt/usage hint 误导 worker 按 `call_template` 构造 SQL，但 `datalogue_execute_query_plan_bundle` 实际只接受 `BIWorkerQueryPlan + context_state`。本轮把蓝图收口为 QueryPlan 生成参考，要求先用 `datalogue_prepare_query_context` 和必要的 `datalogue_request_schema_slice` 获取安全引用，再把蓝图参数、字段、筛选和排序语义转换为 QueryPlan。同步修复 L4 校验器把普通 `display_semantic` 误判为 lookup dependency 的问题，只有 `requires_decoding=true` 才要求 lookup 依赖，避免普通展示字段反复触发 `FIELD_NOT_FOUND`。`prepare_query_context.context_state.asset_refs` 改为 `table:schema.table` 格式，减少 worker 从第一步拿到错误资产引用。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_query_validator.py tests/test_bi_worker_progressive_context_tools.py tests/test_agentscope_static_agent_registry.py -q` 为 `21 passed, 30 warnings`；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentscope_service_tools.py tests/test_bi_worker_query_runtime.py tests/test_bi_worker_query_validator.py tests/test_bi_worker_progressive_context_tools.py tests/test_agentscope_static_agent_registry.py -q` 为 `39 passed, 30 warnings`；执行 `cd datalogue-api && .venv/bin/ruff check app/agentscope_service/bi_worker_validator.py app/agentscope_service/bi_worker_context.py app/agentscope_service/tools.py app/prompts/agent_team.py tests/test_bi_worker_query_validator.py tests/test_bi_worker_progressive_context_tools.py tests/test_agentscope_static_agent_registry.py` 通过。
+- 残留风险：本轮修复到 prompt、工具说明和校验器层，未重新跑真实页面 smoke；复杂蓝图跨表查询仍依赖后续把 `relationship_ref` 稳定解析到真实 join key，否则 QueryPlan 通过校验后仍可能在执行编译阶段失败。
+
+### 2026-07-08 · BI Worker Repair 链路三处修复（bridge status/code + 空结果映射 + join_keys 契约）
+
+- 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_contracts.py`、`datalogue-api/app/agentscope_service/bi_worker_runtime.py`、`datalogue-api/app/agentscope_service/tools.py`、`datalogue-api/tests/test_bi_worker_query_runtime.py`、`datalogue-api/tests/test_agentscope_service_tools.py`、`.codex/project-memory.md`。
+- 关键改动：从 BI Worker timeline 定位 repair 链路三个联动缺陷：(1) `_execute_plan` 忽略 `run_direct_query` 的 `status="blocked"` / `code`，把静默失败当成 completed；(2) `execute_query_plan` 空结果映射用 `row_count == 0` 判定，`row_count is None + artifact_ref is None` 会掉进 completed 默认分支导致 LLM 看不到 `failure_type`，repair 链路 B 不触发；(3) `JoinRequirement` 契约无合法通道承载真实 join 键，LLM 一开始用 `join_condition: "main.account=person.person_card"` 走私 SQL 片段被契约拒绝后 join 语义彻底丢失。本轮：`bi_worker_contracts.py` 新增 `JoinKey`（`left_field`/`right_field` 都要求 min_length=1），`JoinRequirement` 追加可选 `join_keys: list[JoinKey]`；`tools.py` 同步 `BI_WORKER_QUERY_PLAN_CONTRACT_HINT["join_requirement_shape"]` 追加 `join_keys` 示例，并让 `_plan_contract_error_expected` 对 `join_requirements.*.join_condition` 明确引导 LLM 删除 join_condition 改用结构化 `join_keys=[{left_field, right_field}]`；`bi_worker_runtime.py` 新增顶层 `_map_bridge_code_to_failure(code, error_summary)`，`_execute_plan` 在 `bridge_status == "blocked"` 或缺 artifact 时把 code 映射为 `QueryFailureType` 并写进 `BIWorkerQueryResult.failure_type`，`execute_query_plan` 感知 `result.failure_type` 后直接透传，空结果判定放宽为 `row_count == 0 or (row_count is None and not artifact_ref)`；`_query_plan_to_legacy_query_plan` 把 `join_requirements`（含 `join_keys`）透传到 legacy DSL 供下游后续消费。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_query_runtime.py tests/test_agentscope_service_tools.py tests/test_bi_worker_progressive_context_contracts.py tests/test_bi_worker_query_validator.py tests/test_bi_worker_progressive_context_tools.py tests/test_bi_worker_progressive_context_e2e.py tests/test_agentscope_service_worker_logging.py tests/test_bi_worker_timeline_cache.py --tb=short` 为 `85 passed, 30 warnings`；`black` 已重新格式化 5 个改动文件、`ruff check` 全部通过；`mypy` 仅剩本仓库预先存在的 4 处历史类型债（`session_kwargs`、`RepairRequest.failure_stage` Literal、`_execute_supported_plan` 联合类型），非本次引入。
+- 残留风险：`join_keys` 目前仅在 legacy DSL 里透传，`app/services/query_plan_compiler.py` 等下游编译器暂未消费该字段，因此 join 键校准还没真正落到 SQL 层；LLM 拿到 join_keys 通道后能显式声明关联字段，但真实 join 是否能命中数据库物理键需要下一轮把编译器接上 `join_keys`。本次只保证 repair 链路 A 修完契约后不再假成功、失败会走 repair 链路 B、LLM 有合法通道声明 join 键；未跑真实页面 smoke。
+
+### 2026-07-08 · query_plan_compiler 消费 join_keys 生成显式 JOIN（Workflow 多 subagent 并行 + 自主验证）
+
+- 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_runtime.py`、`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/tests/test_query_plan_compiler.py`、`datalogue-api/tests/test_bi_worker_query_runtime.py`、`.codex/project-memory.md`。
+- 关键改动：把上一轮"join_keys 已在契约和 legacy DSL 里就位但编译器不消费"的残留风险闭环。runtime `_query_plan_to_legacy_query_plan` 的 `compiled_joins` 生成时通过复用 `_alias_table_names(query_plan)`（bi_worker_runtime.py:462-471）把 QueryPlan 内部 `left_alias`/`right_alias` 解析为物理 `left_table`/`right_table` 写入 DSL；compiler 侧新增 `_compile_join_clauses(query_plan, main_table, allowed_tables, dialect)`（query_plan_compiler.py:323-418）严格校验每个 `join_requirement` 元素（`left_table`/`right_table` 非空、`join_type` ∈ `{inner, left}` 大小写归一化、`join_keys` 非空 list、每对 `left_field`/`right_field` 非空、当 `allowed_tables` 非空 list 时两侧表都必须在白名单），任一违反即返回 `None` 触发 `PLAN_NOT_COMPILABLE`；`_compile_select_sql` 签名新增 `allowed_tables` 参数并在 `FROM` 子句后追加 `INNER|LEFT JOIN "<right_table>" ON "<left_table>"."<lf>" = "<right_table>"."<rf>" [AND ...]`，标识符全部走 `quote_identifier(name, dialect)`；`compile_query_plan_to_sql` 主入口把 `allowed_tables` 一路透传下去。测试：`test_query_plan_compiler.py` 追加 6 条覆盖 inner/left/复合 join_keys/缺 join_keys/表不在 allowed_tables/join_type=cross/空 join_requirements 的用例；`test_bi_worker_query_runtime.py` 追加 2 条覆盖 alias→table 解析和端到端 runtime→compiler 的 SQL 输出（断言含 `LEFT JOIN "departments"` 等真实子句），并顺带修补了旧用例 `test_query_plan_conversion_preserves_table_name_for_detail_sql`（`_plan()` 默认 `join_keys=[]` 与新 fail-closed 契约不兼容，在测试内为该 JoinRequirement 补 `JoinKey(dept_id, id)` + 对应 table_schema 列，保留 `test_query_plan_join_keys_default_empty_list` 对 `_plan()` 默认 empty 语义的断言不变）。
+- 协作方式：用 Workflow 多 subagent 并行调度（4 个 subagent，共 253347 tokens，60 次工具调用）—— 3 个 Implement subagent 并行做 runtime/compiler/tests（契约由 plan 兜底不冲突），1 个 Verify subagent adversarially 跑 pytest 并自主定位 + 修复兼容性问题。整个链路从设计到全绿测试单次通过，未回滚任何改动。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_query_plan_compiler.py tests/test_bi_worker_query_runtime.py tests/test_bi_worker_progressive_context_contracts.py tests/test_bi_worker_query_validator.py tests/test_agentscope_service_tools.py tests/test_agentscope_service_worker_logging.py tests/test_bi_worker_timeline_cache.py tests/test_bi_worker_progressive_context_tools.py tests/test_bi_worker_progressive_context_e2e.py --tb=short` 为 `102 passed, 30 warnings`（其中 compiler 侧新增 6 条 + runtime 新增 2 条 + 修补旧 1 条）；`black` 已重新格式化改动文件、`ruff check` 全部通过；`mypy app/services/query_plan_compiler.py app/agentscope_service/bi_worker_runtime.py` 剩余错误均为 `handoff_service.py` / `registry.py` 等仓库预先存在的历史类型债，非本次引入。
+- 残留风险：本轮已把 LLM 声明的 `join_keys` 全链路串通到 SQL 层（QueryPlan → legacy DSL → compiler → SQL），但真实业务查询是否能命中数据库物理键，仍依赖 LLM 正确从蓝图 `call_template` 或 L2 schema slice 推断出 join 字段名；本轮未跑真实页面 smoke，等待用户重启后端后用"查询杨凯 2025 年工作日志"实际验证。
+
+### 2026-07-08 11:07 · BI Worker thinking 流式推理摘要与 debug 原文通道
+
+- 涉及文件：`datalogue-api/app/agentscope_service/worker_logging.py`、`datalogue-api/app/agentscope_service/projection.py`、`datalogue-api/tests/test_agentscope_service_worker_logging.py`、`datalogue-api/tests/test_agentscope_service_projection.py`、`datalogue-web/src/assistant/agent-team-event-adapter.js`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/MyMessage.jsx` 与对应前端测试。
+- 关键改动：按 AgentScope + assistant-ui 当前链路把 BI Worker thinking 分成安全摘要与调试原文两条通道。后端 `BIWorkerProgressMiddleware` 对 `ThinkingBlock*` 事件发布 `agent.progress` 安全摘要，默认只显示“BI Worker 思考中/完成思考”；仅当 `DATALOGUE_DEBUG_STREAM_RAW_THINKING=true` 时，才以 `reasoning_kind=bi_worker_raw_thinking_delta`、`debug_raw=true`、`raw_delta` 受控透传 delta 原文。`projection.py` 增加 fail-closed 保护，避免 `ThinkingBlockDeltaEvent` 被泛化成 `message.delta` 后进入正文或 `live_thinking`。前端 adapter 只在 debug 标记与 reasoning kind 同时满足时保留 `rawDelta`，`chat-adapter` 将安全摘要/upsert 和 debug 原文累积进推理摘要，`MyMessage` 显示“BI Worker 思考 / BI Worker 调试原文”标签；默认路径禁止 raw delta 进入 `content`、trace custom 或最终 `reasoning_summary`。
+- 验证方式：执行 `cd datalogue-api && /Users/yangkai/code_place/study/python/Datalogue/datalogue-api/.venv/bin/python -m pytest tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_projection.py tests/test_agentscope_agent_team_task_runner.py tests/test_agentscope_event_projection.py -q` 为 `58 passed, 2 warnings`；执行 `cd datalogue-web && npm test -- agent-team-event-adapter chat-adapter MyMessage` 为 `3 passed (3), 60 passed (60)`；执行 `cd datalogue-web && npm run lint && npm run build` 通过，保留项目既有 lint warnings 与 Vite large chunk warning。worker 并行验证记录：worker-1 后端提交 `8a5dbca5`、worker-2 前端提交 `0351d844`，worker-3 先发现旧 projection 泄露风险，leader 集成后已补回归。
+- 残留风险：debug 原文通道是调试阶段能力，开启后会把模型原始 thinking delta 显示在前端推理摘要中，只允许本地/排障短时开启，后期稳定后应删除或收紧该 raw delta 通道；本轮未重新做真实浏览器页面 smoke，若要确认视觉滚动体验，需要启动前后端后在 `/chat` 做桌面验收。
+
+### 2026-07-08 11:28 · BI Worker raw thinking 配置读取修复
+
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/agentscope_service/worker_logging.py`、`datalogue-api/tests/test_agentscope_service_worker_logging.py`、`.codex/project-memory.md`。
+- 关键改动：修复 `DATALOGUE_DEBUG_STREAM_RAW_THINKING=true` 写在 `datalogue-api/.env` 但前端仍只显示安全摘要的问题。根因是 `_debug_stream_raw_thinking_enabled()` 只读 `os.getenv()`，而项目 `Settings(env_file=".env")` 读取 `.env` 不会保证把值同步回 `os.environ`；本轮在 `Settings` 增加 `DATALOGUE_DEBUG_STREAM_RAW_THINKING` 字段，并让 worker logging 在进程环境变量缺失时 fallback 到 `get_settings()`。补充回归覆盖“未 export、仅写入 `.env` 也能开启 raw delta 调试通道”。
+- 验证方式：执行 `cd datalogue-api && /Users/yangkai/code_place/study/python/Datalogue/datalogue-api/.venv/bin/python -m pytest tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_projection.py tests/test_agentscope_agent_team_task_runner.py tests/test_agentscope_event_projection.py -q` 为 `59 passed, 2 warnings`；执行 `cd datalogue-api && /Users/yangkai/code_place/study/python/Datalogue/datalogue-api/.venv/bin/python -m ruff check app/core/config.py app/agentscope_service/worker_logging.py tests/test_agentscope_service_worker_logging.py` 通过；执行 `git diff --check` 通过。
+- 残留风险：修改配置文件后仍需重启正在运行的后端进程；debug 模式下安全摘要 start/end 仍会保留，真实 delta 以额外“BI Worker 调试原文”推理条目流式追加。如果模型/AgentScope 本轮没有产出 `ThinkingBlockDeltaEvent.delta`，前端也不会凭空显示 raw delta。
+
+### 2026-07-08 · L2 Schema Slice 三层修复（explicit fields + [:32] + 蓝图 SQL 解析真实 FK）
+
+- 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_context.py`、`datalogue-api/tests/test_bi_worker_progressive_context_tools.py`、`.codex/project-memory.md`。
+- 关键改动：从新一次 BI Worker timeline 定位 Repair 链路耗尽 retry 后仍失败的真实上游根因——不是编译器/repair 层的问题（上两轮已修好），而是 L2 schema slice 工具本身的三处缺陷：(1) `columns[:8]` 硬截断导致蓝图 SQL 需要的 `account`/`deptcode` 等 join key 列被挤掉；(2) `_matched_columns` 只做 `focus.values()` 拼串模糊匹配，LLM 无法精确点名要哪些字段；(3) `_relationships` 只输出 `dataset_selected_together` 软关系，无 join key，LLM 只能靠猜——而项目里没有任何持久化 FK 元数据，唯一真实 join 信息在 `AnalysisBlueprint.call_template` SQL 文本里。本轮：(A) `bi_worker_context.py:180` `columns[:8]` → `columns[:32]`；(B) `_matched_columns` 新增 `focus["fields"]` 精确通道，按名称大小写不敏感命中即返回不受截断，未命中/未提供时 fall back 到模糊匹配（focus_text 排除 `fields` key 避免污染）；(C) 新增顶层函数 `_safe_parse_sql`（mysql/sqlite/postgres 多方言降级）、`_extract_joins_from_ast`（遍历 `exp.Join`，只识别 `exp.EQ` 等值 ON、支持 alias 顺序颠倒，RIGHT/FULL/CROSS 一律 skip）、`_parse_blueprint_joins`（遍历 active 蓝图 call_template/raw_sql，异常 swallow 到 debug）。`_relationships` 签名扩展为 `(entities, dataset)`，输出合并原软关系 + 新硬关系 `relationship_type="blueprint_join"`（含 `join_keys`、`join_type`、`source_blueprint_id`），按 `(left_asset_ref, right_asset_ref)` 去重时硬关系优先。LLM 拿到 `blueprint_join:*` relationship 后可直接把结构化 `join_keys` 抄进 QueryPlan，不再靠"看 SQL 猜字段名"。
+- 协作方式：Workflow 4 subagent 并行调度（307031 tokens、87 次工具调用）——3 个 Implement subagent 并行做 A/B/C（契约由 plan 兜底不冲突），1 个 Verify subagent adversarially 跑 pytest 亲眼核对 6 项边界并主动修复 1 处 mypy 错误（`_safe_parse_sql` 返回类型不匹配 `sqlglot.parse_one` 的 `exp.Expr` → 改用 `isinstance(parsed, exp.Expression)`），单次通过全绿。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_progressive_context_tools.py tests/test_bi_worker_progressive_context_contracts.py tests/test_bi_worker_progressive_context_e2e.py tests/test_bi_worker_query_runtime.py tests/test_query_plan_compiler.py tests/test_agentscope_service_tools.py tests/test_bi_worker_query_validator.py tests/test_agentscope_service_worker_logging.py tests/test_bi_worker_timeline_cache.py --tb=short` 为 `112 passed, 54 warnings`（含 6 条本轮新增：`test_l2_returns_exact_fields_when_focus_lists_column_names` / `test_l2_returns_up_to_32_columns_when_all_match` / `test_l2_returns_blueprint_join_relationships_from_call_template` / `test_l2_ignores_malformed_blueprint_sql` / `test_l2_ignores_non_equi_join` / `test_l2_multi_join_and_inner_join`）；`black` / `ruff check` / `mypy` 全部通过，mypy 与 baseline 46 errors 完全一致未引入新错误。
+- 残留风险：本轮 SQL 解析器只处理简单单层 SELECT + INNER/LEFT JOIN，子查询/UNION/CTE/CROSS/RIGHT/FULL/非等值 ON 全部跳过（保守策略，风险最小但可能漏掉某些复杂蓝图的 join）；只依赖 `AnalysisBlueprint.call_template` 存了真实 SQL，历史遗留蓝图如果 call_template 为空或不含 JOIN 则退化为原软关系；本轮未跑真实页面 smoke，等待用户重启后端后用"查询杨凯 2025 年工作日志"实际验证，期望 L2 一次调用后 relationships 里含 blueprint_join:* 且 join_keys 明确写出 `account/person_card`、`deptcode/dept_id`、`xmid/XMID` 三对键。
+
+### 2026-07-08 12:30 · BI Worker raw thinking 英文分片空格修复
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`.codex/project-memory.md`。
+- 关键改动：修复 `DATALOGUE_DEBUG_STREAM_RAW_THINKING=true` 时 BI Worker raw thinking 英文分片直接拼接导致 `Theuserwants` 这类无空格文本的问题。前端 `chat-adapter` 新增 `appendRawThinkingDelta`，仅在上一片以英文/数字结尾且下一片以英文/数字开头、双方都没有显式空白时补一个空格；中文分片、标点、已有前导/尾随空白保持原样，让 BI Worker debug 原文阅读体验与 Leader live thinking 一致。
+- 验证方式：先补失败测试 `preserves readable spaces between english BI Worker raw thinking deltas`，确认修复前输出为 `Theuser wants`；实现后执行 `cd datalogue-web && npm test -- src/assistant/chat-adapter.test.js` 为 `30 passed`；执行 `npm run lint` 通过，保留既有 `0 errors, 14 warnings`；执行 `npm run build` 通过，保留既有 Vite large chunk warning。
+- 残留风险：本轮只修复前端 debug raw thinking 的展示拼接，未改变后端 `raw_delta` 发布协议和安全开关；如果模型分片发生在英文单词内部（如 `anal` + `ysis`），当前保守规则会插入空格，后续可在拿到真实 AgentScope 分片样本后再收紧为更精确的 token 边界策略。
+
+### 2026-07-08 12:55 · BI Worker QueryPlan 修复请求 timeline 安全诊断展示
+
+- 涉及文件：`datalogue-web/src/assistant/agent-team-event-adapter.js`、`datalogue-web/src/assistant/agent-team-event-adapter.test.js`、`.codex/project-memory.md`。
+- 关键改动：修复 `datalogue_execute_query_plan_bundle` 返回 `bi_worker_repair_request` 后，前端 timeline 只显示泛化 `safe_reason`、看不到模型实际收到的契约失败原因的问题。`safeProgressiveSummary` 新增 `safeRepairRequestSummary` 分支，只对白名单格式的 `validation_error_summary`（如 `missing:join_requirements.0.left_alias`）生成用户可见摘要 `Query Plan 契约错误：... 等 N 项`；继续禁止 SQL、schema、raw rows、模型原始输入等私有信息进入 timeline 文本。
+- 验证方式：先补失败测试 `surfaces BI Worker repair request contract paths without leaking private query details`，确认修复前摘要只有 `Query Plan JSON 未符合 BI Worker 安全契约...`；实现后执行 `cd datalogue-web && npm test -- src/assistant/agent-team-event-adapter.test.js` 为 `14 passed`；执行 `pytest datalogue-api/tests/test_agentscope_service_tools.py -q` 为 `12 passed, 2 warnings`，确认后端 ToolChunk 仍保留 `validation_error_summary/details` 和 `query_plan_contract_hint` 给 BI Worker；执行 `cd datalogue-web && npm run lint && npm run build` 通过，保留既有 lint warnings 与 Vite large chunk warning。
+- 残留风险：本轮只把后端已脱敏的契约路径摘要投影到前端 timeline，没有把 `validation_error_details.expected` 做成可展开诊断面板；若后续需要给研发调试更完整解释，可在 Workbench 调试视图单独展示 details，但不应放进普通用户 timeline。
+
+### 2026-07-08 · L2 Schema Slice 表列表 vs 详情工具解耦（新增 describe_tables）
+
+- 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_context.py`、`datalogue-api/app/agentscope_service/bi_worker_contracts.py`、`datalogue-api/app/agentscope_service/tools.py`、`datalogue-api/app/prompts/agent_team.py`、`datalogue-api/tests/test_bi_worker_progressive_context_tools.py`、`datalogue-api/tests/test_agentscope_service_tools.py`、`datalogue-api/tests/test_agentscope_static_agent_registry.py`、`.codex/project-memory.md`。
+- 关键改动：用户指出上一轮 L2 修复里的 `_matched_tables` 是"后端用字段/描述模糊匹配猜 LLM 该看哪几张表"，这一步完全没有 LLM 介入，准确性差且漏表严重（typical 3-列子串命中）。本轮把 L2 拆成两个正交 read-only 工具：(1) `datalogue_request_schema_slice` 职责收窄为"返回 dataset 全量表清单 + 关系"，不再做模糊过滤、不再返回 fields，entities 元素含 `asset_ref/table/schema/description/row_count_approx/column_count`；`_matched_tables/_matched_columns/focus["fields"] 精确通道/columns[:32] 截断/精确补齐块` 全部从主链移除但函数本身保留（L0/L1/L3 还在用）；`_relationships(entities, dataset)` 完整保留（含蓝图 SQL 硬关系解析）。(2) 新增 `datalogue_describe_tables(dataset_id, table_names: list[str])`，由 LLM 显式点名要哪几张表，一次调用可传多个，返回每张表的字段清单/注释/前 3 条样例值；样例值来源为 `SourceColumn.sample_values`（同步 schema 时已采集的 JSON），有则取 `sample_source="metadata"`，无则空列表 + `sample_source="unavailable"`；不存在的表以 `status="not_found"` 占位不影响其他表；`table_names` 空或非 list 时 fail-closed 返回 `code="TABLE_NAMES_REQUIRED"`。契约层新增 `TableDetailContext(bi_worker_l2_table_detail)`；tools.py 注册 `datalogue_describe_tables` FunctionTool（is_read_only + concurrency_safe）；prompt 更新标准查询路径为四步链路 `prepare_query_context -> request_schema_slice(拿全表清单+关系) -> 按需 describe_tables(拿指定表的字段+样例值) -> execute_query_plan_bundle`，并明确 join 关系走 relationships 里的 `blueprint_join:*`。
+- 协作方式：Workflow 4 subagent 并行调度（315319 tokens、74 工具调用）—— 3 个 Implement subagent 并行做 context/contracts+tools+prompt/tests，1 个 Verify subagent adversarially 跑 pytest 亲眼核对 5 项边界，主动修复 2 处遗漏（subagent E 漏更新的 `test_agentscope_static_agent_registry.py` 期望列表 + black 未格式化的 3 个文件），单次通过全绿。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_progressive_context_tools.py tests/test_agentscope_service_tools.py tests/test_bi_worker_progressive_context_contracts.py tests/test_bi_worker_query_runtime.py tests/test_query_plan_compiler.py tests/test_bi_worker_query_validator.py tests/test_agentscope_service_worker_logging.py tests/test_bi_worker_timeline_cache.py tests/test_agentscope_static_agent_registry.py --tb=short` 为 `126 passed, 74 warnings`（含删除 3 条被废弃测试 + 修改 4 条 + 新增 8 条本轮测试）；`black` / `ruff check` 全通过；`mypy app/agentscope_service/bi_worker_context.py app/agentscope_service/tools.py` 剩余 46 个错误全部是 SQLAlchemy `Column[X]` 泛型友好度问题，与 baseline 完全一致未引入新错误。
+- 残留风险：样例数据来源为元数据里预先采集的 `SourceColumn.sample_values`，非实时；若数据集同步阶段样例采集失败（SAMPLE_UNREADABLE），LLM 只能拿到 `sample_source="unavailable"` 信号。`_matched_tables/_matched_columns` 保留但仅供 L0/L1/L3 内部使用，L2 主链完全走"LLM 显式点名 + 全量表"路径；未跑真实页面 smoke，等待用户重启后端后用"查询杨凯 2025 年工作日志"实际验证，期望 timeline：LLM 一次调 `request_schema_slice` 拿全 5 张表 + `blueprint_join:*` 关系，然后一次调 `describe_tables(table_names=["plan_task_daily_record","eas_personofile","sys_dept","project_manager"])` 拿全 4 张表的字段+样例，直接生成正确 QueryPlan 命中真实数据。
+
+
+### 2026-07-08 13:35 · BI Worker Schema Slice 字段别名与 schema-qualified 表引用修复
+
+- 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_context.py`、`datalogue-api/app/agentscope_service/bi_worker_runtime.py`、`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/app/prompts/agent_team.py`、`datalogue-api/tests/test_bi_worker_progressive_context_tools.py`、`datalogue-api/tests/test_bi_worker_query_runtime.py`、`.codex/project-memory.md`。
+- 关键改动：根据“查询杨凯2024年日志” timeline 定位到后续 `FIELD_NOT_FOUND` 的当前代码侧根因：L2/describe_tables 返回的表级 ref 是 `table:schema.table`，runtime/compiler 旧 `_table_from_field_ref()` 看到点号就认为无法解析表，导致 `join_requirements.left_table/right_table` 为空或表级 target metadata 丢表；本轮识别 `table:` 前缀并保留 schema-qualified 表名。同步给 compiler 增加 `_quote_table_name()`，按 schema/table 分段 quote，避免把 `pm_tenant.plan_task_daily_record` 整体 quote 成单个标识符后被 SQL Guard 判为未授权表。继续补齐 `describe_tables.context_state_patch/context_state_usage`，让字段详情工具直接产出可合并的 `field_refs`，避免 Worker 从字段列表手写 context_state；同步更新 BI Worker prompt 与 `search_assets.usage_hint`，明确蓝图路径需 `request_schema_slice` 拿表/关系、`describe_tables` 拿字段/field_refs。
+- 验证方式：执行 `datalogue-api/.venv/bin/python -m py_compile datalogue-api/app/agentscope_service/bi_worker_context.py datalogue-api/app/prompts/agent_team.py datalogue-api/app/agentscope_service/bi_worker_runtime.py datalogue-api/app/services/query_plan_compiler.py` 通过；执行后端 targeted pytest `datalogue-api/.venv/bin/pytest datalogue-api/tests/test_query_plan_compiler.py datalogue-api/tests/test_bi_worker_progressive_context_tools.py datalogue-api/tests/test_bi_worker_query_runtime.py datalogue-api/tests/test_agentscope_service_tools.py datalogue-api/tests/test_agentscope_static_agent_registry.py datalogue-api/tests/test_agentscope_service_worker_logging.py datalogue-api/tests/test_agentscope_service_projection.py -q` 为 `111 passed, 74 warnings`；执行前端 targeted `cd datalogue-web && npm test -- agent-team-event-adapter chat-adapter MyMessage` 为 `3 files passed, 62 tests passed`；执行后端相关文件 `ruff check` 通过；执行 `cd datalogue-web && npm run lint && npm run build` 通过，保留既有 14 条 lint warning 与 Vite large chunk warning；执行 `git diff --check` 通过。
+- 残留风险：当前代码的 `request_schema_slice` 已演进为“只列全量表和关系、不返回字段”，字段详情应走 `datalogue_describe_tables`；本轮验证到 describe field_refs、runtime alias→schema.table、compiler JOIN/SQL Guard 编译层，尚未重新启动后端做真实数据库查询 smoke。用户需要重启后端后再用 dataset_id=10 的“查询杨凯2024年日志”复测，若仍失败，应优先看 `execute_compiled_query` 的底层数据库错误（例如真实库字段大小写/方言/权限）。
+
+### 2026-07-08 · BI Worker 只读工具统一绕过 AgentScope 权限引擎误拦截
+
+- 涉及文件：`datalogue-api/app/agentscope_service/tools.py`、`datalogue-api/tests/test_agentscope_service_tools.py`、`.codex/project-memory.md`。
+- 关键改动：用户 timeline 观察到「BI Worker 调试原文：datalogue_describe_tables 再次被拒绝」——AgentScope 2.0.3 的 DONT_ASK 权限引擎在 SubAgentTemplate 场景下会把裸 `FunctionTool` 判定为需要 confirmation 或直接 DENY,导致 progressive tools 被拒。此前 `datalogue_search_assets` 已踩过同一坑并通过自定义子类 `DatalogueSearchAssetsTool.check_permissions` 返回 ALLOW 绕过,但本轮新增的 `datalogue_describe_tables` 以及既有的 `prepare_query_context / request_schema_slice / repair_query_plan / select_candidate_datasets` 都还是裸 `FunctionTool`,同样会被拦。本轮把绕过逻辑抽成通用基类 `DatalogueBIWorkerReadOnlyTool(FunctionTool)`,`check_permissions` 直接返回 `PermissionBehavior.ALLOW + decision_reason="ALLOWED_BY_TOOL"`;`DatalogueSearchAssetsTool` 保留为别名指向新基类以兼容既有引用;`build_datalogue_progressive_bi_worker_tools` 里除 `datalogue_execute_query_plan_bundle`(is_read_only=False,故意走原权限引擎需要用户/leader 授权)外,`prepare_query_context / request_schema_slice / describe_tables / repair_query_plan` 全部改用新基类;`build_datalogue_select_candidate_datasets_tool` 同步改用新基类。所有 `is_read_only=True` 的 BI Worker 内部工具都是安全内省能力(不执行 SQL、不写数据),统一 ALLOW。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentscope_service_tools.py tests/test_bi_worker_progressive_context_tools.py tests/test_agentscope_static_agent_registry.py tests/test_bi_worker_progressive_context_contracts.py tests/test_bi_worker_query_runtime.py tests/test_query_plan_compiler.py tests/test_bi_worker_query_validator.py tests/test_agentscope_service_worker_logging.py --tb=short` 为 `116 passed, 74 warnings`（含新增 1 条防回归测试 `test_progressive_readonly_tools_bypass_permission_engine`,断言所有 is_read_only=True 的 progressive/candidate 工具必须继承 DatalogueBIWorkerReadOnlyTool 且 check_permissions 返回 ALLOW/ALLOWED_BY_TOOL,覆盖 5 个核心只读工具）；`black` / `ruff check` 全部通过。
+- 残留风险：这是对 AgentScope 2.0.3 权限引擎行为的补丁性绕过,若 AgentScope 版本升级修好了 DONT_ASK 分支的默认行为,本基类可以撤下。执行类工具 `datalogue_execute_query_plan_bundle` 保留 is_read_only=False + 裸 FunctionTool,继续依赖 AgentScope 权限引擎做用户授权确认,未来若需要静默执行需单独审慎评估。未跑真实页面 smoke,等待用户重启后端后 timeline 里应看到 `datalogue_describe_tables` 顺利执行不再出现「被拒绝」文本。
+
+### 2026-07-08 · FIELD_NOT_FOUND 死循环系统性修复（契约+L4+runtime+prompt 四层）
+
+- 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_contracts.py`、`datalogue-api/app/agentscope_service/bi_worker_validator.py`、`datalogue-api/app/agentscope_service/bi_worker_runtime.py`、`datalogue-api/app/agentscope_service/bi_worker_context.py`、`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/app/prompts/agent_team.py`、`datalogue-api/tests/test_bi_worker_progressive_context_contracts.py`、`datalogue-api/tests/test_bi_worker_query_validator.py`、`datalogue-api/tests/test_bi_worker_query_runtime.py`、`datalogue-api/tests/test_bi_worker_progressive_context_tools.py`、`.codex/project-memory.md`。
+- 关键改动：用户报告即便 LLM 已经调完四步链路(prepare/slice/describe/bundle),execute_query_plan_bundle 仍持续报 FIELD_NOT_FOUND 并循环建议再调 request_schema_slice。系统性诊断出三个耦合根因:(1) FieldTarget.asset_ref 契约无格式约束,LLM 可以写 "asset:primary" / "log.rzrq" / 纯字段名等错误格式;(2) L4 用精确字符串成员判断,LLM 忘 merge describe_tables 的 context_state_patch 就必挂;(3) FIELD_NOT_FOUND 的 recommended_action 让 LLM 再调 request_schema_slice —— 但该工具解耦后只返表清单不返字段,循环。本轮四层同步修复:(A) `bi_worker_contracts.py:52-94` FieldTarget.asset_ref 增加 pydantic pattern 白名单(前缀必须是 table/asset/field + 冒号 + 至少一个 . 分隔的路径,支持中文表名 一-龥),并新增 `normalized_field_ref` property 把表级 ref+field 拼成字段级 ref;`bi_worker_contracts.py:313-321` 更新 FAILURE_DIAGNOSIS_MAP[FIELD_NOT_FOUND].recommended_action 为对症引导(明确 table:schema.table.field 规范格式 + context_state_patch.field_refs 合并 + describe_tables 二次确认字段名)。(B) `bi_worker_validator.py:105-114` _collect_missing_context 用 normalized_field_ref 优先匹配 field_refs,允许 LLM 传表级 ref+field 拆分形式命中。(C) `bi_worker_runtime.py:37,54-64,397-421` 新增顶层 `_derive_dataset_field_refs` 从 dataset 元数据推导所有 (schema, table, column) 组合成字段级 ref 集合,并新增实例方法 `_get_dataset` 返回 SemanticDataset | None(db=None 时返回 None 而非抛错),`execute_query_plan` 在 L4 校验前主动 union 到 context_state.field_refs/asset_refs,让 LLM 完全忘 merge 时也能通过校验。(D) `agent_team.py:50-53` 强化 asset_ref 规范格式约束 + 新增 context_state 三次 patch 合并强制引导条 + minimal_detail_query_plan 示例从 asset:primary.* 替换为 table:<schema>.<table>[.<field>]。(E) 顺带补漏 `bi_worker_context.py:describe_tables` 加 context_state_patch 输出(此前解耦时漏了),`query_plan_compiler.py:_table_from_field_ref` 修复表级 ref (table:schema.table) 被错误解析成 (schema, table 字段) 的边界。
+- 协作方式：Workflow 4 subagent 并行调度(316568 tokens、84 工具调用)—— 2 个 Implement subagent 并行做 contracts+validator / runtime+prompt,1 个 Tests subagent 覆盖 4 层新增 16 条测试,1 个 Verify subagent adversarially 主动发现并修复 2 处问题(`_get_dataset` fail-closed 太激进导致 8 个 pre-existing 老测试炸掉 + `_derive_dataset_field_refs` 对残缺元数据不够鲁棒需要 getattr 全防),单次通过全绿。
+- 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_progressive_context_contracts.py tests/test_bi_worker_query_validator.py tests/test_bi_worker_query_runtime.py tests/test_bi_worker_progressive_context_tools.py tests/test_agentscope_service_tools.py tests/test_bi_worker_progressive_context_e2e.py tests/test_query_plan_compiler.py tests/test_agentscope_service_worker_logging.py --tb=short` 为 `126 passed, 74 warnings`(含新增 16 条:11 契约层 pattern/normalized_ref/recommended_action + 1 validator normalized 匹配 + 4 runtime dataset 兜底);`black` / `ruff check` 全通过;`mypy` 剩余错误全部是仓库预先存在的历史类型债,本轮改动文件未引入新错误。
+- 残留风险：契约层 asset_ref pattern 是**破坏性变更**,若有历史 test/prod 里存在 "asset:primary" 之类的旧格式会挂;本轮已识别并同步更新所有测试。runtime 自动 merge dataset 全部字段 ref 意味着 LLM 引用未在 describe_tables 里看到的字段也能通过 L4——这不是安全漏洞(字段属于 dataset,不越权),但可能让 LLM 决策不完整(建议 recommended_action 里已提示"建议先调 describe_tables 确认字段语义")。未跑真实页面 smoke,等待用户重启后端后用"查询杨凯 2025 年工作日志"实际验证,期望 timeline:LLM 用规范 asset_ref 格式一次成功,或即便格式错也被契约 Repair 链路 A 拦下并给出正确格式引导,不再走到 L4 死循环。
+
+### 2026-07-08 17:05 · BI Worker context_state list/set 类型错误与执行异常日志兜底
+
+- 涉及文件：`datalogue-api/app/agentscope_service/bi_worker_runtime.py`、`datalogue-api/app/agentscope_service/tools.py`、`datalogue-api/tests/test_bi_worker_query_runtime.py`、`datalogue-api/tests/test_agentscope_service_tools.py`、`.codex/project-memory.md`。
+- 关键改动：修复 `datalogue_execute_query_plan_bundle` 在 dataset 字段 ref 兜底阶段执行 `context_state.field_refs | derived_refs` 时，因为工具 JSON 入参把 `asset_refs/relationship_refs/field_refs` 反序列化为 list 而触发 `unsupported operand type(s) for |: 'list' and 'set'` 的后端类型错误。`BIWorkerQueryRuntime.execute_query_plan()` 入口新增 `_normalize_context_state_refs()`，在任何集合运算和 L4 校验前统一把三类 refs 收敛为 `set`；`tools.py` 对 runtime 未预期异常新增 `logger.exception`，并返回结构化 `dataset_query_result/status=failed/failure_type=FIELD_NOT_FOUND`，避免异常只以 AgentScope tool error 出现在 timeline 而不进后端错误日志。
+- 验证方式：先补失败测试 `test_execute_query_plan_normalizes_json_list_refs_before_dataset_merge` 复现 `list | set` TypeError，再补 `test_execute_query_plan_bundle_logs_runtime_exception` 复现工具层无日志、无结构化失败 payload；实现后执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_query_runtime.py::test_execute_query_plan_normalizes_json_list_refs_before_dataset_merge tests/test_agentscope_service_tools.py::test_execute_query_plan_bundle_logs_runtime_exception -q` 为 `2 passed, 2 warnings`；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_query_runtime.py -q` 为 `22 passed, 2 warnings`；执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentscope_service_tools.py -q` 为 `16 passed, 2 warnings`。
+- 残留风险：本轮修复到单元/工具层，未重新启动后端做真实页面 smoke；如果正在运行的后端进程未重启，仍会使用旧代码。工具层异常兜底目前映射到既有 `FIELD_NOT_FOUND` 安全诊断，后续如果需要更准确区分平台内部异常，可新增独立 `INTERNAL_RUNTIME_ERROR` failure type。
+
+### 2026-07-08 · BI Worker execute_query_plan_bundle 后端日志增强
+
+- 涉及文件: datalogue-api/app/agentscope_service/bi_worker_runtime.py, datalogue-api/app/agentscope_service/tools.py, .codex/project-memory.md
+- 关键改动: 用户报告排查 FIELD_NOT_FOUND 时后端日志缺少上下文——原代码只在抛异常时 logger.exception, 但 90% 的失败(L4 校验/FILTER_MISSING/bridge blocked/EMPTY_RESULT)都是正常返回 payload, 不进 except, 日志空白。本轮:(A) bi_worker_runtime.py 顶部初始化 logger, execute_query_plan 每个分支加结构化日志:START 摘要(dataset_id/trace_id/intent/primary_asset/dimension counts)、dataset ref 兜底前后 counts、L4 每条 missing_context 逐条 warning + L4 FAILED 汇总、FILTER_MISSING、EXECUTE EXCEPTION 用 logger.exception 保留 traceback、BRIDGE FAILED、EMPTY_RESULT、SUCCESS。(B) tools.py wrapper 加 REQUEST 摘要、context_state 过滤后 dropped_keys、CONTRACT ERROR 摘要、结尾按 status/failure_type 分类打 RESPONSE OK/RESPONSE FAILED。所有日志避免 raw SQL / raw values, 只打安全 dimension(count/failure_type/asset_ref 前缀/missing_context 列表)。
+- 验证方式: cd datalogue-api && .venv/bin/python -m pytest tests/test_bi_worker_query_runtime.py tests/test_agentscope_service_tools.py tests/test_bi_worker_progressive_context_contracts.py tests/test_bi_worker_progressive_context_e2e.py tests/test_query_plan_compiler.py --tb=short 为 71 passed; --log-cli-level=INFO 实测输出确认 START/dataset ref 兜底/SUCCESS 三行结构化日志。black/ruff 通过。
+- 残留风险: 异常路径的 logger.exception 会包含完整 traceback(可能含 SQL 片段), 只写文件日志不进用户可见通道, 但生产环境如果 log 采集到 SIEM 需注意脱敏。若后续有必要, 可用 hash 或 sanitize 替换 exc_msg。
+
+### 2026-07-08 17:57 · datalogue_execute_query_plan_bundle 完整链路文档
+
+- 涉及文件：`docs/architecture/datalogue_execute_query_plan_bundle完整链路.md`、`.codex/project-memory.md`。
+- 关键改动：根据当前代码梳理 `datalogue_execute_query_plan_bundle` 从 Agent Team / BI Worker 上游工具顺序，到 wrapper 契约校验、`BIWorkerQueryRuntime.execute_query_plan` L4/L5 分界、`QueryPlan -> legacy query_plan dict` 投影、`AgentScopeDatasetRuntimeBridge.run_direct_query` 状态机、BI Atomic Toolkit compile/execute/artifact、失败与 repair 分支、TeamSay/message.completed/Workbench 消费的完整链路。文档补充两张 Mermaid 图：主流程图和 Bridge/Atomic Toolkit 时序图，并给出排障日志关键词索引。
+- 验证方式：基于 CodeGraph 读取 `tools.py`、`bi_worker_runtime.py`、`bi_worker_contracts.py`、`runtime_bridge.py`、`atomic.py`、`bi_worker_context.py` 和 `agent_team.py` 相关片段；新增文档后执行人工通读，确认 Mermaid 代码块、章节编号和关键代码入口路径完整。
+- 残留风险：本轮是只读链路文档生成，未运行后端/前端测试，也未做真实页面 smoke；若后续代码继续调整 `AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE`、`BIWorkerQueryPlan` 契约或 Workbench 投影，需要同步更新本文档。
+
+### 2026-07-08 18:32 · datalogue_execute_query_plan_bundle 工具设计图与 Obsidian 同步
+
+- 涉及文件：`docs/architecture/datalogue_execute_query_plan_bundle完整链路.md`、`docs/architecture/assets/datalogue_execute_query_plan_bundle_internal_chain.png`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/工具链路文档/datalogue_execute_query_plan_bundle/datalogue_execute_query_plan_bundle 工具设计.md`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/工具链路文档/datalogue_execute_query_plan_bundle/assets/datalogue_execute_query_plan_bundle_internal_chain.png`、`.codex/project-memory.md`。
+- 关键改动：按用户要求把 imagegen 生成的聚焦版工具内部执行链路图复制进项目文档 assets 和 Obsidian 知识库；在项目 markdown 顶部插入图片，并在 Obsidian 的“数语/工具链路文档/datalogue_execute_query_plan_bundle”下新建单独工具设计文档。Obsidian 文档不再按完整对话链路叙述，而是围绕工具设计展开：设计定位、输入契约、wrapper 校验层、Runtime L4、L5 受控执行、Bridge direct query、Atomic Toolkit、输出契约、失败/repair 策略、安全边界和排障索引。
+- 验证方式：执行 `view_image` 确认选用的是仅包含 `datalogue_execute_query_plan_bundle` tool 内部链路的聚焦版图片；复制后检查 Obsidian 目录、项目 assets、markdown 图片引用和文档正文均存在。
+- 残留风险：图片是 imagegen 生成的 raster infographic，局部英文/符号排版可能不如手工 Mermaid 精准；后续若作为正式设计评审材料，建议基于当前文档再补一版可维护 Mermaid 或 draw.io 源文件。
+
+### 2026-07-08 18:38 · 其他 BI Worker 工具设计文档与工具族图
+
+- 涉及文件：`docs/architecture/BI Worker工具族设计.md`、`docs/architecture/assets/bi_worker_tool_family_design.png`、`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/工具链路文档/BI Worker 工具族设计.md`、Obsidian 下 `datalogue_select_candidate_datasets`、`datalogue_search_assets`、`datalogue_prepare_query_context`、`datalogue_request_schema_slice`、`datalogue_describe_tables`、`datalogue_repair_query_plan` 六个工具目录与设计文档、`.codex/project-memory.md`。
+- 关键改动：根据当前 `tools.py` 与 `BIWorkerContextProvider` 真实实现，为 execute bundle 之外的 6 个 BI Worker 工具生成单独工具设计文档；每篇按设计定位、所在位置、输入契约、输出契约、内部执行、设计重点、安全边界、失败/降级和排障入口组织。使用 Image Gen 生成一张“BI Worker 工具族设计图（execute_query_plan_bundle 之外）”，并复制到项目文档 assets 和 Obsidian `工具链路文档/assets`。
+- 验证方式：使用 CodeGraph 读取 `build_datalogue_search_assets_tool`、`build_datalogue_progressive_bi_worker_tools`、`build_datalogue_select_candidate_datasets_tool` 的真实签名和工具注册；使用 `view_image` 检查生成图聚焦工具族设计而非完整对话链路；检查项目与 Obsidian 文件路径均存在。
+- 残留风险：本轮是文档与图片整理，未运行后端/前端测试；Image Gen 生成的图片属于 raster 资产，若后续要做精确版本管理，建议追加 Mermaid/draw.io 源文件。
+
+### 2026-07-08 18:59 · BI Worker 单工具内部执行链路图补齐
+
+- 涉及文件：Obsidian 下 `datalogue_select_candidate_datasets`、`datalogue_search_assets`、`datalogue_prepare_query_context`、`datalogue_request_schema_slice`、`datalogue_describe_tables`、`datalogue_repair_query_plan` 六份工具设计文档、`.codex/project-memory.md`。
+- 关键改动：针对用户指出“单工具文档没有内部执行链路图”的问题，为 6 份 Obsidian 工具设计文档逐一补充 Mermaid `内部执行链路图`。每张图按当前代码真实执行顺序展开，包括入参校验、SessionLocal/ContextProvider 调用、payload 组装、失败/降级分支、安全边界和后续工具约束。
+- 验证方式：执行 `rg -n "内部执行链路图" .../工具链路文档` 确认 6 个目标工具文档均已新增该章节，并抽查 `datalogue_describe_tables`、`datalogue_prepare_query_context` 文档内容。
+- 残留风险：本轮补的是 Obsidian Mermaid 可维护图，不是 Image Gen raster 图；若后续需要对外汇报版视觉图，可基于这些 Mermaid 再单独生成正式图片。
+
+### 2026-07-08 19:12 · BI Worker 单工具 Image Gen 内部链路图补齐
+
+- 涉及文件：Obsidian 下 `datalogue_select_candidate_datasets/assets/datalogue_select_candidate_datasets_internal_chain.png`、`datalogue_search_assets/assets/datalogue_search_assets_internal_chain.png`、`datalogue_prepare_query_context/assets/datalogue_prepare_query_context_internal_chain.png`、`datalogue_request_schema_slice/assets/datalogue_request_schema_slice_internal_chain.png`、`datalogue_describe_tables/assets/datalogue_describe_tables_internal_chain.png`、`datalogue_repair_query_plan/assets/datalogue_repair_query_plan_internal_chain.png`，以及对应 6 份工具设计文档、`.codex/project-memory.md`。
+- 关键改动：按用户明确要求，为 6 个 BI Worker 单工具分别使用 Image Gen 生成 raster 内部执行链路图，并复制到每个工具目录的 `assets/` 下；每份工具设计文档的“内部执行链路图”章节现在优先展示 Image Gen 图片，原 Mermaid 图仅保留为后续可维护的结构化补充。
+- 验证方式：复制后检查 6 张 PNG 均存在；使用 `rg -n "Image Gen 生成的工具内部执行链路图|internal_chain.png" .../工具链路文档/datalogue_*/*.md` 确认 6 份文档均引用对应图片。
+- 残留风险：Image Gen 图片是位图资产，文字和节点排版不可像 Mermaid 一样直接版本化编辑；后续如果代码链路变化，需要重新生成图片或同步维护下方 Mermaid。
+
+### 2026-07-09 09:40 · BI Worker 调试原文格式错乱修复（前端保真 + 后端 delta 缓冲）
+
+- 涉及文件：`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/styles.css`、`datalogue-api/app/agentscope_service/worker_logging.py`、`datalogue-api/tests/test_agentscope_service_worker_logging.py`。
+- 关键改动：
+  - 前端 `appendRawThinkingDelta` 收敛为纯拼接，删除按 `[A-Za-z0-9]` 边界补空格的分支，避免破坏 `plan_task_daily_record`/`2025`/`LIMIT` 等标识符/数字/关键字。
+  - 前端 `ReasoningText` 增加 raw debug 分支：`part.debugRaw === true || part.reasoningKind === 'bi_worker_raw_thinking_delta'` 命中时用 `<pre className="cot-ant-raw" aria-label="BI Worker 调试原文">` 忠实渲染，跳过 `splitThinkingSegments`；新增 `.cot-ant-raw` 等宽 + `pre-wrap` + 320px 最大高度样式。
+  - 后端 `_publish_thinking_progress` 引入 per-stream_group_id raw delta 缓冲：delta 累积到"结尾为空白/中英标点/换行"或"长度 ≥ 64"才 emit，`phase='end'` 与 `on_reply` 主循环走完后各兜底 flush 一次，解决模型 API 按 tokenizer 边界切碎 delta 导致 UI 词内断裂。
+- 验证方式：`pytest tests/test_agentscope_service_worker_logging.py`（33/33 通过，含新增 `test_bi_worker_thinking_debug_merges_tokenizer_split_deltas`）；`black + ruff` 无 diff/告警；前端 `vitest run src/assistant/chat-adapter.test.js src/assistant/MyMessage.test.jsx`（50/50 通过）；`eslint` 4 个改动文件全绿。
+- 残留风险：如果 LLM 供应商返回的单个 chunk **本身**就带前导空格（例如 `left_al` + ` ias`），后端缓冲策略无法在不误伤合法空格（如 `alias: "p"`）的前提下消除该空格；这类情况需在后端"完整 thinking end-only 一次性 emit"通道另行处理。
+
+### 2026-07-09 12:18 · Datalogue 目录治理 Phase A/B 完成记录
+
+- 涉及文件：`docs/architecture/目录治理与模块边界.md`、`.omx/context/directory-planning/current-directory-snapshot.md`、`datalogue-api/app/domains/**`、`datalogue-api/app/agentscope_runtime/**`、`datalogue-api/tests/test_directory_facades.py`、`.codex/project-memory.md`。
+- 关键改动：Phase A 完成目录治理设计落档，新增架构文档说明当前目录边界、模块职责和迁移约束，并在 `.omx` ignored 上下文中记录当前目录快照；Phase B 新增 `domains` 与 `agentscope_runtime` facade-first 包骨架，用轻量门面先稳定未来迁移入口，同时补 `test_directory_facades.py` 固化导入边界。全程不移动旧源码、不改旧调用方导入、不改变 AgentScope 主链、不改变 BI Worker 查询语义。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile $(find app/domains app/agentscope_runtime -name '*.py' | sort) tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py`，结果为 `4 passed, 2 warnings in 0.02s`。
+- 残留风险或后续事项：本轮只是目录治理 Phase A/B 的文档与 facade 骨架，不做旧源码搬迁和调用方切换；后续如推进真实模块迁移，需要继续保持 facade-first、分批改导入、补回归测试，并确认 AgentScope 主链与 BI Worker 查询语义不发生漂移。
+
+### 2026-07-09 13:50 · Workbench 去常驻化第一批（普通 Chat 退面板 + 隐藏恢复壳分类器）
+
+- 涉及文件：`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/components/workbench-route.jsx`、`datalogue-web/src/assistant/workbench-mount-source.js`、`datalogue-web/src/assistant/workbench-mount-source.test.js`。
+- 关键改动：普通 `/chat` 与 `/chat/:id` 不再默认挂载 `WorkbenchPanel`，把 Workbench 常驻侧栏从 Chat 主链上摘掉；新增 `classifyWorkbenchMountSource` 和 `isAllowedWorkbenchRecoverySource`，把普通聊天、隐藏恢复壳、旧镜像、显式恢复分成 fail-closed 的受控来源；`/workbench` 隐藏路由仍保留，但仅在恢复来源合法时渲染；补测试确认普通 Chat 不再出现工作台面板，同时覆盖普通聊天、隐藏恢复壳、旧镜像、显式恢复与冲突输入的分类结果。
+- 验证方式：`npm test -- --run src/components/chat-page.test.jsx src/components/workbench-route.test.jsx src/assistant/workbench-api.test.js src/assistant/workbench-mount-source.test.js`（34/34 通过）；`npm run lint`（0 errors，保留仓库既有 warnings）；`npm run build` 成功产出前端构建。
+- 残留风险或后续事项：`/workbench` 隐藏壳与 `/api/workbench/*` 仍保留，下一批需要继续收口结果详情/失败态/retry 的 Chat 侧承接，并在主路径流量归零后再走彻底退役；当前 lint 仍存在与本次无关的既有 warnings，未处理仓库历史债务。
+
+
+
+### 2026-07-09 12:45 · 数据源适配 domain 下沉与 Workbench 挂载源收口
+
+- 完成时间：2026-07-09 12:45。
+- 功能名称：数据源适配 domain 下沉与 Workbench 挂载源收口。
+- 涉及文件：`.gitignore`、`datalogue-api/app/domains/data_source/adapters/base.py`、`datalogue-api/app/domains/data_source/adapters/hive.py`、`datalogue-api/app/domains/data_source/adapters/oracle.py`、`datalogue-api/app/domains/data_source/adapters/registry.py`、`datalogue-api/app/domains/data_source/service.py`、`datalogue-api/tests/test_directory_facades.py`、`datalogue-web/src/assistant/workbench-mount-source.js`、`datalogue-web/src/assistant/workbench-mount-source.test.js`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/components/workbench-route.jsx`，并删除根目录临时验收截图 `chat-e2e-initial.png`、`chat-e2e-thread.png`。
+- 关键改动：将数据源能力、上下文、诊断、adapter 注册和 Oracle/Hive 连接逻辑继续下沉到 `domains/data_source/adapters` 边界，`service.py` 收敛为面向 API 的应用服务入口；补强目录 facade 测试，确保旧服务入口仍能稳定导入；前端新增 `workbench-mount-source` 统一判断 Workbench 挂载来源，Chat 页面和 Workbench 路由按同一来源语义展示/挂载，避免页面侧重复推断；`.gitignore` 补充 E2E 临时图规则并移除已追踪临时截图。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/services/datasource.py $(find app/domains/data_source -name '*.py' | sort) tests/test_directory_facades.py` 通过；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_datasource.py -q`，结果 `14 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_dataset.py -q -k "sql_preview or datasource"`，结果 `6 passed, 27 deselected, 10 warnings`。
+
+
+### 2026-07-09 14:10 · 查询执行 SQL Guard 与方言基础工具 domain 下沉
+
+- 完成时间：2026-07-09 14:10。
+- 功能名称：查询执行 SQL Guard 与方言基础工具 domain 下沉。
+- 涉及文件：`datalogue-api/app/domains/query_execution/__init__.py`、`datalogue-api/app/domains/query_execution/guard.py`、`datalogue-api/app/domains/query_execution/dialect/__init__.py`、`datalogue-api/app/domains/query_execution/dialect/names.py`、`datalogue-api/app/utils/__init__.py`、`datalogue-api/app/utils/sql_dialect.py`、`datalogue-api/app/utils/sql_guard.py`、`datalogue-api/app/services/sql_dialect_adapter.py`、`datalogue-api/app/services/sql_preview.py`、`datalogue-api/app/services/analysis_blueprint.py`、`datalogue-api/tests/test_directory_facades.py`。
+- 关键改动：将 `quote_ident`、`resolve_dialect`、`sanitize_filter_sql`、`contains_forbidden_keyword` 等方言基础工具下沉到 `domains/query_execution/dialect/names.py`；将 `SQLGuardResult` 与 `guard_readonly_sql` 的真实实现下沉到 `domains/query_execution/guard.py`；旧 `app/utils/sql_dialect.py`、`app/utils/sql_guard.py` 改为兼容 re-export 门面；`query_execution` 与 `dialect` 包入口改为懒加载，避免新旧路径并存期间触发 query_plan_compiler / sql_guard 循环导入；上层 `sql_dialect_adapter`、`sql_preview`、`analysis_blueprint` 改用 domain 实现源。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_sql_guard.py tests/test_sql_dialect_adapter.py -q`，结果 `24 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/__init__.py app/domains/query_execution/guard.py app/domains/query_execution/dialect/__init__.py app/domains/query_execution/dialect/names.py app/services/sql_dialect_adapter.py app/services/sql_preview.py app/services/analysis_blueprint.py app/utils/__init__.py app/utils/sql_dialect.py app/utils/sql_guard.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_query_plan_compiler.py tests/test_dataset.py -q -k "sql_preview or datasource or dialect"`，结果 `8 passed, 40 deselected, 10 warnings`。
+- 残留风险或后续事项：本轮完成 G040 的纯工具下沉与旧路径 facade；尚未迁移 `sql_dialect_adapter.py`、`query_plan_compiler.py`、`sql_preview.py` 的真实实现主体，对应 G041-G043 仍待后续分批推进。
+
+
+### 2026-07-09 14:35 · 查询计划编译器与 SQL 方言适配器 domain 下沉
+
+- 完成时间：2026-07-09 14:35。
+- 功能名称：查询计划编译器与 SQL 方言适配器 domain 下沉。
+- 涉及文件：`datalogue-api/app/domains/query_execution/compiler.py`、`datalogue-api/app/domains/query_execution/dialect/adapter.py`、`datalogue-api/app/services/query_plan_compiler.py`、`datalogue-api/app/services/sql_dialect_adapter.py`、`datalogue-api/app/bi/toolkit/atomic.py`、`datalogue-api/tests/test_directory_facades.py`。
+- 关键改动：将 `adapt_sql_for_execution`、`normalize_supported_dialect`、`quote_identifier` 真实实现下沉到 `domains/query_execution/dialect/adapter.py`；将 `compile_query_plan_to_sql` 真实实现下沉到 `domains/query_execution/compiler.py`；旧 `app/services/sql_dialect_adapter.py` 与 `app/services/query_plan_compiler.py` 改为兼容 re-export 门面；BI Toolkit 内部调用切到 domain compiler，测试和历史调用方仍可走旧 service facade；补 facade 测试确保旧路径与新 domain 对象同源，避免迁移期出现两套 SQL 编译/适配规则。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/compiler.py app/domains/query_execution/dialect/adapter.py app/services/query_plan_compiler.py app/services/sql_dialect_adapter.py app/bi/toolkit/atomic.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_sql_dialect_adapter.py tests/test_query_plan_compiler.py -q`，结果 `26 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_dataset.py -q -k "sql_preview or datasource" && ../datalogue-api/.venv/bin/pytest tests/test_bi_worker_query_runtime.py -q`，结果分别为 `6 passed, 27 deselected, 10 warnings` 与 `22 passed, 2 warnings`。
+- 残留风险或后续事项：本轮完成 G041；`sql_preview.py` 真实实现仍在 `app/services`，按计划由 G042 单独迁移，并继续保持执行器通过 `create_engine_for_datasource()`。
+
+
+### 2026-07-09 14:55 · SQL Preview 执行服务 domain 下沉
+
+- 完成时间：2026-07-09 14:55。
+- 功能名称：SQL Preview 执行服务 domain 下沉。
+- 涉及文件：`datalogue-api/app/domains/query_execution/preview.py`、`datalogue-api/app/services/sql_preview.py`、`datalogue-api/app/api/dataset.py`、`datalogue-api/app/agents/bi_agent/runtime_context.py`、`datalogue-api/tests/test_dataset.py`、`datalogue-api/tests/test_directory_facades.py`。
+- 关键改动：将 `preview_dataset_sql` 真实实现下沉到 `domains/query_execution/preview.py`，并继续通过 `domains.data_source.service.create_engine_for_datasource()` 创建数据源执行引擎；旧 `app/services/sql_preview.py` 改为兼容 re-export 门面；Dataset API 与 BI runtime context 改用 domain preview；测试 monkeypatch 路径切到 domain preview 的 `create_engine_for_datasource`，并补 facade 测试确认旧 service 与新 domain 对象同源。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/preview.py app/services/sql_preview.py app/api/dataset.py app/agents/bi_agent/runtime_context.py tests/test_dataset.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_dataset.py -q -k "sql_preview or datasource or query_execution_preview"`，结果 `8 passed, 33 deselected, 10 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_bi_worker_query_runtime.py tests/test_query_plan_compiler.py tests/test_sql_dialect_adapter.py -q`，结果 `41 passed, 2 warnings`。
+- 残留风险或后续事项：本轮完成 G042；`artifact_store.py`、`repair_plan.py` 仍待 G043 迁移，SQL 不泄露与 artifact ref 约束测试仍在 G048 汇总验证。
+
+### 2026-07-09 14:24 · Workbench 去常驻化第二批（Chat retry 承接 + 退役闸门）
+
+- 完成时间：2026-07-09 14:24。
+- 功能名称：Workbench 去常驻化第二批（Chat retry 承接 + 退役闸门）。
+- 涉及文件：`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`datalogue-web/src/assistant/workbench-retention-gate.js`、`datalogue-web/src/assistant/workbench-retention-gate.test.js`。
+- 关键改动：Chat 侧 `ArtifactCard` 的 retry 动作改为先发起受控 `/api/workbench/actions/retry`，成功后把后端返回的 `task_request` 写入 `window.__DATALOGUE_PENDING_WORKBENCH_RETRY__` 并通过 `datalogue:composer-submit` 交给既有 Chat 主链；`chat-adapter` 继续消费 pending retry 并把 `retry_checkpoint_ref` 交给 Agent Team；新增纯函数 `evaluateWorkbenchRetentionGate`，按 14 天 UTC 窗口汇总 `/api/workbench/*` 与 `/workbench/*` 的主路径/恢复流量，并用 Chat 侧 artifact 详情承接总量对比 `expected_artifact_detail_total`，作为 Workbench 彻底退役的机器闸门。
+- 验证方式：执行 `cd datalogue-web && npm test -- src/assistant/workbench-retention-gate.test.js src/assistant/MyMessage.test.jsx`，结果 `25 passed`；执行 `cd datalogue-web && npm run lint`，结果 0 errors、14 个既有 warnings；执行 `cd datalogue-web && npm run build` 成功产出前端构建。
+- 残留风险或后续事项：`expected_artifact_detail_total` 目前支持显式输入与前端投影式兜底两种口径，后续若要接入真实埋点，还需要把 Chat 侧 artifact 详情“应出现”指标标准化到统一事件名；`/workbench` 隐藏壳与 `/api/workbench/*` 仍保留，需等主路径流量归零后再做最终退役。
+
+### 2026-07-09 14:42 · Workbench retention gate 标准事件测试补强
+
+- 完成时间：2026-07-09 14:42。
+- 功能名称：Workbench retention gate 标准事件测试补强。
+- 涉及文件：`datalogue-web/src/assistant/workbench-retention-gate.js`、`datalogue-web/src/assistant/workbench-retention-gate.test.js`、`.codex/project-memory.md`。
+- 关键改动：`workbench-retention-gate.test.js` 引入 `buildArtifactDetailExpectedEvent` 与 `buildArtifactDetailViewEvent`，补齐标准 Chat 侧 `artifact_detail_expected/artifact_detail_view` 事件能驱动退役闸门通过的覆盖；新增恢复/旧镜像来源误计数回归，确保 `/workbench` 来源即使带标准详情事件名，也不能被算作 Chat 侧详情承接。`workbench-retention-gate.js` 将 expected/actual artifact 详情统计收紧为普通 `/chat` 路由和 `ordinary_chat/ordinary_chat_history` 来源，避免 Workbench 隐藏恢复壳或 legacy mirror 事件反向证明主路径已完成承接。
+- 验证方式：先执行 `cd datalogue-web && npm test -- src/assistant/workbench-retention-gate.test.js`，新增回归用例按预期失败，错误为 `expected true to be false`；实现后同一命令通过，结果 `7 passed`。继续执行 `cd datalogue-web && npm test -- src/assistant/workbench-retention-gate.test.js src/assistant/workbench-retention-events.test.js src/assistant/MyMessage.test.jsx`，结果 `31 passed`；执行 `cd datalogue-web && npm run lint`，结果 0 errors、14 个既有 warnings；执行 `cd datalogue-web && npm run build` 成功。
+- 残留风险或后续事项：当前闸门仍依赖前端 UI/API 事件输入，尚未接入真实线上 analytics；后续做最终退役时，需要用真实 14 天窗口事件数据喂给 `evaluateWorkbenchRetentionGate`，并继续保留隐藏恢复壳的恢复流量统计。
+
+
+### 2026-07-09 15:15 · ArtifactStore 与 RepairPlan 服务 domain 下沉
+
+- 完成时间：2026-07-09 15:15。
+- 功能名称：ArtifactStore 与 RepairPlan 服务 domain 下沉。
+- 涉及文件：`datalogue-api/app/domains/query_execution/artifact_store.py`、`datalogue-api/app/domains/query_execution/repair_plan.py`、`datalogue-api/app/services/artifact_store.py`、`datalogue-api/app/services/repair_plan.py`、`datalogue-api/app/api/artifacts.py`、`datalogue-api/app/services/workbench_view_model.py`、`datalogue-api/app/agents/bi_agent/native_handoff.py`、`datalogue-api/app/bi/toolkit/atomic.py`、`datalogue-api/tests/test_directory_facades.py`。
+- 关键改动：将 `ArtifactStore`、`ArtifactPayloadTooLargeError` 与 `ArtifactKind` 真实实现下沉到 `domains/query_execution/artifact_store.py`；将 RepairPlan 分类、校验、脱敏摘要与 artifact payload 清洗能力下沉到 `domains/query_execution/repair_plan.py`；旧 `app/services/artifact_store.py`、`app/services/repair_plan.py` 改为兼容 re-export 门面；Artifacts API、Workbench ViewModel、BI native handoff、BI Toolkit 内部调用切到 domain 实现源；补 facade 测试确保旧 service 与新 domain 对象同源，避免 Artifact/RepairPlan 出现两套安全边界。
+- 验证方式：执行 `cd datalogue-api && ../datalogue-api/.venv/bin/python -m py_compile app/domains/query_execution/artifact_store.py app/domains/query_execution/repair_plan.py app/services/artifact_store.py app/services/repair_plan.py app/api/artifacts.py app/services/workbench_view_model.py app/agents/bi_agent/native_handoff.py app/bi/toolkit/atomic.py tests/test_directory_facades.py && ../datalogue-api/.venv/bin/pytest tests/test_directory_facades.py tests/test_artifact_api.py tests/test_repair_plan_contract.py -q`，结果 `29 passed, 2 warnings`；执行 `cd datalogue-api && ../datalogue-api/.venv/bin/pytest tests/test_workbench_view_api.py tests/test_agentscope_dataset_query_executor.py tests/test_bi_lead_agent_native_handoff.py tests/test_bi_worker_query_runtime.py -q`，结果 `45 passed, 2 warnings`。
+- 残留风险或后续事项：本轮完成 G043；G044-G048 将继续以测试闸门形式复核 SQL Guard、方言适配、QueryPlan 编译、BI worker runtime 与 SQL/artifact 安全边界。
+### 2026-07-09 15:16 · 管理员密码手动重置
+
+- 涉及文件：`.codex/project-memory.md`
+- 关键改动：通过一次性数据库脚本将 `admin` 用户 `hashed_password` 重置为 `admin` 对应哈希，避免因历史引导密码与 `.env` 预期不一致导致登录 401。
+- 验证方式：执行 `python -c` 重置后即时调用 `verify_password('admin', u.hashed_password)`，输出 `reset_done=True`。
+- 残留风险：`admin/admin` 仅适用于本地临时调试，后续应尽快改回强密码并通过环境变量/运维流程管理。
+
+### 2026-07-09 15:28 · 新建用户功能页面上线
+
+- 涉及文件：`datalogue-web/src/components/user-create.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/api/client.js`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：新增独立页面 `/users-new`，提供用户名、邮箱、姓名、初始密码表单并调用 `/api/auth/register` 创建用户；侧边栏“系统管理”新增“新建用户”入口；顶部面包屑补充用户管理路径；客户端新增 `createUserAccount` API 方法。
+- 验证方式：执行 `cd datalogue-web && npm run lint`，结果 `0 errors, 14 warnings`（均为仓库既有告警）；新页面编译无异常。
+- 残留风险：当前后端 `register` 仍未加管理员鉴权，理论上任意登录态均可调用；后续建议把创建用户能力限制为管理员角色。
+
+### 2026-07-09 01:05 · 登录认证功能第一阶段落地
+
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/core/security.py`、`datalogue-api/app/models/user.py`、`datalogue-api/app/models/__init__.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-api/app/schemas/__init__.py`、`datalogue-api/app/api/deps.py`、`datalogue-api/app/api/auth.py`、`datalogue-api/app/api/__init__.py`、`datalogue-api/app/main.py`、`datalogue-api/alembic/versions/z6a7b8c9d0e1_add_app_user.py`、`datalogue-api/tests/test_auth.py`、`datalogue-web/src/api/client.js`、`datalogue-web/src/auth/auth-context.jsx`、`datalogue-web/src/components/login-page.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：后端新增 `app_user` 用户模型与 Alembic 迁移，落地 `/api/auth/register|login|refresh|logout|me` 认证接口、Bearer 鉴权依赖与启动管理员引导；配置新增 token/cookie/cors 认证参数并在主应用切换到可携带 Cookie 的白名单 CORS。前端新增 AuthContext、登录页、路由守卫、顶部退出入口，并把 API 客户端改为自动注入 Access Token、401 静默 refresh 后重放请求。
+- 验证方式：执行 `cd datalogue-api && pytest tests/test_auth.py -q` 结果 `3 passed`；执行 `cd datalogue-web && npm run lint` 结果 `0 errors, 14 warnings`（均为历史告警）；执行 `cd datalogue-web && npm run build` 构建通过。
+- 残留风险：业务路由尚未全面接入 `get_current_user` 强制鉴权（当前先完成认证能力与前端登录闭环）；`BOOTSTRAP_ADMIN_PASSWORD`、`SECRET_KEY` 仍需部署环境变量覆盖；迁移文件已新增但生产环境需手动执行 `alembic upgrade head`。
+
+### 2026-07-09 15:08 · 登录页视觉升级（现代双栏）
+
+- 涉及文件：`datalogue-web/src/components/login-page.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：登录页由单卡片升级为双栏布局（左侧品牌价值展示 + 右侧登录表单卡片），新增分层背景光晕、玻璃感容器、表单按钮视觉强化与移动端响应式适配；保持现有 Ant Design 技术栈与登录逻辑不变。
+- 验证方式：执行 `cd datalogue-web && npm run lint` 与 `cd datalogue-web && npm run build` 均通过（lint 仅保留仓库既有 warnings，无新增 errors）。
+- 残留风险：当前仅完成视觉升级，未接入品牌插画或动态运营素材；如需进一步品牌化，可追加自定义 SVG 背景和轻量入场动画。
+
+### 2026-07-09 17:05 · Report Worker 智能报告闭环
+
+- 完成时间：2026-07-09 17:05。
+- 功能名称：Report Worker 智能报告闭环。
+- 涉及文件：`datalogue-api/app/domains/query_execution/report_input.py`、`datalogue-api/app/domains/agent_team/worker_identity.py`、`datalogue-api/app/runtime/engine/tools.py`、`datalogue-api/app/runtime/engine/registry.py`、`datalogue-api/app/prompts/agent_team.py`、`datalogue-api/app/domains/bi/toolkit/atomic.py`、`datalogue-api/app/domains/bi/agent/native_handoff.py`、`datalogue-api/conf/report_worker_permissions.json`、`datalogue-api/conf/bi_worker_permissions.json`、`datalogue-web/src/assistant-ui/DatalogueMarkdown.jsx`、`datalogue-web/src/assistant-ui/DatalogueChartBlocks.jsx`、`datalogue-web/src/styles.css`、`datalogue-web/package.json`、`datalogue-web/package-lock.json` 及相关测试。
+- 关键改动：新增 `report_input` 安全投影，三处 `sql_result` 写入点统一写入 `report_input_meta` 与裁剪后的用户可见 rows/columns；新增 `datalogue_get_artifact_report_input` 工具，只按 artifact_ref 读取并校验报告输入，不查业务库、不接收 SQL/schema/raw rows；新增 `resolve_team_worker_type`，按 team agent system_prompt marker fail-closed 区分 BI/Report worker，Report Worker 只拿报告读取工具并使用独立权限上下文；Leader prompt 支持 BI 成功后按用户语义和结果复杂度自主决策是否生成报告，Report Worker 输出中文 Markdown，并允许 Mermaid/ECharts 图表；前端 Markdown fallback 与 Streamdown 主路径都支持 `mermaid`/`echarts` fenced code block，ECharts 仅接受纯 JSON option 并拒绝原型污染键。
+- 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_report_worker_artifact_input.py datalogue-api/tests/test_agentscope_service_tools.py datalogue-api/tests/test_agentscope_static_agent_registry.py -q`，结果 `33 passed`；执行 `pytest datalogue-api/tests/test_artifact_api.py datalogue-api/tests/test_bi_lead_agent_native_handoff.py datalogue-api/tests/test_agentscope_service_worker_logging.py -q`，结果 `53 passed`；执行 `cd datalogue-web && npm run test -- DatalogueMessage.test.jsx`，结果 `6 passed`；执行 `npm run lint`，结果 0 errors、13 个既有 warnings；执行 `npm run build` 成功，保留现有大 chunk warning；调用 Claude Code review，结论为无阻塞问题，并按建议补强了 report input 边界测试与 `create_query_artifact` 链路。
+- 残留风险或后续事项：本轮不新增报告持久化表、不新增报告文件 artifact 类型、不新增 Workbench 报告面板；Leader 何时派生 Report Worker 仍依赖模型遵循 prompt，后续如需更强确定性，可在 Agent Team runner 层增加成功查询后的策略性 report worker 创建闸门。
+
+### 2026-07-09 18:45 · AgentScope runtime 新目录边界 facade
+
+- 完成时间：2026-07-09 18:45。
+- 功能名称：AgentScope runtime 新目录边界 facade。
+- 涉及文件：`datalogue-api/app/agentscope_runtime/__init__.py`、`datalogue-api/app/agentscope_runtime/app_factory.py`、`datalogue-api/app/agentscope_runtime/client.py`、`datalogue-api/app/agentscope_runtime/credentials.py`、`datalogue-api/app/agentscope_runtime/otel_setup.py`、`datalogue-api/app/agentscope_runtime/projection.py`、`datalogue-api/app/agentscope_runtime/registry.py`、`datalogue-api/app/agentscope_runtime/runner.py`、`datalogue-api/app/agentscope_runtime/worker_logging.py`、`datalogue-api/tests/test_directory_facades.py`、`datalogue-api/tests/test_agentscope_service_imports.py`、`.omx/artifacts/ask-claude-g049-agentscope-runtime-facade-20260709T184426+0800.md`、`.codex/project-memory.md`。
+- 关键改动：新增 `app.agentscope_runtime` 作为 AgentScope Service runtime 的稳定导入边界，按 facade-first 方式 re-export Service 嵌入、runner、registry、projection、OTel、worker logging、client 与 credentials，不搬移旧 `app.runtime.engine` 实现、不切换调用方、不暴露 BI worker 工具链顶层入口；补目录治理测试确认新 facade 与旧实现对象同源，并断言 `build_datalogue_extra_agent_tools` 不进入新包顶层 API。
+- 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_directory_facades.py datalogue-api/tests/test_agentscope_service_imports.py datalogue-api/tests/test_agentscope_service_factory.py datalogue-api/tests/test_agentscope_static_agent_registry.py datalogue-api/tests/test_agentscope_service_worker_logging.py datalogue-api/tests/test_agentscope_service_projection.py -q`，结果 `66 passed, 3 warnings`；调用 Claude Code review，结论为 `APPROVE`、无阻塞问题，并按非阻塞建议补齐 worker logging 顶层导出。
+- 残留风险或后续事项：本轮只建立新目录 facade 边界，旧 `app.runtime.engine` 仍保留为真实实现源；后续若推进调用方迁移或物理文件搬迁，需要继续分批改导入、保持旧路径兼容，并用 AgentScope 主链与 BI/Report Worker 回归测试证明业务语义不漂移。
+
+### 2026-07-09 19:20 · BI 业务域目录边界收口
+
+- 完成时间：2026-07-09 19:20。
+- 功能名称：BI 业务域目录边界收口。
+- 涉及文件：`datalogue-api/app/domains/bi/__init__.py`、`datalogue-api/app/domains/bi/agent_services.py`、`datalogue-api/app/domains/bi/worker_query.py`、`datalogue-api/app/domains/bi/skill/__init__.py`、`datalogue-api/app/domains/bi/toolkit/__init__.py`、`datalogue-api/app/domains/bi/worker/__init__.py`、`datalogue-api/app/domains/bi/toolchain/__init__.py`、`datalogue-api/tests/test_directory_facades.py`、`.codex/project-memory.md`。
+- 关键改动：将 `domains/bi` 根包和兼容聚合入口的注释从“旧 app/bi / app/agents/bi_agent 迁移中”修正为当前 canonical domain source；明确 `agent`、`skill`、`toolkit`、`worker` 四类边界分别承载 BI 应用服务、Dataset Query Skill、受控原子工具、BI Worker QueryPlan 契约/运行时/上下文；删除未使用的空 `toolchain` 包入口；新增目录边界测试，确认旧 `app/bi` 与 `app/agents/bi_agent` 不存在，`domains/bi` 不包含非 BI 源码入口，并验证 Skill、Toolkit、QueryPlan 契约、runtime context 的真实实现源都在 `app.domains.bi` 下。
+- 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_directory_facades.py datalogue-api/tests/test_bi_lead_agent_capabilities.py datalogue-api/tests/test_bi_lead_agent_services.py datalogue-api/tests/test_bi_lead_agent_handoff_port.py datalogue-api/tests/test_bi_worker_progressive_context_contracts.py datalogue-api/tests/test_bi_worker_query_validator.py -q`，结果 `60 passed, 3 warnings`；执行 `pytest datalogue-api/tests/test_bi_worker_query_runtime.py datalogue-api/tests/test_bi_worker_progressive_context_tools.py datalogue-api/tests/test_bi_worker_progressive_context_e2e.py datalogue-api/tests/test_bi_lead_agent_native_handoff.py datalogue-api/tests/test_agentscope_service_tools.py datalogue-api/tests/test_report_worker_artifact_input.py -q`，结果 `80 passed, 75 warnings`。
+- 残留风险或后续事项：本轮只收口 BI 领域目录边界和注释，不迁移调用方到新 facade、不移动 `runtime.engine.tools`，后续 G053/G054 再按测试覆盖决定是否切调用方或继续物理整理。
+
+### 2026-07-09 19:25 · Agent Team 业务域边界 facade 收口
+
+- 完成时间：2026-07-09 19:25。
+- 功能名称：Agent Team 业务域边界 facade 收口。
+- 涉及文件：`datalogue-api/app/domains/agent_team/__init__.py`、`datalogue-api/app/domains/agent_team/contracts.py`、`datalogue-api/app/domains/agent_team/event_projection.py`、`datalogue-api/app/domains/agent_team/retry_actions.py`、`datalogue-api/app/domains/agent_team/task_runtime.py`、`datalogue-api/app/domains/agent_team/workbench_view.py`、`datalogue-api/app/api/agent_team.py`、`datalogue-api/app/api/workbench.py`、`datalogue-api/app/runtime/agent_team_runtime.py`、`datalogue-api/app/domains/workbench/actions.py`、`datalogue-api/app/core/schemas/agentscope_workbench.py`、`datalogue-api/app/domains/agent_team/registry.py`、`datalogue-api/app/domains/agent_team/runner.py`、`datalogue-api/app/domains/agent_team/projection.py`、`datalogue-api/app/domains/agent_team/team_templates.py`、`datalogue-api/app/agentscope_runtime/__init__.py`、`datalogue-api/tests/test_directory_facades.py`、`.codex/project-memory.md`。
+- 关键改动：新增 `contracts`、`event_projection`、`retry_actions`、`task_runtime`、`workbench_view` 五个 canonical facade，明确 `domains/agent_team` 只承载 Datalogue 对外 task 真相源、Workbench view/retry action 和 AgentScope event 到 Datalogue event envelope 的投影；API、Workbench、AgentTeamTaskRuntime 与 Workbench DTO 调用方切到新 facade；旧 `registry`、`runner`、`projection`、`team_templates` 继续作为兼容门面并在注释中标清 AgentScope runtime 入口归 `app.agentscope_runtime`，其中 `team_templates` 保持直连旧实现以避免旧 app_factory 启动链反向导入新包造成循环。
+- 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m py_compile datalogue-api/app/agentscope_runtime/__init__.py datalogue-api/app/domains/agent_team/__init__.py datalogue-api/app/domains/agent_team/contracts.py datalogue-api/app/domains/agent_team/event_projection.py datalogue-api/app/domains/agent_team/retry_actions.py datalogue-api/app/domains/agent_team/task_runtime.py datalogue-api/app/domains/agent_team/workbench_view.py datalogue-api/app/api/agent_team.py datalogue-api/app/api/workbench.py datalogue-api/app/runtime/agent_team_runtime.py datalogue-api/app/domains/workbench/actions.py datalogue-api/app/core/schemas/agentscope_workbench.py datalogue-api/app/domains/agent_team/registry.py datalogue-api/app/domains/agent_team/runner.py datalogue-api/app/domains/agent_team/projection.py datalogue-api/app/domains/agent_team/team_templates.py datalogue-api/tests/test_directory_facades.py` 通过；执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_directory_facades.py datalogue-api/tests/test_agent_team_task_contracts.py datalogue-api/tests/test_agent_team_task_runtime.py datalogue-api/tests/test_agentscope_agent_team_task_runner.py datalogue-api/tests/test_workbench_agent_team_retry_writer.py datalogue-api/tests/test_workbench_agent_team_task_actions.py datalogue-api/tests/test_workbench_view_api.py datalogue-api/tests/test_agentscope_service_imports.py datalogue-api/tests/test_agentscope_service_worker_logging.py -q`，结果 `81 passed, 3 warnings`；执行 `git diff --check` 通过；调用 Claude Code Review，产物 `.omx/artifacts/ask-claude-g051-domains-agent-team-boundary-20260709T191834+0800.md`，结论 `APPROVE`、无阻塞问题。
+- 残留风险或后续事项：本轮是 facade-first 边界收口，未物理迁移旧 `worker_logging`、`task_context`、`progress_bridge` 等兼容文件；后续 G054/G055 迁移调用方或做物理目录整理时，需要继续验证 AgentScope Service 启动链、Workbench retry 和用户可见 event envelope 不漂移。
+>>>>>>> main

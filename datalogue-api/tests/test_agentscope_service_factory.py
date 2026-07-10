@@ -21,10 +21,11 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 
 
-def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, tmp_path):
+def test_create_embedded_runtime_app_wires_redis_and_workspace(monkeypatch, tmp_path):
     """factory 只负责装配官方 AgentScope 基础组件，不在构造阶段连接 Redis。"""
 
-    from app.agentscope_service import app_factory
+    from app.runtime.engine import app_factory
+    from app.runtime.engine.registry import build_datalogue_worker_template_specs
 
     calls: dict[str, object] = {}
 
@@ -60,7 +61,7 @@ def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, t
         AGENTSCOPE_WORKSPACE_TTL_SECONDS=120.5,
     )
 
-    app = app_factory.create_embedded_agentscope_app(settings)
+    app = app_factory.create_embedded_runtime_app(settings)
 
     assert app.title == "fake-agentscope"
     assert calls["storage_kwargs"] == {
@@ -92,11 +93,9 @@ def test_create_embedded_agentscope_app_wires_redis_and_workspace(monkeypatch, t
     ]
     assert callable(create_app_kwargs["extra_agent_middlewares"])
     assert callable(create_app_kwargs["extra_agent_tools"])
+    # factory 的职责是透传 registry 当前暴露的 worker 模板；精确 worker 快照由 static registry 测试兜底。
     assert [template.type for template in create_app_kwargs["custom_subagent_templates"]] == [
-        "bi",
-        "report",
-        "python",
-        "audit",
+        spec.worker_type for spec in build_datalogue_worker_template_specs()
     ]
 
 
@@ -107,14 +106,14 @@ def test_main_mounts_agentscope_service_only_when_enabled(monkeypatch):
 
     mounted: dict[str, object] = {}
 
-    def fake_create_embedded_agentscope_app(settings):
+    def fake_create_embedded_runtime_app(settings):
         mounted["settings"] = settings
         return FastAPI(title="fake-agentscope")
 
     monkeypatch.setattr(
         main_module,
-        "create_embedded_agentscope_app",
-        fake_create_embedded_agentscope_app,
+        "create_embedded_runtime_app",
+        fake_create_embedded_runtime_app,
         raising=False,
     )
 
@@ -146,14 +145,16 @@ def test_main_lifespan_enters_mounted_agentscope_service_lifespan(monkeypatch):
         yield
         events.append("child-exit")
 
-    def fake_create_embedded_agentscope_app(_settings):
+    def fake_create_embedded_runtime_app(_settings):
         return FastAPI(title="fake-agentscope", lifespan=fake_child_lifespan)
 
     monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)
+    # 该用例只验证父应用显式进入 AgentScope 子应用 lifespan，不能顺带访问真实业务库。
+    monkeypatch.setattr(main_module, "_bootstrap_admin_if_needed", lambda: None)
     monkeypatch.setattr(
         main_module,
-        "create_embedded_agentscope_app",
-        fake_create_embedded_agentscope_app,
+        "create_embedded_runtime_app",
+        fake_create_embedded_runtime_app,
         raising=False,
     )
 
@@ -185,24 +186,26 @@ def test_main_lifespan_initializes_agentscope_otel_before_child_lifespan(monkeyp
         yield
         events.append("child-exit")
 
-    def fake_create_embedded_agentscope_app(_settings):
+    def fake_create_embedded_runtime_app(_settings):
         return FastAPI(title="fake-agentscope", lifespan=fake_child_lifespan)
 
-    def fake_setup_agentscope_tracing(settings):
+    def fake_setup_runtime_tracing(settings):
         assert settings is main_module.settings
         events.append("otel")
 
     monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)
+    # 该用例只验证 OTel 与子应用 lifespan 的顺序，管理员引导由认证测试单独覆盖。
+    monkeypatch.setattr(main_module, "_bootstrap_admin_if_needed", lambda: None)
     monkeypatch.setattr(
         main_module,
-        "create_embedded_agentscope_app",
-        fake_create_embedded_agentscope_app,
+        "create_embedded_runtime_app",
+        fake_create_embedded_runtime_app,
         raising=False,
     )
     monkeypatch.setattr(
         main_module,
-        "setup_agentscope_tracing",
-        fake_setup_agentscope_tracing,
+        "setup_runtime_tracing",
+        fake_setup_runtime_tracing,
         raising=False,
     )
 

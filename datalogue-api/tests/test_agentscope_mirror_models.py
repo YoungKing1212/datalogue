@@ -1,5 +1,5 @@
 # ============================================================
-# File Name   : test_agentscope_mirror_models.py
+# File Name   : test_runtime_mirror_models.py
 # Description:
 #   C3 AgentScope Workbench 本地镜像表和服务测试。
 #
@@ -16,8 +16,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models.agentscope_workbench import AgentScopeRef
-from app.services.agentscope_mirror import (
+from app.core.models.agentscope_workbench import AgentScopeRef
+from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,
     create_running_assistant_message,
@@ -89,7 +89,7 @@ def test_create_agentscope_session_and_messages(db_session):
     assert ref.relation == "primary"
 
 
-def test_agentscope_mirror_rejects_legacy_thread_writes(db_session):
+def test_runtime_mirror_rejects_legacy_thread_writes(db_session):
     with pytest.raises(ValueError, match="AGENTSCOPE_MIRROR_REQUIRES_AS_THREAD"):
         append_user_message(
             db_session,
@@ -99,7 +99,7 @@ def test_agentscope_mirror_rejects_legacy_thread_writes(db_session):
         )
 
 
-def test_agentscope_mirror_rejects_forbidden_business_payload(db_session):
+def test_runtime_mirror_rejects_forbidden_business_payload(db_session):
     session = create_agentscope_session(
         db_session,
         thread_id="as_33333333-3333-3333-3333-333333333333",
@@ -115,7 +115,7 @@ def test_agentscope_mirror_rejects_forbidden_business_payload(db_session):
         )
 
 
-def test_agentscope_mirror_rejects_forbidden_payload_variants(db_session):
+def test_runtime_mirror_rejects_forbidden_payload_variants(db_session):
     session = create_agentscope_session(
         db_session,
         thread_id="as_44444444-4444-4444-4444-444444444444",

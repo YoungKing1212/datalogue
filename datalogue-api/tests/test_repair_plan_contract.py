@@ -19,12 +19,12 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.repair_plan import (
+from app.core.schemas.repair_plan import (
     RepairAction,
     RepairFailureClass,
     RepairPlan,
 )
-from app.services.repair_plan import (
+from app.domains.query_execution.repair_plan import (
     RepairPlanValidationError,
     classify_sql_failure,
     repair_attempt_limit,

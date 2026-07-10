@@ -48,7 +48,7 @@ async def test_agentscope_service_client_uses_prefixed_rest_paths_and_payloads()
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         session_id = await client.create_session(
@@ -89,7 +89,7 @@ async def test_agentscope_service_client_lists_credential_schemas():
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         schemas = await client.list_credential_schemas()
@@ -119,7 +119,7 @@ async def test_agentscope_service_client_cruds_credentials_with_official_paths()
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         credentials = await client.list_credentials()
@@ -158,7 +158,7 @@ async def test_agentscope_service_client_lists_models_by_provider():
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         models = await client.list_models(provider="openai_credential")
@@ -194,7 +194,7 @@ async def test_agentscope_service_client_upserts_openai_credential_with_fixed_id
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         credential_id = await client.upsert_openai_credential(
@@ -234,7 +234,7 @@ async def test_agentscope_service_client_streams_session_sse_data_frames():
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope/", http=http)
         events = [
@@ -273,7 +273,7 @@ async def test_agentscope_service_client_ensures_leader_agent_via_official_agent
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         agent_id = await client.ensure_agent(
@@ -297,7 +297,7 @@ async def test_agentscope_service_client_create_session_error_includes_response_
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
@@ -330,7 +330,7 @@ async def test_agentscope_service_client_reuses_existing_leader_agent():
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        from app.agentscope_service.client import AgentScopeServiceClient
+        from app.runtime.engine.client import AgentScopeServiceClient
 
         client = AgentScopeServiceClient(base_url="http://test/agentscope", http=http)
         agent_id = await client.ensure_agent(

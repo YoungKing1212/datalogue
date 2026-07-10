@@ -1,6 +1,7 @@
 import React, { Fragment } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './icons';
+import { useAuth } from '../auth/auth-context';
 
 // Sidebar — restructured to match design doc IA: 4 groups.
 // "最近会话"区已迁出至 chat 页面的独立 ThreadList 左列。
@@ -8,7 +9,9 @@ import { Icon } from './icons';
 function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const path = location.pathname;
+  const canManageUsers = user?.role === 'admin' || user?.is_superuser;
 
   const isActive = (id) => {
     if (id === 'home') return path === '/';
@@ -48,6 +51,7 @@ function Sidebar() {
       label: '系统管理',
       items: [
         { id: 'settings',    label: '系统设置', icon: 'cog' },
+        ...(canManageUsers ? [{ id: 'users', label: '用户管理', icon: 'user' }] : []),
       ],
     },
   ];

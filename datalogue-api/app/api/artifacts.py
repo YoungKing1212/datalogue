@@ -23,8 +23,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.services.artifact_store import ArtifactStore
-from app.services.repair_plan import sanitize_repair_plan_artifact_payload
+from app.domains.query_execution.artifact_store import ArtifactStore
+from app.domains.query_execution.repair_plan import sanitize_repair_plan_artifact_payload
 
 router = APIRouter()
 

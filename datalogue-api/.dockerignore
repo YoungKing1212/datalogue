@@ -1,11 +1,82 @@
+# ── 版本控制 ───────────────────────────────────────────
+.git
+.gitattributes
+.gitignore
+.gitmodules
+
+# ── 环境与密钥 ─────────────────────────────────────────
 .env
-.venv
-.pytest_cache
-.ruff_cache
-.zread
-__pycache__
-*.pyc
-logs
-data
-htmlcov
+.env.*
+*.key
+*.pem
+*.crt
+*.cert
+
+# ── Python 缓存 ────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.so
+*.egg
+
+# ── 虚拟环境 ───────────────────────────────────────────
+.venv/
+venv/
+env/
+.tox/
+
+# ── 测试与覆盖率 ───────────────────────────────────────
+.pytest_cache/
 .coverage
+.coverage.*
+htmlcov/
+tests/
+*.test.py
+
+# ── Lint / 类型检查缓存 ────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+.black_cache/
+.hypothesis/
+
+# ── IDE ─────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.vscode-server/
+
+# ── macOS ───────────────────────────────────────────────
+.DS_Store
+*.DS_Store?
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# ── 日志与运行时数据 ───────────────────────────────────
+logs/
+data/
+*.log
+*.pid
+
+# ── Docker 构建文件 ────────────────────────────────────
+Dockerfile
+docker-compose*.yml
+.dockerignore
+scripts/
+Makefile
+
+# ── 文档 ───────────────────────────────────────────────
+docs/
+*.md
+
+# ── 临时文件 ───────────────────────────────────────────
+.zread
+tmp/
+temp/
+*.bak
+*.tmp

@@ -10,6 +10,7 @@ const PROGRESSIVE_EVENT_LABELS = {
   bi_worker_repair_request: '查询修复',
 };
 const PROGRESSIVE_INTERNAL_TEXT_PATTERN = /[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*|\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|raw_error|raw_rows?|schema|filters?|selects?|entities|relationships/i;
+const SAFE_CONTRACT_ERROR_PATTERN = /^[a-z_]+:[A-Za-z0-9_.]+$/;
 
 function safeText(value, fallback = '') {
   if (value == null) return fallback;
@@ -23,6 +24,8 @@ function safeAgentName(value) {
 }
 
 function safeProgressiveSummary(payload = {}, label = '执行进展') {
+  const repairSummary = safeRepairRequestSummary(payload);
+  if (repairSummary) return repairSummary;
   const candidates = [payload.summary, payload.safe_reason, label];
   for (const value of candidates) {
     if (value == null) continue;
@@ -31,6 +34,22 @@ function safeProgressiveSummary(payload = {}, label = '执行进展') {
     return text.slice(0, 160);
   }
   return label;
+}
+
+function safeRepairRequestSummary(payload = {}) {
+  if (payload.datalogue_event_type !== 'bi_worker_repair_request') return '';
+  const errorSummary = Array.isArray(payload.validation_error_summary)
+    ? payload.validation_error_summary
+    : [];
+  const safeItems = errorSummary
+    .map((item) => String(item || '').trim())
+    // validation_error_summary 由后端生成，只包含错误类型和契约路径；这里再做一次白名单，
+    // 避免把 SQL、schema、raw rows 或模型原始输入误投到用户可见 timeline。
+    .filter((item) => item && SAFE_CONTRACT_ERROR_PATTERN.test(item));
+  if (!safeItems.length) return '';
+  const visibleItems = safeItems.slice(0, 3);
+  const moreText = safeItems.length > visibleItems.length ? ` 等 ${safeItems.length} 项` : '';
+  return `Query Plan 契约错误：${visibleItems.join('；')}${moreText}`.slice(0, 220);
 }
 
 function safeTiming(source = {}) {
@@ -89,6 +108,21 @@ function safeToolCalls(payload = {}) {
     name: safeText(call.name || call.tool_name || call.toolName),
     state: safeText(call.state || call.status),
   })).filter((call) => call.id || call.name || call.state);
+}
+
+function safeInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
+function rawThinkingDelta(payload = {}) {
+  const debugRaw = payload.debug_raw === true || payload.debugRaw === true;
+  if (!debugRaw) return null;
+  const reasoningKind = payload.reasoning_kind || payload.reasoningKind || '';
+  if (reasoningKind !== 'bi_worker_raw_thinking_delta') return null;
+  const raw = payload.raw_delta ?? payload.rawDelta;
+  if (raw == null) return null;
+  return String(raw).slice(0, 4000);
 }
 
 function lifecycleStatus(eventType, payload = {}) {
@@ -183,6 +217,7 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
     const agentRole = safeText(payload.agent_role || payload.agentRole) || 'agent';
     const agentName = safeText(payload.agent_name || payload.agentName || payload.agent || payload.worker_agent_name)
       || (agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
+    const rawDelta = rawThinkingDelta(payload);
     return {
       type: 'agent_progress',
       kind: 'agent_progress',
@@ -196,6 +231,12 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
       replyId: safeText(payload.reply_id || payload.replyId) || null,
       workerSessionId: safeText(payload.worker_session_id || payload.workerSessionId) || null,
       workerAgentId: safeText(payload.worker_agent_id || payload.workerAgentId) || null,
+      reasoningKind: safeText(payload.reasoning_kind || payload.reasoningKind) || null,
+      streamGroupId: safeText(payload.stream_group_id || payload.streamGroupId) || null,
+      sequence: safeInteger(payload.sequence),
+      blockId: safeText(payload.block_id || payload.blockId) || null,
+      debugRaw: rawDelta != null ? true : undefined,
+      rawDelta: rawDelta ?? undefined,
       timing: safeTiming(payload),
       ...baseEvent(streamEvent, envelope),
     };

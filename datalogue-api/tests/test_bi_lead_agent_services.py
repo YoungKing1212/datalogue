@@ -13,12 +13,12 @@
 
 import pytest
 
-from app.models.bi_agent import BIAgentHandoff, BIAgentRun
-from app.schemas.bi_agent import BIAgentHandoffResult
-from app.schemas.bi_agent import ConfirmBIAgentRunRequest, DatasetCapabilitySummary
-from app.agents.bi_agent.confirmation_service import BIAgentConfirmationService
-from app.agents.bi_agent.handoff_service import BIAgentHandoffService
-from app.agents.bi_agent.run_service import BIAgentRunService
+from app.core.models.bi_agent import BIAgentHandoff, BIAgentRun
+from app.core.schemas.bi_agent import BIAgentHandoffResult
+from app.core.schemas.bi_agent import ConfirmBIAgentRunRequest, DatasetCapabilitySummary
+from app.domains.bi.agent.confirmation_service import BIAgentConfirmationService
+from app.domains.bi.agent.handoff_service import BIAgentHandoffService
+from app.domains.bi.agent.run_service import BIAgentRunService
 
 
 def _confirmation_request(
@@ -256,7 +256,7 @@ def test_get_response_returns_safe_confirmation_and_handoff_dto(db_session, samp
     handoff = BIAgentHandoff(
         run_id=run.id,
         handoff_id="handoff-bi-k1-safe",
-        parent_agent="bi_agent",
+        parent_agent="bi_worker",
         child_agent="dataset_agent",
         child_run_id="dataset-run-bi-k1-safe",
         dataset_id=sample_dataset.id,
@@ -284,7 +284,7 @@ def test_get_response_returns_safe_confirmation_and_handoff_dto(db_session, samp
     assert payload["confirmation_id"] == confirmation.id
     assert payload["handoff"] == {
         "handoff_id": "handoff-bi-k1-safe",
-        "parent_agent": "bi_agent",
+        "parent_agent": "bi_worker",
         "child_agent": "dataset_agent",
         "child_run_id": "dataset-run-bi-k1-safe",
         "dataset_id": sample_dataset.id,
@@ -346,7 +346,7 @@ async def test_handoff_service_persists_safe_result_after_approved_confirmation(
     assert saved_run.phase == "summarize_run"
     assert saved_run.status == "completed"
     assert saved_handoff.handoff_id == "handoff-bi-k1-service"
-    assert saved_handoff.parent_agent == "bi_agent"
+    assert saved_handoff.parent_agent == "bi_worker"
     assert saved_handoff.child_agent == "dataset_agent"
     assert saved_handoff.child_run_id == "dataset-run-bi-k1-service"
     assert saved_handoff.dataset_id == dataset_id

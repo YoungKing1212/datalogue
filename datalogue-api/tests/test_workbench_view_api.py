@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
-from app import models
-from app.services.agentscope_mirror import (
+from app.core import models
+from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,
     create_running_assistant_message,
@@ -24,7 +24,7 @@ from app.services.agentscope_mirror import (
     record_agentscope_event,
     record_agentscope_ref,
 )
-from app.services.artifact_store import ArtifactStore
+from app.domains.query_execution.artifact_store import ArtifactStore
 
 
 FORBIDDEN_KEYS = {

@@ -11,9 +11,10 @@
 # Created On  : 2026-07-06
 # ============================================================
 
-from app.agentscope_service.bi_worker_contracts import (
+from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     FieldTarget,
+    JoinKey,
     JoinRequirement,
     QueryDataGraph,
     QueryEntity,
@@ -23,7 +24,7 @@ from app.agentscope_service.bi_worker_contracts import (
     QuerySelect,
     ResultShape,
 )
-from app.agentscope_service.bi_worker_validator import (
+from app.domains.bi.worker.validator import (
     BIWorkerQueryValidator,
     ProgressiveContextState,
 )
@@ -66,6 +67,7 @@ def _plan(
                 join_type="left",
                 required=True,
                 reason="补充订单归属部门",
+                join_keys=[JoinKey(left_field="dept_id", right_field="id")],
             )
         ],
         filters=[
@@ -150,6 +152,23 @@ def test_decoding_select_without_lookup_dependency_needs_more_context():
     assert result.recommended_next_tool == "datalogue_request_schema_slice"
 
 
+def test_display_semantic_without_decoding_does_not_require_lookup_dependency():
+    result = BIWorkerQueryValidator().validate(
+        _plan(
+            department_select=QuerySelect(
+                target=_target("field:departments.name", "name", alias="d"),
+                display_name="部门名称",
+                display_semantic="department_name",
+                requires_decoding=False,
+            )
+        ),
+        _known_context(lookup_dependencies={}),
+    )
+
+    assert result.support_status == "supported"
+    assert result.missing_context == []
+
+
 def test_missing_relationship_after_context_limit_stops_auto_expansion():
     result = BIWorkerQueryValidator().validate(
         _plan(relationship_ref="relationship:orders.region"),
@@ -172,3 +191,40 @@ def test_unknown_asset_and_field_are_reported_as_safe_missing_context():
     assert {"missing_asset", "missing_field"}.issubset(missing_types)
     for item in result.missing_context:
         assert set(item).issubset({"type", "ref", "recommended_next_tool", "focus"})
+
+
+def test_target_with_table_ref_and_field_hits_derived_field_ref():
+    """target.asset_ref 为表级 ref 时,应通过 normalized_field_ref 命中 field_refs。"""
+    plan = BIWorkerQueryPlan(
+        intent="detail_query",
+        question="按表级 ref 查询",
+        result_shape=ResultShape(type="table", grain="日报", limit=10),
+        data_graph=QueryDataGraph(
+            primary_entity=QueryEntity(
+                asset_ref="table:pm_tenant.log",
+                alias="main",
+                role="primary",
+            ),
+            supporting_entities=[],
+        ),
+        selects=[
+            QuerySelect(
+                target=FieldTarget(
+                    asset_ref="table:pm_tenant.log",
+                    alias="main",
+                    field="rzrq",
+                ),
+                display_name="日志日期",
+            )
+        ],
+    )
+    state = ProgressiveContextState(
+        asset_refs={"table:pm_tenant.log"},
+        relationship_refs=set(),
+        field_refs={"table:pm_tenant.log.rzrq"},
+    )
+
+    result = BIWorkerQueryValidator().validate(plan, state)
+
+    assert result.support_status == "supported"
+    assert result.missing_context == []

@@ -22,7 +22,7 @@ from typing import Any
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
-from app import models
+from app.core import models
 
 DRAFT_VERSION = "draft"
 MANUAL_FIELD_KEYS = (

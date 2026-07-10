@@ -24,7 +24,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app import schemas, models
+from app.core import schemas, models
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.services.blueprint_analyzer import (
     analyze_description_for_blueprint,
@@ -41,8 +41,8 @@ from app.services.dataset_manifest import (
     save_manifest_draft,
 )
 from app.services.capability_manifest import build_dataset_capability_manifest
-from app.services.sql_preview import preview_dataset_sql
-from app.utils.query_constraints import normalize_query_constraints
+from app.domains.query_execution.preview import preview_dataset_sql
+from app.domains.query_execution.query_constraints import normalize_query_constraints
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

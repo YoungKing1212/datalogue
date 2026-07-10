@@ -18,8 +18,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
-from app.models.conversation import QueryArtifact
-from app.services.artifact_store import ArtifactStore
+from app.core.models.conversation import QueryArtifact
+from app.domains.query_execution.artifact_store import ArtifactStore
 
 
 @pytest.mark.asyncio
@@ -27,7 +27,7 @@ async def test_dataset_query_executor_commits_artifact_when_it_owns_session(
     monkeypatch,
     tmp_path,
 ):
-    from app.agentscope_service import dataset_query_executor as executor
+    from app.domains.bi.worker import dataset_query as executor
 
     engine = create_engine(
         f"sqlite:///{tmp_path / 'artifact_commit.db'}",

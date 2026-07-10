@@ -53,7 +53,7 @@ class TestConversationAPI:
     def test_conversation_detail_structure(self, client, sample_dataset):
         """验证对话详情返回结构"""
         # 创建对话
-        from app.models.conversation import Conversation, Message
+        from app.core.models.conversation import Conversation, Message
         # 使用 override 的 db_session
         db = None
         for dep in client.app.dependency_overrides.values():

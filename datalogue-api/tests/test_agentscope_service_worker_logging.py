@@ -60,7 +60,7 @@ class FakeStorage:
 async def test_extra_agent_middlewares_attaches_only_to_bi_worker():
     from agentscope.middleware import TracingMiddleware
 
-    from app.agentscope_service.worker_logging import (
+    from app.domains.agent_team.worker_logging import (
         BIWorkerProgressMiddleware,
         LeaderRawDebugMiddleware,
         build_datalogue_extra_agent_middlewares,
@@ -91,7 +91,7 @@ async def test_extra_agent_middlewares_attaches_only_to_bi_worker():
 
 
 def test_event_summary_includes_pending_confirmation_tool_names():
-    from app.agentscope_service.worker_logging import _event_summary
+    from app.domains.agent_team.worker_logging import _event_summary
 
     event = SimpleNamespace(
         type="REQUIRE_USER_CONFIRM",
@@ -122,7 +122,7 @@ async def test_bi_worker_reply_logs_safe_event_chain_without_raw_inputs(monkeypa
         ToolCallStartEvent,
     )
 
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
     middleware = BIWorkerProgressMiddleware(
@@ -157,7 +157,7 @@ async def test_bi_worker_reply_logs_safe_event_chain_without_raw_inputs(monkeypa
         yield ToolCallEndEvent(reply_id="reply-1", tool_call_id="call-1")
         yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
 
-    with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.INFO, logger="app.domains.agent_team.worker_logging"):
         events = [
             event
             async for event in middleware.on_reply(
@@ -191,8 +191,8 @@ async def test_bi_worker_reply_logs_safe_event_chain_without_raw_inputs(monkeypa
 
 @pytest.mark.asyncio
 async def test_bi_worker_reply_publishes_safe_realtime_progress_events():
-    from app.agentscope_service.progress_bridge import agent_progress_subscription
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.progress_bridge import agent_progress_subscription
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     middleware = BIWorkerProgressMiddleware(
         worker_context={
@@ -257,8 +257,225 @@ async def test_bi_worker_reply_publishes_safe_realtime_progress_events():
     assert "查询杨凯2025年日志" not in str(progress_events)
 
 
+@pytest.mark.asyncio
+async def test_bi_worker_thinking_events_publish_safe_reasoning_progress(monkeypatch):
+    from agentscope.event import (
+        ReplyEndEvent,
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+    )
+
+    from app.domains.agent_team.progress_bridge import agent_progress_subscription
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING", "false")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        yield ThinkingBlockDeltaEvent(
+            reply_id="reply-1",
+            block_id="think-1",
+            delta="先分析用户问题，并考虑 SELECT * FROM hidden_schema.raw_rows",
+        )
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
+        yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
+
+    async with agent_progress_subscription(user_id="user-1") as queue:
+        events = [
+            event
+            async for event in middleware.on_reply(
+                agent=agent,
+                input_kwargs={"inputs": "查询杨凯2025年日志"},
+                next_handler=next_handler,
+            )
+        ]
+        progress_events = [queue.get_nowait() for _ in range(queue.qsize())]
+
+    assert [str(event.type) for event in events] == [
+        "REPLY_START",
+        "THINKING_BLOCK_START",
+        "THINKING_BLOCK_DELTA",
+        "THINKING_BLOCK_END",
+        "REPLY_END",
+    ]
+    thinking_payloads = [
+        event["payload"] for event in progress_events if event["payload"]["phase"] == "thinking"
+    ]
+    assert [payload["status"] for payload in thinking_payloads] == ["running", "completed"]
+    assert {payload["reasoning_kind"] for payload in thinking_payloads} == {
+        "bi_worker_thinking_summary"
+    }
+    assert thinking_payloads[0]["summary"] == "正在分析问题与可用数据证据。"
+    assert thinking_payloads[-1]["summary"] == "已完成一段安全推理摘要。"
+    assert thinking_payloads[0]["stream_group_id"] == "agent-worker-thinking:reply-1:think-1"
+    assert [payload["sequence"] for payload in thinking_payloads] == [1, 2]
+    serialized = str(progress_events)
+    assert "先分析用户问题" not in serialized
+    assert "SELECT" not in serialized
+    assert "hidden_schema" not in serialized
+    assert "raw_rows" not in serialized
+    assert "raw_delta" not in serialized
+    assert "查询杨凯2025年日志" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_thinking_debug_flag_streams_raw_delta(monkeypatch):
+    from agentscope.event import (
+        ReplyEndEvent,
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+    )
+
+    from app.domains.agent_team.progress_bridge import agent_progress_subscription
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING", "true")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+    raw_delta = "原始 thinking delta：SELECT * FROM hidden_schema.raw_rows"
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        yield ThinkingBlockDeltaEvent(reply_id="reply-1", block_id="think-1", delta=raw_delta)
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
+        yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
+
+    async with agent_progress_subscription(user_id="user-1") as queue:
+        async for _event in middleware.on_reply(
+            agent=agent,
+            input_kwargs={"inputs": "查询杨凯2025年日志"},
+            next_handler=next_handler,
+        ):
+            pass
+        progress_events = [queue.get_nowait() for _ in range(queue.qsize())]
+
+    raw_payloads = [
+        event["payload"]
+        for event in progress_events
+        if event["payload"].get("reasoning_kind") == "bi_worker_raw_thinking_delta"
+    ]
+    assert len(raw_payloads) == 1
+    assert raw_payloads[0]["debug_raw"] is True
+    assert raw_payloads[0]["raw_delta"] == raw_delta
+    assert raw_payloads[0]["title"] == "BI Worker 调试原文"
+    assert raw_payloads[0]["stream_group_id"] == "agent-worker-thinking:reply-1:think-1"
+    safe_payloads = [
+        event["payload"]
+        for event in progress_events
+        if event["payload"].get("reasoning_kind") == "bi_worker_thinking_summary"
+    ]
+    assert [payload["status"] for payload in safe_payloads] == ["running", "completed"]
+    assert "raw_delta" not in str(safe_payloads)
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_thinking_debug_merges_tokenizer_split_deltas(monkeypatch):
+    """LLM 供应商按 tokenizer 边界切碎的 delta 应先在后端合并到自然停顿再 emit。"""
+
+    from agentscope.event import (
+        ReplyEndEvent,
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+    )
+
+    from app.domains.agent_team.progress_bridge import agent_progress_subscription
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
+
+    monkeypatch.setenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING", "true")
+    middleware = BIWorkerProgressMiddleware(
+        worker_context={
+            "user_id": "user-1",
+            "agent_id": "worker-bi-1",
+            "agent_name": "bi-worker",
+            "session_id": "session-bi-1",
+        },
+    )
+    agent = SimpleNamespace(name="bi-worker")
+
+    # 前两段没有触发 flush 的字符，应该被缓冲；第三段以句号收尾，触发一次 emit。
+    # 结束事件负责兜底 flush 掉最后一段无标点的 tail。
+    fragments = ["plan_task_d", "aily_record ", "202", "5 finished. ", "tail"]
+
+    async def next_handler(**_kwargs):
+        yield ReplyStartEvent(session_id="session-bi-1", reply_id="reply-1", name="bi-worker")
+        yield ThinkingBlockStartEvent(reply_id="reply-1", block_id="think-1")
+        for frag in fragments:
+            yield ThinkingBlockDeltaEvent(reply_id="reply-1", block_id="think-1", delta=frag)
+        yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
+        yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
+
+    async with agent_progress_subscription(user_id="user-1") as queue:
+        async for _event in middleware.on_reply(
+            agent=agent,
+            input_kwargs={"inputs": "查询杨凯2025年日志"},
+            next_handler=next_handler,
+        ):
+            pass
+        progress_events = [queue.get_nowait() for _ in range(queue.qsize())]
+
+    raw_payloads = [
+        event["payload"]
+        for event in progress_events
+        if event["payload"].get("reasoning_kind") == "bi_worker_raw_thinking_delta"
+    ]
+    # 期望三次 emit：前两段合并到 `aily_record ` 末尾空格触发 flush；`202`+`5 finished. `
+    # 空格再触发；`tail` 走 end 兜底。所有词根 identifier / 数字都不再被拆开。
+    raw_deltas = [payload["raw_delta"] for payload in raw_payloads]
+    assert raw_deltas == [
+        "plan_task_daily_record ",
+        "2025 finished. ",
+        "tail",
+    ]
+    assert "plan_task_d aily_record" not in "".join(raw_deltas)
+    for payload in raw_payloads:
+        assert payload["debug_raw"] is True
+        assert payload["stream_group_id"] == "agent-worker-thinking:reply-1:think-1"
+
+
+def test_bi_worker_thinking_debug_flag_reads_settings_when_env_not_exported(monkeypatch, tmp_path):
+    """写在 .env 但未导出到 os.environ 时，也要能开启前端 raw delta 调试通道。"""
+    from app.domains.agent_team.worker_logging import _debug_stream_raw_thinking_enabled
+    from app.core.config import get_settings
+
+    monkeypatch.delenv("DATALOGUE_DEBUG_STREAM_RAW_THINKING", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "DATALOGUE_DEBUG_STREAM_RAW_THINKING=true\n",
+        encoding="utf-8",
+    )
+    get_settings.cache_clear()
+    try:
+        assert _debug_stream_raw_thinking_enabled() is True
+    finally:
+        get_settings.cache_clear()
+
+
 def test_summarize_tool_progress_maps_progressive_bi_tools_to_safe_summaries():
-    from app.agentscope_service.worker_logging import summarize_tool_progress
+    from app.domains.agent_team.worker_logging import summarize_tool_progress
 
     assert summarize_tool_progress("datalogue_prepare_query_context") == {
         "summary": "BI Worker 正在准备查询上下文。"
@@ -276,7 +493,7 @@ def test_summarize_tool_progress_maps_progressive_bi_tools_to_safe_summaries():
 
 @pytest.mark.asyncio
 async def test_bi_worker_progress_middleware_does_not_own_model_call_logging(monkeypatch, caplog):
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
     middleware = BIWorkerProgressMiddleware(
@@ -289,7 +506,7 @@ async def test_bi_worker_progress_middleware_does_not_own_model_call_logging(mon
     )
     agent = SimpleNamespace(name="bi-worker")
 
-    with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.INFO, logger="app.domains.agent_team.worker_logging"):
         assert "on_model_call" not in type(middleware).__dict__
         assert agent.name == "bi-worker"
 
@@ -300,7 +517,7 @@ async def test_bi_worker_progress_middleware_does_not_own_model_call_logging(mon
 
 @pytest.mark.asyncio
 async def test_bi_worker_event_log_includes_model_call_token_usage(caplog):
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     middleware = BIWorkerProgressMiddleware(
         worker_context={
@@ -327,7 +544,7 @@ async def test_bi_worker_event_log_includes_model_call_token_usage(caplog):
             output_tokens=34,
         )
 
-    with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.INFO, logger="app.domains.agent_team.worker_logging"):
         events = [
             event
             async for event in middleware.on_reply(
@@ -352,7 +569,7 @@ async def test_bi_worker_event_log_includes_model_call_token_usage(caplog):
 async def test_bi_worker_raw_debug_log_requires_debug_flag(monkeypatch, caplog):
     from agentscope.event import ReplyStartEvent, ThinkingBlockDeltaEvent, ThinkingBlockStartEvent
 
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
     middleware = BIWorkerProgressMiddleware(
@@ -374,7 +591,7 @@ async def test_bi_worker_raw_debug_log_requires_debug_flag(monkeypatch, caplog):
             delta="这是模型原始 thinking delta",
         )
 
-    with caplog.at_level(logging.DEBUG, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.DEBUG, logger="app.domains.agent_team.worker_logging"):
         async for _event in middleware.on_reply(
             agent=agent,
             input_kwargs={"inputs": "敏感问题不应进入日志"},
@@ -388,7 +605,9 @@ async def test_bi_worker_raw_debug_log_requires_debug_flag(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug_level(monkeypatch, caplog):
+async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug_level(
+    monkeypatch, caplog
+):
     from agentscope.event import (
         ReplyStartEvent,
         TextBlockDeltaEvent,
@@ -406,7 +625,7 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
     )
     from agentscope.message import ToolResultState
 
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
     middleware = BIWorkerProgressMiddleware(
@@ -468,9 +687,11 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
             tool_call_id="call-1",
             delta='{"status":"completed","rows":[{"name":"原始出参"}]}',
         )
-        yield ToolResultEndEvent(reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS)
+        yield ToolResultEndEvent(
+            reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS
+        )
 
-    with caplog.at_level(logging.DEBUG, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.DEBUG, logger="app.domains.agent_team.worker_logging"):
         async for _event in middleware.on_reply(
             agent=agent,
             input_kwargs={"inputs": "敏感问题只允许 raw debug 时按 delta 输出"},
@@ -483,7 +704,9 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
     assert "[agentscope.bi_worker.raw_tool_io]" not in logs
     assert "[agentscope.bi_worker.raw_blocks]" not in logs
     assert "[agentscope.bi_worker.raw_delta]" not in logs
-    raw_line = next(line for line in logs.splitlines() if "[agentscope.bi_worker.raw_debug]" in line)
+    raw_line = next(
+        line for line in logs.splitlines() if "[agentscope.bi_worker.raw_debug]" in line
+    )
     assert '"delta":' not in logs
     assert '"timeline"' in raw_line
     assert '"step": 1' in raw_line
@@ -509,16 +732,23 @@ async def test_bi_worker_raw_debug_log_prints_thinking_text_and_tool_io_at_debug
 
 @pytest.mark.asyncio
 async def test_leader_raw_debug_log_prints_thinking_when_debug_enabled(monkeypatch, caplog):
-    from agentscope.event import ReplyStartEvent, ThinkingBlockDeltaEvent, ThinkingBlockEndEvent, ThinkingBlockStartEvent
+    from agentscope.event import (
+        ReplyStartEvent,
+        ThinkingBlockDeltaEvent,
+        ThinkingBlockEndEvent,
+        ThinkingBlockStartEvent,
+    )
 
-    from app.agentscope_service.worker_logging import LeaderRawDebugMiddleware
+    from app.domains.agent_team.worker_logging import LeaderRawDebugMiddleware
 
     monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
     middleware = LeaderRawDebugMiddleware()
     agent = SimpleNamespace(name="Datalogue Agent Team Leader")
 
     async def next_handler(**_kwargs):
-        yield ReplyStartEvent(session_id="session-leader-1", reply_id="reply-leader-1", name="leader")
+        yield ReplyStartEvent(
+            session_id="session-leader-1", reply_id="reply-leader-1", name="leader"
+        )
         yield ThinkingBlockStartEvent(reply_id="reply-leader-1", block_id="think-leader-1")
         yield ThinkingBlockDeltaEvent(
             reply_id="reply-leader-1",
@@ -527,7 +757,7 @@ async def test_leader_raw_debug_log_prints_thinking_when_debug_enabled(monkeypat
         )
         yield ThinkingBlockEndEvent(reply_id="reply-leader-1", block_id="think-leader-1")
 
-    with caplog.at_level(logging.DEBUG, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.DEBUG, logger="app.domains.agent_team.worker_logging"):
         async for _event in middleware.on_reply(
             agent=agent,
             input_kwargs={"inputs": "用户原始问题不直接记录"},
@@ -546,7 +776,7 @@ def test_raw_debug_blocks_outputs_timeline_in_msg_content_order():
     """timeline 按 msg.content 原始顺序输出全部 block。"""
     from types import SimpleNamespace
 
-    from app.agentscope_service.worker_logging import _raw_debug_blocks_from_msg
+    from app.domains.agent_team.worker_logging import _raw_debug_blocks_from_msg
 
     msg = SimpleNamespace(
         content=[
@@ -554,7 +784,9 @@ def test_raw_debug_blocks_outputs_timeline_in_msg_content_order():
             SimpleNamespace(type="text", text="最终回复文本"),
             SimpleNamespace(type="tool_call", name="query_db", input='{"sql":"SELECT 1"}'),
             SimpleNamespace(
-                type="tool_result", name="query_db", state="success",
+                type="tool_result",
+                name="query_db",
+                state="success",
                 output='{"rows": [{"a": 1}]}',
             ),
         ]
@@ -564,10 +796,16 @@ def test_raw_debug_blocks_outputs_timeline_in_msg_content_order():
     assert timeline[0] == {"step": 1, "type": "thinking", "thinking": "第一步思考"}
     assert timeline[1] == {"step": 2, "type": "text", "text": "最终回复文本"}
     assert timeline[2] == {
-        "step": 3, "type": "tool_call", "tool_name": "query_db", "input": '{"sql":"SELECT 1"}',
+        "step": 3,
+        "type": "tool_call",
+        "tool_name": "query_db",
+        "input": '{"sql":"SELECT 1"}',
     }
     assert timeline[3] == {
-        "step": 4, "type": "tool_result", "tool_name": "query_db", "state": "success",
+        "step": 4,
+        "type": "tool_result",
+        "tool_name": "query_db",
+        "state": "success",
         "output": '{"rows": [{"a": 1}]}',
     }
 
@@ -586,7 +824,7 @@ async def test_bi_worker_reply_blocks_log_safe_tool_result_and_thinking_path(mon
     )
     from agentscope.message import ToolResultState
 
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
     middleware = BIWorkerProgressMiddleware(
@@ -623,11 +861,15 @@ async def test_bi_worker_reply_blocks_log_safe_tool_result_and_thinking_path(mon
             tool_call_id="call-1",
             tool_call_name="datalogue_execute_query_plan",
         )
-        yield ToolResultTextDeltaEvent(reply_id="reply-1", tool_call_id="call-1", delta=safe_tool_result)
-        yield ToolResultEndEvent(reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS)
+        yield ToolResultTextDeltaEvent(
+            reply_id="reply-1", tool_call_id="call-1", delta=safe_tool_result
+        )
+        yield ToolResultEndEvent(
+            reply_id="reply-1", tool_call_id="call-1", state=ToolResultState.SUCCESS
+        )
         yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
 
-    with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.INFO, logger="app.domains.agent_team.worker_logging"):
         async for _event in middleware.on_reply(
             agent=agent,
             input_kwargs={"inputs": "查询杨凯2025年日志"},
@@ -640,10 +882,13 @@ async def test_bi_worker_reply_blocks_log_safe_tool_result_and_thinking_path(mon
     assert '"thinking_path":' in logs
     assert '"content_length":' in logs
     assert '"tool_results":' in logs
-# removed: tool_name may not appear for progressive tools in log output
+    # removed: tool_name may not appear for progressive tools in log output
     assert '"result_ref": "artifact:result-1"' in logs
     assert '"row_count": 5' in logs
-    assert '"primary_ref": {"label": "结果表", "ref": "artifact:result-1", "ref_type": "query_result"}' in logs
+    assert (
+        '"primary_ref": {"label": "结果表", "ref": "artifact:result-1", "ref_type": "query_result"}'
+        in logs
+    )
     assert "先分析用户问题" not in logs
     assert "SELECT" not in logs
     assert "users" not in logs
@@ -660,7 +905,7 @@ async def test_resolve_task_context_direct_hit():
     """leader session 直接命中 Redis 中的 task context。"""
     import json
 
-    from app.agentscope_service.task_context import resolve_task_context
+    from app.domains.agent_team.task_context import resolve_task_context
 
     class FakeRedisForDirectHit:
         async def get(self, key):
@@ -700,7 +945,7 @@ async def test_resolve_task_context_via_team_record():
     import json
     from types import SimpleNamespace
 
-    from app.agentscope_service.task_context import resolve_task_context
+    from app.domains.agent_team.task_context import resolve_task_context
 
     class FakeRedisForTeam:
         @staticmethod
@@ -743,7 +988,7 @@ async def test_resolve_task_context_via_team_record():
 @pytest.mark.asyncio
 async def test_resolve_task_context_miss_graceful():
     """Redis 中无数据时 resolve_task_context 返回空 dict，不抛异常。"""
-    from app.agentscope_service.task_context import resolve_task_context
+    from app.domains.agent_team.task_context import resolve_task_context
 
     class FakeRedisNone:
         async def get(self, key):
@@ -767,7 +1012,7 @@ async def test_resolve_task_context_miss_graceful():
 
 def test_model_input_summary_includes_enhanced_fields():
     """验证 _model_input_summary 包含 input_chars 等增强字段。"""
-    from app.agentscope_service.worker_logging import _model_input_summary
+    from app.domains.agent_team.worker_logging import _model_input_summary
 
     summary = _model_input_summary(
         {
@@ -791,7 +1036,7 @@ def test_model_input_summary_includes_enhanced_fields():
 
 def test_model_output_summary_includes_enhanced_fields():
     """验证 _model_output_summary 包含 output_chars/finish_reason/duration_ms 等增强字段。"""
-    from app.agentscope_service.worker_logging import _model_output_summary
+    from app.domains.agent_team.worker_logging import _model_output_summary
 
     summary = _model_output_summary(
         SimpleNamespace(content="模型回答内容", finish_reason="stop"),
@@ -808,7 +1053,7 @@ def test_model_output_summary_includes_enhanced_fields():
 @pytest.mark.asyncio
 async def test_streaming_model_output_is_left_to_otel_tracing(caplog):
     """流式模型输出不再由 Datalogue 自定义日志记录，交给 AgentScope OTel span。"""
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     middleware = BIWorkerProgressMiddleware(
         worker_context={
@@ -818,7 +1063,7 @@ async def test_streaming_model_output_is_left_to_otel_tracing(caplog):
             "session_id": "session-bi-1",
         },
     )
-    with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.INFO, logger="app.domains.agent_team.worker_logging"):
         assert "on_model_call" not in type(middleware).__dict__
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
@@ -828,7 +1073,7 @@ async def test_streaming_model_output_is_left_to_otel_tracing(caplog):
 @pytest.mark.asyncio
 async def test_on_model_call_failures_are_left_to_otel_tracing(caplog):
     """模型调用异常不再由 Datalogue 自定义日志记录，交给 AgentScope OTel span。"""
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     middleware = BIWorkerProgressMiddleware(
         worker_context={
@@ -838,7 +1083,7 @@ async def test_on_model_call_failures_are_left_to_otel_tracing(caplog):
             "session_id": "session-bi-1",
         },
     )
-    with caplog.at_level(logging.INFO, logger="app.agentscope_service.worker_logging"):
+    with caplog.at_level(logging.INFO, logger="app.domains.agent_team.worker_logging"):
         assert "on_model_call" not in type(middleware).__dict__
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
@@ -848,8 +1093,8 @@ async def test_on_model_call_failures_are_left_to_otel_tracing(caplog):
 @pytest.mark.asyncio
 async def test_raw_logs_not_leaked_to_progress_payload():
     """开启 raw debug 时 progress payload 不包含 raw LLM 内容。"""
-    from app.agentscope_service.progress_bridge import agent_progress_subscription
-    from app.agentscope_service.worker_logging import BIWorkerProgressMiddleware
+    from app.domains.agent_team.progress_bridge import agent_progress_subscription
+    from app.domains.agent_team.worker_logging import BIWorkerProgressMiddleware
 
     middleware = BIWorkerProgressMiddleware(
         worker_context={
@@ -881,7 +1126,7 @@ async def test_raw_logs_not_leaked_to_progress_payload():
 
 def test_worker_context_includes_correlation_fields():
     """验证 worker_context 包含 task_id/thread_id/message_id/trace_id 等关联字段。"""
-    from app.agentscope_service.worker_logging import _publish_worker_progress
+    from app.domains.agent_team.worker_logging import _publish_worker_progress
 
     worker_ctx = {
         "user_id": "user-1",
@@ -897,7 +1142,7 @@ def test_worker_context_includes_correlation_fields():
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            "app.agentscope_service.progress_bridge.publish_agent_progress",
+            "app.domains.agent_team.progress_bridge.publish_agent_progress",
             lambda user_id, payload: None,
         )
         _publish_worker_progress(
@@ -907,6 +1152,30 @@ def test_worker_context_includes_correlation_fields():
             title="测试标题",
             summary="测试摘要",
         )
+
+
+def test_unsafe_worker_progress_is_dropped_without_raising(monkeypatch, caplog):
+    """命中 SQL/schema 等敏感内容时只丢弃前端进度，不能中断 AgentScope 事件流。"""
+    from app.domains.agent_team import worker_logging
+
+    published: list[dict] = []
+    monkeypatch.setattr(
+        worker_logging,
+        "publish_agent_progress",
+        lambda user_id, payload: published.append({"user_id": user_id, "payload": payload}),
+    )
+
+    with caplog.at_level("WARNING"):
+        worker_logging._publish_worker_progress(
+            worker_context={"user_id": "user-1", "agent_name": "bi-worker"},
+            phase="thinking",
+            status="running",
+            title="测试标题",
+            summary="select * from hidden_schema",
+        )
+
+    assert published == []
+    assert "unsafe progress payload dropped" in caplog.text
 
 
 def test_agentscope_otel_config_defaults(tmp_path, monkeypatch):
@@ -922,11 +1191,11 @@ def test_agentscope_otel_config_defaults(tmp_path, monkeypatch):
     assert settings.AGENTSCOPE_OTEL_SERVICE_NAME == "datalogue-api"
 
 
-def test_setup_agentscope_tracing_attaches_logging_exporter_when_otlp_disabled(monkeypatch):
+def test_setup_runtime_tracing_attaches_logging_exporter_when_otlp_disabled(monkeypatch):
     """只启用 tracing、不启用 OTLP 时，也要把 span 输出到后端日志。"""
     from opentelemetry import trace
 
-    from app.agentscope_service import otel_setup
+    from app.runtime.engine import otel_setup
     from app.core.config import Settings
 
     calls: dict[str, object] = {}
@@ -952,7 +1221,7 @@ def test_setup_agentscope_tracing_attaches_logging_exporter_when_otlp_disabled(m
         AGENTSCOPE_OTEL_EXPORTER_ENDPOINT=None,
     )
 
-    otel_setup.setup_agentscope_tracing(settings)
+    otel_setup.setup_runtime_tracing(settings)
 
     assert calls["provider"] is calls["logging_provider"]
     assert calls["logging_enabled"] is True
@@ -964,7 +1233,7 @@ def test_otel_span_log_payload_only_keeps_usage_and_drops_model_messages(monkeyp
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from app.agentscope_service.otel_setup import _span_log_payload
+    from app.runtime.engine.otel_setup import _span_log_payload
 
     monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
     ctx = MagicMock()
@@ -999,3 +1268,135 @@ def test_otel_span_log_payload_only_keeps_usage_and_drops_model_messages(monkeyp
     assert "output.messages" not in str(payload)
     assert "input.messages" not in str(payload)
     assert "tool_calls" not in str(payload)
+
+
+# ---- BI worker timeline Redis 临时调试缓存（TODO 后期删除）----
+
+
+@pytest.mark.asyncio
+async def test_cache_bi_worker_timeline_stores_when_debug_enabled(monkeypatch):
+    """raw debug 开启时，BI worker reply 的 timeline 被暂存 Redis。"""
+    import json
+    from types import SimpleNamespace
+
+    from app.domains.agent_team.worker_logging import _cache_bi_worker_timeline_if_enabled
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+
+    class _Redis:
+        def __init__(self):
+            self.set_calls = []
+
+        async def set(self, key, value, ex=None):
+            self.set_calls.append((key, value, ex))
+
+        async def get(self, key):
+            return None
+
+    fake_redis = _Redis()
+    storage = SimpleNamespace(get_client=lambda: fake_redis)
+    msg = SimpleNamespace(
+        id="reply-cache-1",
+        content=[
+            SimpleNamespace(type="thinking", thinking="原始思考链"),
+            SimpleNamespace(type="text", text="最终回答"),
+        ],
+    )
+
+    await _cache_bi_worker_timeline_if_enabled(
+        storage=storage,
+        worker_context={"session_id": "session-bi-1"},
+        msg=msg,
+    )
+
+    assert len(fake_redis.set_calls) == 1
+    key, value, ex = fake_redis.set_calls[0]
+    assert key == "datalogue:bi_worker_timeline:session-bi-1:reply-cache-1"
+    assert ex == 3600
+    payload = json.loads(value)
+    assert payload["worker_session_id"] == "session-bi-1"
+    assert payload["reply_id"] == "reply-cache-1"
+    assert payload["timeline"][0]["type"] == "thinking"
+    assert payload["timeline"][1]["type"] == "text"
+
+
+@pytest.mark.asyncio
+async def test_cache_bi_worker_timeline_skips_when_debug_disabled(monkeypatch):
+    """raw debug 关闭时，不向 Redis 写入 timeline。"""
+    from types import SimpleNamespace
+
+    from app.domains.agent_team.worker_logging import _cache_bi_worker_timeline_if_enabled
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "false")
+
+    class _Redis:
+        def __init__(self):
+            self.set_calls = []
+
+        async def set(self, key, value, ex=None):
+            self.set_calls.append((key, value, ex))
+
+        async def get(self, key):
+            return None
+
+    fake_redis = _Redis()
+    storage = SimpleNamespace(get_client=lambda: fake_redis)
+    msg = SimpleNamespace(id="reply-1", content=[SimpleNamespace(type="text", text="x")])
+
+    await _cache_bi_worker_timeline_if_enabled(
+        storage=storage,
+        worker_context={"session_id": "session-bi-1"},
+        msg=msg,
+    )
+
+    assert fake_redis.set_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cache_bi_worker_timeline_skips_when_storage_none(monkeypatch):
+    """storage 为 None 时（worker 未注入 storage），安全跳过不抛异常。"""
+    from types import SimpleNamespace
+
+    from app.domains.agent_team.worker_logging import _cache_bi_worker_timeline_if_enabled
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+    msg = SimpleNamespace(id="reply-1", content=[SimpleNamespace(type="text", text="x")])
+
+    await _cache_bi_worker_timeline_if_enabled(
+        storage=None,
+        worker_context={"session_id": "session-bi-1"},
+        msg=msg,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_bi_worker_timeline_skips_when_msg_has_no_timeline(monkeypatch):
+    """msg 无可识别 content 块时，timeline 为空，不写入 Redis。"""
+    from types import SimpleNamespace
+
+    from app.domains.agent_team.worker_logging import _cache_bi_worker_timeline_if_enabled
+
+    monkeypatch.setenv("AGENT_DEBUG_RAW_LOGS", "true")
+
+    class _Redis:
+        def __init__(self):
+            self.set_calls = []
+
+        async def set(self, key, value, ex=None):
+            self.set_calls.append((key, value, ex))
+
+        async def get(self, key):
+            return None
+
+    fake_redis = _Redis()
+    storage = SimpleNamespace(get_client=lambda: fake_redis)
+    # content 为空列表 → _raw_debug_blocks_from_msg 返回 []。
+    msg = SimpleNamespace(id="reply-1", content=[])
+
+    await _cache_bi_worker_timeline_if_enabled(
+        storage=storage,
+        worker_context={"session_id": "session-bi-1"},
+        msg=msg,
+    )
+
+    assert fake_redis.set_calls == []

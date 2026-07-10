@@ -1,0 +1,179 @@
+# ============================================================
+# File Name   : projection.py
+# Description:
+#   AgentScope Service 事件到 Datalogue Event Envelope 的投影。
+#
+# Responsibilities:
+#   - 把 AgentScope session stream 转为 Datalogue 稳定事件协议。
+#   - 清洗 SQL、schema、raw rows、DSL、query_plan 等敏感载荷。
+#   - 保留 artifact_ref、checkpoint_ref 等安全引用。
+#
+# Author      : yangkai
+# Created On  : 2026-07-04
+# ============================================================
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.core.events.projection import build_task_envelope
+from app.core.schemas.bi_workbench import (
+    DatalogueEventEnvelope,
+    DatalogueEventType,
+    sanitize_event_payload,
+    sanitize_stream_delta_content,
+)
+
+
+def project_runtime_event(
+    event: dict[str, Any],
+    *,
+    task_id: str,
+    trace_id: str | None,
+    selected_agent: str,
+    thread_id: str | None = None,
+    message_id: str | None = None,
+) -> DatalogueEventEnvelope:
+    """将 AgentScope Service 原始事件投影为 Datalogue envelope。"""
+
+    event_type = _event_type(event)
+    payload = _payload_from_event(event)
+    safe_payload = sanitize_event_payload(payload)
+    if not isinstance(safe_payload, dict):
+        safe_payload = {"summary": str(safe_payload or "")}
+    envelope = build_task_envelope(
+        event_type=event_type,
+        task_id=task_id,
+        trace_id=trace_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        selected_agent=selected_agent,
+        payload=safe_payload,
+    )
+    if event_type == "message.delta" and isinstance(payload, dict):
+        # build_task_envelope 内部会再次 sanitize（strip 掉边界空格）；这里在构建后回填保留空格/换行的增量，
+        # 避免英文被粘成一块、换行丢失无法分小节。content 已在 sanitize_stream_delta_content 做过 SQL 防护。
+        preserved = sanitize_stream_delta_content(payload.get("content"))
+        if preserved is not None:
+            envelope.payload["content"] = preserved
+    return envelope
+
+
+def _payload_from_event(event: dict[str, Any]) -> dict[str, Any]:
+    if _is_subagent_hitl_require_event(event):
+        return _subagent_hitl_confirmation_payload(event.get("value") or {})
+    if _is_subagent_hitl_result_event(event):
+        value = event.get("value") if isinstance(event.get("value"), dict) else {}
+        worker_name = _safe_text(value.get("worker_agent_name") or value.get("worker_agent_id"), "worker")
+        return {
+            "summary": f"{worker_name} 的工具确认已处理。",
+            "agent": worker_name,
+            "worker_session_id": _safe_text(value.get("worker_session_id")),
+            "reply_id": _safe_text(value.get("reply_id")),
+        }
+    raw_type = str(event.get("event_type") or event.get("type") or "")
+    if _is_thinking_event_type(raw_type):
+        # ThinkingBlockDeltaEvent.delta 是模型原始思维链；这里必须 fail-closed，
+        # 只能发布安全阶段摘要，调试原文统一由 worker_logging 的 debug agent.progress 通道输出。
+        return {
+            "summary": "BI Worker thinking 事件已隐藏，调试原文仅在 debug 开关下通过受控通道输出。",
+            "phase": "thinking",
+            "status": "running" if "delta" in raw_type.lower() else "completed",
+            "reply_id": _safe_text(event.get("reply_id")),
+            "block_id": _safe_text(event.get("block_id")),
+        }
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        return payload
+    message = event.get("message")
+    if isinstance(message, dict):
+        return message
+    content = event.get("content") or event.get("delta") or event.get("text")
+    if content is not None:
+        return {"content": content}
+    return {key: value for key, value in event.items() if key not in {"event_type", "type"}}
+
+
+def _event_type(event: dict[str, Any]) -> DatalogueEventType:
+    if _is_subagent_hitl_require_event(event):
+        return "confirmation.required"
+    raw_type = str(event.get("event_type") or event.get("type") or "").lower()
+    if raw_type == "agent.progress":
+        # AgentScope middleware 发出的实时进度事件只承载用户可见摘要；
+        # payload 仍由 sanitize_event_payload 清洗，避免把 SQL/schema/raw rows 带到聊天区。
+        return "agent.progress"
+    if raw_type == "message.completed":
+        return "message.completed"
+    if _is_thinking_event_type(raw_type):
+        # AgentScope thinking start/delta/end 不是用户可见正文；尤其 delta 不能被通用
+        # “包含 delta/token/chunk 就是 message.delta” 规则误投到聊天正文或 live_thinking。
+        return "trace.updated"
+    # AgentScope 原生事件里 TextBlockEnd/ThinkingBlockEnd/ModelCallEnd 只是分段结束；
+    # 只有 ReplyEnd/final/finish 才代表本轮助手回复完成，避免重复投成 message.completed。
+    if any(marker in raw_type for marker in ("replyendevent", "reply.end", "reply_end", "final", "finish")):
+        return "message.completed"
+    if "tool" in raw_type:
+        return "tool.result"
+    if any(marker in raw_type for marker in ("message", "delta", "token", "chunk")):
+        return "message.delta"
+    if "error" in raw_type or "fail" in raw_type:
+        return "error.blocked"
+    return "trace.updated"
+
+
+def _is_thinking_event_type(raw_type: str) -> bool:
+    normalized = raw_type.replace("-", "_").lower()
+    return "thinkingblock" in normalized or "thinking_block" in normalized
+
+
+def _is_subagent_hitl_require_event(event: dict[str, Any]) -> bool:
+    return str(event.get("name") or "") == "subagent_require_user_confirm"
+
+
+def _is_subagent_hitl_result_event(event: dict[str, Any]) -> bool:
+    return str(event.get("name") or "") == "subagent_user_confirm_result"
+
+
+def _subagent_hitl_confirmation_payload(value: dict[str, Any]) -> dict[str, Any]:
+    """把 AgentScope worker HITL mirror 事件转成用户可见确认摘要，严禁透出 tool input。"""
+
+    worker_name = _safe_text(value.get("worker_agent_name") or value.get("worker_agent_id"), "worker")
+    event_payload = value.get("event") if isinstance(value.get("event"), dict) else {}
+    tool_calls = _safe_tool_calls(event_payload.get("tool_calls"))
+    first_tool = tool_calls[0] if tool_calls else {}
+    tool_name = _safe_text(first_tool.get("name"), "工具")
+    return {
+        "summary": f"{worker_name} 正在等待确认工具调用 {tool_name}。",
+        "title": "Worker 需要确认",
+        "agent": worker_name,
+        "agent_name": worker_name,
+        "worker_session_id": _safe_text(value.get("worker_session_id")),
+        "worker_agent_id": _safe_text(value.get("worker_agent_id")),
+        "reply_id": _safe_text(value.get("reply_id")),
+        "tool_name": tool_name,
+        "tool_call_id": _safe_text(first_tool.get("id")),
+        "tool_calls": tool_calls,
+        "requires_user_confirmation": True,
+        "confirmation_kind": _safe_text(value.get("event_type"), "require_user_confirm"),
+    }
+
+
+def _safe_tool_calls(tool_calls: Any) -> list[dict[str, str]]:
+    if not isinstance(tool_calls, list):
+        return []
+    safe_calls: list[dict[str, str]] = []
+    for item in tool_calls[:8]:
+        if not isinstance(item, dict):
+            continue
+        safe_call = {
+            "id": _safe_text(item.get("id")),
+            "name": _safe_text(item.get("name"), "工具"),
+            "state": _safe_text(item.get("state")),
+        }
+        safe_calls.append({key: value for key, value in safe_call.items() if value})
+    return safe_calls
+
+
+def _safe_text(value: Any, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    return (text or fallback)[:160]

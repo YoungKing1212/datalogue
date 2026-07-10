@@ -15,8 +15,9 @@ import logging
 
 import pytest
 
-from app.models.agent_team_task import AgentTeamTask
-from app.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.core.config import get_settings
+from app.core.models.agent_team_task import AgentTeamTask
+from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 from app.runtime import AgentTeamTaskRuntime
 
 
@@ -140,6 +141,16 @@ class ArtifactFinalAgentScopeRunner:
         }
 
 
+@pytest.fixture(autouse=True)
+def disable_auto_title_for_runtime_unit_tests(monkeypatch):
+    """Runtime 单元测试不验证标题生成，默认关闭后台 DB 线程以避免 teardown 并发副作用。"""
+
+    monkeypatch.setenv("DATALOGUE_AUTO_TITLE_ENABLED", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_agent_team_task_runtime_completes_task(db_session):
     runtime = AgentTeamTaskRuntime(db=db_session, runner=FakeAgentScopeRunner())
@@ -180,8 +191,41 @@ async def test_agent_team_task_runtime_completes_task(db_session):
 
 
 @pytest.mark.asyncio
+async def test_agent_team_task_runtime_skips_auto_title_when_disabled(
+    db_session,
+    monkeypatch,
+):
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_auto_title(thread_id, user_message, assistant_response, **_kwargs):
+        calls.append((thread_id, user_message, assistant_response))
+
+    monkeypatch.setenv("DATALOGUE_AUTO_TITLE_ENABLED", "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.domains.agent_team.title_generator.maybe_auto_title_async",
+        fake_auto_title,
+    )
+    runtime = AgentTeamTaskRuntime(db=db_session, runner=FakeAgentScopeRunner())
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="统计合同总金额",
+        dataset_id=12,
+    )
+
+    try:
+        events = [event async for event in runtime.stream(request)]
+    finally:
+        get_settings.cache_clear()
+
+    assert events[-1].event_type == "task.completed"
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_agent_team_task_runtime_lets_bi_worker_report_dataset_candidates(db_session, sample_datasource):
-    from app.models.dataset import SemanticDataset
+    from app.core.models.dataset import SemanticDataset
 
     db_session.add_all(
         [
