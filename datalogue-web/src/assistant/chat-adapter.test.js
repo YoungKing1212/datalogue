@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeChatAdapter, buildBusinessSessionId } from './chat-adapter';
-import { buildHistoryMessageCustom } from './thread-list-adapter';
+import { buildHistoryMessageCustom, ensureConversationForThread } from './thread-list-adapter';
 
 vi.mock('./agent-team-task-api', () => ({
   streamAgentTeamTask: vi.fn(),
@@ -711,6 +711,38 @@ describe('chat-adapter C-ready metadata', () => {
     expect(renameListener).toHaveBeenCalledWith(expect.objectContaining({
       detail: { remoteId: '88', title: '统计合同总金额' },
     }));
+    window.removeEventListener('datalogue:conv-resolved', resolvedListener);
+    window.removeEventListener('datalogue:thread-rename', renameListener);
+  });
+
+  it('does not dispatch thread-rename when lazy-creating the conversation before the final event', async () => {
+    const resolvedListener = vi.fn();
+    const renameListener = vi.fn();
+    window.addEventListener('datalogue:conv-resolved', resolvedListener);
+    window.addEventListener('datalogue:thread-rename', renameListener);
+
+    // 仅本次测试让懒创建返回真实 remoteId，测试结束后恢复默认 mock 行为。
+    ensureConversationForThread.mockImplementationOnce(async () => '42');
+    streamAgentTeamTask.mockReturnValue(events([
+      { type: 'final', answer: '已完成查询。', conversation_id: 42, title: '查询销售趋势' },
+    ]));
+
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 } });
+    await collectRun(adapter, runInput({
+      question: '查询销售趋势',
+      threadId: 'local-thread',
+    }));
+
+    // 懒创建阶段只应更新 idMap，不应触发 UI 切到新会话；切会话应留给 final 事件。
+    expect(resolvedListener).toHaveBeenCalledWith(expect.objectContaining({
+      detail: { localThreadId: 'local-thread', actualConvId: 42 },
+    }));
+    // thread-rename 只能由 final 事件触发一次；若懒创建也触发，则调用次数会大于 1。
+    expect(renameListener).toHaveBeenCalledTimes(1);
+    expect(renameListener).toHaveBeenCalledWith(expect.objectContaining({
+      detail: { remoteId: '42', title: '查询销售趋势' },
+    }));
+
     window.removeEventListener('datalogue:conv-resolved', resolvedListener);
     window.removeEventListener('datalogue:thread-rename', renameListener);
   });

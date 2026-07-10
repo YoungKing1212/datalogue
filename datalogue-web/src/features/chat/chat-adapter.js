@@ -48,7 +48,6 @@ function safeStepLabel(node, displayName) {
 }
 
 
-
 function safeRepairPlanFromPayload(payload = {}, finalPayload = {}) {
   const patchSummary =
     payload.repair_patch_summary
@@ -1000,12 +999,9 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         if (newRemoteId) {
           routeConvId = normalizeConversationId(newRemoteId);
           emitResolvedConversation(effectiveThreadId, newRemoteId);
-          // 触发 sidebar 刷新与 thread 切换，让新会话出现在列表中并获得真实 remoteId
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('datalogue:thread-rename', {
-              detail: { remoteId: newRemoteId },
-            }));
-          }
+          // 注意：不要在这里派发 thread-rename 让 UI 切到新会话。
+          // 当前 stream 仍挂在草稿 thread 上，提前切换会导致页面跳到空会话、
+          // 用户消息和流式反馈全部丢失。sidebar/URL 更新应留到 final 事件后再处理。
         }
       }
 

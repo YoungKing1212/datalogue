@@ -884,3 +884,32 @@
 - 残留风险或后续事项：`API 接口` 数量当前不显示，因为仓库尚无发布 API 持久化表；如果后续把 `apis.jsx` 从静态演示页改为真实发布接口管理，需要把该表纳入 `/api/navigation/counts`。
 >>>>>>> Stashed changes
 >>>>>>> main
+
+### 2026-07-10 11:18 · 修复选择数据集后首次对话前端无反馈
+
+- 完成时间：2026-07-10 11:18。
+- 功能名称：修复选择数据集后首次对话前端无反馈。
+- 涉及文件：`datalogue-web/src/features/chat/chat-adapter.js`、`datalogue-web/src/assistant/chat-adapter.test.js`、`.codex/project-memory.md`。
+- 关键改动：
+  1. `chat-adapter.js` 首条消息懒创建后端会话（`ensureConversationForThread`）成功后，删除此前立即派发的 `datalogue:thread-rename` 事件，仅保留 `datalogue:conv-resolved` 更新 idMap；sidebar/URL 切换留在 SSE `final` 事件后再处理。
+  2. 新增中文注释说明提前切换会导致 stream 仍挂在草稿 thread 上、页面跳到空会话、用户消息与流式反馈丢失。
+  3. `chat-adapter.test.js` 新增回归测试，验证懒创建阶段只触发 `conv-resolved`，`thread-rename` 仅由 final 事件触发一次；使用 `mockImplementationOnce` 避免污染后续测试用例。
+- 验证方式：
+  - Playwright 真机复现：修复后选择数据集发送消息，页面出现用户消息气泡和“正在生成…”助手回复，`.chat-inner` 不再为空。
+  - `npx vitest run src/assistant/chat-adapter.test.js`：32 passed。
+  - `npm run test -- --run`：190 passed，2 failed（`settings.test.jsx` 的 `useLocation() may be used only in the context of a <Router>`），为本次改动前已存在的 pre-existing 失败。
+  - `npm run build`：构建成功，仅保留既有 Vite chunk-size warning。
+- 残留风险或后续事项：`settings.test.jsx` 的 Router 上下文失败与 chat 无关，但属于 pre-existing 测试债务；后续若需要可在前端测试稳定化专题中处理。Playwright 复现脚本 `/tmp/pw-test/`、`/tmp/repro_chat_dataset.js`、`/tmp/login_api.py` 为本地临时文件，未纳入仓库，可手动清理。
+
+### 2026-07-10 16:30 · /chat/{id} 历史消息 rehydrate（后端聚合 agentscope_message）
+
+- 完成时间：2026-07-10 16:30。
+- 功能名称：`/chat/{id}` 打开历史会话时无法回放对话内容，后端 `get_conversation` 只读旧 `messages` 表导致 agentscope 主链会话空白。
+- 涉及文件：`datalogue-api/app/api/conversation.py`、`datalogue-api/tests/test_conversation_history_agentscope.py`。
+- 关键改动：
+  1. `get_conversation` 消息主数据源改为 `agentscope_message`：先按 `legacy_conversation_id` 聚合所有 `AgentScopeSession.thread_id`（同一 conversation 前端未稳定传 thread_id 时会新建多个 session），再按 `created_at, id` 排序读取全部 `AgentScopeMessage`。
+  2. 新增 `_agentscope_message_to_public / _agentscope_payload_to_metadata / _reasoning_summary_to_step_trace`：把 agentscope 消息映射成前端 `MessageOut` 契约——`business_payload_json.artifact_ref` → `response_metadata.result_ref` + `artifact_card.primary_ref`，`reasoning_summary` status `completed` 统一改为前端只识别的 `done` 才会渲染 reasoning part，可选 `task_id/checkpoint_ref` 也一并透出。
+  3. 无 agentscope session 关联时回退老 `messages` 表，保证 rehydrate 前的旧会话仍能打开。
+  4. 新增 `tests/test_conversation_history_agentscope.py`：覆盖单 session、多 session 聚合排序、无 agentscope 回退 legacy、无任何消息返回空、reasoning `completed→done` 与 `artifact_ref→result_ref` 映射五种场景。
+- 验证方式：`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m pytest tests/test_conversation_history_agentscope.py -q` 全部通过；Playwright 真机复现 `/chat/200` 会话正常回放 3 轮问答 + artifact 卡片。
+- 残留风险或后续事项：agentscope 侧 `business_payload_json` 仍以 `artifact_ref` 单主 ref 为主，多 artifact 的 `related_refs` 目前不回放；后续若 Report Worker 输出多 artifact 需要一起展示，需要扩 `_agentscope_payload_to_metadata`。

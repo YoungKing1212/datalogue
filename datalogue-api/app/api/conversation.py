@@ -144,13 +144,17 @@ def _safe_public_ref(value: Any) -> str | dict[str, Any] | None:
     """只保留公开 ref 句柄和业务级类型，兼容 string 与 {ref_id, ref_type} 两种契约。"""
 
     if isinstance(value, str) and (
-        value.startswith("artifact:") or value.startswith("trace:") or value.startswith("checkpoint://")
+        value.startswith("artifact:")
+        or value.startswith("trace:")
+        or value.startswith("checkpoint://")
     ):
         return value
     if isinstance(value, dict):
         ref_id = value.get("ref_id") or value.get("ref")
         if isinstance(ref_id, str) and (
-            ref_id.startswith("artifact:") or ref_id.startswith("trace:") or ref_id.startswith("checkpoint://")
+            ref_id.startswith("artifact:")
+            or ref_id.startswith("trace:")
+            or ref_id.startswith("checkpoint://")
         ):
             # ref 对象是前端 ArtifactCard 的稳定输入；这里只保留句柄、类型和标签，不回放 nested payload。
             safe: dict[str, Any] = {"ref_id": ref_id}
@@ -194,7 +198,9 @@ def _safe_artifact_card(card: Any) -> dict[str, Any] | None:
     if summary_for_chat is not None:
         safe_card["summary_for_chat"] = summary_for_chat
     if "preview_payload" in card:
-        safe_card["preview_payload"] = None  # 旧卡片可能带 raw preview，历史回放只保留“存在过”的空占位。
+        safe_card["preview_payload"] = (
+            None  # 旧卡片可能带 raw preview，历史回放只保留“存在过”的空占位。
+        )
     if primary_ref is not None:
         safe_card["primary_ref"] = primary_ref
     if related_refs:
@@ -364,14 +370,97 @@ def _with_observability_links(message: models.Message) -> models.Message:
         return message
 
     # Trace 技术栈已下线，历史记录只暴露可识别的 trace_id/session_id，不拼接不可用外链。
-    observability.update({
-        "base_url": None,
-        "project_id": None,
-        "trace_url": None,
-    })
+    observability.update(
+        {
+            "base_url": None,
+            "project_id": None,
+            "trace_url": None,
+        }
+    )
     metadata["observability"] = observability
     message.response_metadata = metadata
     return message
+
+
+def _reasoning_summary_to_step_trace(reasoning_summary: Any) -> list[dict[str, Any]] | None:
+    """把 agentscope_message 的 reasoning_summary 转成前端期望的 step_trace 格式。
+
+    agentscope 的 reasoning_summary 是 [{title, status, summary, ref?}]；前端
+    messagesFromBackend 只在 step.status === 'done' 时渲染 reasoning part，因此
+    status "completed" 必须映射为 "done"，否则历史链路不会回放。
+    """
+
+    if not isinstance(reasoning_summary, list):
+        return None
+    public_steps: list[dict[str, Any]] = []
+    for step in reasoning_summary[:20]:
+        if not isinstance(step, dict):
+            continue
+        raw_status = str(step.get("status") or "").strip().lower()
+        # agentscope 终态是 completed；legacy/前端协议是 done。统一落到 done 才能被前端渲染。
+        status = "done" if raw_status in ("completed", "done", "success") else raw_status or "done"
+        public_step: dict[str, Any] = {
+            "type": "step",
+            "node": "business_step",
+            "display_name": str(step.get("title") or "任务处理").strip() or "任务处理",
+            "status": status,
+        }
+        if step.get("summary") is not None:
+            public_step["detail"] = step.get("summary")
+        if step.get("ref"):
+            public_step["ref"] = step.get("ref")
+        public_steps.append(public_step)
+    return public_steps or None
+
+
+def _agentscope_payload_to_metadata(payload: Any) -> dict[str, Any] | None:
+    """把 agentscope_message.business_payload_json 映射成前端期望的 response_metadata。
+
+    前端 buildHistoryMessageCustom 据此渲染 artifact 卡片、task_id 等；agentscope 侧
+    只存了 artifact_ref/answer_summary/reasoning_summary，需补齐 result_ref 与 artifact_card。
+    """
+
+    if not isinstance(payload, dict) or not payload:
+        return None
+    metadata: dict[str, Any] = {}
+    if payload.get("task_id"):
+        metadata["task_id"] = payload.get("task_id")
+    artifact_ref = payload.get("artifact_ref")
+    if artifact_ref:
+        # 前端 resultRef / artifactCard.primary_ref 都用它渲染 ArtifactCard。
+        metadata["result_ref"] = artifact_ref
+        metadata["artifact_card"] = {
+            "title": "查询结果",
+            "status": "completed",
+            "primary_ref": artifact_ref,
+            "related_refs": [],
+        }
+    if payload.get("checkpoint_ref"):
+        metadata["checkpoint_ref"] = payload.get("checkpoint_ref")
+    return metadata or None
+
+
+def _agentscope_message_to_public(
+    message: models.AgentScopeMessage, conv_id: int
+) -> dict[str, Any]:
+    """把 AgentScopeMessage 转成 MessageOut 兼容 dict，供历史对话加载使用。"""
+
+    payload: dict[str, Any] = (
+        message.business_payload_json if isinstance(message.business_payload_json, dict) else {}
+    )
+    reasoning_summary = payload.get("reasoning_summary")
+    return {
+        "id": message.id,
+        "conversation_id": conv_id,
+        "role": message.role,
+        "content": message.content_summary or "",
+        "sql_list": None,
+        "report_html": None,
+        "token_usage": None,
+        "step_trace": _reasoning_summary_to_step_trace(reasoning_summary),
+        "response_metadata": _agentscope_payload_to_metadata(payload),
+        "created_at": message.created_at,
+    }
 
 
 @router.get("", response_model=List[schemas.ConversationOut])
@@ -415,13 +504,36 @@ def get_conversation(conv_id: int, db: Session = Depends(get_db)):
     conv = db.get(models.Conversation, conv_id)
     if not conv:
         raise HTTPException(status_code=404, detail="对话不存在")
-    messages = (
-        db.query(models.Message)
-        .filter(models.Message.conversation_id == conv_id)
-        .order_by(models.Message.created_at)
+    # 消息主数据源是 agentscope_message：一个 conversation 可能关联多个 as_ session
+    # （前端未稳定传 thread_id 时每次发消息会新建 session），需聚合全部关联 thread。
+    thread_ids = [
+        row.thread_id
+        for row in db.query(models.AgentScopeSession.thread_id)
+        .filter(models.AgentScopeSession.legacy_conversation_id == conv_id)
         .all()
-    )
-    messages = [_public_message(_with_observability_links(message)) for message in messages]
+    ]
+    if thread_ids:
+        as_messages = (
+            db.query(models.AgentScopeMessage)
+            .filter(models.AgentScopeMessage.thread_id.in_(thread_ids))
+            .order_by(
+                models.AgentScopeMessage.created_at.asc(),
+                models.AgentScopeMessage.id.asc(),
+            )
+            .all()
+        )
+        messages = [_agentscope_message_to_public(m, conv_id) for m in as_messages]
+    else:
+        # 回退：agentscope 改造前的老会话消息只在 legacy message 表。
+        legacy_messages = (
+            db.query(models.Message)
+            .filter(models.Message.conversation_id == conv_id)
+            .order_by(models.Message.created_at)
+            .all()
+        )
+        messages = [
+            _public_message(_with_observability_links(message)) for message in legacy_messages
+        ]
     return {"conversation": conv, "messages": messages}
 
 
@@ -486,9 +598,7 @@ def delete_conversation(conv_id: int, db: Session = Depends(get_db)):
     ).delete()
 
     # 3) 查询产物（引用 message.id + conversation.id）
-    db.query(models.QueryArtifact).filter(
-        models.QueryArtifact.conversation_id == conv_id
-    ).delete()
+    db.query(models.QueryArtifact).filter(models.QueryArtifact.conversation_id == conv_id).delete()
 
     # 4) SQL 诊断日志（引用 conversation.id）
     db.query(models.SQLDiagnosisLog).filter(
@@ -501,9 +611,7 @@ def delete_conversation(conv_id: int, db: Session = Depends(get_db)):
     ).delete()
 
     # 6) 消息（Conversation 的 cascade 会处理，但显式先删避免 bulk-delete 侧漏）
-    db.query(models.Message).filter(
-        models.Message.conversation_id == conv_id
-    ).delete()
+    db.query(models.Message).filter(models.Message.conversation_id == conv_id).delete()
 
     # 7) 会话本体
     db.delete(conv)
