@@ -27,12 +27,12 @@ from app.core.schemas.agentscope_workbench import (
     WorkbenchRetryResponse,
     WorkbenchThreadView,
 )
-from app.domains.workbench.actions import (
+from app.domains.agent_team.retry_actions import (
     WorkbenchActionConflictError,
     WorkbenchActionNotFoundError,
     request_controlled_retry,
 )
-from app.domains.workbench.view_model import (
+from app.domains.agent_team.workbench_view import (
     WorkbenchViewNotFoundError,
     build_workbench_artifact_view,
     build_workbench_thread_view,

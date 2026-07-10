@@ -22,9 +22,9 @@ OpenViking Service 如果作为外部服务接入，建议把 Datalogue 当成�
      -> Leader Agent
      -> BI Worker Agent
   -> Datalogue BI Worker Runtime
-     -> L4 校验
-     -> L5 受控执行
-     -> DSL -> SQL 编译 -> 查询执行 -> artifact
+     -> 上下文与关系校验
+     -> QueryPlan 受控执行
+     -> DSL -> SQL 编译 -> 查询执行 -> artifact / repair
   -> DatalogueEventEnvelope SSE
   -> assistant-ui / OpenViking 消费端
 ```
@@ -35,6 +35,8 @@ OpenViking Service 如果作为外部服务接入，建议把 Datalogue 当成�
 - AgentScope Service 作为 FastAPI 子应用挂载在 `/agentscope`。
 - Leader Agent 负责规划、候选确认和 Worker 协调，不直接产出 SQL。
 - BI Worker Agent 通过 Datalogue tools 执行受控问数。
+- 任何提速或外部接入都必须保留 Leader 控制面；OpenViking 不应直接调用 direct-query 或 BI Worker runtime 承接产品问数。
+- repair 是一等可信闭环，失败按 Failure Classifier、Private Diagnosis、Repair Planner、User Confirmation、Retry Executor、Artifact Writer 收敛。
 - Datalogue 仍持有业务真相源：任务、会话投影、artifact、checkpoint、权限与审计边界。
 
 ## OpenViking 接入边界
@@ -111,9 +113,9 @@ SSE 事件中需要重点消费：
 | `datalogue-api/app/agentscope_service/registry.py` | Leader / Worker prompt 与 Agent 规格 |
 | `datalogue-api/app/agentscope_service/tools.py` | Datalogue 暴露给 AgentScope 的工具 |
 | `datalogue-api/app/agentscope_service/bi_worker_contracts.py` | `BIWorkerQueryPlan` 等严格契约 |
-| `datalogue-api/app/agentscope_service/bi_worker_context.py` | 渐进式上下文 L0-L4 构建 |
-| `datalogue-api/app/agentscope_service/bi_worker_validator.py` | L4 查询支持校验 |
-| `datalogue-api/app/agentscope_service/bi_worker_runtime.py` | L5 受控执行 |
+| `datalogue-api/app/agentscope_service/bi_worker_context.py` | 渐进式上下文构建 |
+| `datalogue-api/app/agentscope_service/bi_worker_validator.py` | QueryPlan 上下文与关系支持校验 |
+| `datalogue-api/app/agentscope_service/bi_worker_runtime.py` | QueryPlan 受控执行与 repair 基础 |
 | `datalogue-web/src/assistant/agent-team-event-adapter.js` | 前端 SSE 事件适配 |
 | `datalogue-web/src/assistant/chat-adapter.js` | assistant-ui 消息适配 |
 
@@ -121,12 +123,12 @@ SSE 事件中需要重点消费：
 
 当前 BI Worker 采用渐进式上下文：
 
-- L0：数据集能力摘要。
-- L1：候选资产目录。
-- L2：schema slice，按需加载，并由后端生成 `context_state_patch`。
-- L3：值域画像，仍在继续收敛。
-- L4：查询支持校验，强制用于 join / relationship 判断。
-- L5：受控执行，失败返回安全 repair payload。
+- 数据集能力摘要：说明数据集适合回答的问题范围。
+- 候选资产目录：列出可用指标、维度、术语和关系线索。
+- schema slice：按需加载字段与关系证据，并由后端生成 `context_state_patch`。
+- 值域画像：仍在继续收敛，用于改善业务解释与过滤建议。
+- 查询支持校验：强制用于 join / relationship 判断，不支持时返回安全 repair payload。
+- QueryPlan 受控执行：通过工具层编译、执行、写 artifact，失败继续进入 repair 闭环。
 
 `BIWorkerQueryPlan` 关键契约：
 
@@ -137,6 +139,10 @@ SSE 事件中需要重点消费：
 - 契约失败会返回 `bi_worker_repair_request` 和重试策略；同类或累计错误达到预算后要求停止猜测并汇报澄清或失败摘要。
 
 排障时如果看到执行时间很长，先排查 QueryPlan 契约反复校验失败，而不是先猜 SQL 慢。
+
+## Repair 与安全输出边界
+
+repair 阶段固定为 Failure Classifier、Private Diagnosis、Repair Planner、User Confirmation、Retry Executor、Artifact Writer。Private Diagnosis 可以在 Datalogue runtime/tool 私有层读取 SQL、schema、raw rows、原始数据库报错和本地 debug 线索，但 OpenViking 普通上下文、LLM prompt、SSE、用户回答和 artifact 摘要只能看到安全摘要、计数和 refs。
 
 ## 安全输出边界
 

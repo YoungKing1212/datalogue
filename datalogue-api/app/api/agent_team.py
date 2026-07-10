@@ -23,8 +23,8 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.middlewares.lifecycle import log_lifecycle
-from app.runtime.agent_team_runtime import AgentTeamTaskRuntime
-from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest, AgentTeamTaskStreamEvent
+from app.domains.agent_team.contracts import AgentTeamTaskRequest, AgentTeamTaskStreamEvent
+from app.domains.agent_team.task_runtime import AgentTeamTaskRuntime
 
 router = APIRouter()
 
@@ -36,7 +36,7 @@ def _sse_data(payload: dict) -> dict:
 def build_agent_team_task_runner(*, base_url: str, db: Session):
     """生产默认 runner：Agent Team 主链交给 AgentScope Service leader session。"""
 
-    from app.runtime.engine.runner import AgentTeamTaskRunner
+    from app.agentscope_runtime.runner import AgentTeamTaskRunner
 
     return AgentTeamTaskRunner(base_url=base_url, db=db, settings=get_settings())
 

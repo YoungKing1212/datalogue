@@ -55,7 +55,7 @@
 
 ### 关键边界
 
-- **BI Worker 安全边界**：只能调用 Datalogue 暴露的安全查询工具，不得生成/执行 SQL、读取 raw rows；输出只含安全摘要、`artifact_ref`、`checkpoint_ref`、`row_count`、`column_count` 等。
+- **BI Worker 安全边界**：BI Worker Agent/LLM 只能调用 Datalogue 暴露的安全查询工具，不得自行生成/执行 SQL、直接读取 raw rows，输出只含安全摘要、`artifact_ref`、`checkpoint_ref`、`row_count`、`column_count` 等。Datalogue runtime/tool 私有诊断层可以持有 SQL、schema、raw rows、原始数据库报错和 RepairPatch 主体，用于 Failure Classifier、Private Diagnosis、Repair Planner、Retry Executor 与本地 debug；这些私有细节不得进入 LLM prompt、用户可见 SSE、artifact 摘要、OpenViking 普通上下文或项目交接文档正文。
 - **Prompt 统一管理**：所有 LLM prompt 常量集中在 `app/prompts/`，调用方统一 `from app.prompts import XXX`，不得在业务代码内散落 prompt 字符串。
 - **官方团队工具**：`TeamCreate`/`AgentCreate`/`TeamSay`/`TeamDelete` 只用 AgentScope 官方内置工具，不自研替代、不自研 runner 绕过官方团队协作。
 

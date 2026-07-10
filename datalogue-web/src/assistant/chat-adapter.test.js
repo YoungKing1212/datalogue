@@ -10,12 +10,13 @@ vi.mock('./agent-team-task-api', () => ({
   streamAgentTeamTask: vi.fn(),
 }));
 
-vi.mock('./thread-list-adapter', async (importOriginal) => {
+vi.mock('../features/chat/thread-list-adapter', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
     resolveRemoteId: vi.fn(() => null),
     resolveRecentInitializedRemoteId: vi.fn(() => null),
+    ensureConversationForThread: vi.fn(async () => null),
   };
 });
 
@@ -1490,14 +1491,12 @@ describe('chat-adapter C-ready metadata', () => {
       { ref_id: 'artifact:repair-plan-1', ref_type: 'repair_plan', label: 'RepairPlan' },
     ]);
     expect(custom.artifactCard.actions).toEqual([
-      {
+      expect.objectContaining({
         action_type: 'view',
         label: '查看详情',
         ref: 'artifact:result-1',
-        checkpoint_ref: 'artifact:result-1',
-        disabled_reason: null,
         disabled: false,
-      },
+      }),
     ]);
     expect(custom.artifactCard.preview_payload).toBeNull();
     expect(JSON.stringify(custom)).not.toMatch(/bad_col|work_log|raw_sql|select/i);

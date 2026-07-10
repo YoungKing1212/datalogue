@@ -177,8 +177,12 @@ function StepList({ steps, compact = false, sqlResult = null }) {
               <span className={`agent-step-label ${step.status === 'running' ? 'running' : ''}`}>
                 {businessStepName(step)}
               </span>
-              {step.elapsed_ms != null && step.status === 'done' && (
-                <span className="agent-step-ms">{step.elapsed_ms}ms</span>
+              {step.elapsed_ms != null && (
+                <span className="agent-step-ms">
+                  {step.elapsed_ms >= 1000
+                    ? `${(step.elapsed_ms / 1000).toFixed(1)}s`
+                    : `${step.elapsed_ms}ms`}
+                </span>
               )}
             </div>
             <StepDetail step={step} />

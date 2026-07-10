@@ -12,10 +12,10 @@
 # Created On  : 2026-07-09
 # ============================================================
 
-"""Agent Team 装配门面。
+"""AgentScope runtime registry 兼容门面。
 
-Leader / Worker 的实际定义与权限装配仍在
-`app.agentscope_service.registry`；本文件只做 re-export。
+新导入边界是 `app.agentscope_runtime.registry`。本文件保留为旧
+`app.domains.agent_team.registry` 调用方的兼容层，不承载 Datalogue task 真相源。
 """
 
 from app.runtime.engine.registry import (  # noqa: F401  兼容迁移中，保留公开导出

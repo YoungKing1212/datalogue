@@ -212,6 +212,11 @@ export function listConversations({ archived = false } = {}) {
   return get(`/api/conversation?archived=${archived}`);
 }
 
+/** 获取左侧功能栏导航数量。 */
+export function listNavigationCounts() {
+  return get('/api/navigation/counts');
+}
+
 /** 创建空对话，返回 ConversationOut */
 export function createConversation({ title = '新对话', thread_id = null, dataset_id = null } = {}) {
   return post('/api/conversation', { title, thread_id, dataset_id });

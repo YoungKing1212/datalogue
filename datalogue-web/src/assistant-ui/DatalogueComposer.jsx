@@ -7,7 +7,7 @@ import {
   unstable_useComposerInputHistory,
   useAuiState,
 } from '@assistant-ui/react';
-import { Icon } from '../components/icons';
+import { Icon } from '../shared/components/icons';
 
 /**
  * DatasetChip — 数据集选择 chip。

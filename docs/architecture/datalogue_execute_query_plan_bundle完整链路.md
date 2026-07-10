@@ -8,7 +8,7 @@
 
 ## 1. 链路定位
 
-`datalogue_execute_query_plan_bundle` 定义在 `datalogue-api/app/agentscope_service/tools.py`，注册为 BI Worker 可调用的非只读 `FunctionTool`。上游提示词要求 BI Worker 在有 `dataset_id` 后按以下骨架工作：
+`datalogue_execute_query_plan_bundle` 定义在 `datalogue-api/app/runtime/engine/tools.py`，注册为 BI Worker 可调用的非只读 `FunctionTool`。上游提示词要求 BI Worker 在有 `dataset_id` 后按以下骨架工作：
 
 1. `datalogue_prepare_query_context`：拿数据集能力、候选资产、蓝图、筛选线索和初始 `context_state`。
 2. `datalogue_request_schema_slice`：拿数据集全量表清单和 relationships。
@@ -20,11 +20,11 @@
 对应代码入口：
 
 - `datalogue-api/app/prompts/agent_team.py`：BI Worker 标准路径和 TeamSay 输出约束。
-- `datalogue-api/app/agentscope_service/tools.py:563`：`datalogue_execute_query_plan_bundle` wrapper。
-- `datalogue-api/app/agentscope_service/bi_worker_runtime.py:51`：`BIWorkerQueryRuntime.execute_query_plan`。
-- `datalogue-api/app/bi/skill/runtime_bridge.py:472`：`AgentScopeDatasetRuntimeBridge.run_direct_query`。
-- `datalogue-api/app/bi/toolkit/atomic.py`：BI 原子工具状态机。
-- `datalogue-api/app/agentscope_service/bi_worker_contracts.py:338`：`BIWorkerQueryResult.to_tool_payload`。
+- `datalogue-api/app/runtime/engine/tools.py`：`datalogue_execute_query_plan_bundle` wrapper。
+- `datalogue-api/app/domains/bi/worker/runtime.py`：`BIWorkerQueryRuntime.execute_query_plan`。
+- `datalogue-api/app/domains/bi/skill/runtime_bridge.py`：`AgentScopeDatasetRuntimeBridge.run_direct_query`。
+- `datalogue-api/app/domains/bi/toolkit/atomic.py`：BI 原子工具状态机。
+- `datalogue-api/app/domains/bi/worker/contracts.py`：`BIWorkerQueryResult.to_tool_payload`。
 
 ## 2. 主流程图
 

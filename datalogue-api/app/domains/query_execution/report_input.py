@@ -83,7 +83,8 @@ def build_sql_result_report_payload(
     row_limit = max(0, int(getattr(resolved_settings, "REPORT_RESULT_MAX_ROWS", 30) or 30))
     cell_max_chars = max(0, int(getattr(resolved_settings, "REPORT_CELL_MAX_CHARS", 120) or 120))
 
-    columns = _safe_columns(source.get("columns"))
+    source_columns = source.get("columns")
+    columns = _safe_columns(source_columns)
     source_rows = _safe_rows(source.get("rows"))
     total_row_count = _safe_int(source.get("row_count"), fallback=len(source_rows))
     visible_rows = source_rows[:row_limit]
@@ -105,7 +106,10 @@ def build_sql_result_report_payload(
         "visible_row_count": len(clipped_rows),
         "total_row_count": total_row_count,
         "visible_column_count": len(columns),
-        "total_column_count": _safe_int(source.get("column_count"), fallback=len(columns)),
+        "total_column_count": _safe_int(
+            source.get("column_count"),
+            fallback=len(source_columns) if isinstance(source_columns, list) else len(columns),
+        ),
         "truncated": bool(
             total_row_count > len(clipped_rows)
             or len(source_rows) > len(clipped_rows)
@@ -218,7 +222,7 @@ def _is_safe_source_key(key: Any) -> bool:
     lowered = key_text.lower()
     if lowered in FORBIDDEN_REPORT_INPUT_KEYS:
         return False
-    if "sql" in lowered or "schema" in lowered or "query_plan" in lowered or "raw" in lowered:
+    if _contains_forbidden_report_token(lowered):
         return False
     return key_text not in {"columns", "rows", REPORT_INPUT_META_KEY}
 
@@ -226,7 +230,12 @@ def _is_safe_source_key(key: Any) -> bool:
 def _safe_columns(value: Any) -> list[Any]:
     if not isinstance(value, list):
         return []
-    return [_clip_cell_value(item, max_chars=120, state=_ClipState()) for item in value]
+    columns: list[Any] = []
+    for item in value:
+        if isinstance(item, str) and not _is_safe_row_key(item):
+            continue
+        columns.append(_clip_cell_value(item, max_chars=120, state=_ClipState()))
+    return columns
 
 
 def _safe_rows(value: Any) -> list[Any]:
@@ -267,7 +276,18 @@ def _is_safe_row_key(key: Any) -> bool:
     key_text = str(key or "").strip()
     if not key_text:
         return False
-    return key_text.lower() not in FORBIDDEN_REPORT_INPUT_KEYS
+    lowered = key_text.lower()
+    # rows 是 Report Worker 真实可见的数据面，字段名必须使用与 source/meta 一致的 denylist。
+    return lowered not in FORBIDDEN_REPORT_INPUT_KEYS and not _contains_forbidden_report_token(lowered)
+
+
+def _contains_forbidden_report_token(lowered_key: str) -> bool:
+    """拦截内部执行态字段名变体，避免 query_plan_dump/raw_payload 等绕过精确 denylist。"""
+
+    return any(
+        token in lowered_key
+        for token in ("sql", "schema", "query_plan", "raw", "repair", "dsl", "debug", "internal")
+    )
 
 
 def _safe_int(value: Any, *, fallback: int) -> int:

@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : team_templates.py
 # Description:
-#   AgentScope Agent Team worker 模板构造入口。
+#   AgentScope Agent Team worker 模板兼容入口。
 #
 # Responsibilities:
-#   - 向 app_factory 暴露 build_datalogue_subagent_templates。
-#   - 保持模板事实源在 registry.py，避免多个文件重复定义 worker 边界。
+#   - 为旧 app.domains.agent_team.team_templates 调用方转发模板构造函数。
+#   - 避免旧 app_factory 启动链反向导入 app.agentscope_runtime 造成 bootstrap 循环。
 #
 # Author      : yangkai
 # Created On  : 2026-07-04

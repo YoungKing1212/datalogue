@@ -12,6 +12,18 @@ vi.mock('../api/client', () => ({
   del: vi.fn(),
 }));
 
+vi.mock('../auth/auth-context', () => ({
+  useAuth: () => ({
+    user: {
+      username: 'kenyang',
+      full_name: 'Ken Yang',
+      email: 'ken@example.test',
+      role: 'admin',
+      is_superuser: true,
+    },
+  }),
+}));
+
 vi.mock('./icons', () => ({
   Icon: ({ name }) => <span data-testid={`icon-${name}`} />,
 }));

@@ -18,6 +18,9 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './tests/setup.js',
+    alias: {
+      echarts: new URL('./tests/mocks/echarts.js', import.meta.url).pathname,
+    },
   },
   server: {
     hmr: {

@@ -78,7 +78,7 @@ vi.mock('../assistant-ui', () => ({
 }));
 
 // Mock 子组件
-vi.mock('../components/icons', () => ({
+vi.mock('../shared/components/icons', () => ({
   Icon: ({ name, style }) => <span data-testid={`icon-${name}`} style={style} />,
 }));
 

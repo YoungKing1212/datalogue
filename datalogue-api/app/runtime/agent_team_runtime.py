@@ -24,12 +24,14 @@ from typing import Any, Protocol
 from agentscope.message import UserMsg
 from sqlalchemy.orm import Session
 
-from app.core.events.projection import build_task_envelope, project_agentscope_event
 from app.core.middlewares.lifecycle import log_lifecycle, log_output
-from app.core.models.agent_team_task import AgentTeamTask
 from app.runtime.thread_resolver import new_runtime_thread_id
-from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
-from app.core.schemas.bi_workbench import DatalogueEventEnvelope
+from app.domains.agent_team.contracts import AgentTeamTask, AgentTeamTaskRequest
+from app.domains.agent_team.event_projection import (
+    DatalogueEventEnvelope,
+    build_task_envelope,
+    project_agentscope_event,
+)
 from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,
@@ -506,17 +508,19 @@ class AgentTeamTaskRuntime:
             # 自动生成会话标题（在后台线程执行，不阻塞主链路）
             if not getattr(task, "_title_generated", False):
                 try:
+                    from app.core.config import get_settings
                     from app.domains.agent_team.title_generator import maybe_auto_title_async
 
-                    maybe_auto_title_async(
-                        session.thread_id,  # type: ignore[arg-type]
-                        request.question,
-                        final_answer,
-                        legacy_conversation_id=request.conversation_id,
-                    )
-                    task._title_generated = True  # type: ignore[attr-defined]
-                    self.db.add(task)
-                    self.db.commit()
+                    if get_settings().DATALOGUE_AUTO_TITLE_ENABLED:
+                        maybe_auto_title_async(
+                            session.thread_id,  # type: ignore[arg-type]
+                            request.question,
+                            final_answer,
+                            legacy_conversation_id=request.conversation_id,
+                        )
+                        task._title_generated = True  # type: ignore[attr-defined]
+                        self.db.add(task)
+                        self.db.commit()
                 except Exception:
                     pass
             self._record_completion_refs(

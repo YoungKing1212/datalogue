@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     AGENT_DEBUG_RAW_LOGS: bool = False
     # 本地调试开关：打开后允许 BI Worker thinking delta 原文进入前端推理摘要；仅限短时排障。
     DATALOGUE_DEBUG_STREAM_RAW_THINKING: bool = False
+    # 自动标题后台线程开关；测试或批处理场景可关闭，避免异步 DB 副作用干扰主链验证。
+    DATALOGUE_AUTO_TITLE_ENABLED: bool = True
 
     # ---- AgentScope OpenTelemetry 配置 ----
     # WARNING: TracingMiddleware 会将模型请求/响应内容（messages、tools schema、

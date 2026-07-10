@@ -7,7 +7,7 @@ import {
   ThreadListPrimitive,
   ThreadListItemPrimitive,
 } from '@assistant-ui/react';
-import { Icon } from '../components/icons';
+import { Icon } from '../shared/components/icons';
 
 function DatalogueThreadListItem({ archived = false }) {
   return (

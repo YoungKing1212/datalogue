@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from app.runtime.engine.client import AgentScopeServiceClient
+from app.agentscope_runtime.client import AgentScopeServiceClient
 from app.core.config import get_settings
 
 

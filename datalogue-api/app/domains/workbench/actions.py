@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core.models.agentscope_workbench import AgentScopeMessage, AgentScopeRef, AgentScopeSession
-from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.domains.agent_team.contracts import AgentTeamTaskRequest
 from app.core.schemas.agentscope_workbench import (
     WorkbenchRetryRequest,
     WorkbenchRetryResponse,

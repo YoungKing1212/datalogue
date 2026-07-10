@@ -22,7 +22,9 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/agentscope-control/status` | AgentScope Service 健康检查 |
+| GET | `/api/agentscope-control/status` | AgentScope Service 健康检查；完整运行时检查项见 `docs/operations/运行时健康检查.md` |
+
+运行时健康检查至少覆盖：AgentScope Service、Redis、Credential、Leader Agent、Session stream、BI Tool、Artifact API、Frontend version。该检查是接手部署和 OpenViking 接入前的产品化验收口径，不替代业务问数回归。
 
 ## 三、数据集治理
 

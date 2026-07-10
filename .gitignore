@@ -14,6 +14,9 @@ feishu-cli-auth-qrcode.png
 outputs
 .omx
 
+# 本地浏览器/E2E 临时截图不要放在仓库根目录；需要长期保存的截图放入 docs/assets/screenshots/。
+/*.png
+
 # Python
 __pycache__/
 *.py[cod]

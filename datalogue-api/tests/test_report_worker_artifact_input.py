@@ -28,14 +28,26 @@ def test_build_sql_result_report_payload_clips_rows_cells_and_drops_internal_fie
 
     payload = build_sql_result_report_payload(
         {
-            "columns": ["name", "note"],
+            "columns": ["name", "note", "raw_payload", "query_plan_dump", "schema_notes"],
             "rows": [
                 {
                     "name": "杨凯",
                     "note": "x" * 20,
                     "raw_score": 9,
+                    "query_plan_dump": {"secret": True},
+                    "raw_payload": {"secret": True},
+                    "schema_notes": "private schema",
                     "raw_rows": [{"secret": "hidden"}],
-                    "nested": {"schema": "private", "display": "safe"},
+                    "nested": {
+                        "schema": "private",
+                        "query_plan_detail": "hidden",
+                        "raw_payload": {"secret": True},
+                        "display": "safe",
+                    },
+                    "children": [
+                        {"display": "safe child", "schema_notes": "private child"},
+                        {"raw_payload": "hidden"},
+                    ],
                 },
                 {"name": "张三", "note": "ok"},
             ],
@@ -51,7 +63,12 @@ def test_build_sql_result_report_payload_clips_rows_cells_and_drops_internal_fie
 
     assert payload["columns"] == ["name", "note"]
     assert payload["rows"] == [
-        {"name": "杨凯", "note": "xxxxxxxx...", "raw_score": 9, "nested": {"display": "safe"}}
+        {
+            "name": "杨凯",
+            "note": "xxxxxxxx...",
+            "nested": {"display": "safe"},
+            "children": [{"display": "safe chi..."}, {}],
+        }
     ]
     assert payload["row_count"] == 5
     assert payload["summary"] == "查询成功"
@@ -60,13 +77,17 @@ def test_build_sql_result_report_payload_clips_rows_cells_and_drops_internal_fie
     assert "query_plan" not in payload
     assert "metadata" not in payload
     assert "raw_rows" not in json.dumps(payload, ensure_ascii=False)
+    assert "raw_score" not in json.dumps(payload, ensure_ascii=False)
+    assert "query_plan_dump" not in json.dumps(payload, ensure_ascii=False)
+    assert "raw_payload" not in json.dumps(payload, ensure_ascii=False)
+    assert "schema_notes" not in json.dumps(payload, ensure_ascii=False)
     assert payload[REPORT_INPUT_META_KEY] == {
         "visible_row_limit": 1,
         "visible_cell_max_chars": 8,
         "visible_row_count": 1,
         "total_row_count": 5,
         "visible_column_count": 2,
-        "total_column_count": 2,
+        "total_column_count": 5,
         "truncated": True,
     }
 
