@@ -36,6 +36,19 @@ export function resolveRecentInitializedRemoteId(maxAgeMs = 10000) {
     : null;
 }
 
+/**
+ * 返回最近 initialize 的 pending 线程 localId。
+ * 供 chat-adapter 在 unstable_threadId 缺失时兜底使用。
+ * 仅当 remoteId 为空（pending）时返回，已有真实会话时返回 null。
+ */
+export function resolveRecentPendingLocalId(maxAgeMs = 30000) {
+  if (!lastInitializedThread) return null;
+  if (lastInitializedThread.remoteId) return null; // 已有真实 remoteId，无需兜底
+  return Date.now() - lastInitializedThread.createdAt <= maxAgeMs
+    ? lastInitializedThread.localId
+    : null;
+}
+
 function rememberResolvedConversation(localThreadId, actualConvId) {
   if (localThreadId == null || actualConvId == null) return;
   const localId = String(localThreadId);
@@ -597,8 +610,10 @@ export class DatalogueThreadListAdapter {
       const m = idMap.get(localId);
       return { remoteId: m.remoteId, externalId: m.externalId };
     }
-    // 仅注册本地映射，不调后端；避免每次点击「新对话」就创建空会话
+    // 仅注册本地映射，不调后端；避免每次点击「新对话」就创建空会话。
+    // 记录最近初始化供 chat-adapter fallback：run() 中 unstable_threadId 可能为 undefined。
     idMap.set(localId, { remoteId: null, externalId: undefined, pending: true });
+    lastInitializedThread = { localId, remoteId: null, createdAt: Date.now() };
     return { remoteId: null, externalId: undefined };
   }
 

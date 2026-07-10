@@ -23,12 +23,14 @@ from app.api import (
     dataset,
     llm,
     messages,
+    navigation,
     workbench,
 )
 
 router = APIRouter()
 
 router.include_router(datasource.router, prefix="/datasource", tags=["数据源"])
+router.include_router(navigation.router, prefix="/navigation", tags=["导航统计"])
 router.include_router(dataset.router, prefix="/dataset", tags=["数据集"])
 router.include_router(llm.router, prefix="/llm", tags=["LLM 配置"])
 router.include_router(auth.router, prefix="/auth", tags=["认证"])

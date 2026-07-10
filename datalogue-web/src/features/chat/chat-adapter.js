@@ -14,7 +14,7 @@
 
 import { agentTeamEnvelopeToChatEvent } from '../../assistant/agent-team-event-adapter';
 import { streamAgentTeamTask } from '../../assistant/agent-team-task-api';
-import { resolveRecentInitializedRemoteId, resolveRemoteId, ensureConversationForThread } from './thread-list-adapter';
+import { resolveRecentInitializedRemoteId, resolveRemoteId, resolveRecentPendingLocalId, ensureConversationForThread } from './thread-list-adapter';
 
 const BUSINESS_SESSION_PREFIX = 'assistant-thread';
 
@@ -991,12 +991,15 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         ? normalizeConversationId(resolvedRemoteId)
         : conversationIdFromCurrentRoute() || normalizeConversationId(unstable_threadId);
 
-      // 首条消息：懒创建后端会话（此前 initialize 仅在本地注册 pending 映射）
-      if (!routeConvId && unstable_threadId) {
-        const newRemoteId = await ensureConversationForThread(unstable_threadId);
+      // 首条消息：懒创建后端会话（此前 initialize 仅在本地注册 pending 映射）。
+      // assistant-ui useLocalRuntime 对草稿 thread 可能不传 unstable_threadId，
+      // 此时通过 resolveRecentPendingLocalId 找到最近 init 的 pending 线程。
+      const effectiveThreadId = unstable_threadId || resolveRecentPendingLocalId();
+      if (!routeConvId && effectiveThreadId) {
+        const newRemoteId = await ensureConversationForThread(effectiveThreadId);
         if (newRemoteId) {
           routeConvId = normalizeConversationId(newRemoteId);
-          emitResolvedConversation(unstable_threadId, newRemoteId);
+          emitResolvedConversation(effectiveThreadId, newRemoteId);
           // 触发 sidebar 刷新与 thread 切换，让新会话出现在列表中并获得真实 remoteId
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('datalogue:thread-rename', {

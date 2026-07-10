@@ -490,12 +490,7 @@
 
 - 涉及文件：`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/components/workbench-route.jsx`、`datalogue-web/src/assistant/workbench-mount-source.js`、`datalogue-web/src/assistant/workbench-mount-source.test.js`。
 - 关键改动：普通 `/chat` 与 `/chat/:id` 不再默认挂载 `WorkbenchPanel`，把 Workbench 常驻侧栏从 Chat 主链上摘掉；新增 `classifyWorkbenchMountSource` 和 `isAllowedWorkbenchRecoverySource`，把普通聊天、隐藏恢复壳、旧镜像、显式恢复分成 fail-closed 的受控来源；`/workbench` 隐藏路由仍保留，但仅在恢复来源合法时渲染；补测试确认普通 Chat 不再出现工作台面板，同时覆盖普通聊天、隐藏恢复壳、旧镜像、显式恢复与冲突输入的分类结果。
-- 验证方式：`npm test -- --run src/components/chat-page.test.jsx src/components/workbench-route.test.jsx src/assistant/workbench-api.test.js src/assistant/workbench-mount-source.test.js`（34/34 通过）；`npm run lint`（0 errors，保留仓库既有 warnings）；`npm run build` 成功产出前端构建。
-- 残留风险或后续事项：`/workbench` 隐藏壳与 `/api/workbench/*` 仍保留，下一批需要继续收口结果详情/失败态/retry 的 Chat 侧承接，并在主路径流量归零后再走彻底退役；当前 lint 仍存在与本次无关的既有 warnings，未处理仓库历史债务。
 
-
-
-### 2026-07-09 12:45 · 数据源适配 domain 下沉与 Workbench 挂载源收口
 
 - 完成时间：2026-07-09 12:45。
 - 功能名称：数据源适配 domain 下沉与 Workbench 挂载源收口。
@@ -597,6 +592,24 @@
 - 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_report_worker_artifact_input.py datalogue-api/tests/test_agentscope_service_tools.py datalogue-api/tests/test_agentscope_static_agent_registry.py -q`，结果 `33 passed`；执行 `pytest datalogue-api/tests/test_artifact_api.py datalogue-api/tests/test_bi_lead_agent_native_handoff.py datalogue-api/tests/test_agentscope_service_worker_logging.py -q`，结果 `53 passed`；执行 `cd datalogue-web && npm run test -- DatalogueMessage.test.jsx`，结果 `6 passed`；执行 `npm run lint`，结果 0 errors、13 个既有 warnings；执行 `npm run build` 成功，保留现有大 chunk warning；调用 Claude Code review，结论为无阻塞问题，并按建议补强了 report input 边界测试与 `create_query_artifact` 链路。
 - 残留风险或后续事项：本轮不新增报告持久化表、不新增报告文件 artifact 类型、不新增 Workbench 报告面板；Leader 何时派生 Report Worker 仍依赖模型遵循 prompt，后续如需更强确定性，可在 Agent Team runner 层增加成功查询后的策略性 report worker 创建闸门。
 
+### 2026-07-09 17:06 · Datalogue 2026 下半年工作规划
+
+- 完成时间：2026-07-09 17:06。
+- 功能名称：Datalogue 2026 下半年工作规划。
+- 涉及文件：`.omx/plans/2026-07-09-datalogue-h2-work-plan.md`、`.codex/project-memory.md`。
+- 关键改动：新增下半年工作规划文档，按 BI Worker 查询可靠性、Report Worker、assistant-ui 聊天体验、Workbench 退役、AgentScope 原生化与观测、数据源语义治理、认证权限、工程治理八条主线组织；拆分 2026 年 7 月至 12 月月度路线图、P0/P1/P2 优先级、风险控制和近期两周行动清单。
+- 验证方式：文档型变更，基于 `docs/上下文入口.md`、`.omx/plans/2026-07-09-assistant-ui-stream-tool-multi-agent-plan.md`、`.omx/plans/workbench-retention-consensus-plan.md`、`.omx/interviews/report-agent-20260709T075403Z.md`、`docs/architecture/系统架构.md` 与 `.codex/project-memory.md` 当前记录交叉整理；未运行代码测试。
+- 残留风险或后续事项：规划需要随 BI Worker E2E、Report Worker 实施、Workbench retention gate 真实埋点和权限闭环进展持续更新；当前尚未拆成飞书任务或具体执行分支。
+
+### 2026-07-09 17:12 · Datalogue 下半年规划同步 Obsidian
+
+- 完成时间：2026-07-09 17:12。
+- 功能名称：Datalogue 下半年规划同步 Obsidian。
+- 涉及文件：`/Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/规划/Datalogue 2026 下半年工作规划.md`、`.codex/project-memory.md`。
+- 关键改动：将 `.omx/plans/2026-07-09-datalogue-h2-work-plan.md` 同步到默认 Obsidian vault 的数语规划目录，保留原 Markdown 内容和中文标题，便于在个人知识库中继续查阅和迭代。
+- 验证方式：执行 `ls -l /Users/yangkai/KenYang/文档库/develop-doc-repositry/工作知识库/2026/数语/规划`，确认目标文件已生成，文件大小为 14411 bytes。
+- 残留风险或后续事项：本次是单次复制同步，后续若项目内规划继续修改，需要再次同步到 Obsidian，避免两边内容漂移。
+
 ### 2026-07-09 18:45 · AgentScope runtime 新目录边界 facade
 
 - 完成时间：2026-07-09 18:45。
@@ -623,4 +636,214 @@
 - 关键改动：新增 `contracts`、`event_projection`、`retry_actions`、`task_runtime`、`workbench_view` 五个 canonical facade，明确 `domains/agent_team` 只承载 Datalogue 对外 task 真相源、Workbench view/retry action 和 AgentScope event 到 Datalogue event envelope 的投影；API、Workbench、AgentTeamTaskRuntime 与 Workbench DTO 调用方切到新 facade；旧 `registry`、`runner`、`projection`、`team_templates` 继续作为兼容门面并在注释中标清 AgentScope runtime 入口归 `app.agentscope_runtime`，其中 `team_templates` 保持直连旧实现以避免旧 app_factory 启动链反向导入新包造成循环。
 - 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m py_compile datalogue-api/app/agentscope_runtime/__init__.py datalogue-api/app/domains/agent_team/__init__.py datalogue-api/app/domains/agent_team/contracts.py datalogue-api/app/domains/agent_team/event_projection.py datalogue-api/app/domains/agent_team/retry_actions.py datalogue-api/app/domains/agent_team/task_runtime.py datalogue-api/app/domains/agent_team/workbench_view.py datalogue-api/app/api/agent_team.py datalogue-api/app/api/workbench.py datalogue-api/app/runtime/agent_team_runtime.py datalogue-api/app/domains/workbench/actions.py datalogue-api/app/core/schemas/agentscope_workbench.py datalogue-api/app/domains/agent_team/registry.py datalogue-api/app/domains/agent_team/runner.py datalogue-api/app/domains/agent_team/projection.py datalogue-api/app/domains/agent_team/team_templates.py datalogue-api/tests/test_directory_facades.py` 通过；执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_directory_facades.py datalogue-api/tests/test_agent_team_task_contracts.py datalogue-api/tests/test_agent_team_task_runtime.py datalogue-api/tests/test_agentscope_agent_team_task_runner.py datalogue-api/tests/test_workbench_agent_team_retry_writer.py datalogue-api/tests/test_workbench_agent_team_task_actions.py datalogue-api/tests/test_workbench_view_api.py datalogue-api/tests/test_agentscope_service_imports.py datalogue-api/tests/test_agentscope_service_worker_logging.py -q`，结果 `81 passed, 3 warnings`；执行 `git diff --check` 通过；调用 Claude Code Review，产物 `.omx/artifacts/ask-claude-g051-domains-agent-team-boundary-20260709T191834+0800.md`，结论 `APPROVE`、无阻塞问题。
 - 残留风险或后续事项：本轮是 facade-first 边界收口，未物理迁移旧 `worker_logging`、`task_context`、`progress_bridge` 等兼容文件；后续 G054/G055 迁移调用方或做物理目录整理时，需要继续验证 AgentScope Service 启动链、Workbench retry 和用户可见 event envelope 不漂移。
+<<<<<<< Updated upstream
 >>>>>>> main
+=======
+
+### 2026-07-09 19:35 · Agent Team runtime 自动标题测试隔离
+
+- 完成时间：2026-07-09 19:35。
+- 功能名称：Agent Team runtime 自动标题测试隔离。
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/runtime/agent_team_runtime.py`、`datalogue-api/tests/test_agent_team_task_runtime.py`、`.codex/project-memory.md`。
+- 关键改动：新增 `DATALOGUE_AUTO_TITLE_ENABLED` 配置并默认开启；runtime 在启动 `maybe_auto_title_async` 前检查该开关；Agent Team runtime 单元测试默认关闭自动标题后台 DB 线程，并新增关闭开关防回归测试，避免 pytest teardown 时 daemon 线程连库触发 C 扩展 segfault。
+- 验证方式：先新增失败测试 `test_agent_team_task_runtime_skips_auto_title_when_disabled`，确认关闭环境变量后仍调用 auto-title；实现后执行 `test_agent_team_task_runtime.py`，结果 `6 passed, 3 warnings`；执行 G051 目标回归，结果 `82 passed, 3 warnings`；`py_compile`、`git diff --check` 通过；Claude Code Review 产物 `.omx/artifacts/ask-claude-g051-auto-title-test-isolation-20260709T192714+0800.md`，结论 `APPROVE`、无阻塞问题。
+- 残留风险或后续事项：生产默认仍开启自动标题；daemon 线程模式长期仍建议改为可管理任务队列或生命周期可 join 的后台任务。
+
+### 2026-07-09 19:45 · G052 AgentScope runtime facade 验证与 lifespan 测试隔离
+
+- 完成时间：2026-07-09 19:45。
+- 功能名称：G052 AgentScope runtime facade 验证与 lifespan 测试隔离。
+- 涉及文件：`datalogue-api/tests/test_agentscope_service_factory.py`、`.omx/artifacts/claude-review-datalogue-g052-g052-app-agentscope-service-app-agents-2026-07-09T11-35-55-764Z.md`、`.codex/project-memory.md`。
+- 关键改动：确认 `app.agentscope_runtime` facade 已存在且旧 `app/agentscope_service` 目录未直接回流；修复 AgentScope Service factory 的两个 FastAPI lifespan 单测隔离缺口，在验证子应用 lifespan 和 OTel 顺序时显式 mock `_bootstrap_admin_if_needed`，避免测试误连真实 PostgreSQL。
+- 验证方式：RED 证据为原始 `test_main_lifespan_enters_mounted_agentscope_service_lifespan` 触发 `main.lifespan -> _bootstrap_admin_if_needed -> SessionLocal -> psycopg2.connect` segfault；补丁后两个最小 lifespan 测试 `2 passed, 3 warnings`；隔离工作树 G052 回归 `68 passed, 3 warnings`；主工作区 G052 直接 facade 证据 `test_directory_facades.py test_agentscope_service_imports.py test_agentscope_service_projection.py` 为 `23 passed, 3 warnings`，并通过脚本确认 `app.agentscope_runtime` 存在、`app/agentscope_service` 不存在、facade 不暴露 `build_datalogue_extra_agent_tools`；Claude Code Review 结论 `可以合并，无阻塞问题`。
+- 残留风险或后续事项：主工作区仍有未提交 `datalogue-api/app/runtime/engine/registry.py` 改动，把 worker 模板从 `bi/report/python/audit` 临时变为 `bi/report`，因此完整 `tests/test_agentscope_service_factory.py tests/test_agentscope_static_agent_registry.py` 在主工作区当前态会因测试期待不一致失败；该业务边界变更未在本轮擅自提交或回滚。
+
+### 2026-07-09 19:50 · G053 BI runtime context 与 Skill/Toolkit 边界文档
+
+- 完成时间：2026-07-09 19:50。
+- 功能名称：G053 BI runtime context 与 Skill/Toolkit 边界文档。
+- 涉及文件：`docs/architecture/目录治理与模块边界.md`、`docs/architecture/系统架构.md`、`docs/architecture/datalogue_execute_query_plan_bundle完整链路.md`、`.omx/artifacts/claude-review-g053-bi-boundary-doc-20260709T194901+0800.md`、`.codex/project-memory.md`。
+- 关键改动：在目录治理文档新增 `BI runtime context / Skill / Toolkit 边界` 表，明确旧 `app/agents/bi_agent/runtime_context.py`、`app/bi/skill`、`app/bi/toolkit` 已退役，不作为当前实现或导入入口；当前 canonical owner 为 `app.domains.bi.agent.runtime_context`、`app.domains.bi.skill`、`app.domains.bi.toolkit`、`app.domains.bi.worker`。同步更新系统架构的 `agentscope_runtime` 与 `domains/bi` 文件清单，并修正 `datalogue_execute_query_plan_bundle` 链路文档中的当前真实代码入口。
+- 验证方式：执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_directory_facades.py::test_domains_bi_boundary_is_canonical_source_for_bi_capabilities -q`，结果 `1 passed, 3 warnings`；执行 `domains_bi_boundary_imports_ok` smoke，确认 `build_bi_runtime_context`、`DatasetQuerySkill`、`AgentScopeDatasetRuntimeBridge`、`build_bi_atomic_toolkit` 均归属 `app.domains.bi.*`；执行 `git diff --check HEAD~1..HEAD` 通过；Claude Code Review 首轮发现旧路径残留，修复后复核结论为 `阻塞项已关闭，可以合并`。
+- 残留风险或后续事项：`docs/architecture/OpenViking-Service交接记忆.md` 仍保留历史交接视角中的 `agentscope_service` 旧路径，本轮按 G053 范围未展开整理；后续若要把 `docs/architecture` 全量变为当前态，需要单独做历史文档归档或加明确过期标记。
+
+### 2026-07-09 20:05 · G054 AgentScope runtime 调用方 facade 迁移
+
+- 完成时间：2026-07-09 20:05。
+- 功能名称：G054 AgentScope runtime 调用方 facade 迁移。
+- 涉及文件：`datalogue-api/app/agentscope_runtime/client.py`、`datalogue-api/app/main.py`、`datalogue-api/app/api/agent_team.py`、`datalogue-api/app/api/agentscope_control_plane.py`、`datalogue-api/app/api/llm.py`、`datalogue-api/app/core/llm_config.py`、`datalogue-api/tests/test_agentscope_service_imports.py`、`datalogue-api/tests/test_directory_facades.py`、`.omx/artifacts/claude-review-g054-callers-to-facade-20260709T200500+0800.md`、`.codex/project-memory.md`。
+- 关键改动：将已有测试覆盖的生产调用方从旧 `app.runtime.engine` 入口迁移到 `app.agentscope_runtime` facade，包括 FastAPI 主入口的嵌入式 AgentScope app/OTel、Agent Team runner 构造、AgentScope 控制面、LLM API 和 LLM 配置默认用户常量；`app.agentscope_runtime.client` 增补 `DEFAULT_AGENTSCOPE_USER_ID` re-export，保持与旧实现常量同源；新增静态回归测试，防止这批已覆盖调用方重新直接导入 `app.runtime.engine`。
+- 验证方式：在干净 G054 工作树执行 `PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_directory_facades.py datalogue-api/tests/test_agentscope_service_imports.py datalogue-api/tests/test_agentscope_service_factory.py datalogue-api/tests/test_agent_team_task_runtime.py datalogue-api/tests/test_agentscope_service_client.py datalogue-api/tests/test_agentscope_control_plane_api.py datalogue-api/tests/test_agentscope_llm_resource_boundary.py -q`，结果 `41 passed, 3 warnings`；执行 `py_compile` 覆盖本轮变更的 6 个生产文件，通过；执行 `git diff --check` 通过；Claude Code Review 复审结论为无阻塞问题，可以合并。
+- 残留风险或后续事项：主工作区当前仍有未提交 `datalogue-api/app/runtime/engine/registry.py` 改动，将 worker 模板临时限制为 `bi/report`，因此合并后在主工作区直接跑同一验证集时 `test_agentscope_service_factory.py::test_create_embedded_runtime_app_wires_redis_and_workspace` 会因测试期望仍包含 `python/audit` 而失败；该失败与 G054 facade 调用方迁移无关，本轮未擅自回滚或提交该既有业务边界改动。
+
+### 2026-07-09 20:22 · G055 物理搬迁决策
+
+- 完成时间：2026-07-09 20:22。
+- 功能名称：G055 物理搬迁决策。
+- 涉及文件：`docs/architecture/目录治理与模块边界.md`、`.omx/artifacts/claude-review-g055-physical-move-decision-20260709T202200+0800.md`、`.codex/project-memory.md`。
+- 关键改动：在 facade-first ADR 中新增 `G055 物理搬迁决策` 小节，明确当前暂不启动 AgentScope runtime、Agent Team、BI runtime 或前端目录的物理文件搬迁；确认 G049-G054 已完成 facade 入口和已有测试覆盖调用方迁移，但旧实现文件继续保留在原路径；定义后续重新评估物理搬迁的四个开放条件，包括 G056-G059 回归闸门、无重叠未提交改动、旧路径兼容壳/静态导入测试、单 owner 域小闭环移动。
+- 验证方式：执行 `git diff --check HEAD~1..HEAD` 通过；执行 `rg -n "G055|G056|G057|G058|G059|物理搬迁" docs/architecture/目录治理与模块边界.md`，确认 G055 决策和 G056-G059 验收标准均已落档；Claude Code Review 首轮指出 G056-G059 未定义，补齐后复审结论为无阻塞问题。
+- 残留风险或后续事项：G056-G059 当前是文档闸门定义，后续各故事需要在自身交付中补充可计数测试清单；物理移动仍需等这些闸门通过后重新评估并单独提交。
+
+### 2026-07-09 20:38 · G056 Agent Team SSE API 测试闸门
+
+- 完成时间：2026-07-09 20:38。
+- 功能名称：G056 Agent Team SSE API 测试闸门。
+- 涉及文件：`datalogue-api/tests/test_agent_team_stream_api.py`、`.codex/project-memory.md`。
+- 关键改动：新增 `/api/agent-team/tasks/stream` 接口级测试，使用 fake AgentScope runner 直接打 FastAPI SSE 路由，覆盖成功流 `task.started -> agent.selected -> message.delta -> message.completed -> task.completed`，并覆盖 runner 异常时 API 仍输出 `task.failed`、只暴露 `AGENT_TEAM_TASK_FAILED` 安全摘要、不泄露 `select * from hidden_table` 或内部表名；测试 fixture 关闭自动标题线程并重置 `sse_starlette` 的 `AppStatus` 全局事件，避免多次 TestClient 流请求跨 event loop 污染。
+- 验证方式：在独立工作树和主工作区均执行 `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.../datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_agent_team_stream_api.py datalogue-api/tests/test_agent_team_task_runtime.py datalogue-api/tests/test_agent_team_task_contracts.py -q`，结果均为 `13 passed, 3 warnings`；执行 `py_compile datalogue-api/tests/test_agent_team_stream_api.py` 和 `git diff --check` 通过；Claude Code Review 对首版测试给出无阻断结论，并提出事件空流断言、避免固定索引等 Major 建议，均已修复并重新验证通过；最终版 Claude 复审因 CLI 超时未返回正文。
+- 残留风险或后续事项：本轮只补 API SSE 测试闸门，不改生产实现；主工作区仍保留既有未提交 `registry.py` worker 模板改动，该改动会影响 broader AgentScope factory 期望，本轮未回滚或纳入提交。
+
+### 2026-07-09 20:46 · G057 AgentScope Service 关键子集测试闸门
+
+- 完成时间：2026-07-09 20:46。
+- 功能名称：G057 AgentScope Service 关键子集测试闸门。
+- 涉及文件：`datalogue-api/tests/test_agentscope_service_factory.py`、`.omx/artifacts/claude-review-g057-agentscope-service-tests-20260709T204625+0800.md`、`.codex/project-memory.md`。
+- 关键改动：将 `test_create_embedded_runtime_app_wires_redis_and_workspace` 中 `custom_subagent_templates` 的硬编码四类 worker 断言改为对齐 `build_datalogue_worker_template_specs()` 当前 registry 输出，明确 factory 测试只验证 AgentScope create_app 装配与 registry 透传语义；精确 worker 类型快照继续由 `test_agentscope_static_agent_registry.py` 负责兜底。该改动兼容主工作区当前未提交的 `registry.py` worker 模板边界调整，不回滚用户改动。
+- 验证方式：在独立工作树执行 `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.../.worktrees/codex-g057-agentscope-service-tests/datalogue-api .../.venv/bin/python -m pytest datalogue-api/tests/test_agentscope_service_imports.py datalogue-api/tests/test_agentscope_service_factory.py datalogue-api/tests/test_agentscope_service_worker_logging.py datalogue-api/tests/test_agentscope_service_projection.py datalogue-api/tests/test_agentscope_service_client.py datalogue-api/tests/test_agentscope_service_tools.py -q`，结果 `75 passed, 3 warnings`；合入主工作区后用当前未提交 registry 改动再次执行同一 service 子集，结果 `75 passed, 3 warnings`；`py_compile datalogue-api/tests/test_agentscope_service_factory.py` 和 `git diff --check HEAD -- datalogue-api/tests/test_agentscope_service_factory.py` 通过；Claude Code Review 结论为无阻断、无 Major，Minor 建议已通过注释和现有 static registry 测试职责说明收口。
+- 残留风险或后续事项：主工作区 `datalogue-api/app/runtime/engine/registry.py` 仍是未提交业务边界改动，`test_agentscope_static_agent_registry.py` 若在当前主工作区直接执行仍会按硬编码四类 worker 快照失败；该问题属于 registry 业务决策本身，不在 G057 service 子集范围内。
+
+### 2026-07-09 20:47 · G058 BI Lead Agent native handoff 测试闸门
+
+- 完成时间：2026-07-09 20:47。
+- 功能名称：G058 BI Lead Agent native handoff 测试闸门。
+- 涉及文件：`.codex/project-memory.md`、`.omx/artifacts/get-goal-g058-bi-lead-agent-native-handoff-20260709T204746+0800.json`。
+- 关键改动：本轮为验证型 story，无生产代码或测试代码改动；确认当前主工作区状态下 `tests/test_bi_lead_agent_native_handoff.py` 可通过，作为 AgentScope / BI 主链后续目录治理前的 native handoff 回归闸门。
+- 验证方式：执行 `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/Users/yangkai/code_place/study/python/Datalogue/datalogue-api /Users/yangkai/code_place/study/python/Datalogue/datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_bi_lead_agent_native_handoff.py -q`，结果 `14 passed, 3 warnings`。
+- 残留风险或后续事项：本轮未处理主工作区既有未提交 `registry.py` worker 模板边界改动；该改动与 G058 native handoff 单测无直接冲突。
+
+### 2026-07-09 20:48 · G059 Workbench retry/action/view 测试闸门
+
+- 完成时间：2026-07-09 20:48。
+- 功能名称：G059 Workbench retry/action/view 测试闸门。
+- 涉及文件：`.codex/project-memory.md`、`.omx/artifacts/get-goal-g059-workbench-retry-action-view-20260709T204842+0800.json`。
+- 关键改动：本轮为验证型 story，无生产代码或测试代码改动；确认 Workbench retry writer、Agent Team task action、Workbench view API 三组测试在当前主工作区可通过，作为目录边界继续推进前的 Workbench 回归闸门。
+- 验证方式：执行 `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/Users/yangkai/code_place/study/python/Datalogue/datalogue-api /Users/yangkai/code_place/study/python/Datalogue/datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_workbench_agent_team_retry_writer.py datalogue-api/tests/test_workbench_agent_team_task_actions.py datalogue-api/tests/test_workbench_view_api.py -q`，结果 `10 passed, 3 warnings`。
+- 残留风险或后续事项：本轮只完成后端 Workbench retry/action/view 单测闸门；后续前端目录规划和页面 smoke 仍由 G060-G067 继续处理。
+
+### 2026-07-09 21:01 · G060 前端 src/app 应用壳规划
+
+- 完成时间：2026-07-09 21:01。
+- 功能名称：G060 前端 `src/app` 应用壳规划。
+- 涉及文件：`datalogue-web/src/app/README.md`、`docs/architecture/目录治理与模块边界.md`、`.omx/artifacts/claude-review-g060-frontend-app-shell-plan-20260709T205900+0800.md`、`.codex/project-memory.md`。
+- 关键改动：新建 `datalogue-web/src/app/README.md`，只落前端应用壳目标域规划，不搬迁 `src/App.jsx`、`src/components/sidebar.jsx` 或任何页面源码；明确当前 App shell、TopBar、Sidebar、routes、auth guard、theme tweak 的现有归属，规划后续 `app-root.jsx`、`app-shell.jsx`、`routes.jsx`、`topbar.jsx`、`sidebar.jsx`、`navigation.js`、`theme.js` 的边界与迁移顺序；同步在目录治理 ADR 中新增 G060 小节，要求后续源码拆分先建薄 re-export、保持 `/login`、`/chat/:id`、`/workbench/:threadId`、`/workbench/:threadId/:artifactRef`、`/users` 路由和鉴权语义不变，并执行 `npm run lint`、`npm run build`、`npm run test`。
+- 验证方式：执行 `git diff --check` 通过；执行 `rg -n "G060|src/app|RequireAuth|RequireSuperuser|npm run test|/workbench/:threadId" datalogue-web/src/app/README.md docs/architecture/目录治理与模块边界.md`，确认关键锚点齐全；调用 Claude Code Review，最终复审产物 `.omx/artifacts/claude-review-g060-frontend-app-shell-plan-20260709T205900+0800.md`，结论为 Blocker/Major/Minor 均为 0、无阻断问题。
+- 残留风险或后续事项：本轮是文档规划和目标目录占位，不执行前端源码拆分、不跑 `npm run lint/build/test`；后续真正迁移 `TopBar`、`Sidebar`、routes 或 theme 时必须单独提交并执行上述前端验证与桌面 smoke。
+
+### 2026-07-09 21:28 · G061 Chat 功能域搬迁与旧入口兼容
+
+- 完成时间：2026-07-09 21:28。
+- 功能名称：G061 Chat 功能域搬迁与旧入口兼容。
+- 涉及文件：`datalogue-web/src/features/chat/*`、`datalogue-web/src/assistant/chat-adapter.js`、`datalogue-web/src/assistant/thread-list-adapter.js`、`datalogue-web/src/assistant/Thread.jsx`、`datalogue-web/src/assistant/ThreadList.jsx`、`datalogue-web/src/assistant/MyComposer.jsx`、`datalogue-web/src/assistant/MyMessage.jsx`、`datalogue-web/src/assistant/chat-adapter.test.js`、`docs/architecture/目录治理与模块边界.md`、`.omx/artifacts/claude-review-g061-features-chat-reexports-20260709T212447+0800.md`、`.codex/project-memory.md`。
+- 关键改动：新建 `datalogue-web/src/features/chat` 功能域，迁入普通 Chat 的 `chat-adapter`、`thread-list-adapter`、`Thread`、`ThreadList`、`MyComposer`、`MyMessage` 实现；旧 `src/assistant/*` 同名入口缩为薄 re-export，保证现有调用方继续可用；保留并补强主工作区已有的首条消息懒创建后端会话逻辑，新增 pending 草稿 fetch 防御、懒创建失败重试边界和成功后的 `datalogue:conv-resolved` 事件派发；同步更新 Chat 功能域 README 与目录治理 ADR 的 G061 边界记录。
+- 验证方式：在 G061 独立工作树执行 `git diff --check` 通过；执行 `npm run test -- src/assistant/chat-adapter.test.js src/assistant/thread-list-adapter.test.js src/assistant/MyMessage.test.jsx src/components/chat-page.test.jsx`，结果 `4 passed, 80 passed`；执行 `npm run lint` 通过，保留既有 `13 warnings, 0 errors`；执行 `npm run build` 通过，保留 Vite 大 chunk warning；完整 `npm run test` 在本轮中曾因既有 `assistant-ui/DatalogueMessage.test.jsx` 缺少 `echarts` 依赖和 `components/settings.test.jsx` 缺少 `AuthProvider` 包裹失败，属于 G061 外部测试债务；Claude Code Review 最终产物 `.omx/artifacts/claude-review-g061-features-chat-reexports-20260709T212447+0800.md`，结论为 Blocker 0、Major 0、可以合并。
+- 残留风险或后续事项：主工作区合并前将旧 `src/assistant/chat-adapter.js` 与 `src/assistant/thread-list-adapter.js` 的未提交脏改动以 `git stash push -m "pre-g061 assistant adapter dirty backup" -- ...` 方式保存备份；最终提交已吸收这些懒创建会话改动到 `src/features/chat`。后续应把 `src/assistant/chat-adapter.test.js` 迁入 `src/features/chat/__tests__` 或同等测试目录，并在所有生产调用方收口到 `src/features/chat` 后再删除旧兼容壳。
+
+### 2026-07-09 21:36 · G062 Assistant 与 assistant-ui 前端边界
+
+- 完成时间：2026-07-09 21:36。
+- 功能名称：G062 Assistant 与 assistant-ui 前端边界。
+- 涉及文件：`datalogue-web/src/assistant/README.md`、`datalogue-web/src/assistant-ui/README.md`、`docs/architecture/目录治理与模块边界.md`、`.omx/artifacts/claude-review-g062-assistant-boundaries-20260709T213420+0800.md`、`.codex/project-memory.md`。
+- 关键改动：新增 `src/assistant` 目录护栏，明确该目录只保留 runtime adapter、API adapter、event adapter，以及已存在 Chat re-export 兼容壳，不再承载普通 Chat UI 实现；新增 `src/assistant-ui` 目录护栏，明确该目录只保留 assistant-ui 视觉组件、message parts 用户可见渲染和展示层安全过滤，不直接访问后端 HTTP/SSE 或 Workbench API；在目录治理 ADR 新增 G062 小节，固化 `src/assistant`、`src/assistant-ui`、`src/features/chat` 三者边界和测试迁移策略。
+- 验证方式：执行 `git diff --check` 通过；执行 `rg -n "协议层清洗|展示层安全过滤|DatalogueThread|__tests__|lint/build/test|API adapter|event adapter|message parts" ...`，确认关键锚点齐全；Claude Code Review 最终产物 `.omx/artifacts/claude-review-g062-assistant-boundaries-20260709T213420+0800.md`，结论为 Blocker 0、Major 0、可以合并。
+- 残留风险或后续事项：Claude 提出非阻塞 Minor：架构文档 2.2 仍是 Phase A 初始快照，可后续在前端目录继续迁移时加注指向 G055-G062 细化小节；`message-parts.js` 中部分多字段 fallback 仍是历史兼容逻辑，后续协议稳定后可评估是否迁回 adapter 层。
+
+### 2026-07-09 21:55 · G063 Chat 页面与 shared 通用图标迁移
+
+- 完成时间：2026-07-09 21:55。
+- 功能名称：G063 Chat 页面与 shared 通用图标迁移。
+- 涉及文件：`datalogue-web/src/features/chat/chat-page.jsx`、`datalogue-web/src/features/chat/chat-page.test.jsx`、`datalogue-web/src/components/chat-page.jsx`、`datalogue-web/src/components/chat-page.test.jsx`、`datalogue-web/src/shared/components/icons.jsx`、`datalogue-web/src/shared/components/README.md`、`datalogue-web/src/components/icons.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/features/chat/README.md`、`datalogue-web/src/features/chat/MyComposer.jsx`、`datalogue-web/src/features/chat/MyMessage.jsx`、`datalogue-web/src/features/chat/ThreadList.jsx`、`datalogue-web/src/assistant-ui/DatalogueActionBar.jsx`、`datalogue-web/src/assistant-ui/DatalogueComposer.jsx`、`datalogue-web/src/assistant-ui/DatalogueThreadList.jsx`、`datalogue-web/src/assistant/MyMessage.test.jsx`、`docs/architecture/目录治理与模块边界.md`、`.omx/artifacts/claude-review-g063-components-features-shared-final-20260709T215205+0800.md`、`.codex/project-memory.md`。
+- 关键改动：将页面级 `ChatPage` 实现和完整测试迁入 `src/features/chat`，旧 `src/components/chat-page.jsx` 保留薄 re-export 兼容壳，旧 `src/components/chat-page.test.jsx` 改为兼容入口 smoke 测试，避免重复执行完整页面测试；将通用 `Icon` 组件迁入 `src/shared/components/icons.jsx`，旧 `src/components/icons.jsx` 保留 re-export，应用入口、Chat 功能域和 assistant-ui 组件统一改用 shared 图标入口；同步补充 shared README、Chat README 和目录治理 ADR 的 G063 边界记录。
+- 验证方式：在独立工作树完成并 fast-forward 合并到 `main` 后，执行 `git diff --check HEAD^ HEAD` 通过；执行 `npm run test -- src/features/chat/chat-page.test.jsx src/components/chat-page.test.jsx src/assistant/chat-adapter.test.js src/assistant/thread-list-adapter.test.js src/assistant/MyMessage.test.jsx`，结果 `5 passed, 81 passed`；执行 `npm run lint` 通过，保留既有 `13 warnings, 0 errors`；执行 `npm run build` 通过，保留 Vite 大 chunk warning；Claude Code Review 最终产物 `.omx/artifacts/claude-review-g063-components-features-shared-final-20260709T215205+0800.md`，结论为 Blocker 0、Major 0、可以合并。
+- 残留风险或后续事项：Claude 提出非阻塞 Minor：`src/assistant/MyMessage.test.jsx` 仍在旧 assistant 测试目录，后续可随测试目录治理迁入 `features/chat`；旧 `components` 兼容壳当前仍以 `export *` 暴露历史命名导出，后续待调用方完全收口后再缩窄或删除；主工作区仍有既有未提交 `registry.py` 业务边界改动和两张截图，本轮未纳入提交或回滚。
+
+### 2026-07-09 22:08 · G064-G066 前端验证闸门与测试稳定化
+
+- 完成时间：2026-07-09 22:08。
+- 功能名称：G064-G066 前端验证闸门与测试稳定化。
+- 涉及文件：`datalogue-web/src/components/settings.test.jsx`、`datalogue-web/vite.config.js`、`datalogue-web/tests/mocks/echarts.js`、`.omx/artifacts/claude-review-g066-frontend-tests-20260709T220401+0800.md`、`.codex/project-memory.md`。
+- 关键改动：G064/G065 在主工作区确认 `npm run lint` 与 `npm run build` 可通过；G066 在独立工作树补齐前端完整单测的测试隔离，给 `settings.test.jsx` 增加 `auth-context` mock，避免默认账号页渲染时缺少 `AuthProvider`；在 Vitest `test.alias` 中把 `echarts` 指向测试专用轻量 mock，解决动态导入 `echarts` 在测试环境无法解析的问题，且 alias 只在 Vitest 生效，不影响生产构建。
+- 验证方式：G064 执行 `npm run lint`，结果 `0 errors, 13 warnings`；G065 执行 `npm run build`，结果成功，仅保留既有 Vite chunk-size warning；G066 独立工作树和合入主工作区后均执行 `npm run test`，结果 `21 passed, 186 passed`，合入后再次执行 `npm run lint` 与 `npm run build` 均通过；`git diff --check HEAD^ HEAD` 通过；Claude Code Review 产物 `.omx/artifacts/claude-review-g066-frontend-tests-20260709T220401+0800.md` 结论为 APPROVE，无 Blocker/Major，并已采纳其对 ECharts mock 分工注释的 Minor 建议。
+- 残留风险或后续事项：lint 仍有 13 个既有 warning，分布在 `agent-panel.jsx`、`apis.jsx`、`charts.jsx`、`datasets.jsx`、`datasources.jsx`、`editor-modal.jsx`、`notifications.jsx`、`features/chat/MyComposer.jsx`，本轮只保证不新增 error；Vite 大 chunk warning 仍为既有构建体积提示，后续如需处理应单独做代码分包。
+
+### 2026-07-09 22:18 · G067 前端桌面路由 smoke 截图
+
+- 完成时间：2026-07-09 22:18。
+- 功能名称：G067 `/chat`、`/datasets`、`/datasources`、Workbench 桌面 smoke 截图对齐。
+- 涉及文件：`.omx/artifacts/g067-desktop-smoke-20260709T221420+0800/results.json`、`.omx/artifacts/g067-desktop-smoke-20260709T221420+0800/chat.png`、`.omx/artifacts/g067-desktop-smoke-20260709T221420+0800/datasets.png`、`.omx/artifacts/g067-desktop-smoke-20260709T221420+0800/datasources.png`、`.omx/artifacts/g067-desktop-smoke-20260709T221420+0800/workbench.png`、`.omx/artifacts/g067-desktop-smoke-20260709T221420+0800/workbench-real.png`、`.codex/project-memory.md`。
+- 关键改动：本轮为验证型 story，无生产代码或测试代码改动；使用本地前端 `http://localhost:5173` 和后端 `http://127.0.0.1:8000` 的真实运行服务，登录 `admin` 后完成 `/chat`、`/datasets`、`/datasources` 桌面首屏截图和轻量前端交互验证；Workbench 裸 `/workbench` 实际路由为隐藏恢复壳 `/workbench/:threadId`，先保留 fake thread 错误态截图，再用本地已有真实 `as_c63b713b-06c7-41be-8961-c49b37f88709` 补测成功态恢复壳截图。
+- 验证方式：应用内 Browser 插件可连接但 `tab.playwright.domSnapshot()` 触发 `TypeError: o.incrementalAriaSnapshot is not a function`，因此改用同一 Browser 通道的 `evaluate`、locator、console logs 和 screenshot API；四个目标 surface 均无 Vite/React error overlay，console `error/warn` 为空；`/chat` 点击“查看全部模板”、`/datasets` 点击“新建数据集”、`/datasources` 点击“新建数据源”均能触发可见前端状态；Workbench 真实恢复壳显示 `BI WORKBENCH`、消息、任务时间线、引用和产物详情区。
+- 残留风险或后续事项：本轮只覆盖桌面默认视口，不覆盖移动端；Workbench fake thread 只验证错误态外壳，成功态证据依赖当前本地数据库已有历史 `as_*` 线程；Browser 插件 DOM snapshot API 与当前运行时存在兼容问题，后续若要做更细 DOM 断言需升级或修复插件运行时。
+
+### 2026-07-09 22:27 · G068-G069 E2E 截图资产目录治理
+
+- 完成时间：2026-07-09 22:27。
+- 功能名称：G068 根目录 E2E PNG 清点与 G069 文档截图资产迁移。
+- 涉及文件：`.gitignore`、`docs/assets/screenshots/e2e/README.md`、`docs/assets/screenshots/e2e/datalogue-bi-worker-candidate-fallback-desktop.png`、`docs/assets/screenshots/e2e/datalogue-realtime-agent-progress-desktop.png`、`docs/assets/screenshots/e2e/workbench-e2e.png`、`.omx/artifacts/claude-review-g068-g069-doc-assets-20260709T222358+0800.md`、`.codex/project-memory.md`。
+- 关键改动：在独立工作树 `codex/g068-g069-doc-assets` 中将 3 张已跟踪的根目录 E2E 截图以 `git mv` 迁入 `docs/assets/screenshots/e2e/`，保留 Git 历史；新增截图资产清单 README，明确长期文档资产与临时 Browser/Playwright 验证截图的边界；在 `.gitignore` 增加 `/*.png`，阻止新的根目录临时 PNG 被误加入仓库。主工作区已有未跟踪 `chat-after-login.png`、`chat-page-screenshot.png` 被界定为本地临时验证图，本轮不移动、不删除。
+- 验证方式：执行 `git ls-files '*.png' | awk -F/ 'NF==1 {print}'` 无输出，确认已无被 Git 跟踪的根目录 PNG；执行 `git grep -nE '!\\[[^]]*\\]\\((datalogue-bi-worker-candidate-fallback-desktop|datalogue-realtime-agent-progress|workbench-e2e)\\.png\\)' || true` 无输出，确认没有旧路径 markdown 图片引用被破坏；执行 `git diff --check HEAD^ HEAD` 通过；Claude Code Review 产物 `.omx/artifacts/claude-review-g068-g069-doc-assets-20260709T222358+0800.md` 结论为 `APPROVE`，无阻塞问题。
+- 残留风险或后续事项：Claude 提出非阻塞 Minor：`.gitignore` 中既有 `feishu-cli-auth-qrcode.png` 已被新的根目录 `/*.png` 覆盖，后续可在单独清理中移除冗余；本轮未处理主工作区既有未提交 `datalogue-api/app/runtime/engine/registry.py` 业务边界改动。
+
+### 2026-07-09 22:34 · G070-G072 文档入口、归档边界与图片引用治理
+
+- 完成时间：2026-07-09 22:34。
+- 功能名称：G070 `docs/README.md` / `docs/上下文入口.md` 目录说明、G071 `docs/archive/` 只读归档边界、G072 markdown 图片引用验证。
+- 涉及文件：`docs/README.md`、`docs/上下文入口.md`、`docs/archive/README.md`、`docs/archive/old-architecture/assets`、`.omx/artifacts/claude-review-g070-g072-docs-index-20260709T223113+0800.md`、`.codex/project-memory.md`。
+- 关键改动：在文档总索引中补充“入口与当前上下文”“资产与交付物”“历史归档”三类导航；在 AI Agent 上下文入口中新增文档目录边界，明确 `architecture`、`api`、`assets`、`test-reports`、`deliverables`、`archive` 的读取策略；新增 `docs/archive/README.md`，声明 archive 只读、不参与常规上下文；为旧归档 `docs/archive/old-architecture/product/*` 的历史相对图片路径增加 `docs/archive/old-architecture/assets -> ../../assets` 兼容链接，不改写归档正文。
+- 验证方式：执行限定 `docs/` 范围的 `python3` markdown PNG 引用解析脚本，结果 `all docs markdown png image references resolved (39)`；执行 `git diff --check HEAD^ HEAD` 通过；Claude Code Review 产物 `.omx/artifacts/claude-review-g070-g072-docs-index-20260709T223113+0800.md` 结论为 `APPROVE`，确认 symlink 是最小兼容方案且不破坏文档导航。
+- 残留风险或后续事项：本轮没有改写 archive 历史正文；若未来跨平台环境无法保留 symlink，需要再评估复制资产或重写归档路径的替代方案。
+
+### 2026-07-09 22:39 · G073-G074 根目录入口与文档主链说明验证
+
+- 完成时间：2026-07-09 22:39。
+- 功能名称：G073 根目录一级入口文件边界验证与 G074 文档入口主链/目录规划说明验证。
+- 涉及文件：`.codex/project-memory.md`、`.omx/artifacts/get-goal-g073-readme-agents-claude-todos-docker-compose-20260709T223900+0800.json`、`.omx/artifacts/get-goal-g074-doc-entry-main-chain-directory-plan-20260709T224000+0800.json`。
+- 关键改动：本轮为验证型 story，无生产代码或文档代码改动；确认根目录被 Git 跟踪的一级文件只剩 `.gitignore`、`AGENTS.md`、`CLAUDE.md`、`TODOS.md`、`docker-compose.yml`，符合根目录只保留项目入口文件的约束；确认 `docs/上下文入口.md` 已说明当前 AS-R0 主链、AgentScope Service 挂载、Agent Team API 入口和旧 LangGraph 归档边界，`docs/README.md` 已把目录治理文档作为当前上下文入口。
+- 验证方式：执行 `git ls-files | awk -F/ 'NF==1 {print}' | sort`，输出 `.gitignore`、`AGENTS.md`、`CLAUDE.md`、`TODOS.md`、`docker-compose.yml`；读取 `docs/上下文入口.md` 和 `docs/README.md`，确认包含 `AgentScopeServiceTaskRunner`、`/agentscope`、`/api/agent-team/tasks/stream`、`docs/architecture/目录治理与模块边界.md`、`docs/archive/` 只读边界；G070-G072 的 Claude Code Review `.omx/artifacts/claude-review-g070-g072-docs-index-20260709T223113+0800.md` 已对这两个入口文档给出 `APPROVE`。
+- 残留风险或后续事项：根目录仍有未跟踪/忽略的本地运行产物和缓存目录，例如 `.omx/`、`.codex/`、`.worktrees/`、`outputs/`、`logs/`、`chat-after-login.png`、`chat-page-screenshot.png`；它们不属于 Git 跟踪入口文件，本轮不删除。
+
+### 2026-07-09 22:42 · G075-G079 停机闸门未触发确认
+
+- 完成时间：2026-07-09 22:42。
+- 功能名称：G075 facade-only 回退条件、G076 AgentScope E 阶段停机条件、G077 前端 build 停机条件、G078 文档资产暂停条件、G079 用户保持现状条件确认。
+- 涉及文件：`.codex/project-memory.md`、`.omx/ultragoal/ledger.jsonl`、`.omx/ultragoal/goals.json`。
+- 关键改动：本轮为验证型 story，无生产代码或文档代码改动；确认 G075-G079 都是执行计划的条件闸门，而不是需要新增实现的功能。当前执行没有出现大面积循环导入，后端 AgentScope/Agent Team/Workbench 关键子集测试在 G056-G059 已通过，前端 `npm run lint` / `npm run build` / `npm run test` 在 G064-G066 已通过，文档资产引用在 G068-G072 已清点、迁移并验证，用户明确要求继续 `$ultragoal` 开发而不是保持现状。
+- 验证方式：引用前序已 checkpoint 证据：G056-G059 后端关键子集测试、G064-G066 前端 lint/build/test、G068-G072 文档资产与引用验证、G073-G074 入口边界验证均为 complete；`.omx/ultragoal/ledger.jsonl` 记录这些 checkpoint，当前 `omx ultragoal checkpoint` 输出显示 `0 failed, 0 review-blocked, 0 needs-user-decision`。
+- 残留风险或后续事项：这些闸门只说明截至 G079 未触发停机/回退条件；后续 E/F/G 阶段如果出现新的循环导入、AgentScope 主链测试失败、前端构建失败或用户改变方向，仍需要按对应闸门重新停机处理。
+
+### 2026-07-09 22:48 · G080-G085 执行顺序与 Ultragoal 工作流采用确认
+
+- 完成时间：2026-07-09 22:48。
+- 功能名称：G080 Phase A+B、G081 Phase C+D、G082 Phase E、G083 Phase F+G、G084 推荐 Ultragoal 工作流、G085 建议启动执行确认。
+- 涉及文件：`.codex/project-memory.md`、`.omx/ultragoal/goals.json`、`.omx/ultragoal/ledger.jsonl`。
+- 关键改动：本轮为验证型 story，无生产代码或文档代码改动；确认实际执行顺序遵循原计划：先完成目录规划、矩阵和 facade 骨架；再完成数据源/SQL 执行层拆分与测试；随后完成 AgentScope / BI / Agent Team 高风险关键子集测试；最后用独立 worktree 串行合并前端目录治理和文档资产治理，并以 Ultragoal ledger 串行 checkpoint。
+- 验证方式：`.omx/ultragoal/ledger.jsonl` 已记录 G001-G079 的连续完成证据；前端与文档阶段均使用独立 worktree、Claude Code Review 和 fast-forward merge；`$Team` 因当前不在 tmux 中未启动，符合 Team skill 对非 tmux 场景的约束，当前 leader 直接负责 Ultragoal checkpoint。
+- 残留风险或后续事项：这些目标确认的是执行策略已被采用；后续若要真正启用 tmux Team，需要在 `$TMUX` 可用的 OMX CLI 会话中启动。
+
+### 2026-07-09 22:55 · G086-G089 四条执行 lane 收口确认
+
+- 完成时间：2026-07-09 22:55。
+- 功能名称：G086 backend-inventory/facade lane、G087 data-source lane、G088 frontend lane、G089 docs-assets lane 收口确认。
+- 涉及文件：`.codex/project-memory.md`、`.omx/ultragoal/goals.json`、`.omx/ultragoal/ledger.jsonl`、`docs/architecture/目录治理与模块边界.md`、`docs/README.md`、`docs/上下文入口.md`、`docs/assets/screenshots/e2e/README.md`。
+- 关键改动：本轮为验证型 story，无生产代码或文档代码改动；确认四条推荐执行 lane 均已落地：backend-inventory/facade lane 覆盖 G018-G031 和后端域边界；data-source lane 覆盖 G032-G039 的数据源适配拆分与测试；frontend lane 覆盖 G060-G067 的 features/shared/assistant-ui 迁移、lint/build/test 与桌面 smoke；docs-assets lane 覆盖 G068-G074 的根目录 PNG 清理、文档资产目录、文档索引和归档边界。
+- 验证方式：引用前序 checkpoint 证据和 Claude Code Review 产物：G063、G066、G068-G069、G070-G072 均有 `APPROVE` 或无 Blocker/Major 的 review 结果；`omx ultragoal checkpoint` 输出显示截至 G085 为 `0 failed, 0 review-blocked, 0 needs-user-decision`。
+- 残留风险或后续事项：这些节点是对已完成 lane 的审计收口；主工作区仍保留既有未提交 `datalogue-api/app/runtime/engine/registry.py` 业务边界改动，未纳入本轮 lane 收口提交或回滚。
+
+### 2026-07-09 23:00 · G090-G093 Ultragoal 最终质量门禁收口
+
+- 完成时间：2026-07-09 23:00。
+- 功能名称：G090 durable plan 路径确认、G091 context snapshot 路径确认、G092 Team/Ultragoal 授权边界确认、G093 最终质量门禁。
+- 涉及文件：`datalogue-api/app/domains/query_execution/report_input.py`、`datalogue-api/tests/test_report_worker_artifact_input.py`、`.codex/project-memory.md`、`.omx/ultragoal/goals.json`、`.omx/ultragoal/ledger.jsonl`、`.omx/plans/prometheus-strict/deep-directory-planning.md`、`.omx/context/deep-directory-planning-20260709T032633Z.md`、`.omx/artifacts/final-quality-gate-g093-*.json`、`.omx/artifacts/claude-review-final-g093-*.md`。
+- 关键改动：确认 durable plan 与 context snapshot 文件仍存在，确认 `$Team` 因当前 Codex App 会话不在 tmux 中未启动，实际执行采用 Ultragoal ledger、独立 worktree、Claude Code Review 与最终质量门禁串行收口；最终独立代码审查发现 Report Worker rows 清洗只拦截精确字段名，可能让 `query_plan_dump`、`raw_payload`、`schema_notes` 等行字段变体进入报告输入面，因此补充 `_contains_forbidden_report_token()` 并让 source 与 row key 共用包含式 denylist，确保 `sql/schema/query_plan/raw/repair/dsl/debug/internal` 字段名变体都被剔除；同步补充嵌套 dict/list 回归测试。
+- 验证方式：修复前 `test_report_worker_artifact_input.py` 失败并复现 `query_plan_dump/raw_payload/schema_notes/raw_score` 泄漏；修复后 `test_report_worker_artifact_input.py` 为 `7 passed, 3 warnings`，后端关键测试子集加 Report Worker 为 `189 passed, 3 warnings`；执行 `git diff --check` 通过；执行 `git ls-files '*.png' | awk -F/ 'NF==1 {print}'` 无输出；执行 docs markdown PNG 引用解析脚本通过；前端 `npm run test` 为 `21 passed, 186 passed`；`npm run lint` 为 `0 errors, 13 warnings`；`npm run build` 通过，仅保留既有 Vite chunk-size warning；最终 Claude Code Review 和独立代理复审无阻塞问题后，生成 G093 quality gate JSON 并 checkpoint。
+- 残留风险或后续事项：主工作区仍保留既有未提交 `datalogue-api/app/runtime/engine/registry.py` 现场改动，该现场会导致 `test_agentscope_static_agent_registry.py` 的 worker 模板期望和当前运行结果不一致，本轮不回滚；lint 既有 13 个 warning 和 Vite chunk-size warning 后续可单独治理。
+
+### 2026-07-09 23:33 · 左侧功能栏真实数量
+
+- 完成时间：2026-07-09 23:33。
+- 功能名称：左侧功能栏真实数量。
+- 涉及文件：`datalogue-api/app/api/navigation.py`、`datalogue-api/app/api/__init__.py`、`datalogue-api/tests/test_navigation_counts.py`、`datalogue-web/src/api/client.js`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/components/sidebar.test.jsx`、`.codex/project-memory.md`。
+- 关键改动：新增 `/api/navigation/counts` 统一导航统计接口并接入登录鉴权，侧栏数量改为读取数据库真实数量；`dashboard/history/datasets/knowledge/review/datasources` 分别来自 Agent Team task、未归档会话、语义数据集、业务术语加分析蓝图、未通过语义验证项、数据源。当前 API 发布页仍无持久化真相源，因此 `apis` 返回 `null`，前端不再显示原写死 `7`。
+- 验证方式：先按 TDD 确认后端测试因 404 失败、前端测试因仍渲染硬编码数量失败；Claude Code review 首轮指出统计接口缺少认证保护、历史数量包含归档会话，已补充未登录 401 测试和未归档会话口径，复审结论 `APPROVE`、无 Blocker/Major；实现后执行 `./.venv/bin/python -m pytest tests/test_navigation_counts.py tests/test_dataset.py tests/test_datasource.py tests/test_conversation.py -q`，结果 `49 passed, 29 warnings`；执行 `npm run test`，结果 `22 passed, 188 passed`；执行 `npm run lint`，结果 `0 errors, 13 existing warnings`；执行 `npm run build` 通过，仅保留既有 Vite chunk-size warning；最终 `git diff --check` 通过。
+- 残留风险或后续事项：`API 接口` 数量当前不显示，因为仓库尚无发布 API 持久化表；如果后续把 `apis.jsx` 从静态演示页改为真实发布接口管理，需要把该表纳入 `/api/navigation/counts`。
+>>>>>>> Stashed changes

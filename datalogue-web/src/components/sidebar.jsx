@@ -1,7 +1,8 @@
-import React, { Fragment } from 'react';
+import React, { Fragment, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './icons';
 import { useAuth } from '../auth/auth-context';
+import { listNavigationCounts } from '../api/client';
 
 // Sidebar — restructured to match design doc IA: 4 groups.
 // "最近会话"区已迁出至 chat 页面的独立 ThreadList 左列。
@@ -10,8 +11,29 @@ function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [navCounts, setNavCounts] = useState({});
   const path = location.pathname;
   const canManageUsers = user?.role === 'admin' || user?.is_superuser;
+
+  useEffect(() => {
+    let cancelled = false;
+    listNavigationCounts()
+      .then((counts) => {
+        if (!cancelled) setNavCounts(counts || {}); // 真实统计缺失时保持空 badge，不回退到演示数字。
+      })
+      .catch((err) => {
+        console.error('加载导航数量失败:', err);
+        if (!cancelled) setNavCounts({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const countFor = (id) => {
+    const value = navCounts?.[id];
+    return Number.isFinite(value) && value >= 0 ? String(value) : null;
+  };
 
   const isActive = (id) => {
     if (id === 'home') return path === '/';
@@ -27,24 +49,24 @@ function Sidebar() {
       items: [
         { id: 'home',      label: '工作台',     icon: 'home' },
         { id: 'chat',      label: '对话问数',   icon: 'chat' },
-        { id: 'dashboard', label: '监控大盘',   icon: 'layout', count: '6', isNew: true },
-        { id: 'history',   label: '查询历史',   icon: 'history' },
+        { id: 'dashboard', label: '监控大盘',   icon: 'layout', count: countFor('dashboard') },
+        { id: 'history',   label: '查询历史',   icon: 'history', count: countFor('history') },
         { id: 'pinned',    label: '我的收藏',   icon: 'bookmark' },
-        { id: 'apis',      label: 'API 接口',   icon: 'api', count: '7' },
+        { id: 'apis',      label: 'API 接口',   icon: 'api', count: countFor('apis') },
       ],
     },
     {
       label: '语义治理',
       items: [
-        { id: 'datasets',  label: '数据集 & 指标', icon: 'database', count: '24' },
-        { id: 'knowledge', label: '知识库',       icon: 'brain', count: '234', isNew: true },
-        { id: 'review',    label: '审核队列',     icon: 'check', count: '5', isNew: true, dot: true },
+        { id: 'datasets',  label: '数据集 & 指标', icon: 'database', count: countFor('datasets') },
+        { id: 'knowledge', label: '知识库',       icon: 'brain', count: countFor('knowledge') },
+        { id: 'review',    label: '审核队列',     icon: 'check', count: countFor('review'), dot: Number(navCounts?.review || 0) > 0 },
       ],
     },
     {
       label: '数据连接',
       items: [
-        { id: 'datasources', label: '数据源', icon: 'plug', count: '4' },
+        { id: 'datasources', label: '数据源', icon: 'plug', count: countFor('datasources') },
       ],
     },
     {
