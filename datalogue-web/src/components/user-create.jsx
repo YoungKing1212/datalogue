@@ -1,4 +1,4 @@
-import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, message, Typography } from 'antd';
+import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, message, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 
 import {
@@ -9,6 +9,7 @@ import {
   updateUserAccount,
 } from '../api/client';
 import { useAuth } from '../auth/auth-context';
+import { Icon } from './icons';
 
 export function UserCreateScreen() {
   const [createForm] = Form.useForm();
@@ -186,18 +187,32 @@ export function UserCreateScreen() {
     {
       title: '操作',
       key: 'actions',
-      width: 240,
+      width: 168,
       render: (_, record) => {
         const isSelf = currentUser?.id === record.id;
         const canDelete = !record.is_superuser && !isSelf;
         return (
-          <Space size="small">
-            <Button size="small" onClick={() => openEditModal(record)}>
-              编辑
-            </Button>
-            <Button size="small" onClick={() => openResetModal(record)}>
-              重置密码
-            </Button>
+          <Space size={6} className="um-action-group">
+            <Tooltip title="编辑用户" placement="top">
+              <Button
+                type="text"
+                size="small"
+                className="um-action-btn"
+                onClick={() => openEditModal(record)}
+                icon={<Icon name="edit" />}
+              />
+            </Tooltip>
+
+            <Tooltip title="重置密码" placement="top">
+              <Button
+                type="text"
+                size="small"
+                className="um-action-btn"
+                onClick={() => openResetModal(record)}
+                icon={<Icon name="refresh" />}
+              />
+            </Tooltip>
+
             <Popconfirm
               title="确认删除该用户吗？"
               description="删除后将无法恢复。"
@@ -206,9 +221,16 @@ export function UserCreateScreen() {
               onConfirm={() => onDeleteUser(record)}
               disabled={!canDelete}
             >
-              <Button size="small" danger disabled={!canDelete}>
-                删除
-              </Button>
+              <Tooltip title={canDelete ? '删除用户' : '当前用户不可删除'} placement="top">
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  disabled={!canDelete}
+                  className="um-action-btn"
+                  icon={<Icon name="trash" />}
+                />
+              </Tooltip>
             </Popconfirm>
           </Space>
         );
@@ -228,9 +250,6 @@ export function UserCreateScreen() {
               管理平台用户账号，支持查看已有用户并快速创建新用户。
             </Typography.Paragraph>
           </div>
-          <Button type="primary" onClick={() => setCreateOpen(true)}>
-            新建用户
-          </Button>
         </div>
 
         <div className="user-manage-toolbar">
@@ -262,6 +281,11 @@ export function UserCreateScreen() {
             ]}
             className="user-manage-filter"
           />
+
+          <Button className="user-manage-create-btn" onClick={() => setCreateOpen(true)}>
+            <Icon name="plus" />
+            新建用户
+          </Button>
         </div>
 
         <Table

@@ -258,6 +258,27 @@
 - 验证方式：执行 `cd datalogue-api && .venv/bin/python -m pytest tests/test_agentscope_service_tools.py -q` 为 `10 passed, 2 warnings`；执行 `cd datalogue-api && .venv/bin/ruff check app/agentscope_service/tools.py tests/test_agentscope_service_tools.py` 通过；执行 `git diff --check -- datalogue-api/app/agentscope_service/tools.py datalogue-api/tests/test_agentscope_service_tools.py` 通过。
 - 残留风险：本轮只增强工具返回的安全诊断 payload，未做真实页面 smoke；如果前端需要把 `validation_error_details` 做成可视化折叠面板，还需另补 UI 展示和前端测试。
 
+### 2026-07-09 17:08 · 系统设置与用户管理视觉层级精修
+
+- 涉及文件：`datalogue-web/src/styles.css`、`.codex/project-memory.md`
+- 关键改动：在不改信息架构的前提下优化“系统设置 > 用户管理”页面观感。设置页布局从固定窄主栏调整为自适应双栏，减小左侧与主内容区割裂感；设置侧栏改为轻量卡片容器并优化 active 态权重；用户管理嵌入设置页时去掉外层冗余留白和重阴影，避免卡片套卡片；优化筛选工具条和表头层级，使标题区、表格区视觉更统一。
+- 验证方式：执行 `cd datalogue-web && npm run lint && npm run build` 通过；lint 保留仓库既有 warning（无新增 error），build 正常产出。
+- 残留风险：本轮主要是 CSS 精修，未额外做跨浏览器逐项截图回归；若后续新增设置子页存在超宽表格，可能仍需按子模块补充横向滚动与列宽策略。
+
+### 2026-07-09 17:17 · 系统管理子页面配色统一 + 表格图标操作按钮
+
+- 涉及文件：`datalogue-web/src/styles.css`、`datalogue-web/src/components/settings.jsx`、`datalogue-web/src/components/user-create.jsx`、`.codex/project-memory.md`
+- 关键改动：统一系统管理页（设置各子页）的视觉样式，收敛标题字重与色彩、卡片/表单/表格边框与 hover 背景，形成一致的蓝灰配色层级；设置页所有表格操作按钮统一为紧凑图标按钮，并增加 `data-tip` 气泡提示样式（hover/focus 可见）；用户管理（Antd Table）将“编辑/重置密码/删除”改为图标按钮并使用 Tooltip，显著节省操作列宽度。
+- 验证方式：执行 `cd datalogue-web && npm run lint && npm run build` 通过；lint 保留仓库既有 warning（无新增 error），build 正常。
+- 残留风险：设置页的 `data-tip` 是 CSS 气泡，若后续某些容器调整为 `overflow: hidden`，个别位置的气泡可能被裁剪；用户管理页已使用 Antd Tooltip，不受该限制。
+
+### 2026-07-09 17:04 · 登录与网关错误提示可读性修复 + 用户管理入口归位
+
+- 涉及文件：`datalogue-web/src/api/client.js`、`datalogue-web/src/components/sidebar.jsx`、`.codex/project-memory.md`
+- 关键改动：前端 API 客户端 `request()` 在非 2xx 响应时新增统一错误解析，优先提取后端 JSON `detail/message/error`，支持 `detail` 数组和嵌套对象；对反向代理 HTML 错误页做过滤，避免弹窗展示整段 `HTTP 401: Unauthorized` 或 HTML 垃圾文本；当后端无可读文案时按状态码回退为中文提示（含 502 网关异常专用文案）。这样登录接口 `POST /api/auth/login` 返回 `{detail: "用户名或密码错误"}` 时会直接展示该文案，同时 502 也会给用户可理解提示。侧边栏把“系统管理”分组内“用户管理”顺序提前到“系统设置”之前，入口更符合信息架构。
+- 验证方式：执行 `cd datalogue-web && npm run lint`（通过，0 error/13 warning，均为仓库既有 warning）；执行 `cd datalogue-web && npm run build`（通过，Vite 正常构建产物）。
+- 残留风险：本轮未启动 dev server 做手工登录弹窗截图复验；如果后端未来返回非标准错误体（既非 JSON 也非纯文本），前端仍会使用状态码兜底文案。
+
 ### 2026-07-09 16:05 · 用户管理列表页与新建用户弹框
 
 - 涉及文件：`datalogue-api/app/api/auth.py`、`datalogue-api/app/schemas/auth.py`、`datalogue-web/src/components/user-create.jsx`、`datalogue-web/src/api/client.js`、`datalogue-web/src/components/sidebar.jsx`、`datalogue-web/src/App.jsx`、`datalogue-web/src/styles.css`、`.codex/project-memory.md`
