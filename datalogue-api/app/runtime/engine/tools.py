@@ -813,7 +813,7 @@ def build_datalogue_progressive_bi_worker_tools(
             "EMPTY_RESULT",
             "EXECUTE_FAILED",
         }
-        resolved_type = failure_type if failure_type in valid_failure_types else "FIELD_NOT_FOUND"
+        resolved_type = failure_type if failure_type in valid_failure_types else "EXECUTE_FAILED"
         repair = RepairRequest.from_failure_type(
             resolved_type,  # type: ignore[arg-type]
             retry_count=retry_attempt,

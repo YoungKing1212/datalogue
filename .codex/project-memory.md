@@ -944,3 +944,35 @@
   2. 新增 `tests/test_preview_count.py` 三条测试：总量未超过 10,000 时 row_count/total_row_count 都等于真实总量；总量超过 10,000 时实际返回 10,000 行但 row_count 记录真实总量；COUNT 执行失败时降级为直接执行且不报错。fallback 测试的 fake connection 补齐了 `_mapping` 包装，避免 preview 层访问 `row._mapping` 时炸 `'tuple' object has no attribute '_mapping'`。
 - 验证方式：`pytest tests/test_preview_count.py -q` 3 passed；联跑相关测试 48 passed；`black + ruff + mypy` 通过。
 - 残留风险：`_MAX_PREVIEW_ROWS = 10000` 与 `query_constraints.max_limit=10000`、`sql_guard` 默认上限保持一致；如后续调整全局上限，需同步这三处。
+
+### 2026-07-10 11:47 · Leader Prompt 强制触发 Report Worker + Worker 注册表收敛
+
+- 完成时间：2026-07-10 11:47。
+- 功能名称：Leader Prompt 增加用户明确报告意图时强制调用 Report Worker，同时把 worker 注册表收敛到 bi/report 两类。
+- 涉及文件：`datalogue-api/app/prompts/agent_team.py`、`datalogue-api/app/runtime/engine/registry.py`、`datalogue-api/tests/test_agentscope_static_agent_registry.py`。
+- 关键改动：
+  1. `LEADER_AGENT_SYSTEM_PROMPT` 结构化 report worker 判断规则：用户原始问题中出现"报告/总结/分析/汇报/以报告方式/用报告展示/写成报告/生成报告"等表达，或要求分析、总结、对比、归因、趋势、经营解读、汇报材料时，**必须创建 report worker**，不得以结果简单为由跳过；只有当用户只要原始列表、单值或极少行明细时才可以不创建。
+  2. `registry.py` 注释掉 python/audit worker 模板；`tests/test_agentscope_static_agent_registry.py` 的 `EXPECTED_WORKER_TEMPLATE_TYPES` 同步收敛为 `("bi", "report")`。
+  3. `tools.py` `build_datalogue_progressive_bi_worker_tools` 里未知 failure_type 的兜底从 `FIELD_NOT_FOUND` 改为 `EXECUTE_FAILED`，避免误把执行失败归类到字段缺失导致 repair 走错分支。
+- 验证方式：`black + ruff + mypy` 通过；`pytest tests/test_agentscope_static_agent_registry.py -v` 8 passed。
+- 残留风险：chat 入口 `task_type` 仍固定 `bi_query`，report worker 依赖 BI Worker 先成功返回 `artifact_ref` 后 Leader 才创建；若 BI 失败或无 artifact，report 仍无法触发。
+
+### 2026-07-10 12:40 · datasource dialect 归一化只在缺省时覆盖 + Doris/MariaDB→MySQL
+
+- 完成时间：2026-07-10 12:40。
+- 功能名称：数据源方言归一化仅在用户未显式设置时覆盖，Doris 与 MariaDB 统一落到 MySQL 执行方言。
+- 涉及文件：`datalogue-api/app/domains/data_source/service.py`。
+- 关键改动：
+  1. `enrich_datasource_defaults` 判断 `data["dialect"]` 是否为空：非空则以用户值经 `normalize_execution_dialect` 归一化；空才补默认。
+  2. `normalize_execution_dialect` 内 Doris 强制映射到 `mysql`；显式传入 `mariadb` 也归一化为 `mysql`（MySQL 兼容产品统一执行方言）。
+- 验证方式：现存单测 `tests/test_datasource.py` 未新增用例，本次是最小增量修补。
+- 残留风险：如果未来引入其他 MySQL 兼容产品（TiDB、OceanBase 等），需在此显式加入映射。
+
+### 2026-07-10 11:00 · Onboarding 快速指南
+
+- 完成时间：2026-07-10 11:00。
+- 功能名称：整理项目 Onboarding 快速指南。
+- 涉及文件：`docs/Onboarding快速指南.md`、`docs/README.md`。
+- 关键改动：综合项目现有架构文档、执行链路、数据模型、目录治理、API 参考、编码规范、Docker 部署等全部材料，整理成一份面向新开发者的快速上手指南。指南包含：项目定位与产品形态、技术栈速览、环境搭建（Docker 与本地两种方案）、核心架构 5 分钟理解、关键文件速查表、开发规范门禁、常见开发任务速查、测试验证路径、问题排查速查、术语表、推荐阅读顺序。文档索引 `docs/README.md` 同步加入新指南入口。
+- 验证方式：指南内容交叉验证自 `docs/architecture/` 系列文档、`datalogue-api/README.md`、`.codex/project-memory.md`、`AGENTS.md`、`datalogue-api/docs/CODE_STYLE.md`、`datalogue-api/docs/CHECKLIST.md`、`.env.example`、`docker-compose.yml` 等源文件，确保技术细节准确。
+- 残留风险：指南为当前架构（AS-R0）快照，若后续架构发生重大变更（如 AgentScope 版本升级、目录物理搬迁完成），需同步更新指南对应章节。

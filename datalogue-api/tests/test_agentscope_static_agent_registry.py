@@ -4,7 +4,7 @@
 #   AgentScope Agent Team 固定 worker 模板注册表测试。
 #
 # Responsibilities:
-#   - 确认 Datalogue 暴露固定 BI/Report/Python/Audit worker 类型。
+#   - 确认 Datalogue 暴露固定 BI/Report worker 类型。
 #   - 防止 worker prompt 回退到 Datalogue 自研 handoff/runner。
 #
 # Author      : yangkai
@@ -21,8 +21,6 @@ import pytest
 EXPECTED_WORKER_TEMPLATE_TYPES = (
     "bi",
     "report",
-    "python",
-    "audit",
 )
 
 FORBIDDEN_DATALOGUE_ORCHESTRATION_TOKENS = (

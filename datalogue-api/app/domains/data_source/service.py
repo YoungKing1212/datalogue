@@ -80,7 +80,11 @@ def enrich_datasource_defaults(data: dict[str, Any]) -> dict[str, Any]:
     capability = CAPABILITIES.get(db_type)
     if not capability:
         return data
-    data["dialect"] = normalize_execution_dialect(db_type, data.get("dialect"))
+    # 仅补齐默认值时不覆盖用户显式设置的 dialect；Doris → mysql 映射由 normalize_execution_dialect 负责。
+    if data.get("dialect"):
+        data["dialect"] = normalize_execution_dialect(db_type, str(data["dialect"]).strip().lower())
+    else:
+        data["dialect"] = normalize_execution_dialect(db_type)
     if not data.get("driver"):
         data["driver"] = capability.driver
     if data.get("port") in (None, 0) and capability.default_port:
@@ -97,12 +101,15 @@ def enrich_datasource_defaults(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_execution_dialect(db_type: str | None, dialect: str | None = None) -> str:
-    """归一化真实执行方言；Doris 产品类型固定落到 MySQL 执行方言。"""
+    """归一化真实执行方言；Doris/MariaDB 等 MySQL 兼容产品固定落到 MySQL 执行方言。"""
     normalized_db_type = normalize_db_type(db_type)
-    if normalized_db_type == "doris":
+    if normalized_db_type in ("doris",):
         return "mysql"
     if dialect:
-        return str(dialect).strip().lower()
+        cleaned = str(dialect).strip().lower()
+        if cleaned in ("mariadb",):
+            return "mysql"
+        return cleaned
     capability = CAPABILITIES.get(normalized_db_type)
     return capability.dialect if capability else normalized_db_type
 

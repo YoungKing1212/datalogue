@@ -4,7 +4,7 @@
 #   AgentScope Agent Team worker 模板注册表。
 #
 # Responsibilities:
-#   - 定义 Datalogue 固定 worker 类型：bi、report、python、audit。
+#   - 定义 Datalogue 固定 worker 类型：bi、report。
 #   - 输出 AgentScope 官方 SubAgentTemplate，交给 AgentCreate 的 subagent_type 枚举使用。
 #   - 只描述业务能力边界，不实现 Datalogue 自研 runner 或 handoff 编排。
 #
@@ -26,10 +26,8 @@ from agentscope.permission import (
 )
 
 from app.prompts.agent_team import (
-    AUDIT_WORKER_PROMPT,
     BI_WORKER_PROMPT,
     LEADER_AGENT_SYSTEM_PROMPT,
-    PYTHON_WORKER_PROMPT,
     REPORT_WORKER_PROMPT,
 )
 
@@ -137,18 +135,6 @@ def build_datalogue_worker_template_specs() -> list[AgentTeamWorkerTemplateSpec]
             description="报告 worker，负责基于 artifact_ref 和安全摘要生成报告。",
             system_prompt_template=REPORT_WORKER_PROMPT,
         ),
-        # AgentTeamWorkerTemplateSpec(
-        #     worker_type="python",
-        #     display_name="Datalogue Python Worker",
-        #     description="Python 沙箱 worker，负责基于 artifact_ref 做受控分析。",
-        #     system_prompt_template=PYTHON_WORKER_PROMPT,
-        # ),
-        # AgentTeamWorkerTemplateSpec(
-        #     worker_type="audit",
-        #     display_name="Datalogue Audit Worker",
-        #     description="审计 worker，负责检查工具调用、安全投影和阻断原因。",
-        #     system_prompt_template=AUDIT_WORKER_PROMPT,
-        # ),
     ]
 
 
