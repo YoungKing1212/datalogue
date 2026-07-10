@@ -1,12 +1,24 @@
 import React, { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Icon } from './icons';
 import { del as apiDelete, get, patch, post } from '../api/client';
 import { useAuth } from '../auth/auth-context';
+import { UserCreateScreen } from './user-create';
 
 // Settings — account, workspace, model, integrations, API keys.
 
 function SettingsScreen() {
+  const { user } = useAuth();
+  const location = useLocation();
+  const canManageUsers = user?.role === 'admin' || user?.is_superuser;
   const [section, setSection] = useState('account');
+
+  useEffect(() => {
+    // 兼容旧路由 /users 的跳转：统一收敛到系统设置内的用户管理子页。
+    if (location.state?.section === 'users' && canManageUsers) {
+      setSection('users');
+    }
+  }, [location.state, canManageUsers]);
 
   const groups = [
     { title: '个人', items: [
@@ -17,6 +29,7 @@ function SettingsScreen() {
     { title: '工作区', items: [
       { id: 'workspace', label: '工作区设置', icon: 'preset' },
       { id: 'members',   label: '成员与权限', icon: 'user' },
+      ...(canManageUsers ? [{ id: 'users', label: '用户管理', icon: 'user_circle' }] : []),
       { id: 'usage',     label: '用量 & 计费', icon: 'chart_bar' },
     ]},
     { title: '数据与模型', items: [
@@ -53,6 +66,7 @@ function SettingsScreen() {
         {section === 'appearance' && <AppearanceSection />}
         {section === 'workspace'  && <WorkspaceSection />}
         {section === 'members'    && <MembersSection />}
+        {section === 'users'      && canManageUsers && <UserCreateScreen />}
         {section === 'usage'      && <UsageSection />}
         {section === 'datasources'&& <DatasourcesSection />}
         {section === 'models'     && <ModelsSection />}
@@ -274,7 +288,7 @@ function MembersSection() {
             <span>{m.team}</span>
             <span><span className={'st-role role-' + m.role.toLowerCase()}>{m.role}</span></span>
             <span className="text-3">{m.last}</span>
-            <span><button className="icon-btn"><Icon name="more" /></button></span>
+            <span><button className="icon-btn" data-tip="更多操作" aria-label="更多操作"><Icon name="more" /></button></span>
           </div>
         ))}
       </div>
@@ -738,10 +752,10 @@ function ModelsSection() {
                 {model.last_test_result?.ok ? `通过 · ${model.last_test_result.latency_ms}ms` : model.last_error_message || '未测试'}
               </span>
               <span className="st-llm-actions">
-                <button className="icon-btn" title="发现可用模型" disabled={testingId === model.id} onClick={() => testModel(model)}><Icon name="beaker" /></button>
-                <button className="icon-btn" title="编辑" onClick={() => startEdit(model)}><Icon name="edit" /></button>
-                <button className="icon-btn" title={model.status === 'active' ? '停用' : '启用'} onClick={() => toggleStatus(model)}><Icon name="pause" /></button>
-                <button className="icon-btn danger" title="删除" onClick={() => removeModel(model)}><Icon name="trash" /></button>
+                <button className="icon-btn" data-tip="发现可用模型" aria-label="发现可用模型" disabled={testingId === model.id} onClick={() => testModel(model)}><Icon name="beaker" /></button>
+                <button className="icon-btn" data-tip="编辑" aria-label="编辑" onClick={() => startEdit(model)}><Icon name="edit" /></button>
+                <button className="icon-btn" data-tip={model.status === 'active' ? '停用' : '启用'} aria-label={model.status === 'active' ? '停用' : '启用'} onClick={() => toggleStatus(model)}><Icon name="pause" /></button>
+                <button className="icon-btn danger" data-tip="删除" aria-label="删除" onClick={() => removeModel(model)}><Icon name="trash" /></button>
               </span>
             </div>
           ))}
@@ -756,7 +770,7 @@ function ModelsSection() {
                 <div className="st-modal-eyebrow">系统设置 / LLM 模型</div>
                 <div className="st-modal-title">{form.id ? `编辑 credential · ${form.name || form.id}` : '新增 credential'}</div>
               </div>
-              <button className="icon-btn" title="关闭" onClick={closeEditor}><Icon name="x" /></button>
+              <button className="icon-btn" data-tip="关闭" aria-label="关闭" onClick={closeEditor}><Icon name="x" /></button>
             </div>
 
             <div className="st-modal-body">
@@ -862,7 +876,7 @@ function GlossarySection() {
             <span>{t.def}</span>
             <span className="text-3 mono">{t.alias}</span>
             <span className="mono text-3">{t.usage}</span>
-            <span><button className="icon-btn"><Icon name="more" /></button></span>
+            <span><button className="icon-btn" data-tip="更多操作" aria-label="更多操作"><Icon name="more" /></button></span>
           </div>
         ))}
       </div>
@@ -894,8 +908,8 @@ function ApiKeysSection() {
             <span className="mono">{k.calls}</span>
             <span className="text-3">{k.last}</span>
             <span>
-              <button className="icon-btn" title="复制"><Icon name="copy" /></button>
-              <button className="icon-btn" title="撤销"><Icon name="x" /></button>
+              <button className="icon-btn" data-tip="复制" aria-label="复制"><Icon name="copy" /></button>
+              <button className="icon-btn danger" data-tip="撤销" aria-label="撤销"><Icon name="trash" /></button>
             </span>
           </div>
         ))}
@@ -925,7 +939,7 @@ function WebhooksSection() {
             <span className="mono text-2" style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{h.url}</span>
             <span className="mono text-3">{h.events}</span>
             <span><span className={'st-ds-status ' + (h.status === 'active' ? 'connected' : 'syncing')}><span className="dot" />{h.status === 'active' ? '生效中' : '已暂停'}</span></span>
-            <span><button className="icon-btn"><Icon name="more" /></button></span>
+            <span><button className="icon-btn" data-tip="更多操作" aria-label="更多操作"><Icon name="more" /></button></span>
           </div>
         ))}
       </div>

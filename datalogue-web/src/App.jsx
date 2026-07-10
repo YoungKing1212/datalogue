@@ -16,7 +16,6 @@ import { NotificationsPopover, bellCount } from './components/notifications';
 import { useTweaks, TweaksPanel, TweakSection, TweakColor, TweakRadio, TweakToggle, TweakButton } from './components/tweaks-panel';
 import { DatasourcesScreen } from './components/datasources';
 import { KnowledgeScreen } from './components/knowledge';
-import { UserCreateScreen } from './components/user-create';
 import { EditorModalHost } from './components/editor-modal';
 import WorkbenchRoute from './components/workbench-route';
 import { LoginPage } from './components/login-page';
@@ -164,7 +163,7 @@ function AppInner({ t, setTweak }) {
               path="/users"
               element={(
                 <RequireSuperuser>
-                  <UserCreateScreen />
+                  <Navigate to="/settings" replace state={{ section: 'users' }} />
                 </RequireSuperuser>
               )}
             />

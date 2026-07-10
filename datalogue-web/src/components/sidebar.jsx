@@ -13,7 +13,6 @@ function Sidebar() {
   const { user } = useAuth();
   const [navCounts, setNavCounts] = useState({});
   const path = location.pathname;
-  const canManageUsers = user?.role === 'admin' || user?.is_superuser;
 
   useEffect(() => {
     let cancelled = false;
@@ -73,7 +72,6 @@ function Sidebar() {
       label: '系统管理',
       items: [
         { id: 'settings',    label: '系统设置', icon: 'cog' },
-        ...(canManageUsers ? [{ id: 'users', label: '用户管理', icon: 'user' }] : []),
       ],
     },
   ];

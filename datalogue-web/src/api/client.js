@@ -71,6 +71,54 @@ async function parseJsonResponse(res) {
   return null;
 }
 
+function normalizePlainErrorText(text) {
+  if (typeof text !== 'string') return '';
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  // 网关/反向代理常返回 HTML 错误页，直接展示给用户可读性很差。
+  if (/^<!doctype html/i.test(trimmed) || /^<html/i.test(trimmed)) return '';
+  return trimmed.length > 200 ? `${trimmed.slice(0, 200)}...` : trimmed;
+}
+
+function extractErrorDetail(payload) {
+  if (!payload) return '';
+  if (typeof payload === 'string') return normalizePlainErrorText(payload);
+  if (typeof payload !== 'object') return '';
+
+  if (typeof payload.detail === 'string') return payload.detail.trim();
+  if (Array.isArray(payload.detail)) {
+    const lines = payload.detail
+      .map((item) => {
+        if (typeof item === 'string') return item.trim();
+        if (item && typeof item === 'object') {
+          return String(item.msg || item.message || item.error || '').trim();
+        }
+        return '';
+      })
+      .filter(Boolean);
+    if (lines.length) return lines.join('；');
+  }
+  if (payload.detail && typeof payload.detail === 'object') {
+    const nestedDetail = String(
+      payload.detail.message || payload.detail.msg || payload.detail.error || payload.detail.reason || '',
+    ).trim();
+    if (nestedDetail) return nestedDetail;
+  }
+
+  const direct = String(payload.message || payload.msg || payload.error || '').trim();
+  return direct;
+}
+
+function buildFallbackErrorMessage(status) {
+  if (status === 401) return '认证失败，请检查账号密码后重试';
+  if (status === 403) return '当前账号没有访问权限，请联系管理员';
+  if (status === 404) return '请求的资源不存在，请检查配置';
+  if (status === 429) return '请求过于频繁，请稍后重试';
+  if (status === 502) return '服务暂时不可用（网关异常），请稍后重试';
+  if (status >= 500) return '服务暂时不可用，请稍后重试';
+  return `请求失败（HTTP ${status}）`;
+}
+
 async function request(path, options = {}, retried = false) {
   const headers = { ...(options.headers || {}) };
   if (_accessToken && !headers.Authorization) {
@@ -98,7 +146,37 @@ async function request(path, options = {}, retried = false) {
     }
   }
 
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  if (!res.ok) {
+    const contentType = res.headers.get('content-type') || '';
+    let payload = null;
+    let plainText = '';
+
+    if (contentType.includes('application/json')) {
+      try {
+        payload = await res.json();
+      } catch {
+        payload = null;
+      }
+    } else {
+      try {
+        plainText = normalizePlainErrorText(await res.text());
+      } catch {
+        plainText = '';
+      }
+    }
+
+    const detailMessage = extractErrorDetail(payload) || plainText;
+    const message = detailMessage || buildFallbackErrorMessage(res.status);
+    const error = new Error(message);
+    error.status = res.status;
+    error.statusText = res.statusText;
+    error.path = path;
+    if (payload && typeof payload === 'object') {
+      error.data = payload;
+    }
+    throw error;
+  }
+
   return parseJsonResponse(res);
 }
 
