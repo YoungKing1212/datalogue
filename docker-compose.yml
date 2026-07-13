@@ -113,8 +113,19 @@ services:
     image: datalogue-nginx:latest
     container_name: datalogue-nginx
     # 唯一对外入口
+    #   - WEB_PORT   → 主 https 端口（Web Crypto 要求安全上下文）
+    #   - WEB_HTTP_PORT → http 端口，仅用于健康检查与 https 跳转
     ports:
-      - "${WEB_PORT:-5173}:80"
+      - "${WEB_PORT:-5173}:443"
+      - "${WEB_HTTP_PORT:-5174}:80"
+    environment:
+      # 自签证书 SAN 列表；局域网访问请追加机器 IP，如
+      #   NGINX_TLS_HOSTS=localhost,127.0.0.1,192.168.1.10
+      NGINX_TLS_HOSTS: "${NGINX_TLS_HOSTS:-localhost,127.0.0.1}"
+      NGINX_TLS_DAYS: "${NGINX_TLS_DAYS:-3650}"
+    volumes:
+      # 证书持久化，避免每次重启重新签发（浏览器多一次"不受信任"确认）
+      - datalogue_nginx_certs:/etc/nginx/certs
     depends_on:
       web:
         condition: service_started
@@ -127,3 +138,4 @@ volumes:
   datalogue_redisdata:
   datalogue_workspaces:
   datalogue_api_logs:
+  datalogue_nginx_certs:
