@@ -1,5 +1,45 @@
+# ── 依赖与产物 ────────────────────────────────────────
 node_modules
 dist
 .vite
 coverage
+build
+
+# ── 版本控制 ──────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+
+# ── 环境与密钥 ────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── 测试与缓存 ────────────────────────────────────────
+.nyc_output
+tests/**/__snapshots__
+.eslintcache
+
+# ── IDE / OS ──────────────────────────────────────────
+.idea
+.vscode
 .DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ── Docker 相关（避免复制自身进镜像）────────────────
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# ── 文档 ──────────────────────────────────────────────
+docs
+*.md
+!README.md
+
+# ── 日志与临时 ────────────────────────────────────────
+*.log
+tmp
+temp
+*.bak

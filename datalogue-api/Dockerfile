@@ -69,9 +69,9 @@ RUN mkdir -p /app/data/agentscope/workspaces
 RUN groupadd -r datalogue && useradd -r -g datalogue -d /app -s /sbin/nologin datalogue \
     && chown -R datalogue:datalogue /app
 
-# 健康检查
+# 健康检查（改用 python urllib，避免依赖 curl；production stage 未安装 curl）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD python -c "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else sys.exit(1)"
 
 EXPOSE 8000
 

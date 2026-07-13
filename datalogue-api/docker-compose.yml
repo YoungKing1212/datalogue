@@ -1,5 +1,15 @@
+# ============================================================================
+# datalogue-api 本地开发用 compose — 仅启动基础设施 (db + redis)
+# ============================================================================
+# 用途：
+#   `make docker-up-infra` 会调用本文件启动 pg + redis，供 `make dev` 在宿主机
+#   跑 uvicorn 时使用。
+#
+# 完整部署（含 api + web）请使用仓库根目录的 ../docker-compose.yml：
+#   cd .. && docker compose up -d
+# ============================================================================
+
 services:
-  # ── 基础设施 ──────────────────────────────────────────
   db:
     image: pgvector/pgvector:pg16
     container_name: datalogue-db
@@ -33,53 +43,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # ── API 服务（需要 --profile all 才会启动）───────────
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: datalogue-api:latest
-    container_name: datalogue-api
-    ports:
-      - "${API_PORT:-8000}:8000"
-    environment:
-      # 数据库（password 由 ${DB_PASSWORD} 注入，通过 .env 或环境变量设置）
-      DATABASE_URL: "postgresql://datalogue:${DB_PASSWORD:-datalogue}@db:5432/datalogue"
-      # LLM（必须配置）
-      OPENAI_API_KEY: "${OPENAI_API_KEY:?请设置 OPENAI_API_KEY 环境变量}"
-      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.minimaxi.com/v1}"
-      LLM_MODEL: "${LLM_MODEL:-MiniMax-M2.7}"
-      # AgentScope 基础设施
-      AGENTSCOPE_SERVICE_ENABLED: "true"
-      AGENTSCOPE_MOUNT_PATH: "/agentscope"
-      AGENTSCOPE_SERVICE_BASE_URL: "http://localhost:8000/agentscope"
-      AGENTSCOPE_REDIS_HOST: redis
-      AGENTSCOPE_REDIS_PORT: "6379"
-      AGENTSCOPE_REDIS_DB: "0"
-      AGENTSCOPE_REDIS_URL: "redis://redis:6379/0"
-      AGENTSCOPE_WORKSPACE_BASEDIR: "/app/data/agentscope/workspaces"
-      AGENTSCOPE_WORKSPACE_TTL_SECONDS: "3600"
-      # 安全
-      SECRET_KEY: "${SECRET_KEY:-change-me-in-production}"
-      AES_KEY: "${AES_KEY:-your-32-byte-aes-key-here!!}"
-      # 运行环境
-      APP_ENV: "${APP_ENV:-production}"
-      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-    volumes:
-      - datalogue_workspaces:/app/data/agentscope/workspaces
-      # 企业数据源驱动（可选）：挂载 wheel 包目录
-      # - ./wheelhouse:/app/wheelhouse
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    # 默认配置只启动 api；基础设施通过 --profile all 启动
-    profiles:
-      - all
-
 volumes:
   datalogue_pgdata:
   datalogue_redisdata:
-  datalogue_workspaces:

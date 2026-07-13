@@ -23,7 +23,8 @@ RUFF            := $(VENV_DIR)/bin/ruff
 MYPY            := $(VENV_DIR)/bin/mypy
 DOCKER_IMAGE    := datalogue-api
 DOCKER_TAG      := latest
-COMPOSE_PROFILE := --profile all
+# 完整部署编排入口在仓库根目录（含 api + web）；本目录 compose 仅提供 db+redis 供本地开发
+ROOT_COMPOSE    := -f ../docker-compose.yml
 
 # ── 颜色 ──────────────────────────────────────────────
 RED    := \033[0;31m
@@ -63,7 +64,8 @@ help: ## 显示此帮助
 	@echo ""
 	@echo "$(YELLOW)Docker$(NC)"
 	@echo "  make docker-build   构建 API 镜像"
-	@echo "  make docker-up      启动完整部署 (db+redis+api)"
+	@echo "  make docker-up      启动完整部署 (db+redis+api+web+nginx，根 compose)"
+	@echo "  make docker-up-infra 仅启动 db+redis (供 make dev 使用)"
 	@echo "  make docker-down    停止全部容器"
 	@echo "  make docker-logs    实时日志"
 	@echo "  make docker-shell   进入 API 容器 bash"
@@ -197,45 +199,45 @@ docker-build-prod: ## 生产构建（多阶段，含 enterprise 依赖）
 	@echo "$(GREEN)✓ 生产构建完成$(NC)"
 
 .PHONY: docker-up
-docker-up: ## 启动完整部署 (db + redis + api)
+docker-up: ## 启动完整部署 (db + redis + api + web)
 	@echo "$(GREEN)>>> 启动完整部署$(NC)"
-	docker compose $(COMPOSE_PROFILE) up -d
-	@echo "$(GREEN)✓ 已启动。API: http://localhost:${API_PORT:-8000}$(NC)"
+	docker compose $(ROOT_COMPOSE) up -d
+	@echo "$(GREEN)✓ 已启动。入口: http://localhost:$${WEB_PORT:-5173}  API 直连: http://localhost:$${API_PORT:-8000}$(NC)"
 
 .PHONY: docker-up-infra
-docker-up-infra: ## 仅启动基础设施 (db + redis)
+docker-up-infra: ## 仅启动基础设施 (db + redis，供本地 make dev 使用)
 	@echo "$(GREEN)>>> 启动基础设施$(NC)"
 	docker compose up -d db redis
 	@echo "$(GREEN)✓ 基础设施已启动$(NC)"
 
 .PHONY: docker-down
-docker-down: ## 停止全部容器
-	docker compose $(COMPOSE_PROFILE) down
+docker-down: ## 停止全部容器（含 web）
+	docker compose $(ROOT_COMPOSE) down
 
 .PHONY: docker-logs
-docker-logs: ## 实时日志
-	docker compose logs -f $(SERVICE)
+docker-logs: ## 实时日志（SERVICE=api|web|db|redis 可选）
+	docker compose $(ROOT_COMPOSE) logs -f $(SERVICE)
 
 .PHONY: docker-shell
 docker-shell: ## 进入 API 容器 bash
-	docker compose exec api bash
+	docker compose $(ROOT_COMPOSE) exec api bash
 
 .PHONY: docker-psql
 docker-psql: ## 连接数据库
-	docker compose exec db psql -U datalogue datalogue
+	docker compose $(ROOT_COMPOSE) exec db psql -U datalogue datalogue
 
 .PHONY: docker-clean
 docker-clean: ## 删除全部容器和数据卷
 	@echo "$(RED)警告: 这将删除所有数据卷！$(NC)"
 	@read -p "确认? [y/N] " confirm; \
 	if [ "$$confirm" = "y" ]; then \
-		docker compose $(COMPOSE_PROFILE) down -v; \
+		docker compose $(ROOT_COMPOSE) down -v; \
 		echo "$(GREEN)✓ 已清理$(NC)"; \
 	fi
 
 .PHONY: docker-migrate
 docker-migrate: ## 在 API 容器内运行迁移
-	docker compose exec api alembic upgrade head
+	docker compose $(ROOT_COMPOSE) exec api alembic upgrade head
 
 # ============================================================================
 #  清理

@@ -1,10 +1,20 @@
+# ============================================================================
+# Datalogue — 一体化部署编排
+# ============================================================================
+# 用法：
+#   docker compose up -d              # 完整启动 (db + redis + api + web)
+#   docker compose up -d db redis     # 仅启动基础设施（本地开发）
+#
+# 敏感变量通过 .env 或环境变量注入。示例见 datalogue-api/.env.example
+# ============================================================================
+
 services:
   db:
     image: pgvector/pgvector:pg16
     container_name: datalogue-db
     environment:
       POSTGRES_USER: datalogue
-      POSTGRES_PASSWORD: datalogue
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-datalogue}
       POSTGRES_DB: datalogue
     ports:
       - "5432:5432"
@@ -15,6 +25,7 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -29,32 +40,43 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   api:
     build:
       context: ./datalogue-api
       dockerfile: Dockerfile
+    image: datalogue-api:latest
     container_name: datalogue-api
     env_file:
       - path: ./datalogue-api/.env
         required: false
     environment:
-      DATABASE_URL: postgresql://datalogue:datalogue@db:5432/datalogue
+      # 数据库（密码经 ${DB_PASSWORD} 注入）
+      DATABASE_URL: "postgresql://datalogue:${DB_PASSWORD:-datalogue}@db:5432/datalogue"
+      # LLM 凭证由前端设置页写入数据库，容器不注入 OPENAI_API_KEY / OPENAI_BASE_URL / LLM_MODEL
+      # AgentScope 基础设施
       AGENTSCOPE_SERVICE_ENABLED: "true"
-      AGENTSCOPE_MOUNT_PATH: /agentscope
-      AGENTSCOPE_SERVICE_BASE_URL: http://api:8000/agentscope
+      AGENTSCOPE_MOUNT_PATH: "/agentscope"
+      AGENTSCOPE_SERVICE_BASE_URL: "http://api:8000/agentscope"
       AGENTSCOPE_REDIS_HOST: redis
       AGENTSCOPE_REDIS_PORT: "6379"
       AGENTSCOPE_REDIS_DB: "0"
       AGENTSCOPE_REDIS_PASSWORD: ""
-      AGENTSCOPE_REDIS_URL: redis://redis:6379/0
-      AGENTSCOPE_WORKSPACE_BASEDIR: /data/agentscope/workspaces
+      AGENTSCOPE_REDIS_URL: "redis://redis:6379/0"
+      AGENTSCOPE_WORKSPACE_BASEDIR: "/app/data/agentscope/workspaces"
       AGENTSCOPE_WORKSPACE_TTL_SECONDS: "3600"
-      LANGFUSE_ENABLED: "false"
+      # 安全（生产必须覆盖默认值）
+      SECRET_KEY: "${SECRET_KEY:-change-me-in-production}"
+      AES_KEY: "${AES_KEY:-your-32-byte-aes-key-here!!}"
+      # 运行环境
+      APP_ENV: "${APP_ENV:-production}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      LANGFUSE_ENABLED: "${LANGFUSE_ENABLED:-false}"
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
-      - datalogue_agentscope_workspaces:/data/agentscope/workspaces
+      - datalogue_workspaces:/app/data/agentscope/workspaces
       - datalogue_api_logs:/app/logs
     depends_on:
       db:
@@ -62,26 +84,44 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
+      # 探针路径挂在 app/main.py:/health（避免依赖 curl）
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else sys.exit(1)\""]
       interval: 10s
       timeout: 5s
       retries: 12
+      start_period: 20s
+    restart: unless-stopped
 
   web:
     build:
       context: ./datalogue-web
       dockerfile: Dockerfile
     container_name: datalogue-web
-    environment:
-      VITE_API_PROXY_TARGET: http://api:8000
-    ports:
-      - "5173:5173"
+    # 纯静态服务，不对外暴露端口；仅在 docker 网络里被 nginx 消费
+    expose:
+      - "3000"
     depends_on:
       api:
         condition: service_healthy
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: ./datalogue-nginx
+      dockerfile: Dockerfile
+    container_name: datalogue-nginx
+    # 唯一对外入口
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    depends_on:
+      web:
+        condition: service_started
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   datalogue_pgdata:
   datalogue_redisdata:
-  datalogue_agentscope_workspaces:
+  datalogue_workspaces:
   datalogue_api_logs:
