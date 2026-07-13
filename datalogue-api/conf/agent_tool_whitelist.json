@@ -1,0 +1,63 @@
+{
+  "$comment": "Datalogue Agent Team 各角色允许调用的工具白名单——prompt 的 <allowed_tools> 段以及 permission_context 均以本文件为单一事实来源。",
+  "leader": {
+    "display_name": "Datalogue Agent Team Leader",
+    "allowed_tools": [
+      "TeamCreate",
+      "AgentCreate",
+      "TeamSay",
+      "TeamDelete",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskUpdate"
+    ],
+    "denied_tools": [
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "NotebookEdit"
+    ]
+  },
+  "bi_worker": {
+    "display_name": "Datalogue BI Worker",
+    "allowed_tools": [
+      "datalogue_select_candidate_datasets",
+      "datalogue_prepare_query_context",
+      "datalogue_search_assets",
+      "datalogue_request_schema_slice",
+      "datalogue_describe_tables",
+      "datalogue_execute_query_plan_bundle",
+      "datalogue_repair_query_plan",
+      "TeamSay"
+    ],
+    "denied_tools": [
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "NotebookEdit"
+    ]
+  },
+  "report_worker": {
+    "display_name": "Datalogue Report Worker",
+    "allowed_tools": [
+      "datalogue_get_artifact_report_input",
+      "TeamSay"
+    ],
+    "denied_tools": [
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "NotebookEdit"
+    ]
+  }
+}
