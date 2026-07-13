@@ -112,12 +112,10 @@ services:
       dockerfile: Dockerfile
     image: datalogue-nginx:latest
     container_name: datalogue-nginx
-    # 唯一对外入口
-    #   - WEB_PORT   → 主 https 端口（Web Crypto 要求安全上下文）
-    #   - WEB_HTTP_PORT → http 端口，仅用于健康检查与 https 跳转
+    # 唯一对外入口（HTTPS，Web Crypto 需要安全上下文）
+    # 容器内 80 端口仅供 docker healthcheck 使用，不对外暴露
     ports:
-      - "${WEB_PORT:-5173}:443"
-      - "${WEB_HTTP_PORT:-5174}:80"
+      - "${WEB_PORT:-3000}:443"
     environment:
       # 自签证书 SAN 列表；局域网访问请追加机器 IP，如
       #   NGINX_TLS_HOSTS=localhost,127.0.0.1,192.168.1.10
