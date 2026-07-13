@@ -96,6 +96,7 @@ services:
     build:
       context: ./datalogue-web
       dockerfile: Dockerfile
+    image: datalogue-web:latest
     container_name: datalogue-web
     # 纯静态服务，不对外暴露端口；仅在 docker 网络里被 nginx 消费
     expose:
@@ -109,6 +110,7 @@ services:
     build:
       context: ./datalogue-nginx
       dockerfile: Dockerfile
+    image: datalogue-nginx:latest
     container_name: datalogue-nginx
     # 唯一对外入口
     ports:
