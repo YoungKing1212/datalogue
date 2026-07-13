@@ -1016,3 +1016,16 @@
   - 后端：`pytest tests/test_report_worker_artifact_input.py tests/test_conversation.py tests/test_sql_guard.py tests/test_preview_count.py tests/test_agentscope_service_tools.py tests/test_artifact_api.py tests/test_workbench_view_api.py -q`，结果 `61 passed`。
   - 前端：`npm run test -- MyMessage.test.jsx`，结果 `23 passed`；`npm run lint` 0 errors；`npm run build` 成功。
 - 残留风险或后续事项：已生成的旧 artifact 仍只存了 30 行，无法通过本次改动恢复；用户需重新发起查询才能体验到完整分页。10000 行 × 多列的 artifact 体积需继续观察 `QUERY_ARTIFACT_MAX_BYTES=50MB` 是否足够。
+
+### 2026-07-13 09:00 · 生成 2026 年 6–12 月工作计划
+
+- 完成时间：2026-07-13 09:00。
+- 功能名称：制定数语项目 2026 年 6 月至 12 月两周粒度 Sprint 工作计划。
+- 涉及文件：`docs/2026-6-12月工作计划.md`、`.codex/project-memory.md`。
+- 关键改动：
+  1. 基于项目当前状态（AgentScope 主链稳定、Workbench 上线、目录治理 G055-G093 完成、artifact 分页已落地），制定三阶段路线图：产品化收口（6–7月）、能力扩展（8–10月）、生产就绪（11–12月）。
+  2. 按两周粒度拆分为 14 个 Sprint（Sprint 1–3 已完成，Sprint 4 当前进行中，Sprint 5–14 为待启动），每个 Sprint 包含目标、交付项、验收标准和风险。
+  3. 明确当前 Sprint 4（7/14–7/25）核心目标：artifact store 产物持久化、Phase B 目录迁移启动、E2E 测试稳定化。
+  4. 设置 6 个里程碑检查点（M1–M6），定义每周节奏和代码质量门禁。
+- 验证方式：计划文档经项目历史记录交叉验证（`project-memory.md` 最新记录至 2026-07-10、`TODOS.md` artifact store 任务、`Phase-B-迁移计划.md` 已制定）；Sprint 划分与既有 G055-G093 故事粒度一致。
+- 残留风险或后续事项：计划为当前状态快照，若市场/用户反馈变化，需按 AGENTS.md 规范动态更新本文档并同步到 `.codex/project-memory.md`。
