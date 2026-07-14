@@ -88,8 +88,8 @@ class BIWorkerQueryRuntime:
             derived_refs = _derive_dataset_field_refs(dataset)
             before_field = len(context_state.field_refs)
             before_asset = len(context_state.asset_refs)
-            context_state.field_refs = context_state.field_refs | derived_refs
-            context_state.asset_refs = context_state.asset_refs | {
+            context_state.field_refs = set(context_state.field_refs) | derived_refs
+            context_state.asset_refs = set(context_state.asset_refs) | {
                 r for r in derived_refs if r.count(".") == 1
             }
             logger.info(

@@ -40,6 +40,21 @@ class ProgressiveContextState:
     validation_more_context_count: int = 0
     suggested_filters: list[dict[str, Any]] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        """自动将 JSON 反序列化产生的 list 强转为 set，避免 | 操作符 TypeError。"""
+        for _field in fields(self):
+            _type = _field.type
+            # from __future__ import annotations 下类型是字符串，需取 __origin__
+            if isinstance(_type, str):
+                _type = _type.strip().lower()
+                is_set_type = _type == "set" or _type.startswith("set[")
+            else:
+                is_set_type = _type is set or getattr(_type, "__origin__", None) is set
+            if is_set_type:
+                value = getattr(self, _field.name)
+                if isinstance(value, list):
+                    setattr(self, _field.name, set(value))
+
     @classmethod
     def field_names(cls) -> set[str]:
         """返回所有已知字段名，供 tools 层过滤未知 key 时使用。"""
