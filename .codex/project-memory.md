@@ -1029,3 +1029,17 @@
   4. 设置 6 个里程碑检查点（M1–M6），定义每周节奏和代码质量门禁。
 - 验证方式：计划文档经项目历史记录交叉验证（`project-memory.md` 最新记录至 2026-07-10、`TODOS.md` artifact store 任务、`Phase-B-迁移计划.md` 已制定）；Sprint 划分与既有 G055-G093 故事粒度一致。
 - 残留风险或后续事项：计划为当前状态快照，若市场/用户反馈变化，需按 AGENTS.md 规范动态更新本文档并同步到 `.codex/project-memory.md`。
+
+### 2026-07-14 · 查询结果表格增强每页条数选择与页码跳转
+
+- 完成时间：2026-07-14。
+- 功能名称：Chat 查询结果详情表格（DataTable）支持每页条数切换和页码跳转。
+- 涉及文件：`datalogue-web/src/shared/components/DataTable.jsx`、`datalogue-web/src/features/chat/MyMessage.jsx`、`datalogue-web/src/styles.css`。
+- 关键改动：
+  1. `DataTable` 新增 `pageSize`（每页初值，默认 100）与 `pageSizeOptions`（可选每页条数，默认 `[20,50,100]`）两个 prop；`size` 由内部 state 维护，支持下拉切换每页条数，切换后重置回第 1 页避免落在空白页。
+  2. 新增页码跳转输入框：回车或失焦提交，`commitJump` 将输入值 clamp 到 `[1, totalPages]`，非法输入清空不跳转；输入框 placeholder 显示当前页。
+  3. 分页页脚显示条件由 `totalPages > 1` 改为 `effectiveTotal > 最小可选每页值`，保证即使当前每页值下只有一页，用户仍能切换到更小每页值触发分页。
+  4. 聊天 `ArtifactDetailPanel` 传入 `pageSize={20}`，默认每页 20 行方便预览，用户可自行切到 50/100 或跳页；`workbench-panel.jsx` 未改，沿用默认 100。
+  5. `styles.css` 分页栏改两端对齐 + flex-wrap，新增每页下拉、跳转输入框样式，并隐藏 number input 原生上下箭头。
+- 验证方式：`npm run lint` 通过（0 error，14 个警告均为其他既有文件历史遗留，与本次改动无关）；`get_errors` 检查 DataTable.jsx / MyMessage.jsx 无报错。
+- 残留风险或后续事项：后端仍最多返回前 100 行，分页仅作用于已返回数据；如需超 100 行分页预览，需后续接后端分页接口。分支 `feature/conversation-result-table-pagination`，尚未提交/推送。

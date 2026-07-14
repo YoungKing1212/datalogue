@@ -9417,9 +9417,59 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 .data-table-pagination {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 4px 0;
+}
+
+/* 每页条数选择 / 页码跳转两侧辅助控件 */
+.data-table-page-size,
+.data-table-page-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.data-table-page-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.data-table-page-size-select {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.data-table-page-jump-input {
+  width: 48px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+}
+
+.data-table-page-jump-input::-webkit-outer-spin-button,
+.data-table-page-jump-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.data-table-page-jump-input {
+  -moz-appearance: textfield;
 }
 
 .data-table-page-btn {

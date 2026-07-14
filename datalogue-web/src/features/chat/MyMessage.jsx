@@ -485,6 +485,7 @@ function ArtifactDetailPanel({ detail, onClose }) {
             rows={tableRows}
             totalRowCount={rowCount}
             truncated={artifact?.content_json?.truncated === true}
+            pageSize={20}
           />
         </div>
       )}
