@@ -9,7 +9,7 @@ dependencies = [
     "sse-starlette==2.1.0",
     "sqlalchemy==2.0.30",
     "alembic==1.13.1",
-    "psycopg2-binary==2.9.9",
+    "psycopg2==2.9.10",  # 源码编译链系统 libpq；psycopg2-binary wheel bundle 的 libpq 在 macOS ARM64 会 SIGSEGV，见 requirements.txt 注释
     "pymysql==1.2.0",
     "pgvector==0.2.5",
     "pydantic>=2.11,<3",
