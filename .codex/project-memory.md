@@ -674,7 +674,6 @@
 - 关键改动：根据 leader mailbox 指令，以 detached commit `adddfd24` 复核当前 team branch，确认 Doris capability、服务端执行方言归一化、Oracle compiler/adapter、preview_dataset_sql、build_bi_runtime_context、analysis_blueprint、preview_table、前端 datasources 与 artifact/DatalogueMessage 可见性测试已集成；同步修正早前基于旧 detached HEAD 的 Doris 0 命中/Oracle fail-closed 结论。
 - 验证方式：执行 Doris/Oracle 后端 targeted pytest，覆盖 datasource capability/defaults/update stale dialect、build_datasource_context、build_bi_runtime_context、analysis_blueprint timeout stale path、preview_dataset_sql guard dialect、preview_table Doris SQL、Oracle FETCH FIRST 和 URL，结果 `16 passed, 6 warnings`；执行 `cd datalogue-web && npm test -- src/components/datasources.test.jsx src/components/artifact-card.test.jsx src/assistant-ui/DatalogueMessage.test.jsx`，结果 `3 passed / 28 passed`。
 - 残留风险或后续事项：仍未搭建真实 Doris/Oracle 数据库，真实页面最终 answer 与 Workbench artifact 截图/payload 需连接用户已有环境补证；当前自动化证明代码路径和用户可见投影基线通过。
-=======
 
 ### 2026-07-09 19:35 · Agent Team runtime 自动标题测试隔离
 
@@ -882,8 +881,6 @@
 - 关键改动：新增 `/api/navigation/counts` 统一导航统计接口并接入登录鉴权，侧栏数量改为读取数据库真实数量；`dashboard/history/datasets/knowledge/review/datasources` 分别来自 Agent Team task、未归档会话、语义数据集、业务术语加分析蓝图、未通过语义验证项、数据源。当前 API 发布页仍无持久化真相源，因此 `apis` 返回 `null`，前端不再显示原写死 `7`。
 - 验证方式：先按 TDD 确认后端测试因 404 失败、前端测试因仍渲染硬编码数量失败；Claude Code review 首轮指出统计接口缺少认证保护、历史数量包含归档会话，已补充未登录 401 测试和未归档会话口径，复审结论 `APPROVE`、无 Blocker/Major；实现后执行 `./.venv/bin/python -m pytest tests/test_navigation_counts.py tests/test_dataset.py tests/test_datasource.py tests/test_conversation.py -q`，结果 `49 passed, 29 warnings`；执行 `npm run test`，结果 `22 passed, 188 passed`；执行 `npm run lint`，结果 `0 errors, 13 existing warnings`；执行 `npm run build` 通过，仅保留既有 Vite chunk-size warning；最终 `git diff --check` 通过。
 - 残留风险或后续事项：`API 接口` 数量当前不显示，因为仓库尚无发布 API 持久化表；如果后续把 `apis.jsx` 从静态演示页改为真实发布接口管理，需要把该表纳入 `/api/navigation/counts`。
->>>>>>> Stashed changes
->>>>>>> main
 
 ### 2026-07-10 11:18 · 修复选择数据集后首次对话前端无反馈
 
@@ -1043,3 +1040,51 @@
   5. `styles.css` 分页栏改两端对齐 + flex-wrap，新增每页下拉、跳转输入框样式，并隐藏 number input 原生上下箭头。
 - 验证方式：`npm run lint` 通过（0 error，14 个警告均为其他既有文件历史遗留，与本次改动无关）；`get_errors` 检查 DataTable.jsx / MyMessage.jsx 无报错。
 - 残留风险或后续事项：后端仍最多返回前 100 行，分页仅作用于已返回数据；如需超 100 行分页预览，需后续接后端分页接口。分支 `feature/conversation-result-table-pagination`，尚未提交/推送。
+
+### 2026-07-13 10:48 · 部署新版 docker-compose 到生产服务器
+
+- 完成时间：2026-07-13 10:48。
+- 功能名称：Datalogue docker-compose 统一编排部署（拆分 web/nginx 容器 + 多阶段构建）。
+- 涉及文件：
+  - `docker-compose.yml` — 统一入口，api/web/nginx 都加了 `image:` 标签
+  - `datalogue-nginx/Dockerfile` + `datalogue.conf` — 新 Nginx 反代容器
+  - `datalogue-web/Dockerfile` — 多阶段构建（builder → production via `serve`）
+  - `datalogue-api/Dockerfile` — healthcheck 改为 python urllib
+- 关键改动：
+  1. 架构从 Vite dev server 直接暴露，变为 web 容器只托管静态文件（serve -s dist），nginx 作为唯一对外入口反代 `/`、`/api/`、`/agentscope/`。
+  2. web 镜像从 746MB 缩小到 202MB（多阶段构建分离 build 与 runtime）。
+  3. 密码/密钥通过 `${VAR:-default}` 环境变量注入，支持 `DB_PASSWORD`、`SECRET_KEY`、`AES_KEY`。
+  4. 端口可配置：`API_PORT`、`WEB_PORT`。
+- 部署流程：
+  1. 本地 `DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose build` 构建 AMD64 镜像（M 系列 Mac 默认 ARM64，服务器为 AMD64）。
+  2. `docker save | gzip` 打包为 tar.gz，rsync 传输到服务器（366MB，约 5 分钟）。
+  3. 服务器 `docker load -i` 加载镜像，`docker compose up -d` 启动。
+  4. 验证：全部 5 容器（db、redis、api、web、nginx）healthy，前端 200，API /health 200。
+- 遗留注意：服务器 `/opt/datalogue/` 下原有的 `nginx.conf` 和 `Dockerfile` 已清理，改用 `datalogue-nginx/` 子目录结构。Docker daemon 镜像源已修复（仅保留 `docker.1ms.run`）.
+
+### 2026-07-13 15:41 · ltc-mcp 架构借鉴落地方案
+
+- 完成时间：2026-07-13 15:41。
+- 功能名称：制定 ltc-mcp 架构借鉴落地方案（本体建模/查询代数/指标库/静态守卫）。
+- 涉及文件：`Datalogue-ltc-mcp-落地方案.md`、`.codex/project-memory.md`。
+- 关键改动：
+  1. 基于《ltc-mcp 对 Datalogue 的架构借鉴分析》，把 6 项借鉴建议转化为分阶段可执行的落地路线图：Phase 1（2 周）澄清提示 + 停更表过滤 + 首个通用指标模板 + 统一执行入口骨架；Phase 2（1 个月）指标库扩展 + 唯一执行入口硬化 + 静态守卫 CI + RLS 编译期注入；Phase 3（1 季度）查询代数编译器 + 可选 YAML 本体建模框架 + 分层评测门禁。
+  2. 明确设计边界：不绑定具体业务域、不破坏现有 schema slice + LLM 规划主路径、所有增强作为可选高置信分支存在，fail-closed 降级到现有路径。
+  3. 输出关键模块设计：澄清提示触发条件与输出格式、停更表台账数据结构、指标库 YAML 模板与运行时类、统一执行入口 `execute_scoped_query()` 职责、静态守卫 AST 扫描策略、查询代数 AST 与编译流程、可选本体层目录结构。
+- 验证方式：方案文档经当前代码架构交叉验证（`app/domains/bi/worker/runtime.py`、`app/domains/bi/worker/contracts.py`、`app/domains/query_execution/compiler.py`、`app/domains/query_execution/guard.py` 等），确认 BIWorker QueryPlan 已是查询代数雏形，增强层可在现有契约上平滑叠加；文档落盘于项目根目录，可被后续实施直接引用。
+- 残留风险或后续事项：本记录仅为方案文档交付，尚未产生代码改动；Phase 1 实施时需特别注意指标模板误匹配风险和停更表台账误杀活跃表风险，建议首版只做通用聚合模板、台账默认空且经画像+人工复核入库。
+
+### 2026-07-14 · credential PATCH partial-update + psycopg2 源码编译 + BI worker/SSE 兜底
+
+- 完成时间：2026-07-14。
+- 功能名称：AgentScope credential PATCH partial-update 兜底、psycopg2 源码编译版本切换、BI worker set 反序列化兜底、AgentScope SSE 长 read 超时。
+- 涉及文件：`datalogue-api/app/api/agentscope_control_plane.py`、`datalogue-api/tests/test_agentscope_control_plane_api.py`、`datalogue-api/pyproject.toml`、`datalogue-api/requirements.txt`、`datalogue-api/uv.lock`、`datalogue-api/app/domains/bi/worker/runtime.py`、`datalogue-api/app/domains/bi/worker/validator.py`、`datalogue-api/app/runtime/engine/client.py`、`hermes-skills/datalogue/SKILL.md`。
+- 关键改动：
+  1. `agentscope_control_plane.update_credential` 收敛为 partial update：从 AgentScope Service 读现存 credential，用前端 patch 覆盖后整体回写，缺失字段（尤其 `api_key`）用现存兜底；切 `type` 时不复用旧 key；credential 不存在直接抛 404。
+  2. psycopg2 从 `psycopg2-binary` 切换为源码编译 `psycopg2==2.9.10`（binary wheel bundle 的 libpq 在 macOS ARM64 触发 SIGSEGV），`pyproject.toml`/`requirements.txt`/`uv.lock` 三处同步。
+  3. `ProgressiveContextState` 新增 `__post_init__`，把 JSON 反序列化产生的 list 强转为 set，避免 `field_refs | derived_refs` 触发 TypeError；`BIWorkerQueryRuntime` 里合并前显式 `set()` 兜底。
+  4. `AGENTSCOPE_SSE_TIMEOUT.read` 从 `None` 改回 `600s`，避免长连接无限挂起，同时给单轮模型推理足够时长。
+  5. Hermes skill 描述从 "LeadAgent/LangGraph chain" 更新为 "AgentScope Agent Team chain"，新增 AS-R0 架构上下文小节。
+- 验证方式：`test_agentscope_control_plane_api.py` 补 3 个用例（404、api_key 兜底、type 切换清 key）全部通过；`black`/`ruff` 通过；本地 uvicorn 启动 psycopg2 不再段错误；SSE 长 read 超时不影响既有 Agent Team 测试。
+- 残留风险或后续事项：BI worker set 兜底仅覆盖 dataclass 字段，若上游继续引入新的 set 字段仍需依赖 `__post_init__` 反射兜底；psycopg2 源码编译需要 brew libpq/openssl@3，CI 或部署环境需自带这些依赖。
+
