@@ -31,11 +31,27 @@ class FakeAgentScopeControlPlaneClient:
 
     async def list_credential_schemas(self):
         self.calls.append(("list_credential_schemas", None))
-        return {"openai_credential": {"title": "OpenAI API", "properties": {"api_key": {"type": "string"}}}}
+        return {
+            "openai_credential": {
+                "title": "OpenAI API",
+                "properties": {"api_key": {"type": "string"}},
+            }
+        }
 
     async def list_credentials(self):
         self.calls.append(("list_credentials", None))
-        return [{"id": "cred-1", "data": {"name": "默认凭证", "api_key": "sk-hidden"}}]
+        # 现实中 AgentScope 存储层永远吐出带 type/api_key 明文的 credential data，
+        # 这里对齐真实结构以便 partial-update 合并逻辑能被完整覆盖。
+        return [
+            {
+                "id": "cred-1",
+                "data": {
+                    "name": "默认凭证",
+                    "type": "openai_credential",
+                    "api_key": "sk-hidden",
+                },
+            }
+        ]
 
     async def create_credential(self, payload):
         self.calls.append(("create_credential", payload))
@@ -91,9 +107,18 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
     )
     delete_response = client.delete("/api/agentscope-control/credentials/cred-1")
 
-    assert list_response.json() == [{"id": "cred-1", "data": {"name": "默认凭证", "api_key_set": True}}]
+    assert list_response.json() == [
+        {
+            "id": "cred-1",
+            "data": {"name": "默认凭证", "type": "openai_credential", "api_key_set": True},
+        }
+    ]
     assert create_response.json() == {"credential_id": "cred-1", "data": {"api_key_set": True}}
-    assert update_response.json() == {"credential_id": "cred-1", "updated": True, "data": {"api_key_set": True}}
+    assert update_response.json() == {
+        "credential_id": "cred-1",
+        "updated": True,
+        "data": {"api_key_set": True},
+    }
     assert delete_response.json() == {"deleted": True}
     assert _contains_api_key_field(list_response.json()) is False
     assert _contains_api_key_field(create_response.json()) is False
@@ -101,10 +126,72 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
     assert ("create_credential", {"data": {"type": "openai_credential", "api_key": "sk-test"}}) in (
         FakeAgentScopeControlPlaneClient.calls
     )
-    assert ("update_credential", ("cred-1", {"data": {"name": "更新后的凭证"}})) in (
-        FakeAgentScopeControlPlaneClient.calls
-    )
+    # PATCH 语义收敛为 partial update：Datalogue 会先读现存 credential，把缺失字段
+    # （尤其是 api_key/type）用现值兜底再回写，避免前端脱敏表单误清空 key。
+    assert (
+        "update_credential",
+        (
+            "cred-1",
+            {
+                "data": {
+                    "name": "更新后的凭证",
+                    "type": "openai_credential",
+                    "api_key": "sk-hidden",
+                },
+            },
+        ),
+    ) in FakeAgentScopeControlPlaneClient.calls
     assert ("delete_credential", "cred-1") in FakeAgentScopeControlPlaneClient.calls
+
+
+def test_agentscope_control_plane_patch_returns_404_when_credential_missing(client):
+    response = client.patch(
+        "/api/agentscope-control/credentials/missing-id",
+        json={"data": {"name": "any"}},
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.text.lower()
+
+
+def test_agentscope_control_plane_patch_preserves_existing_api_key(client):
+    response = client.patch(
+        "/api/agentscope-control/credentials/cred-1",
+        json={"data": {"description": "只改描述，不重填 key"}},
+    )
+
+    assert response.status_code == 200
+    # 前端只改描述、没送 api_key → Datalogue 用 AgentScope 里的现存 api_key 兜底。
+    matching = [
+        call
+        for call in FakeAgentScopeControlPlaneClient.calls
+        if call[0] == "update_credential" and call[1][0] == "cred-1"
+    ]
+    assert matching, "expected update_credential to be invoked"
+    _, (_, forwarded_payload) = matching[-1]
+    forwarded_data = forwarded_payload["data"]
+    assert forwarded_data["api_key"] == "sk-hidden"
+    assert forwarded_data["description"] == "只改描述，不重填 key"
+
+
+def test_agentscope_control_plane_patch_drops_api_key_when_type_changes(client):
+    response = client.patch(
+        "/api/agentscope-control/credentials/cred-1",
+        json={"data": {"type": "deepseek_credential"}},
+    )
+
+    assert response.status_code == 200
+    # 切换 credential type（provider 变了）→ 旧 api_key 立即作废，由前端提示用户重填。
+    matching = [
+        call
+        for call in FakeAgentScopeControlPlaneClient.calls
+        if call[0] == "update_credential" and call[1][0] == "cred-1"
+    ]
+    assert matching, "expected update_credential to be invoked"
+    _, (_, forwarded_payload) = matching[-1]
+    forwarded_data = forwarded_payload["data"]
+    assert "api_key" not in forwarded_data
+    assert forwarded_data["type"] == "deepseek_credential"
 
 
 def test_agentscope_control_plane_proxies_models(client):
