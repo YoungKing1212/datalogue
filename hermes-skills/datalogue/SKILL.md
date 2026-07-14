@@ -1,6 +1,6 @@
 ---
 name: datalogue
-description: Lightweight Hermes/Codex skill for Datalogue semantic assets and guarded readonly SQL preview. Use when an agent needs to choose a dataset, inspect metrics/dimensions/blueprints/schema/terms, generate SQL from those assets, and execute it through Datalogue's readonly preview API without loading the full LeadAgent/LangGraph chain.
+description: Lightweight Hermes/Codex skill for Datalogue semantic assets and guarded readonly SQL preview. Use when an agent needs to choose a dataset, inspect metrics/dimensions/blueprints/schema/terms, generate SQL from those assets, and execute it through Datalogue's readonly preview API without triggering the full AgentScope Agent Team chain.
 ---
 
 # Datalogue Semantic Assets
@@ -26,6 +26,20 @@ Use this skill as a lightweight live API client for the Datalogue project. It ex
 ## Performance Context
 
 This skill's path (direct API calls through `scripts/api_assets.py`) takes ~2s per query — vs the full AgentScope Agent Team chain which takes 15–45s through 8–12 LLM inference rounds. The full chain exists for ambiguous questions requiring dataset confirmation, multi-step exploration, and auto-repair; for straightforward queries with a known dataset, always prefer this skill.
+
+## Current Architecture Context (AS-R0)
+
+Datalogue's main query chain has migrated from the old LangGraph-based process-internal LeadAgent + DatasetSubAgent to AgentScope Service Agent Team:
+
+```
+POST /api/agent-team/tasks/stream (SSE)
+  → AgentTeamTaskRuntime
+    → AgentScopeServiceTaskRunner (HTTP → AgentScope Service /agentscope)
+      → AgentScope Agent Team (Leader Agent + BI Worker Agent)
+        → BIWorkerQueryRuntime (L5)
+```
+
+The AgentScope Service runs as a FastAPI sub-app mounted at `/agentscope`. Old LangGraph code in `app/graph/` has been reduced to only `llm.py` (LLM invocation wrapper). Detailed current architecture docs are at `docs/architecture/` in the Datalogue project.
 
 ## Code Changes in Datalogue
 
