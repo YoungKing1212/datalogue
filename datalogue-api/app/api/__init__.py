@@ -21,6 +21,7 @@ from app.api import (
     conversation,
     datasource,
     dataset,
+    debug_timeline,
     llm,
     messages,
     navigation,
@@ -44,3 +45,4 @@ router.include_router(
 router.include_router(messages.router, prefix="/messages", tags=["消息反馈"])
 router.include_router(artifacts.router, prefix="/artifacts", tags=["查询产物"])
 router.include_router(workbench.router, prefix="/workbench", tags=["工作台"])
+router.include_router(debug_timeline.router, prefix="/debug", tags=["调试 Timeline"])
