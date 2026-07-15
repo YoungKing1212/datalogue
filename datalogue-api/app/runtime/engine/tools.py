@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import logging
 import re
@@ -59,6 +60,13 @@ BI_WORKER_PLAN_CONTRACT_MAX_RETRIES = 1
 _BI_WORKER_PLAN_CONTRACT_TOTAL_ATTEMPT_KEY = "__total_contract_attempts__"
 _BI_WORKER_REPAIR_MAX_RETRIES = 2
 _BI_WORKER_REPAIR_ATTEMPT_KEY = "__total_repair_attempts__"
+
+# 仅允许后端静默移除已经被 QueryPlan v1 替代、且不会影响实际执行语义的历史字段。
+# 例如 join_on 曾被模型写在 supporting_entities 中，但真正可执行的关联只能由
+# join_requirements + join_keys 表达；保留它只会触发一次无意义的整计划重试。
+_BI_WORKER_REDUNDANT_QUERY_PLAN_FIELD_PATHS = {
+    ("data_graph", "supporting_entities", "join_on"),
+}
 
 BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
     "required_top_level_fields": [
@@ -294,6 +302,58 @@ def _safe_plan_contract_detail_path(*, code: str, loc: tuple[Any, ...]) -> str:
     if code == "extra_forbidden" and len(loc) == 1:
         return "root.extra_field"
     return ".".join(str(part) for part in loc)
+
+
+def _drop_redundant_query_plan_fields(
+    query_plan: dict[str, Any], exc: ValidationError
+) -> tuple[dict[str, Any], list[str]] | None:
+    """只移除已废弃的冗余字段，避免为纯格式噪声重新生成整个 QueryPlan。
+
+    该函数 fail-closed：只有本次校验的全部错误均为 allowlist 中字段的
+    ``extra_forbidden`` 时才返回修正后的副本。缺字段、枚举值错误、字段引用错误
+    等情况仍须交给 Worker 明确修复，不能由后端猜测业务意图。
+    """
+
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    if not errors:
+        return None
+
+    normalized_plan = deepcopy(query_plan)
+    normalized_paths: list[str] = []
+    for item in errors:
+        loc = tuple(item.get("loc") or ())
+        semantic_path = tuple(part for part in loc if not isinstance(part, int))
+        if (
+            item.get("type") != "extra_forbidden"
+            or semantic_path not in _BI_WORKER_REDUNDANT_QUERY_PLAN_FIELD_PATHS
+            or not _drop_mapping_key_at_location(normalized_plan, loc)
+        ):
+            return None
+        normalized_paths.append(_safe_plan_contract_detail_path(code="extra_forbidden", loc=loc))
+
+    return normalized_plan, sorted(normalized_paths)
+
+
+def _drop_mapping_key_at_location(payload: dict[str, Any], loc: tuple[Any, ...]) -> bool:
+    """按 Pydantic 错误路径删除一个 dict 键；路径不匹配时不修改输入。"""
+
+    if not loc or not isinstance(loc[-1], str):
+        return False
+
+    current: Any = payload
+    for part in loc[:-1]:
+        if isinstance(part, int):
+            if not isinstance(current, list) or part < 0 or part >= len(current):
+                return False
+        elif not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+
+    field_name = loc[-1]
+    if not isinstance(current, dict) or field_name not in current:
+        return False
+    current.pop(field_name)
+    return True
 
 
 def _plan_contract_error_message(*, code: str, loc: tuple[Any, ...]) -> str:
@@ -686,6 +746,37 @@ def build_datalogue_progressive_bi_worker_tools(
 
         try:
             plan = BIWorkerQueryPlan.model_validate(query_plan)
+        except ValidationError as exc:
+            normalization = _drop_redundant_query_plan_fields(query_plan, exc)
+            if normalization is None:
+                # 非冗余字段的校验失败必须 fail-closed，避免后端臆测业务意图。
+                logger.warning(
+                    "[datalogue_execute_query_plan_bundle] CONTRACT ERROR dataset_id=%s "
+                    "trace_id=%s exc_type=%s signature=%s",
+                    dataset_id,
+                    trace_id,
+                    type(exc).__name__,
+                    _safe_plan_contract_signature(exc),
+                )
+                return _tool_success_chunk(
+                    _bi_worker_plan_contract_repair_payload(
+                        failure_counts=plan_contract_failure_counts,
+                        exc=exc,
+                    )
+                )
+
+            normalized_query_plan, normalized_paths = normalization
+            # join_on 只是旧 DSL 残留，真正的关联仍需由 join_requirements 通过安全校验。
+            plan = BIWorkerQueryPlan.model_validate(normalized_query_plan)
+            logger.info(
+                "[datalogue_execute_query_plan_bundle] NORMALIZED REDUNDANT PLAN FIELDS "
+                "dataset_id=%s trace_id=%s paths=%s",
+                dataset_id,
+                trace_id,
+                normalized_paths,
+            )
+
+        try:
             # 版本能力在结构契约通过后、执行 SQL 前强制收口；提示词和前端隐藏都不能替代这道后端闸门。
             capability_policy = get_bi_capability_policy(
                 get_settings().DATALOGUE_DEMO_CAPABILITY_LEVEL
@@ -750,7 +841,7 @@ def build_datalogue_progressive_bi_worker_tools(
                 )
             state = ProgressiveContextState(**filtered_state)
         except (TypeError, ValidationError) as exc:
-            # 契约错误:直接进入 Repair 链路 A。记录错误摘要便于事后排查 LLM 传入结构。
+            # context_state 契约错误直接进入 Repair 链路；不能用 QueryPlan 归一化掩盖状态异常。
             logger.warning(
                 "[datalogue_execute_query_plan_bundle] CONTRACT ERROR dataset_id=%s "
                 "trace_id=%s exc_type=%s signature=%s",

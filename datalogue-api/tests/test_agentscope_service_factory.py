@@ -84,6 +84,7 @@ def test_create_embedded_runtime_app_wires_redis_and_workspace(monkeypatch, tmp_
         "extra_agent_middlewares",
         "extra_agent_tools",
         "custom_subagent_templates",
+        "custom_agent_cls",
     }
     assert isinstance(create_app_kwargs["storage"], FakeRedisStorage)
     assert isinstance(create_app_kwargs["message_bus"], FakeRedisMessageBus)
@@ -93,6 +94,7 @@ def test_create_embedded_runtime_app_wires_redis_and_workspace(monkeypatch, tmp_
     ]
     assert callable(create_app_kwargs["extra_agent_middlewares"])
     assert callable(create_app_kwargs["extra_agent_tools"])
+    assert create_app_kwargs["custom_agent_cls"].__name__ == "DatalogueRuntimeAgent"
     # factory 的职责是透传 registry 当前暴露的 worker 模板；精确 worker 快照由 static registry 测试兜底。
     assert [template.type for template in create_app_kwargs["custom_subagent_templates"]] == [
         spec.worker_type for spec in build_datalogue_worker_template_specs()

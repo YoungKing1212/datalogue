@@ -23,8 +23,9 @@ import re
 from typing import Any
 
 from agentscope.app.storage import StorageBase
-from agentscope.message import AssistantMsg
+from agentscope.message import AssistantMsg, Msg
 from agentscope.middleware import MiddlewareBase, TracingMiddleware
+from opentelemetry import trace as otel_trace
 
 from app.domains.bi.worker.timeline_cache import store_bi_worker_timeline
 from app.domains.agent_team.progress_bridge import publish_agent_progress
@@ -62,6 +63,7 @@ _PROGRESSIVE_TOOL_SUMMARIES = {
     "datalogue_repair_query_plan": "BI Worker 正在生成查询修复建议。",
 }
 _RAW_THINKING_TRUE_VALUES = {"1", "true", "yes", "on", "debug"}
+_PHOENIX_SESSION_IO_TEXT_LIMIT = 1000
 
 
 def build_datalogue_extra_agent_middlewares(
@@ -88,9 +90,15 @@ def build_datalogue_extra_agent_middlewares(
                 agent_id=agent_id,
                 session_id=session_id,
             )
-        # TracingMiddleware 全局挂载（所有 agent），未配置 TracerProvider 时零开销短路。
+        # TracingMiddleware 必须位于最外层，Phoenix 兼容层才能把标准 I/O 属性写入根 Agent Span。
         # BIWorkerProgressMiddleware 只记录 thinking 路径摘要、工具结果摘要与用户可见进度，不接管原始模型 I/O 日志。
-        middlewares: list[MiddlewareBase] = [TracingMiddleware()]
+        agent_role = (
+            "bi_worker" if worker_context is not None else "leader" if leader_context else "agent"
+        )
+        middlewares: list[MiddlewareBase] = [
+            TracingMiddleware(),
+            PhoenixSessionIOMiddleware(agent_role=agent_role),
+        ]
         if worker_context is not None:
             middlewares.append(
                 BIWorkerProgressMiddleware(worker_context=worker_context, storage=storage)
@@ -100,6 +108,48 @@ def build_datalogue_extra_agent_middlewares(
         return middlewares
 
     return _extra_agent_middlewares
+
+
+class PhoenixSessionIOMiddleware(MiddlewareBase):
+    """为 Phoenix Session 根 Span 补充 OpenInference 标准输入输出属性。
+
+    AgentScope 2.0.3 原生中间件记录 ``gen_ai.*.messages``，而 Phoenix Session
+    摘要只读取根 Span 的 ``input.value`` / ``output.value``。本中间件位于原生
+    TracingMiddleware 内层，只提取最终文本块并执行敏感内容过滤与长度限制。
+    """
+
+    def __init__(self, *, agent_role: str = "agent") -> None:
+        self.agent_role = agent_role
+
+    async def on_reply(
+        self,
+        agent: Any,
+        input_kwargs: dict,
+        next_handler: Callable[..., AsyncGenerator],
+    ) -> AsyncGenerator:
+        """在一次 reply 的根 Span 上写入 Phoenix 可识别的安全文本。"""
+
+        input_text = _phoenix_message_text(input_kwargs.get("inputs"))
+        _set_phoenix_session_io_attribute(
+            name="input",
+            value=input_text or _phoenix_fallback_text(self.agent_role, direction="input"),
+        )
+
+        last_msg: Msg | None = None
+        try:
+            async for event_or_msg in next_handler(**input_kwargs):
+                if isinstance(event_or_msg, Msg):
+                    last_msg = event_or_msg
+                yield event_or_msg
+        except BaseException:
+            # 异常状态由外层 TracingMiddleware 记录；失败回复不能伪装成正常 output。
+            raise
+        else:
+            output_text = _phoenix_message_text(last_msg)
+            _set_phoenix_session_io_attribute(
+                name="output",
+                value=output_text or _phoenix_fallback_text(self.agent_role, direction="output"),
+            )
 
 
 class LeaderRawDebugMiddleware(MiddlewareBase):
@@ -219,7 +269,9 @@ async def _bi_worker_context(
 
     if storage is None or not user_id or not agent_id:
         return None
-    worker_type = await resolve_team_worker_type(storage=storage, user_id=user_id, agent_id=agent_id)
+    worker_type = await resolve_team_worker_type(
+        storage=storage, user_id=user_id, agent_id=agent_id
+    )
     if worker_type != "bi":
         return None
     agent_record = await storage.get_agent(user_id, agent_id)
@@ -487,6 +539,59 @@ def _safe_content_blocks(msg: Any, block_type: str) -> list[Any]:
     except Exception:
         return []
     return blocks if isinstance(blocks, list) else []
+
+
+def _phoenix_message_text(value: Any) -> str | None:
+    """从 AgentScope Msg 提取普通文本块，过滤工具、思维链和敏感内部材料。"""
+
+    messages = value if isinstance(value, list) else [value]
+    chunks: list[str] = []
+    for msg in messages[:20]:
+        if not isinstance(msg, Msg):
+            continue
+        for block in _safe_content_blocks(msg, "text")[:20]:
+            text = _raw_block_text(block, attrs=("text", "content"))
+            if text:
+                chunks.append(text)
+    return _phoenix_safe_trace_text("\n".join(chunks))
+
+
+def _phoenix_safe_trace_text(value: Any) -> str | None:
+    """生成可离开进程进入 Phoenix 的限长文本；命中内部敏感模式时整体丢弃。"""
+
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if not text or _SENSITIVE_TEXT_PATTERN.search(text):
+        return None
+    return _clip(text, limit=_PHOENIX_SESSION_IO_TEXT_LIMIT)
+
+
+def _phoenix_fallback_text(agent_role: str, *, direction: str) -> str:
+    """当子智能体没有直接输入或安全文本被过滤时，写入不含业务原文的真实状态。"""
+
+    labels = {
+        "bi_worker": "BI Worker",
+        "leader": "智能问数主智能体",
+        "agent": "智能体",
+    }
+    label = labels.get(agent_role, labels["agent"])
+    if direction == "input":
+        return f"{label}继续处理当前任务"
+    return f"{label}本轮处理已完成"
+
+
+def _set_phoenix_session_io_attribute(*, name: str, value: str) -> None:
+    """写入当前根 Span；观测兼容失败不得影响 Agent 主链。"""
+
+    try:
+        span = otel_trace.get_current_span()
+        if not span.is_recording():
+            return
+        span.set_attribute(f"{name}.value", value)
+        span.set_attribute(f"{name}.mime_type", "text/plain")
+    except Exception:
+        logger.debug("Failed to set Phoenix session %s attribute.", name, exc_info=True)
 
 
 def _raw_block_text(block: Any, *, attrs: tuple[str, ...]) -> str:

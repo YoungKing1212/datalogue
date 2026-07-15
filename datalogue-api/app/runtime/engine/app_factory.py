@@ -23,6 +23,7 @@ from agentscope.app.message_bus import RedisMessageBus
 from agentscope.app.storage import RedisStorage
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 
+from app.runtime.engine.bi_worker_agent import DatalogueRuntimeAgent
 from app.runtime.engine.tools import build_datalogue_extra_agent_tools
 from app.domains.agent_team.team_templates import build_datalogue_subagent_templates
 from app.domains.agent_team.worker_logging import build_datalogue_extra_agent_middlewares
@@ -84,4 +85,6 @@ def create_embedded_runtime_app(settings: Settings) -> FastAPI:
         extra_agent_tools=build_datalogue_extra_agent_tools(storage=storage),
         # 固定 worker 类型通过 AgentScope 官方 Agent Team 模板暴露；worker 创建由 AgentCreate 接管。
         custom_subagent_templates=build_datalogue_subagent_templates(),
+        # 复用官方 custom_agent_cls 扩展点：BI Worker 不携带通用工作区/任务工具，缩短每轮模型上下文。
+        custom_agent_cls=DatalogueRuntimeAgent,
     )

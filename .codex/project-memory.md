@@ -1387,4 +1387,26 @@
   - `datalogue-api/tests/test_bi_worker_agent.py`、`datalogue-api/tests/test_agentscope_service_factory.py` — 覆盖 allowlist、非 basic ToolGroup 移除与运行时装配。
 - 关键改动：BI Worker 不再向模型暴露 Bash、Read/Write/Edit、Glob/Grep、Task*、ToolStop、Schedule*、`reset_tools` 与未使用的 `datalogue_search_assets`；普通 Agent 保持既有通用 Toolkit。
 - 验证方式：`python -m pytest datalogue-api/tests/test_bi_worker_agent.py datalogue-api/tests/test_agentscope_service_factory.py -q`（5 passed）；`git diff --check` 通过。
-- 残留风险或后续事项：完整 `test_agentscope_service_tools.py` 中存在一条与本改动无关的既有失败：其断言仍期待旧版 `join_requirement_shape`，但当前工作区契约已含 `alias_source`、`example` 等新增字段；另一个后续优化是按路由/规划/执行阶段继续细分 BI 工具集。
+- 残留风险或后续事项：后续可按路由、规划、执行阶段继续细分 BI 工具集，进一步减少单轮可见工具；当前 `join_requirement_shape` 测试已同步到真实契约。
+
+### 2026-07-15 14:54 · 避免 BI Worker 因历史 join_on 字段重生成 QueryPlan
+
+- 完成时间：2026-07-15 14:54。
+- 功能名称：局部归一化 BI Worker 的已废弃关联字段，消除纯格式错误引起的长模型重试。
+- 涉及文件：
+  - `datalogue-api/app/runtime/engine/tools.py` — 在 QueryPlan 校验失败时，仅自动移除 `data_graph.supporting_entities[*].join_on`，然后重新执行原有 QueryPlan、能力等级和 SQL 安全校验。
+  - `datalogue-api/tests/test_agentscope_service_tools.py` — 覆盖自动归一化直达执行，以及与其他结构错误并存时继续 fail-closed 的边界。
+- 关键改动：`join_on` 是旧 DSL 的冗余字段，实际关联仍必须由 `join_requirements + join_keys` 表达；后端只在全部校验错误均为该 allowlist 字段时删除副本中的字段。缺字段、非法操作符、字段引用或上下文错误均不自动修复，仍向 Worker 返回精确错误。
+- 验证方式：`datalogue-api/.venv/bin/python -m pytest datalogue-api/tests/test_agentscope_service_tools.py::test_execute_query_plan_bundle_drops_redundant_supporting_entity_join_on datalogue-api/tests/test_agentscope_service_tools.py::test_drop_redundant_query_plan_fields_rejects_mixed_contract_errors datalogue-api/tests/test_agentscope_service_tools.py::test_execute_query_plan_bundle_accepts_join_keys_field datalogue-api/tests/test_bi_worker_agent.py datalogue-api/tests/test_agentscope_service_factory.py -q`（8 passed）；`git diff --check` 通过。
+- 残留风险或后续事项：上线后应在 Phoenix 观察 `NORMALIZED REDUNDANT PLAN FIELDS` 日志频率，确认模型提示词收敛后再决定是否保留兼容逻辑；`join_requirement_shape` 测试已同步到当前增补字段。
+
+### 2026-07-15 15:11 · Phoenix Session 输入输出兼容中间件
+
+- 完成时间：2026-07-15 15:11。
+- 功能名称：复用现有 AgentScope OTel 根 Span，为 Phoenix Session 补充 OpenInference 输入输出字段。
+- 涉及文件：
+  - `datalogue-api/app/domains/agent_team/worker_logging.py` — 新增 `PhoenixSessionIOMiddleware`，在原生 `TracingMiddleware` 内层写入 `input.value`、`input.mime_type`、`output.value`、`output.mime_type`。
+  - `datalogue-api/tests/test_agentscope_service_worker_logging.py` — 覆盖 Leader、BI Worker、普通 Agent 的中间件顺序、标准字段写入和敏感内容过滤。
+- 关键改动：兼容层不创建第二套 TracerProvider、Exporter 或 Trace，只复用当前正在记录的根 Agent Span；输入输出只提取普通文本块，过滤 thinking、工具参数、SQL、Schema、QueryPlan 等内部材料并限制为 1000 字符。BI Worker 没有直接输入或内容被过滤时写入安全任务状态，异常回复不伪装为正常输出。
+- 验证方式：`ruff check` 与 `black --check` 通过；`pytest datalogue-api/tests/test_agentscope_service_worker_logging.py datalogue-api/tests/test_agentscope_service_factory.py datalogue-api/tests/test_agentscope_agent_team_task_runner.py -q`（58 passed）；`git diff --check` 通过。
+- 残留风险或后续事项：需要重启本地 API 后才会加载新中间件，且仅影响新生成的 Trace/Session；Phoenix 中已有 Session 不会自动回填 Input/Output。工具耗时仍由既有 Tool Span 的起止时间计算，无需重复写入 duration 属性。

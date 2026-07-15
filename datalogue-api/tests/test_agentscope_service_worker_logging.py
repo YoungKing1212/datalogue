@@ -57,12 +57,13 @@ class FakeStorage:
 
 
 @pytest.mark.asyncio
-async def test_extra_agent_middlewares_attaches_only_to_bi_worker():
+async def test_extra_agent_middlewares_attaches_tracing_and_phoenix_compatibility():
     from agentscope.middleware import TracingMiddleware
 
     from app.domains.agent_team.worker_logging import (
         BIWorkerProgressMiddleware,
         LeaderRawDebugMiddleware,
+        PhoenixSessionIOMiddleware,
         build_datalogue_extra_agent_middlewares,
     )
 
@@ -70,24 +71,110 @@ async def test_extra_agent_middlewares_attaches_only_to_bi_worker():
 
     middlewares = await factory("user-1", "worker-bi-1", "session-bi-1")
 
-    # BI worker 保留 OTel TracingMiddleware 和前端进度/事件链路中间件；不再挂自定义模型 I/O 日志中间件。
-    assert len(middlewares) == 2
+    # 原生 Tracing 必须在最外层，Phoenix 兼容层才能把 I/O 写入同一个根 Agent Span。
+    assert len(middlewares) == 3
     assert isinstance(middlewares[0], TracingMiddleware)
-    assert isinstance(middlewares[1], BIWorkerProgressMiddleware)
-    assert "on_model_call" not in type(middlewares[1]).__dict__
-    assert middlewares[1].worker_context["agent_name"] == "bi-worker"
+    assert isinstance(middlewares[1], PhoenixSessionIOMiddleware)
+    assert isinstance(middlewares[2], BIWorkerProgressMiddleware)
+    assert "on_model_call" not in type(middlewares[2]).__dict__
+    assert middlewares[2].worker_context["agent_name"] == "bi-worker"
 
     factory = build_datalogue_extra_agent_middlewares(storage=FakeStorage(FakeReportRecord()))
-    # 非 BI worker 只获得全局 TracingMiddleware
+    # 非 BI worker 同样补充 Phoenix Session I/O，但不挂 BI 进度中间件。
     non_bi_middlewares = await factory("user-1", "report-worker-1", "session-report-1")
-    assert len(non_bi_middlewares) == 1
+    assert len(non_bi_middlewares) == 2
     assert isinstance(non_bi_middlewares[0], TracingMiddleware)
+    assert isinstance(non_bi_middlewares[1], PhoenixSessionIOMiddleware)
 
     factory = build_datalogue_extra_agent_middlewares(storage=FakeStorage(FakeLeaderRecord()))
     leader_middlewares = await factory("user-1", "agent-leader-1", "session-leader-1")
-    assert len(leader_middlewares) == 2
+    assert len(leader_middlewares) == 3
     assert isinstance(leader_middlewares[0], TracingMiddleware)
-    assert isinstance(leader_middlewares[1], LeaderRawDebugMiddleware)
+    assert isinstance(leader_middlewares[1], PhoenixSessionIOMiddleware)
+    assert isinstance(leader_middlewares[2], LeaderRawDebugMiddleware)
+
+
+@pytest.mark.asyncio
+async def test_phoenix_session_io_middleware_sets_openinference_root_attributes(monkeypatch):
+    """兼容层复用当前 OTel Span，写入 Phoenix Session 能识别的文本字段。"""
+    from agentscope.message import AssistantMsg, UserMsg
+
+    from app.domains.agent_team import worker_logging
+    from app.domains.agent_team.worker_logging import PhoenixSessionIOMiddleware
+
+    class RecordingSpan:
+        def __init__(self):
+            self.attributes = {}
+
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, name, value):
+            self.attributes[name] = value
+
+    span = RecordingSpan()
+    monkeypatch.setattr(worker_logging.otel_trace, "get_current_span", lambda: span)
+
+    async def next_handler(**_kwargs):
+        yield AssistantMsg(name="assistant", content="已找到 243 条工作日志。")
+
+    middleware = PhoenixSessionIOMiddleware(agent_role="leader")
+    events = [
+        event
+        async for event in middleware.on_reply(
+            agent=SimpleNamespace(name="leader"),
+            input_kwargs={"inputs": UserMsg(name="user", content="查询杨凯2025年工作日志")},
+            next_handler=next_handler,
+        )
+    ]
+
+    assert len(events) == 1
+    assert span.attributes == {
+        "input.value": "查询杨凯2025年工作日志",
+        "input.mime_type": "text/plain",
+        "output.value": "已找到 243 条工作日志。",
+        "output.mime_type": "text/plain",
+    }
+
+
+@pytest.mark.asyncio
+async def test_phoenix_session_io_middleware_filters_sensitive_text_and_uses_fallback(monkeypatch):
+    """SQL、Schema 等内部材料不能因兼容 Phoenix Session 而离开进程。"""
+    from agentscope.message import AssistantMsg, UserMsg
+
+    from app.domains.agent_team import worker_logging
+    from app.domains.agent_team.worker_logging import PhoenixSessionIOMiddleware
+
+    class RecordingSpan:
+        def __init__(self):
+            self.attributes = {}
+
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, name, value):
+            self.attributes[name] = value
+
+    span = RecordingSpan()
+    monkeypatch.setattr(worker_logging.otel_trace, "get_current_span", lambda: span)
+
+    async def next_handler(**_kwargs):
+        yield AssistantMsg(name="assistant", content="schema: secret_table")
+
+    middleware = PhoenixSessionIOMiddleware(agent_role="bi_worker")
+    async for _event in middleware.on_reply(
+        agent=SimpleNamespace(name="bi-worker"),
+        input_kwargs={"inputs": UserMsg(name="user", content="SELECT * FROM secret_table")},
+        next_handler=next_handler,
+    ):
+        pass
+
+    serialized = str(span.attributes).lower()
+    assert span.attributes["input.value"] == "BI Worker继续处理当前任务"
+    assert span.attributes["output.value"] == "BI Worker本轮处理已完成"
+    assert "select" not in serialized
+    assert "schema" not in serialized
+    assert "secret_table" not in serialized
 
 
 def test_event_summary_includes_pending_confirmation_tool_names():

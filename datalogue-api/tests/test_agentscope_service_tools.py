@@ -17,7 +17,6 @@ import json
 
 import pytest
 
-
 AGENTSCOPE_SERVICE_BUILTIN_TOOL_NAMES = {
     "Bash",
     "Read",
@@ -277,9 +276,7 @@ async def test_query_plan_contract_hint_points_to_real_operator_and_join_shape()
                 "join_type": "inner",
                 "left_asset_ref": "table:pm_tenant.plan_task_daily_record",
                 "right_asset_ref": "table:pm_tenant.eas_personofile",
-                "join_keys": [
-                    {"left_field": "person_id", "right_field": "id"}
-                ],
+                "join_keys": [{"left_field": "person_id", "right_field": "id"}],
             }
         ],
         "filters": [
@@ -340,6 +337,20 @@ async def test_query_plan_contract_hint_points_to_real_operator_and_join_shape()
         "join_keys": [
             {"left_field": "left_table_field_name", "right_field": "right_table_field_name"},
         ],
+        "forbidden_fields": ["left_asset_ref", "right_asset_ref"],
+        "alias_source": "data_graph.primary_entity or data_graph.supporting_entities alias",
+        "example": {
+            "left_alias": "main",
+            "right_alias": "ep",
+            "relationship_ref": (
+                "blueprint_join:1:table:pm_tenant.plan_task_daily_record"
+                "->table:pm_tenant.eas_personofile"
+            ),
+            "join_type": "left",
+            "required": True,
+            "reason": "通过账号关联员工档案获取姓名",
+            "join_keys": [{"left_field": "account", "right_field": "person_card"}],
+        },
     }
     assert "literal_error:filters.0.operator" in payload["validation_error_summary"]
     assert "missing:join_requirements.0.left_alias" in payload["validation_error_summary"]
@@ -382,9 +393,7 @@ async def test_query_plan_contract_details_explain_legacy_join_fields():
                 "type": "inner",
                 "relationship_ref": "rel:contract_customer",
                 "reason": "关联客户",
-                "join_keys": [
-                    {"left_field": "customer_id", "right_field": "id"}
-                ],
+                "join_keys": [{"left_field": "customer_id", "right_field": "id"}],
             },
             {
                 "left": "contract",
@@ -392,9 +401,7 @@ async def test_query_plan_contract_details_explain_legacy_join_fields():
                 "type": "left",
                 "relationship_ref": "rel:contract_org",
                 "reason": "关联组织",
-                "join_keys": [
-                    {"left_field": "org_id", "right_field": "id"}
-                ],
+                "join_keys": [{"left_field": "org_id", "right_field": "id"}],
             },
             {
                 "left": "contract",
@@ -402,9 +409,7 @@ async def test_query_plan_contract_details_explain_legacy_join_fields():
                 "type": "left",
                 "relationship_ref": "rel:contract_person",
                 "reason": "关联人员",
-                "join_keys": [
-                    {"left_field": "person_id", "right_field": "id"}
-                ],
+                "join_keys": [{"left_field": "person_id", "right_field": "id"}],
             },
         ],
         "filters": [],
@@ -658,6 +663,128 @@ def test_plan_contract_error_expected_guides_join_condition_to_join_keys():
     assert "join_keys" in expected
     assert "SQL 片段" in expected
     assert "left_field" in expected and "right_field" in expected
+
+
+@pytest.mark.asyncio
+async def test_execute_query_plan_bundle_drops_redundant_supporting_entity_join_on():
+    """历史 join_on 仅是冗余格式字段，应由后端删除后直接执行，避免整计划重试。"""
+    from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
+    from app.runtime.engine import tools as tools_module
+    from app.runtime.engine.tools import build_datalogue_progressive_bi_worker_tools
+
+    captured_plans = []
+
+    async def fake_execute(*args, **kwargs):
+        captured_plans.append(kwargs["query_plan"])
+        return {
+            "datalogue_event_type": "dataset_query_result",
+            "status": "completed",
+            "artifact_ref": "artifact:test-normalized-plan",
+            "row_count": 1,
+            "column_count": 1,
+            "summary": "OK",
+        }
+
+    plan_with_redundant_join_on = {
+        "intent": "detail_query",
+        "question": "查询杨凯2025年工作日志",
+        "result_shape": {"type": "table", "grain": "detail", "limit": 100},
+        "data_graph": {
+            "primary_entity": {"asset_ref": "asset:log", "alias": "main", "role": "primary"},
+            "supporting_entities": [
+                {
+                    "asset_ref": "asset:person",
+                    "alias": "person",
+                    "role": "supporting",
+                    "join_on": "main.account = person.person_card",
+                }
+            ],
+        },
+        "join_requirements": [],
+        "filters": [],
+        "selects": [
+            {
+                "target": {"asset_ref": "asset:log.id", "alias": "main", "field": "id"},
+                "display_name": "日志编号",
+            }
+        ],
+        "metrics": [],
+        "group_by": [],
+        "ordering": [],
+        "assumptions": [],
+    }
+
+    original = BIWorkerQueryRuntime.execute_query_plan
+    BIWorkerQueryRuntime.execute_query_plan = fake_execute  # type: ignore[assignment]
+    try:
+        tools = build_datalogue_progressive_bi_worker_tools(worker_context=None)
+        execute_tool = next(
+            tool for tool in tools if tool.name == "datalogue_execute_query_plan_bundle"
+        )
+        result_chunk = await execute_tool(
+            dataset_id=1,
+            confirmed_question="查询杨凯2025年工作日志",
+            query_plan=plan_with_redundant_join_on,
+            context_state={},
+        )
+    finally:
+        BIWorkerQueryRuntime.execute_query_plan = original  # type: ignore[assignment]
+
+    payload = json.loads(result_chunk.content[0].text)
+    assert payload["status"] == "completed"
+    assert len(captured_plans) == 1
+    assert captured_plans[0].data_graph.supporting_entities[0].alias == "person"
+    assert not hasattr(captured_plans[0].data_graph.supporting_entities[0], "join_on")
+    assert "bi_worker_repair_request" not in tools_module.json.dumps(payload, ensure_ascii=False)
+
+
+def test_drop_redundant_query_plan_fields_rejects_mixed_contract_errors():
+    """冗余字段与任何其他错误同时出现时，必须保留 fail-closed 的修复链路。"""
+    from pydantic import ValidationError
+
+    from app.domains.bi.worker.contracts import BIWorkerQueryPlan
+    from app.runtime.engine.tools import _drop_redundant_query_plan_fields
+
+    invalid_plan = {
+        "intent": "detail_query",
+        "question": "查询日志",
+        "result_shape": {"type": "table", "grain": "detail"},
+        "data_graph": {
+            "primary_entity": {"asset_ref": "asset:log", "alias": "main", "role": "primary"},
+            "supporting_entities": [
+                {
+                    "asset_ref": "asset:person",
+                    "alias": "person",
+                    "role": "supporting",
+                    "join_on": "main.account = person.person_card",
+                }
+            ],
+        },
+        "join_requirements": [],
+        "filters": [
+            {
+                "target": {"asset_ref": "asset:log.id", "alias": "main", "field": "id"},
+                "operator": "eq",
+                "value": "1",
+            }
+        ],
+        "selects": [
+            {
+                "target": {"asset_ref": "asset:log.id", "alias": "main", "field": "id"},
+                "display_name": "日志编号",
+            }
+        ],
+        "metrics": [],
+        "group_by": [],
+        "ordering": [],
+        "assumptions": [],
+    }
+
+    with pytest.raises(ValidationError) as raised:
+        BIWorkerQueryPlan.model_validate(invalid_plan)
+
+    # 非法操作符是业务结构错误，不能因 join_on 可删除而被后端掩盖。
+    assert _drop_redundant_query_plan_fields(invalid_plan, raised.value) is None
 
 
 @pytest.mark.asyncio
