@@ -1,5 +1,5 @@
 # ============================================================
-# File Name   : z6a7b8c9d0e1_drop_langgraph_checkpoint_tables.py
+# File Name   : d1e2f3a4b5c6_drop_langgraph_checkpoint_tables.py
 # Description:
 #   清理旧 LangGraph checkpoint 运行时残留表。
 #
@@ -8,14 +8,14 @@
 #   - 避免误删 Datalogue 自有会话、Workbench、BI Agent 和审计表。
 #
 # Author      : yangkai
-# Created On  : 2026-07-09
+# Created On  : 2026-07-15
 # ============================================================
 
 """drop langgraph checkpoint tables
 
-Revision ID: z6a7b8c9d0e1
-Revises: y5z6a7b8c9d0
-Create Date: 2026-07-09 00:00:00.000000
+Revision ID: d1e2f3a4b5c6
+Revises: c0d1e2f3a4b5
+Create Date: 2026-07-15 16:20:00.000000
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "z6a7b8c9d0e1"
-down_revision = "y5z6a7b8c9d0"
+revision = "d1e2f3a4b5c6"
+down_revision = "c0d1e2f3a4b5"
 branch_labels = None
 depends_on = None
 

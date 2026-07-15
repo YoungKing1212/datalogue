@@ -23,7 +23,7 @@ RUFF            := $(VENV_DIR)/bin/ruff
 MYPY            := $(VENV_DIR)/bin/mypy
 DOCKER_IMAGE    := datalogue-api
 DOCKER_TAG      := latest
-# 完整部署编排入口在仓库根目录（含 api + web）；本目录 compose 仅提供 db+redis 供本地开发
+# 根 Compose 是部署入口；本目录 Compose 只定义与后端版本绑定的 migration 服务。
 ROOT_COMPOSE    := -f ../docker-compose.yml
 
 # ── 颜色 ──────────────────────────────────────────────
@@ -100,7 +100,7 @@ install-enterprise: ## 安装企业数据源驱动
 dev: ## 启动开发服务器（热重载 + 自动建表）
 	@echo "$(GREEN)>>> 启动开发服务器 http://localhost:8000$(NC)"
 	@echo "$(YELLOW)    确保 PostgreSQL 和 Redis 已启动。$(NC)"
-	@echo "$(YELLOW)    docker compose up -d db redis$(NC)"
+	@echo "$(YELLOW)    cd .. && docker compose up -d db redis$(NC)"
 	@echo ""
 	$(UVICORN) $(APP_DIR).main:app --reload --host 0.0.0.0 --port 8000
 
@@ -199,15 +199,15 @@ docker-build-prod: ## 生产构建（多阶段，含 enterprise 依赖）
 	@echo "$(GREEN)✓ 生产构建完成$(NC)"
 
 .PHONY: docker-up
-docker-up: ## 启动完整部署 (db + redis + api + web)
+docker-up: ## 启动完整部署 (db + redis + migration + api + web + nginx)
 	@echo "$(GREEN)>>> 启动完整部署$(NC)"
 	docker compose $(ROOT_COMPOSE) up -d
-	@echo "$(GREEN)✓ 已启动。入口: http://localhost:$${WEB_PORT:-5173}  API 直连: http://localhost:$${API_PORT:-8000}$(NC)"
+	@echo "$(GREEN)✓ 已启动。HTTPS 入口: https://localhost:$${WEB_PORT:-3000}$(NC)"
 
 .PHONY: docker-up-infra
 docker-up-infra: ## 仅启动基础设施 (db + redis，供本地 make dev 使用)
 	@echo "$(GREEN)>>> 启动基础设施$(NC)"
-	docker compose up -d db redis
+	docker compose $(ROOT_COMPOSE) up -d db redis
 	@echo "$(GREEN)✓ 基础设施已启动$(NC)"
 
 .PHONY: docker-down
@@ -236,8 +236,8 @@ docker-clean: ## 删除全部容器和数据卷
 	fi
 
 .PHONY: docker-migrate
-docker-migrate: ## 在 API 容器内运行迁移
-	docker compose $(ROOT_COMPOSE) exec api alembic upgrade head
+docker-migrate: ## 运行一次性数据库迁移服务
+	docker compose $(ROOT_COMPOSE) run --rm migration
 
 # ============================================================================
 #  清理

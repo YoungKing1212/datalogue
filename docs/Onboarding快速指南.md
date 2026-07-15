@@ -64,32 +64,30 @@
 ### 方式一：Docker 一键启动（推荐首次）
 
 ```bash
-# 1. 进入后端目录
-cd datalogue-api
+# 1. 在仓库根目录启动唯一一套 PostgreSQL + Redis
+docker compose up -d db redis
 
-# 2. 复制环境变量模板
+# 2. 进入后端目录并复制环境变量模板
+cd datalogue-api
 cp .env.example .env
 # 编辑 .env，至少修改 OPENAI_API_KEY
 
-# 3. 启动基础设施（PostgreSQL + Redis）
-docker compose up -d db redis
-
-# 4. 安装 Python 依赖
+# 3. 安装 Python 依赖
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 5. 初始化数据库
+# 4. 初始化数据库
 alembic upgrade head
 
-# 6. 启动后端服务
+# 5. 启动后端服务
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 后端启动后访问：http://localhost:8000/docs（Swagger API 文档）
 
 ```bash
-# 7. 启动前端（另开终端）
+# 6. 启动前端（另开终端）
 cd datalogue-web
 npm install  # 或 pnpm install
 npm run dev
@@ -100,13 +98,12 @@ npm run dev
 ### 方式二：Docker Compose 完整部署
 
 ```bash
-cd datalogue-api
-export OPENAI_API_KEY=sk-your-key-here
-make docker-build
-make docker-up
+cp .env.example .env
+# 编辑根目录 .env 后启动；migration 会先执行 Alembic
+docker compose up -d --build
 ```
 
-详见 [Docker 部署方案](datalogue-api/docs/docker-deployment.md)。
+详见 [Docker 部署方案](../datalogue-api/docs/docker-deployment.md)。
 
 ### 验证环境
 

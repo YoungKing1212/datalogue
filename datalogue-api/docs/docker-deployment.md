@@ -1,405 +1,213 @@
-# Datalogue Docker 部署方案
+# Datalogue Docker 部署指南
 
-## 架构
+本文以仓库根目录 `docker-compose.yml` 为业务部署入口。PostgreSQL 只在根 Compose 定义；根 Compose 通过 `include` 聚合 `datalogue-api/docker-compose.yml` 中与后端版本强绑定的数据库迁移服务。Redis、API、Web 和 Nginx 仍由根 Compose 编排；Phoenix 使用独立的 `docker-compose.phoenix.yml`，不会影响业务栈启动。
 
-```
-                 ┌──────────────┐
-                 │    Nginx     │  ← 可选反向代理（HTTPS 终止）
-                 │  (443/80)    │
-                 └──────┬───────┘
-                        │
-                 ┌──────▼───────┐
-                 │  datalogue-  │
-                 │  api:8000    │  ← FastAPI + AgentScope Service
-                 │              │
-                 │  /api/*      │  ← 业务 API
-                 │  /agentscope/*│ ← Agent 编排
-                 └──────┬───────┘
-                        │
-          ┌─────────────┼─────────────┐
-          ▼             ▼             ▼
-  ┌────────────┐ ┌────────────┐ ┌────────────┐
-  │ datalogue- │ │ datalogue- │ │  外部数据源 │
-  │ db:5432    │ │ redis:6379 │ │ (MySQL/…)  │
-  │ PostgreSQL │ │            │ │            │
-  │ +pgvector  │ │ MessageBus │ │            │
-  └────────────┘ └────────────┘ └────────────┘
+## 部署结构
+
+```text
+浏览器
+  │ HTTPS ${WEB_PORT:-3000}
+  ▼
+Nginx
+  ├── /        → Web:3000
+  ├── /api/*   → API:8000
+  └── /agentscope/* → API:8000
+
+PostgreSQL healthy
+  ▼
+Migration: alembic upgrade head
+  ▼
+API healthy → Web → Nginx
 ```
 
-## 快速部署
+API 的 8000 端口不发布到宿主机，只允许 Nginx 和 Docker 内网服务访问。数据库迁移是 API 的启动闸门：迁移失败时 API、Web、Nginx 不会继续启动。
 
-### 前置条件
+## 前置条件
 
-- Docker Engine 24+ 及 Docker Compose v2
-- 可用的 LLM API Key（MiniMax / DeepSeek / OpenAI 等）
+- Docker Engine 24+
+- Docker Compose v2.20+，需支持 `include` 与 `service_completed_successfully`
+- 建议至少 4 核 CPU、8 GB 内存和 50 GB 可用磁盘
 
-### 1. 一键启动
+## 首次部署
 
-```bash
-# 设置 LLM API Key（必填）
-export OPENAI_API_KEY=your-api-key-here
-
-# 设置数据库密码（可选，默认 datalogue）
-export DB_PASSWORD=your-strong-password
-
-# 使用 Makefile 一键构建并启动
-make docker-build
-make docker-up
-
-# ── 或手动执行 ──
-# 构建镜像（多阶段，仅运行时层）
-./scripts/docker-build.sh
-
-# 启动完整部署
-docker compose --profile all up -d
-
-# 查看启动日志
-docker compose logs -f
-```
-
-### 2. 验证部署
-
-```bash
-# 健康检查
-curl http://localhost:8000/health
-# 预期: {"status":"ok"}
-
-# 查看运行容器
-docker compose ps
-
-# 确认数据库就绪
-docker compose exec db pg_isready -U datalogue
-```
-
-### 3. 初始化数据库
-
-```bash
-# 自动建表（容器启动时自动执行 metadata.create_all）
-# 如需手动运行迁移：
-docker compose exec api alembic upgrade head
-```
-
-### 4. 访问
-
-| 服务 | 地址 |
-|------|------|
-| API Swagger 文档 | http://localhost:8000/docs |
-| API ReDoc 文档 | http://localhost:8000/redoc |
-| 健康检查 | http://localhost:8000/health |
-
----
-
-## 自定义配置
-
-### 环境变量文件
-
-推荐使用 `.env` 文件管理配置：
+在仓库根目录执行：
 
 ```bash
 cp .env.example .env
-# 编辑 .env
 ```
 
-关键变量示例（`.env`）：
+编辑 `.env`，至少替换以下值：
 
-```env
-# ── 数据库 ──
-DB_PASSWORD=datalogue@2024
-API_PORT=8000
-
-# ── LLM ──
-OPENAI_API_KEY=sk-your-key-here
-OPENAI_BASE_URL=https://api.minimaxi.com/v1
-LLM_MODEL=MiniMax-M2.7
-
-# ── 安全（生产环境务必修改）──
-SECRET_KEY=generate-a-random-secret-here
-AES_KEY=your-32-byte-aes-key-here
-
-# ── 运行模式 ──
+```dotenv
+DB_PASSWORD=<数据库强密码>
+SECRET_KEY=<随机 JWT 密钥>
+AES_KEY=<32 字节 AES 密钥>
 APP_ENV=production
-LOG_LEVEL=INFO
+WEB_PORT=3000
+NGINX_TLS_HOSTS=localhost,127.0.0.1,<部署机 IP 或域名>
 ```
 
-然后启动：
+构建并启动业务栈：
 
 ```bash
-docker compose --profile all --env-file .env up -d
+docker compose up -d --build
 ```
 
----
+启动顺序由 Compose 自动控制：
 
-## 生产环境部署
+1. PostgreSQL、Redis 通过健康检查。
+2. `migration` 执行 `alembic upgrade head` 并正常退出。
+3. API 启动并通过健康检查。
+4. Web 和 Nginx 启动。
 
-### 1. 反向代理 + HTTPS
-
-推荐用 Nginx 做 TLS 终止：
-
-```nginx
-# /etc/nginx/sites-available/datalogue
-server {
-    listen 443 ssl http2;
-    server_name datalogue.your-company.com;
-
-    ssl_certificate /etc/ssl/certs/datalogue.crt;
-    ssl_certificate_key /etc/ssl/private/datalogue.key;
-
-    client_max_body_size 10m;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # SSE 流式响应需要关闭缓冲
-        proxy_buffering off;
-        proxy_cache off;
-    }
-}
-```
-
-### 2. 资源建议
-
-| 服务 | CPU | 内存 | 存储 |
-|------|-----|------|------|
-| API (datalogue-api) | 2 核 | 4 GB | — |
-| PostgreSQL | 2 核 | 4 GB | 50 GB+ (数据增长) |
-| Redis | 1 核 | 1 GB | 10 GB (AOF 持久化) |
-| **合计** | **5 核** | **9 GB** | **60 GB+** |
-
-> 实际需求取决于并发量、数据集规模和查询频率。上述为中等负载参考。
-
-### 3. 安全加固
-
-| 措施 | 说明 |
-|------|------|
-| 修改默认密码 | 设置 `DB_PASSWORD`、`SECRET_KEY`、`AES_KEY` |
-| 数据库端口隔离 | 生产环境移除 `db:5432` 的 `ports` 暴露，仅内部网络访问 |
-| 网络隔离 | 使用 Docker 自定义网络，只暴露 `api:8000` |
-| 数据卷备份 | 定期备份 `datalogue_pgdata` 和 `datalogue_redisdata` |
-| 日志轮转 | Docker 默认 json-file 日志驱动，配置 max-size/max-file |
-
-```yaml
-# docker-compose.override.yml 追加
-services:
-  api:
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-  db:
-    ports: []  # 不暴露数据库端口到宿主机
-  redis:
-    ports: []
-```
-
-### 4. 多环境配置
+## 验证部署
 
 ```bash
-# 开发环境
-docker compose --profile all -f docker-compose.yml -f docker-compose.override.yml up -d
+# 查看所有服务及一次性迁移容器
+docker compose ps -a
 
-# 生产环境（覆盖配置）
-docker compose --profile all -f docker-compose.yml -f docker-compose.prod.yml up -d
+# migration 预期为 Exited (0)
+docker compose logs migration
+
+# API 仅在容器内验证，不从宿主机暴露 8000
+docker compose exec api python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health').read().decode())"
+
+# Nginx HTTPS 入口
+curl -k https://localhost:${WEB_PORT:-3000}/healthz
 ```
 
----
+浏览器访问：
 
-## 运维操作
+```text
+https://<部署机地址>:${WEB_PORT:-3000}
+```
 
-### 查看日志
+首次使用自签证书时，浏览器会提示证书不受信任。正式生产环境应挂载受信任 CA 签发的证书。
+
+## 单独运行迁移
+
+部署流程会自动执行迁移。如需手动补跑：
 
 ```bash
-# 所有服务
-docker compose logs -f
-
-# 仅 API
-docker compose logs -f api
-
-# 最近 100 行
-docker compose logs --tail=100 api
+docker compose run --rm migration
 ```
 
-### 数据备份与恢复
+查看当前迁移版本：
 
 ```bash
-# 备份 PostgreSQL
-docker compose exec db pg_dump -U datalogue datalogue > datalogue_backup_$(date +%Y%m%d).sql
-
-# 恢复
-cat datalogue_backup.sql | docker compose exec -T db psql -U datalogue datalogue
-
-# 备份 Redis RDB
-docker compose cp redis:/data/appendonly.aof ./redis_backup.aof
+docker compose run --rm migration alembic current
 ```
 
-### 升级
+迁移会修改数据库结构，生产执行前必须完成 PostgreSQL 备份。
 
-```bash
-# 拉取最新代码
-git pull
+## 本地开发基础设施
 
-# 重新构建并滚动重启
-docker compose --profile all build --no-cache api
-docker compose --profile all up -d
-
-# 运行数据库迁移（如有）
-docker compose exec api alembic upgrade head
-```
-
-### 健康检查与监控
-
-```yaml
-# docker-compose.override.yml — 健康检查增强
-services:
-  api:
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-```
-
-```bash
-# 查看容器健康状态
-docker compose ps
-
-# Prometheus 指标（如需）
-# FastAPI 默认不暴露 metrics endpoint，可集成 prometheus-fastapi-instrumentator
-```
-
----
-
-## 常见问题
-
-### Q: 启动后 API 无法连接数据库
-
-确认 `db` 容器先于 `api` 就绪。健康检查会自动等待，但如果数据库密码不匹配会报错：
-
-```
-psycopg2.OperationalError: FATAL: password authentication failed for user "datalogue"
-```
-
-**解决**：检查 `.env` 中 `DB_PASSWORD` 与 docker-compose 中设置的密码一致。
-
-### Q: API 提示 "OPENAI_API_KEY environment variable required"
-
-`OPENAI_API_KEY` 是必填环境变量：
-
-```bash
-export OPENAI_API_KEY=sk-your-key
-docker compose --profile all up -d
-```
-
-### Q: 想要只启动基础设施（本地开发）
+PostgreSQL 只在根 Compose 定义。即使开发后端位于 `datalogue-api/`，也应从仓库根目录启动基础设施：
 
 ```bash
 docker compose up -d db redis
-# 然后在 IDE/终端中用 .venv/bin/uvicorn 启动 API
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Q: 如何添加数据源驱动（Oracle / Hive / SQL Server 等）
-
-企业数据源驱动不包含在基础镜像中。有两种方式：
-
-**方案 A：在 Dockerfile 中预装**
-
-```dockerfile
-RUN pip install oracledb PyHive[hive_pure_sasl,presto] trino pyodbc
-```
-
-**方案 B：挂载离线 wheel 包后运行时安装**
-
-```yaml
-services:
-  api:
-    volumes:
-      - ./wheelhouse:/app/wheelhouse
-    command: >
-      sh -c "pip install --no-index --find-links /app/wheelhouse -r requirements-enterprise.txt 2>/dev/null
-      && uvicorn app.main:app --host 0.0.0.0 --port 8000"
-```
-
-### Q: 数据库表没自动创建
-
-容器的 `lifespan` 会自动执行 `Base.metadata.create_all`。如果未生效：
+也可以在 `datalogue-api/` 目录执行：
 
 ```bash
-docker compose exec api alembic upgrade head
+make docker-up-infra
 ```
 
-### Q: 如何扩缩容
+该 Makefile 命令同样调用根 Compose，不会创建第二套数据卷。
+
+## Phoenix 独立部署
+
+Phoenix 不属于业务栈。先确保根 Compose 已创建 PostgreSQL 和共享网络：
 
 ```bash
-# 启动多个 API 副本（前面需加负载均衡）
-docker compose --profile all up -d --scale api=3
+docker compose up -d db
+docker compose -f docker-compose.phoenix.yml up -d
 ```
 
----
+Phoenix 默认仅绑定宿主机回环地址：
 
-## 快速参考
+- UI：`127.0.0.1:${PHOENIX_PORT:-6006}`
+- OTLP gRPC：`127.0.0.1:${PHOENIX_OTLP_PORT:-4317}`
 
-| 场景 | 命令 |
-|------|------|
-| 开发环境启动 | `make docker-up-infra` (仅 db+redis) + `make dev` (API) |
-| 完整部署启动 | `make docker-build && make docker-up` |
-| 生产构建 | `./scripts/docker-build.sh --version --enterprise` |
-| 构建+推送 | `./scripts/docker-build.sh --version --enterprise --push` |
-| 查看日志 | `make docker-logs` |
-| 运行迁移 | `make docker-migrate` |
-| 连接数据库 | `make docker-psql` |
-| 全部清理 | `make docker-clean` |
-
-## 构建脚本
-
-`scripts/docker-build.sh` 是生产级构建脚本，支持：
+远程访问 UI 时使用 SSH 隧道：
 
 ```bash
-# 构建 latest 标签
-./scripts/docker-build.sh
-
-# 使用 git tag/SHA 作为版本号
-./scripts/docker-build.sh --version
-
-# 包含企业数据源驱动（Oracle / Hive / SQL Server 等）
-./scripts/docker-build.sh --enterprise
-
-# 构建开发镜像（热重载）
-./scripts/docker-build.sh --dev
-
-# 构建 + 推送到镜像仓库
-export DOCKER_REGISTRY=registry.example.com
-./scripts/docker-build.sh --version --push
-
-# 构建时清理缓存
-./scripts/docker-build.sh --clean
-
-# 完整生产构建
-./scripts/docker-build.sh --version --enterprise --clean
+ssh -N -L 6006:127.0.0.1:6006 <部署用户>@<部署机地址>
 ```
 
-Dockerfile 使用多阶段构建：
+停止 Phoenix 不会停止业务栈：
 
-| 阶段 | 目标 | 尺寸 | 用途 |
-|------|------|------|------|
-| `base` | python:3.12-slim + 编译工具 | ~1.2 GB | 中间层 |
-| `dependencies` | base + pip install | ~1.5 GB | 依赖缓存层 |
-| `production` | 仅运行时 + 应用代码 | ~500 MB | **生产部署** |
-| `development` | dependencies + 源码 | ~1.6 GB | 本地调试 |
+```bash
+docker compose -f docker-compose.phoenix.yml down
+```
 
-默认构建使用 `--target production`，镜像仅包含运行时依赖和应用代码，不保留 build-essential 等编译工具。
+详细初始化与验收步骤见根目录 `docs/Phoenix开发观测部署与验收.md`。
 
-| 资源 | 位置 |
-|------|------|
-| Dockerfile | `./Dockerfile` |
-| Docker Compose | `./docker-compose.yml` |
-| 环境变量模板 | `.env.example` |
-| 企业驱动离线安装 | `docs/企业数据源驱动离线部署.md` |
-| LLM 多模型配置 | `docs/LiteLLM多模型接入说明.md` |
+## 日常运维
+
+```bash
+# 查看状态
+docker compose ps -a
+
+# 查看业务日志
+docker compose logs -f api nginx
+
+# 重建并升级
+docker compose up -d --build
+
+# 停止业务容器，保留数据卷
+docker compose down
+```
+
+### PostgreSQL 备份
+
+```bash
+docker compose exec -T db pg_dump -U datalogue -Fc datalogue > datalogue.dump
+```
+
+恢复前先停止 API，并在独立环境验证备份文件可恢复。
+
+## 故障排查
+
+### API 未启动
+
+先检查迁移：
+
+```bash
+docker compose ps -a migration
+docker compose logs migration
+```
+
+如果迁移退出码不是 0，修复迁移或数据库连接问题后重新执行：
+
+```bash
+docker compose run --rm migration
+docker compose up -d api web nginx
+```
+
+### Phoenix 提示网络不存在
+
+独立 Phoenix Compose 依赖根业务栈创建的共享网络。先执行：
+
+```bash
+docker compose up -d db
+docker compose -f docker-compose.phoenix.yml up -d
+```
+
+### 无法从宿主机访问 8000
+
+这是预期安全边界。API 不再发布宿主机端口，业务访问统一经过 Nginx 的 HTTPS 入口；本地调试后端时应直接运行 Uvicorn，而不是修改生产 Compose。
+
+## 数据卷
+
+| 数据卷 | 用途 | 是否必须备份 |
+| --- | --- | --- |
+| `datalogue_pgdata` | 业务数据库及 Phoenix Schema | 必须 |
+| `datalogue_redisdata` | Redis AOF | 按恢复目标决定 |
+| `datalogue_workspaces` | AgentScope 临时工作区 | 按业务要求决定 |
+| `datalogue_api_logs` | API 文件日志 | 建议按审计要求保留 |
+| `datalogue_nginx_certs` | Nginx TLS 证书 | 使用自有证书时必须 |
+
+禁止在未备份的情况下执行 `docker compose down -v`。

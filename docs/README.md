@@ -23,6 +23,7 @@
 - [工作台 API](api/工作台.md) — Workbench / Artifact
 
 ### 运维与验证
+- [Docker 部署指南](../datalogue-api/docs/docker-deployment.md) — 根 Compose、一次性迁移、Nginx 单入口与 Phoenix 独立部署
 - [运行时健康检查](operations/运行时健康检查.md) — AgentScope、Redis、Credential、Leader、Session stream、BI Tool、Artifact API、Frontend version 检查清单
 
 ### 开发指南

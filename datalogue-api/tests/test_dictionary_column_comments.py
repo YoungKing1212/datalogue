@@ -120,7 +120,7 @@ def test_checkpoint_cleanup_migration_targets_only_langgraph_runtime_tables():
         Path(__file__).resolve().parents[1]
         / "alembic"
         / "versions"
-        / "z6a7b8c9d0e1_drop_langgraph_checkpoint_tables.py"
+        / "d1e2f3a4b5c6_drop_langgraph_checkpoint_tables.py"
     )
     spec = spec_from_file_location("drop_langgraph_checkpoint_tables_migration", path)
     assert spec is not None
@@ -128,7 +128,7 @@ def test_checkpoint_cleanup_migration_targets_only_langgraph_runtime_tables():
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.down_revision == "y5z6a7b8c9d0"
+    assert module.down_revision == "c0d1e2f3a4b5"
     assert module._DROP_TABLE_NAMES == (
         "checkpoint_writes",
         "checkpoint_blobs",

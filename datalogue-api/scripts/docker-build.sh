@@ -178,7 +178,7 @@ docker images --filter "reference=${APP_NAME}" --format "table {{.Repository}}:{
 echo -e "${CYAN}────────────────────────────────────────────${NC}"
 echo ""
 echo -e "快速启动:"
-echo -e "  ${YELLOW}docker compose --profile all up -d${NC}"
+echo -e "  ${YELLOW}cd .. && docker compose up -d${NC}"
 echo -e ""
 echo -e "查看文档:"
 echo -e "  ${YELLOW}docs/docker-deployment.md${NC}"

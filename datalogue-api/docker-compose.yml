@@ -1,48 +1,25 @@
 # ============================================================================
-# datalogue-api 本地开发用 compose — 仅启动基础设施 (db + redis)
+# Datalogue API — 后端部署片段
 # ============================================================================
-# 用途：
-#   `make docker-up-infra` 会调用本文件启动 pg + redis，供 `make dev` 在宿主机
-#   跑 uvicorn 时使用。
-#
-# 完整部署（含 api + web）请使用仓库根目录的 ../docker-compose.yml：
-#   cd .. && docker compose up -d
+# 本文件由仓库根 docker-compose.yml 通过 include 聚合，不单独定义 PostgreSQL。
+# migration 与后端镜像、Alembic 脚本版本绑定，成功退出后根 Compose 才启动 API。
 # ============================================================================
 
 services:
-  db:
-    image: pgvector/pgvector:pg16
-    container_name: datalogue-db
+  migration:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: datalogue-api:latest
+    container_name: datalogue-migration
+    env_file:
+      - path: ./.env
+        required: false
     environment:
-      POSTGRES_USER: datalogue
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-datalogue}
-      POSTGRES_DB: datalogue
-    ports:
-      - "5432:5432"
-    volumes:
-      - datalogue_pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U datalogue -d datalogue"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    container_name: datalogue-redis
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
-    volumes:
-      - datalogue_redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
-
-volumes:
-  datalogue_pgdata:
-  datalogue_redisdata:
+      DATABASE_URL: "postgresql://datalogue:${DB_PASSWORD:-datalogue}@db:5432/datalogue"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    # 迁移是部署闸门：成功后退出 0，失败则阻止 API 启动，不作为常驻服务重启。
+    restart: "no"

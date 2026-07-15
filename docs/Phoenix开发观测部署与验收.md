@@ -13,10 +13,11 @@ PHOENIX_ADMIN_INITIAL_PASSWORD=<符合强密码规则的管理员密码>
 PHOENIX_PORT=6006
 ```
 
-先启动现有 PostgreSQL 与 Phoenix：
+先启动根 Compose 中的 PostgreSQL，再使用独立 Compose 启动 Phoenix：
 
 ```bash
-docker compose up -d db phoenix
+docker compose up -d db
+docker compose -f docker-compose.phoenix.yml up -d
 ```
 
 通过 SSH 隧道访问管理页面，避免将 UI 或 OTLP collector 暴露到公网：
@@ -42,10 +43,11 @@ AGENTSCOPE_OTEL_EXPORTER_ENABLED=true
 
 ## 本地直启后端
 
-本地开发通常不使用 Docker Compose 启动 API。此时仅启动 Phoenix，并使用开发覆盖文件把 OTLP gRPC 绑定到宿主机回环地址：
+本地开发通常不使用 Docker Compose 启动 API。独立 Phoenix Compose 已将 UI 与 OTLP gRPC 绑定到宿主机回环地址：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db phoenix
+docker compose up -d db
+docker compose -f docker-compose.phoenix.yml up -d
 ```
 
 在 `datalogue-api/.env` 中填入刚创建的 system key，并开启 exporter：

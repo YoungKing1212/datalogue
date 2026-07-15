@@ -476,8 +476,9 @@ alembic current
 ## Docker 部署
 
 ```bash
-# 完整部署（Postgres + Redis + API）
-docker compose --profile api up -d
+# 在仓库根目录启动完整业务栈；数据库迁移成功后 API 才会启动
+cd ..
+docker compose up -d
 
 # 仅基础设施（方便本地开发后端）
 docker compose up -d db redis
