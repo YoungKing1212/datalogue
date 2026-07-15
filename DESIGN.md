@@ -92,10 +92,12 @@
   - 状态色：`--pos: #19805c`、`--pos-soft: #e7f5ed`、`--warn: #b97616`、`--neg: #c34a36`；状态始终同时有文本或图标，不能只靠颜色传达。
   - LLM 顶部运行区为无渐变的浅天青信息面：`#f4f9fe` 背景、`#c9e0f7` 边框、石墨正文；移除深色网格、光晕和半透明读数卡，仅保留 3px 天青顶部强调线。
   - 侧栏使用 `#f4f6f8`，选中项为 `#e8f3fd`，左侧 3px 天青定位条；不使用大面积蓝色底，避免导航比内容更抢眼。
+  - 2026-07-15 对话页视觉稿校准：仍使用蓝白体系，但以清晰度优先。对话与表格正文使用深色 `--text`，浅蓝只能用于选中/提示底色，不能承载正文；边界使用至少 `--hairline-strong`，主操作与当前项使用实色 `--accent`，禁止低对比灰蓝文字或大面积雾化浅蓝。
   - 当前代码已套用本方案；后续任何颜色变更必须继续覆盖全局 token、LLM 面板、卡片、弹窗和侧栏后再验收。
 - Typography:
   - 保持 `Geist` / `Geist Sans` 作为界面字体，`Geist Mono` 仅用于端点、模型名、超时等技术值。
   - 页面标题 22–24px / 600；分区标题 17–18px / 600；字段标签 12–13px；技术元数据 11–12px。
+  - 对话页可读性下限：会话标题、回答正文与表格单元格不小于 14px；表格表头和侧栏分组标题不小于 13px；时间、计数等次要信息不小于 12px，且必须使用 `--text-2` 或更深颜色。
 - Spacing/layout rhythm:
   - 使用现有 8px 基准：卡片间距 12–16px，分区间距 28–32px，弹窗内区块间距 20–24px。
   - 独立管理页不再额外限制内容最大宽度：桌面横向页边距为 24px，760px 以下为 16px，520px 以下为 12px；使内容与工作台主内容区对齐，避免双重留白。
@@ -124,6 +126,7 @@
   - `DatalogueThread`：保持 `ThreadPrimitive.Root / Viewport / Messages / composer` 壳层和自动滚动职责；Thread 不读取后端执行面，也不自行拼接会话状态。
   - `AIMessage`、`UserMessage`、`DatalogueActionBar`、`ArtifactCard`、`DatalogueComposer`：作为 Thread 内的消息、动作、结果引用和继续追问入口。
   - `SettingsScreen`、`SetRow`、`st-input`、`btn`、`icon-btn`、`st-modal`、`st-modal-footer`。
+  - `DatalogueThreadList`：会话栏继续使用 assistant-ui 的线程切换/归档语义，但视觉上只展示分组、标题、时间和当前态；归档/删除等破坏性操作收纳到 hover 或更多菜单，不能在每行常驻。
   - `LLM_PRESETS`、`LLM_PROVIDER_OPTIONS`、`buildFormFromPreset` 和现有 credential API 调用逻辑。
 - New/changed components:
   - `ChatAnswerCanvas`（由现有 `Thread` / `MyMessage` 组合实现）：每个完成回答按“结论摘要 → 指标带 → 证据块 → 建议追问”呈现；沿用现有安全的 `ArtifactCard`、图表和表格预览，不新增原始执行数据。

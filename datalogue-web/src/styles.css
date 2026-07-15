@@ -1436,33 +1436,44 @@ input:focus, textarea:focus, button:focus { outline: none; }
 }
 
 
-/* chat composer (fixed at bottom) */
+/* chat composer（固定底部）：高对比边界让输入区与结果区一眼可分。 */
 .composer-wrap {
   padding: 14px 0 22px;
-  background: linear-gradient(180deg, transparent, var(--bg) 30%);
+  background: var(--bg);
   flex-shrink: 0;
 }
 .composer { max-width: 800px; margin: 0 auto; padding: 0 28px; }
 .composer-inner {
   background: var(--surface);
-  border: 1px solid var(--hairline);
+  border: 2px solid var(--hairline-strong);
   border-radius: 12px;
-  padding: 12px 14px 10px;
-  transition: border-color 0.18s ease;
+  padding: 14px 16px 12px;
+  box-shadow: 0 8px 20px -20px rgba(28, 39, 51, 0.52);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
-.composer-inner:focus-within { border-color: var(--accent); }
+.composer-inner:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 8px 20px -20px rgba(28, 39, 51, 0.52);
+}
 .composer-input {
   background: transparent;
   border: 0; outline: 0;
   width: 100%;
-  font-size: 14.5px;
+  font-size: 15px;
   line-height: 1.5;
   color: var(--text);
   font-family: inherit;
   resize: none;
 }
-.composer-input::placeholder { color: var(--text-3); }
-.composer-toolbar { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.composer-input::placeholder { color: var(--text-2); opacity: 1; }
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline-strong);
+}
 
 .ds-dropdown {
   position: absolute;
@@ -7739,8 +7750,8 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 
 /* ─── COMPOSER FAB（圆形浮动发送/停止按钮） ─── */
 .composer-fab {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   border: 0;
   display: inline-flex;
@@ -7750,6 +7761,10 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   transition: all 0.12s;
   flex-shrink: 0;
   font-family: inherit;
+}
+.composer-fab:focus-visible {
+  outline: 3px solid var(--accent-line);
+  outline-offset: 2px;
 }
 .composer-fab-send {
   background: var(--accent);
@@ -9937,8 +9952,27 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
 }
 
 .chat-layout:not(.aui-bare-preview):not(.aui-agentscope-preview) .composer-inner {
+  border: 2px solid var(--hairline-strong);
   border-radius: 10px;
-  box-shadow: 0 8px 22px -20px rgba(28, 39, 51, 0.42);
+  box-shadow: 0 8px 22px -20px rgba(28, 39, 51, 0.52);
+}
+
+.chat-layout:not(.aui-bare-preview):not(.aui-agentscope-preview) .composer-inner:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 8px 22px -20px rgba(28, 39, 51, 0.52);
+}
+
+.chat-layout:not(.aui-bare-preview):not(.aui-agentscope-preview) .composer-toolbar .tool-chip {
+  background: var(--surface);
+  border-color: var(--hairline-strong);
+  color: var(--text);
+}
+
+.chat-layout:not(.aui-bare-preview):not(.aui-agentscope-preview) .composer-toolbar .tool-chip:hover,
+.chat-layout:not(.aui-bare-preview):not(.aui-agentscope-preview) .composer-toolbar .tool-chip:focus-visible {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 @media (hover: none) {
