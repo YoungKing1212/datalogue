@@ -1,5 +1,7 @@
 // Agent Team envelope 到旧 ChatModelAdapter 内部事件的迁移适配。
 
+import { exposesAgentTeam, resolveDemoCapabilityLevel } from './demo-capabilities.js';
+
 const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_rows?|schema|repairpatch|blueprint/i;
 const PROGRESSIVE_EVENT_LABELS = {
   bi_worker_l0_capability: '数据集能力',
@@ -158,7 +160,21 @@ function baseEvent(streamEvent, envelope) {
   };
 }
 
-export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
+function genericProgress(streamEvent, envelope, payload = {}) {
+  const status = lifecycleStatus(envelope.event_type, payload);
+  // 前三期只展示稳定的业务进展，不把 Agent 身份、handoff、原始思考或内部会话标识带入 UI。
+  return {
+    type: 'agent_progress',
+    kind: 'agent_progress',
+    status,
+    title: status === 'failed' ? '处理未完成' : '正在处理请求',
+    summary: status === 'failed' ? '当前步骤未能完成，请稍后重试。' : '正在分析问题并准备结果。',
+    timing: safeTiming(payload),
+    ...baseEvent(streamEvent, envelope),
+  };
+}
+
+export function agentTeamEnvelopeToChatEvent(streamEvent = {}, options = {}) {
   if (!streamEvent.event_envelope) {
     if (typeof console !== 'undefined') {
       console.warn('[agent-team] rejected non-envelope event shape', streamEvent.type || 'unknown');
@@ -169,6 +185,8 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
   const envelope = streamEvent.event_envelope;
   const payload = envelope.payload || {};
   const legacy = streamEvent.legacy_payload || envelope.legacy_payload || {};
+  const capabilityLevel = options.capabilityLevel || resolveDemoCapabilityLevel();
+  const showAgentTeam = exposesAgentTeam(capabilityLevel);
 
   if (envelope.event_type === 'message.delta') {
     return { type: 'token', content: payload.content || '' };
@@ -176,6 +194,7 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
   if (envelope.event_type === 'message.completed') {
     const progressiveLabel = PROGRESSIVE_EVENT_LABELS[payload.datalogue_event_type];
     if (progressiveLabel) {
+      if (!showAgentTeam) return genericProgress(streamEvent, envelope, payload);
       return {
         type: 'agent_progress',
         title: progressiveLabel,
@@ -214,6 +233,7 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
     };
   }
   if (isAgentProgressEvent(envelope.event_type)) {
+    if (!showAgentTeam) return genericProgress(streamEvent, envelope, payload);
     const agentRole = safeText(payload.agent_role || payload.agentRole) || 'agent';
     const agentName = safeText(payload.agent_name || payload.agentName || payload.agent || payload.worker_agent_name)
       || (agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
@@ -242,6 +262,7 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
     };
   }
   if (isHandoffEvent(envelope.event_type)) {
+    if (!showAgentTeam) return genericProgress(streamEvent, envelope, payload);
     const toAgent = safeAgentName(payload.to_agent || payload.toAgent || payload.agent);
     return {
       type: 'agent_handoff',
@@ -257,6 +278,7 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
     };
   }
   if (isToolLifecycle(envelope.event_type)) {
+    if (!showAgentTeam) return genericProgress(streamEvent, envelope, payload);
     const refs = safeRefs(payload);
     return {
       type: 'tool_call',
@@ -264,7 +286,7 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
       status: lifecycleStatus(envelope.event_type, payload),
       title: safeText(payload.title || payload.tool_name || payload.toolName) || '工具调用',
       summary: safeText(payload.summary || payload.message) || '',
-      agent: safeAgentName(payload.agent || payload.agent_name || payload.agentName),
+      ...(showAgentTeam ? { agent: safeAgentName(payload.agent || payload.agent_name || payload.agentName) } : {}),
       toolName: safeText(payload.tool_name || payload.toolName) || 'dataset_tool',
       toolCallId: safeText(payload.tool_call_id || payload.toolCallId || payload.call_id || payload.callId) || '',
       timing: safeTiming(payload),
@@ -274,13 +296,16 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
     };
   }
   if (isConfirmationEvent(envelope.event_type)) {
+    const visibleSummary = showAgentTeam
+      ? (safeText(payload.summary || payload.message) || '需要确认后继续')
+      : '请确认后继续处理当前请求。';
     return {
       type: 'confirmation',
       kind: 'confirmation',
       status: 'requires_action',
       title: safeText(payload.title) || '需要确认',
-      summary: safeText(payload.summary || payload.message) || '需要确认后继续',
-      agent: safeAgentName(payload.agent || payload.agent_name || payload.agentName),
+      summary: visibleSummary,
+      ...(showAgentTeam ? { agent: safeAgentName(payload.agent || payload.agent_name || payload.agentName) } : {}),
       toolName: safeText(payload.tool_name || payload.toolName) || null,
       toolCallId: safeText(payload.tool_call_id || payload.toolCallId || payload.call_id || payload.callId) || null,
       replyId: safeText(payload.reply_id || payload.replyId) || null,
@@ -339,12 +364,14 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}) {
     };
   }
   if (envelope.event_type?.startsWith('repair.')) {
+    if (!showAgentTeam) return genericProgress(streamEvent, envelope, payload);
     return {
       type: 'repair',
       task_id: streamEvent.task_id || envelope.task_id,
       event_envelope: envelope,
     };
   }
+  if (!showAgentTeam) return genericProgress(streamEvent, envelope, payload);
   const fallbackEventType = safeText(envelope.event_type, 'agent_team') || 'agent_team';
   return {
     type: 'step',

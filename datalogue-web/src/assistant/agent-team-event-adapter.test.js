@@ -1,14 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { agentTeamEnvelopeToChatEvent } from './agent-team-event-adapter.js';
 
+const AGENT_TEAM_OPTIONS = { capabilityLevel: 'agent_team' };
+
 describe('agentTeamEnvelopeToChatEvent', () => {
+  beforeEach(() => {
+    // 既有用例验证第四期完整安全投影；前三期收敛行为由专门用例覆盖。
+    vi.stubEnv('VITE_DATALOGUE_DEMO_CAPABILITY_LEVEL', 'agent_team');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('rejects legacy non-envelope events instead of bypassing safety projection', () => {
     const event = agentTeamEnvelopeToChatEvent({
       type: 'final',
       answer: 'SELECT secret_col FROM hidden_table',
       raw_rows: [{ secret_col: 'raw' }],
-    });
+    }, AGENT_TEAM_OPTIONS);
 
     expect(event).toBeNull();
   });
@@ -212,6 +223,43 @@ describe('agentTeamEnvelopeToChatEvent', () => {
       debugRaw: true,
       rawDelta: '先分析用户问题',
     });
+  });
+
+  it('compresses agent identity, handoff and raw thinking before the agent-team stage', () => {
+    const progress = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-hidden-agent',
+      event_envelope: {
+        event_type: 'agent.progress',
+        trace_id: 'trace-hidden-agent',
+        payload: {
+          agent_role: 'worker',
+          agent_name: 'BI Worker',
+          worker_session_id: 'private-session',
+          reasoning_kind: 'bi_worker_raw_thinking_delta',
+          debug_raw: true,
+          raw_delta: '内部原始思考',
+        },
+      },
+    }, { capabilityLevel: 'semantic_metrics' });
+    const handoff = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-hidden-agent',
+      event_envelope: {
+        event_type: 'agent.handoff.started',
+        payload: { from_agent: 'leader', to_agent: 'bi_worker', summary: '交给 BI Worker' },
+      },
+    }, { capabilityLevel: 'multi_table' });
+
+    expect(progress).toMatchObject({
+      type: 'agent_progress',
+      title: '正在处理请求',
+      summary: '正在分析问题并准备结果。',
+      task_id: 'task-hidden-agent',
+      trace_id: 'trace-hidden-agent',
+    });
+    expect(handoff).toMatchObject({ type: 'agent_progress', title: '正在处理请求' });
+    expect(JSON.stringify({ progress, handoff })).not.toMatch(
+      /BI Worker|bi_worker|leader|private-session|内部原始思考|rawDelta|agentRole|agentName/i,
+    );
   });
 
   it('keeps repair envelopes as repair events', () => {
