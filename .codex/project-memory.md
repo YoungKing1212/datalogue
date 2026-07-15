@@ -1410,3 +1410,48 @@
 - 关键改动：兼容层不创建第二套 TracerProvider、Exporter 或 Trace，只复用当前正在记录的根 Agent Span；输入输出只提取普通文本块，过滤 thinking、工具参数、SQL、Schema、QueryPlan 等内部材料并限制为 1000 字符。BI Worker 没有直接输入或内容被过滤时写入安全任务状态，异常回复不伪装为正常输出。
 - 验证方式：`ruff check` 与 `black --check` 通过；`pytest datalogue-api/tests/test_agentscope_service_worker_logging.py datalogue-api/tests/test_agentscope_service_factory.py datalogue-api/tests/test_agentscope_agent_team_task_runner.py -q`（58 passed）；`git diff --check` 通过。
 - 残留风险或后续事项：需要重启本地 API 后才会加载新中间件，且仅影响新生成的 Trace/Session；Phoenix 中已有 Session 不会自动回填 Input/Output。工具耗时仍由既有 Tool Span 的起止时间计算，无需重复写入 duration 属性。
+
+### 2026-07-15 17:07 · 问数输入框高对比改造
+
+- 完成时间：2026-07-15 17:07。
+- 功能名称：增强对话问数底部输入框的蓝白高对比与键盘可见性。
+- 涉及文件：`datalogue-web/src/styles.css`、`DESIGN.md`、`.codex/project-memory.md`。
+- 关键改动：默认 composer 改为更强的边界、深色占位文字、分隔明确的工具栏和 36px 发送按钮；聚焦时用天青边框与焦点环提示输入状态，工具标签 hover/键盘聚焦时切换为清晰的浅蓝选中态。设计契约同步明确对话正文、表格、侧栏与次要信息的可读性下限，以及会话行不常驻破坏性操作。
+- 验证方式：`npm run lint`（0 error，13 条既有 warning）、`npm run build`、`git diff --check` 均通过。
+- 残留风险或后续事项：未进行浏览器实机截图；后续可在 1440px、760px、390px 视口确认边框粗细与 36px 发送按钮的触屏密度。
+
+### 2026-07-15 17:21 · Docker 部署边界与 Alembic 迁移闸门收口
+
+- 完成时间：2026-07-15 17:21。
+- 功能名称：统一 PostgreSQL 部署入口、增加后端一次性迁移服务、拆分 Phoenix 并关闭 API 宿主机端口。
+- 涉及文件：`docker-compose.yml`、`docker-compose.phoenix.yml`、`.env.example`、`datalogue-api/docker-compose.yml`、`datalogue-api/Makefile`、`datalogue-api/alembic/versions/d1e2f3a4b5c6_drop_langgraph_checkpoint_tables.py`、`datalogue-api/tests/test_dictionary_column_comments.py`、部署与 Onboarding 文档。
+- 关键改动：PostgreSQL 只在根 Compose 定义；后端 Compose 只拥有与后端版本绑定的 `migration` 服务，根 Compose 通过 `include` 聚合，并以 `service_completed_successfully` 阻止迁移失败时启动 API。API 8000 仅 `expose` 给 Docker 内网，外部统一走 Nginx HTTPS。Phoenix 改为独立 Compose，复用固定业务网络，UI/OTLP 仅绑定宿主机回环地址。修复两个迁移文件复用 `z6a7b8c9d0e1` 导致 Alembic 图不可用的问题，将幂等 LangGraph checkpoint 清理迁移调整为当前单一 head `d1e2f3a4b5c6`。
+- 验证方式：根业务 Compose（含无 `.env` 场景）与独立 Phoenix Compose 均通过 `docker compose config --quiet`；`alembic heads` 仅返回 `d1e2f3a4b5c6`，`alembic history --verbose` 链路连续；checkpoint 清理迁移测试 `4 passed`；Python 编译和 `git diff --check` 通过。
+- 残留风险或后续事项：本轮没有对当前真实数据库执行 `alembic upgrade head`，避免在未备份情况下触发结构写入；正式部署时新 head 会幂等删除已废弃的四张 LangGraph checkpoint 表，执行前应先备份 PostgreSQL 并核对这组表已不再被旧进程使用。
+
+### 2026-07-15 17:28 · 清理本机 Agent 与 OMX Git 跟踪
+
+- 完成时间：2026-07-15 17:28。
+- 功能名称：完善 Git/Docker 忽略规则并停止跟踪本机 Agent、插件和 OMX 运行资产。
+- 涉及文件：`.gitignore`、`datalogue-api/.gitignore`、`datalogue-api/.dockerignore`、`datalogue-web/.gitignore`、`datalogue-web/.dockerignore`、`datalogue-nginx/.dockerignore`，以及 Git 索引中的 `.agents/`、`.omx/`。
+- 关键改动：整目录忽略 `.agents/` 与 `.omx/`，从 Git 索引移除原有 86 个已跟踪文件但保留本地副本；补齐环境变量、密钥证书、Python/Node 缓存、覆盖率、日志、运行数据、备份和临时文件规则；为 API、Web、Nginx 分别收紧 Docker 构建上下文，并保证 `.env.example` 继续可提交。
+- 验证方式：`git ls-files .agents .omx` 返回 0；本地抽查的 assistant-ui Skill 与 OMX 计划文件仍存在且命中忽略规则；三个 Dockerfile 的 `docker build --check` 均无警告；工作区与暂存区 `git diff --check` 均通过。
+- 残留风险或后续事项：索引删除与 ignore 文件已经暂存但尚未提交；当前机器的本地副本已保留，但其他开发者拉取包含删除的提交时，原先由 Git 跟踪的副本可能被删除，必要时应提前备份或从各自插件/技能来源重新安装。
+
+### 2026-07-15 17:36 · 本地缓存与已合并工作树清理
+
+- 完成时间：2026-07-15 17:36。
+- 功能名称：清理可再生成的本地产物，并安全移除已合并且无未提交修改的 Git 工作树。
+- 涉及文件：`.gitignore`、`datalogue-api/package-lock.json`、`.codex/project-memory.md`；本地缓存、轮转日志、临时截图、前端构建产物及 Git 工作树目录。
+- 关键改动：删除 MyPy、Ruff、Pytest、`__pycache__` 等缓存，删除前端 `dist`、根目录临时验收截图、macOS `.DS_Store`、后端 7 份历史轮转日志和空日志；保留仍在写入的当前日志、运行数据与文档输出。删除后端误生成的空 `package-lock.json`，并增加精确忽略规则。通过 `git worktree remove` 移除 20 个已合并且干净的工作树，未强制处理任何带改动的工作树。
+- 验证方式：重新执行 `git worktree list --porcelain`，仅保留主工作区和 3 个存在未提交改动的工作树；项目目录占用从约 2.7GB 降至约 1.4GB；后端日志目录从约 75MB 降至约 5.4MB；被删除的缓存、临时截图、前端构建产物和空锁文件均不存在。
+- 残留风险或后续事项：`codex/doris-oracle-datasource-team` 有 1 项改动，`codex/docs-current-planning-cleanup` 有 34 项改动，`codex/shadcn-ui-chat-components` 有 10 项改动，因此继续保留；后续应先确认、提交或备份这些修改，再决定是否移除对应工作树。
+
+### 2026-07-15 17:46 · 历史规划文档归档与残留工作树收口
+
+- 完成时间：2026-07-15 17:46。
+- 功能名称：提炼 `docs-current-planning-cleanup` 的有效文档治理成果并清理全部残留工作树。
+- 涉及文件：`assets/README.md`、`assets/archive/2026-07-03-legacy-design-plans/`、`assets/documents/README.md`、`docs/archive/2026-07-03-legacy-assets/`、`docs/archive/old-architecture/*/README.md`、`docs/assets/README.md`、`docs/superpowers/README.md`、`docs/test-reports/README.md`。
+- 关键改动：识别并排除该旧工作树基于 2026-07-03 过渡架构对当前文档和项目记忆的过期覆盖；将旧版设计 DOCX、7 月 3 日方案和旧 QueryGraph 执行图迁入历史归档，为历史计划、验收记录、测试报告和素材目录补充边界说明，并统一校准到当前 `/api/agent-team/tasks/stream -> AgentScope Service -> Agent Team` 主链。提交 `f757b1e0` 已快进合并到 `main`，后续提交 `cd83c4f2` 修复两个历史 DOCX 生成脚本的归档路径。随后按用户确认丢弃另外两个工作树的未提交现场，移除全部残留工作树和三个对应本地分支。
+- 验证方式：`git worktree list --porcelain` 仅返回主工作区；三个本地分支均已删除；两个文档提交和当前工作区执行 `git diff --check` 通过；Python AST 解析确认历史生成脚本语法有效；旧文档和旧执行图路径无残留引用；归档说明未再把 `/api/agentic-shell/tasks/stream` 或 2026-07-03 方案标成当前主链。
+- 残留风险或后续事项：提交尚未推送到远程；主工作区原有 Docker、前端样式、忽略规则和项目记忆等未提交修改均保持不变，后续提交时仍需按功能边界拆分。
