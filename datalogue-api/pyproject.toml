@@ -1,6 +1,6 @@
 [project]
 name = "datalogue-api"
-version = "1.2.0"
+version = "1.3.0"
 description = "数语 AI 原生智能问数平台后端 API"
 requires-python = ">=3.11,<3.14"
 dependencies = [

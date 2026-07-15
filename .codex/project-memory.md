@@ -1342,3 +1342,12 @@
 - 关键改动：确认当前 Docker context 为 OrbStack，但运行中的 Colima 将旧 `datalogue-phoenix` 转发到 `127.0.0.1:6006/4317`，使浏览器和本地 API 命中旧实例。已按用户确认停止 Colima，保留 OrbStack 中的 Phoenix 18.0.0 与数据库；API endpoint 保持 `127.0.0.1:4317`，不改业务本地地址。
 - 验证方式：配置 token 的 JWT 签名、`ApiKey:3` 数据库记录、SYSTEM 角色均校验有效；停止 Colima 后 IPv4 REST 校验由 401 变为 200，gRPC 探针成功入库，正式 `phoenix` Schema 计数为 Trace=2、Span=2。
 - 残留风险或后续事项：Colima 中旧 Phoenix/数据库处于停止状态但未删除；若日后重新启动 Colima，会再次占用 127.0.0.1 的 Phoenix 端口，应避免与 OrbStack 同时运行或为其中一套服务改用非冲突端口。
+
+### 2026-07-15 11:41 · 智能问数四级演示版本与语义化 Tag
+
+- 完成时间：2026-07-15 11:41。
+- 功能名称：按单表、多表、指标维度和子智能体显性协作拆分 `1.0.0` 至 `1.3.0` 四个累计演示版本。
+- 涉及文件：`datalogue-api/app/domains/bi/capability_policy.py`、`datalogue-api/app/runtime/engine/tools.py`、`datalogue-api/app/runtime/engine/registry.py`、`datalogue-api/app/runtime/engine/runner.py`、`datalogue-api/app/runtime/agent_team_runtime.py`、`datalogue-api/app/core/config.py`、`datalogue-web/src/assistant/demo-capabilities.js`、`datalogue-web/src/assistant/agent-team-event-adapter.js`、`conf/demo/*.env`、`docs/releases/*.md`、相关测试与版本文件。
+- 关键改动：后端在 QueryPlan 结构校验通过后按能力等级执行第二道 fail-closed 闸门：`1.0.0` 禁止支持实体、Join、指标和分组，`1.1.0` 最多允许三实体明确关联且继续禁止指标/分组，`1.2.0` 开放指标与维度，`1.3.0` 开放 Agent Team 安全身份和过程投影；前三期前端把协作事件压缩为通用安全进展。四期演示配置统一关闭 Report Worker、raw thinking 和 OTel 展示，不把未完全实现的智能报告、完整观测或生产部署包装成已交付能力。
+- 验证方式：后端能力、配置及工具执行前拦截测试 `14 passed`；前端能力投影测试 `17 passed`；ESLint `--quiet`、Vite build、Ruff、Black 和 `git diff --check` 通过；逐 Tag 核对 API 版本、后端默认能力与 `conf/demo/current.env` 一致。
+- 残留风险或后续事项：四级版本复用同一 AgentScope Agent Team 稳定内核，前三期隐藏的是产品可见协作而不是恢复旧查询架构；正式会议前仍需分别使用对应 Tag 和演示数据集跑真实页面问题集，尤其核对单表基础计数是否会被模型表达为指标查询。智能报告、完整观测和生产部署继续留在后续版本，不纳入本轮四期承诺。
