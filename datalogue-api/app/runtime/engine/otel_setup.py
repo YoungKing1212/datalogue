@@ -24,7 +24,7 @@ from app.core.config import Settings
 logger = logging.getLogger(__name__)
 
 
-def setup_runtime_tracing(settings: Settings) -> None:
+def setup_runtime_tracing(settings: Settings, *, app: Any | None = None) -> None:
     """根据配置初始化 AgentScope OTel TracerProvider。
 
     仅在 AGENTSCOPE_OTEL_TRACING_ENABLED=true 时生效。
@@ -43,7 +43,16 @@ def setup_runtime_tracing(settings: Settings) -> None:
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 
-        resource = Resource.create({SERVICE_NAME: settings.AGENTSCOPE_OTEL_SERVICE_NAME})
+        resource_attributes: dict[str, Any] = {
+            SERVICE_NAME: settings.AGENTSCOPE_OTEL_SERVICE_NAME,
+            "deployment.environment.name": settings.APP_ENV,
+        }
+        if settings.AGENTSCOPE_OTEL_EXPORTER_PROJECT_NAME:
+            # Phoenix 按 OpenInference 项目属性归档 trace；不依赖 Phoenix SDK 注册新的 Provider。
+            resource_attributes["openinference.project.name"] = (
+                settings.AGENTSCOPE_OTEL_EXPORTER_PROJECT_NAME
+            )
+        resource = Resource.create(resource_attributes)
         provider = TracerProvider(resource=resource)
 
         if settings.AGENTSCOPE_OTEL_LOGGING_ENABLED:
@@ -53,15 +62,15 @@ def setup_runtime_tracing(settings: Settings) -> None:
             _setup_otlp_exporter(provider, settings)
 
         trace.set_tracer_provider(provider)
+        if app is not None:
+            _instrument_http_boundaries(app)
         logger.info(
             "AgentScope OTel tracing initialized (logging=%s, exporter=%s).",
             "enabled" if settings.AGENTSCOPE_OTEL_LOGGING_ENABLED else "disabled",
             "enabled" if settings.AGENTSCOPE_OTEL_EXPORTER_ENABLED else "disabled",
         )
     except ImportError:
-        logger.warning(
-            "opentelemetry packages not installed; AgentScope OTel tracing skipped."
-        )
+        logger.warning("opentelemetry packages not installed; AgentScope OTel tracing skipped.")
     except Exception:
         logger.exception("Failed to initialize AgentScope OTel tracing.")
 
@@ -87,13 +96,55 @@ def _setup_otlp_exporter(provider: Any, settings: Settings) -> None:
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
-        exporter = OTLPSpanExporter(endpoint=settings.AGENTSCOPE_OTEL_EXPORTER_ENDPOINT)
+        headers = _otlp_exporter_headers(settings)
+        if not settings.AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN:
+            # 不打印 token 或配置对象，避免意外把部署机密写入日志。
+            logger.warning("OTLP exporter configured without an authorization token.")
+        exporter = OTLPSpanExporter(
+            endpoint=settings.AGENTSCOPE_OTEL_EXPORTER_ENDPOINT,
+            headers=headers or None,
+            # Phoenix 自建 gRPC collector 走 Docker 内网/宿主机回环时没有 TLS；显式关闭 TLS
+            # 才不会把明文 gRPC 响应误当作错误证书。公网 collector 必须保留默认安全连接。
+            insecure=settings.AGENTSCOPE_OTEL_EXPORTER_INSECURE,
+        )
         provider.add_span_processor(BatchSpanProcessor(exporter))
-        logger.info("OTLP exporter configured (endpoint=%s).", settings.AGENTSCOPE_OTEL_EXPORTER_ENDPOINT)
+        logger.info(
+            "OTLP exporter configured (endpoint=%s).", settings.AGENTSCOPE_OTEL_EXPORTER_ENDPOINT
+        )
     except ImportError:
         logger.warning("opentelemetry-exporter-otlp not installed; OTLP export skipped.")
     except Exception:
         logger.exception("Failed to configure OTLP exporter.")
+
+
+def _otlp_exporter_headers(settings: Settings) -> list[tuple[str, str]]:
+    """构造 Phoenix gRPC 认证 metadata；该函数不记录任何部署机密。"""
+
+    headers: list[tuple[str, str]] = []
+    if settings.AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN:
+        # Phoenix gRPC collector 要求小写 authorization metadata；值不参与日志输出。
+        headers.append(("authorization", f"Bearer {settings.AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN}"))
+    # x-project-name 仅适用于 Phoenix 的 OTLP HTTP collector；当前 gRPC 方案通过
+    # setup_runtime_tracing 中的 openinference.project.name Resource 属性完成项目路由。
+    return headers
+
+
+def _instrument_http_boundaries(app: Any) -> None:
+    """为主 FastAPI 与内部 HTTPX 调用自动传递 W3C traceparent。"""
+
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app)
+        HTTPXClientInstrumentor().instrument()
+    except ImportError:
+        logger.warning(
+            "OTel FastAPI/HTTPX instrumentation not installed; HTTP trace propagation skipped."
+        )
+    except Exception:
+        # 观测初始化不允许阻断 API 启动；重复初始化等问题留给日志排查。
+        logger.exception("Failed to instrument FastAPI/HTTPX tracing boundaries.")
 
 
 def _setup_logging_exporter(provider: Any, settings: Settings) -> None:
@@ -103,7 +154,9 @@ def _setup_logging_exporter(provider: Any, settings: Settings) -> None:
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
         provider.add_span_processor(
-            SimpleSpanProcessor(_LoggingSpanExporter(service_name=settings.AGENTSCOPE_OTEL_SERVICE_NAME))
+            SimpleSpanProcessor(
+                _LoggingSpanExporter(service_name=settings.AGENTSCOPE_OTEL_SERVICE_NAME)
+            )
         )
         logger.info("AgentScope OTel logging exporter configured.")
     except ImportError:

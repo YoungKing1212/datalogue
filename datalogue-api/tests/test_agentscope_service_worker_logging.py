@@ -1187,8 +1187,77 @@ def test_agentscope_otel_config_defaults(tmp_path, monkeypatch):
     assert settings.AGENTSCOPE_OTEL_TRACING_ENABLED is False
     assert settings.AGENTSCOPE_OTEL_EXPORTER_ENABLED is False
     assert settings.AGENTSCOPE_OTEL_EXPORTER_ENDPOINT is None
+    assert settings.AGENTSCOPE_OTEL_EXPORTER_INSECURE is False
+    assert settings.AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN is None
+    assert settings.AGENTSCOPE_OTEL_EXPORTER_PROJECT_NAME is None
     assert settings.AGENTSCOPE_OTEL_LOGGING_ENABLED is False
     assert settings.AGENTSCOPE_OTEL_SERVICE_NAME == "datalogue-api"
+    assert not hasattr(settings, "DATALOGUE_DEBUG_TIMELINE_ENABLED")
+
+
+def test_phoenix_grpc_exporter_metadata_keeps_token_out_of_logs(caplog):
+    """Phoenix 使用小写 Bearer metadata；项目通过 Resource 属性而非 gRPC header 路由。"""
+    from app.core.config import Settings
+    from app.runtime.engine.otel_setup import _otlp_exporter_headers
+
+    token = "phoenix-system-key-should-never-be-logged"
+    settings = Settings(
+        AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN=token,
+        AGENTSCOPE_OTEL_EXPORTER_PROJECT_NAME="datalogue-production",
+    )
+
+    with caplog.at_level("INFO"):
+        headers = _otlp_exporter_headers(settings)
+
+    assert headers == [("authorization", f"Bearer {token}")]
+    assert token not in caplog.text
+
+
+def test_phoenix_grpc_exporter_uses_configured_endpoint_and_auth(monkeypatch):
+    """直接 OTel exporter 必须把配置的 Phoenix gRPC endpoint 与认证 metadata 原样传入。"""
+    from opentelemetry.exporter.otlp.proto.grpc import trace_exporter
+    from opentelemetry.sdk.trace import export as trace_export
+
+    from app.core.config import Settings
+    from app.runtime.engine import otel_setup
+
+    calls: dict[str, object] = {}
+
+    class FakeExporter:
+        def __init__(self, **kwargs):
+            calls["exporter_kwargs"] = kwargs
+
+    class FakeBatchSpanProcessor:
+        def __init__(self, exporter):
+            calls["batch_exporter"] = exporter
+
+    class FakeProvider:
+        def add_span_processor(self, processor):
+            calls["processor"] = processor
+
+    monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", FakeExporter)
+    monkeypatch.setattr(trace_export, "BatchSpanProcessor", FakeBatchSpanProcessor)
+    settings = Settings(
+        AGENTSCOPE_OTEL_EXPORTER_ENDPOINT="phoenix:4317",
+        AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN="system-api-key",
+        AGENTSCOPE_OTEL_EXPORTER_PROJECT_NAME="datalogue-production",
+        AGENTSCOPE_OTEL_EXPORTER_INSECURE=True,
+    )
+
+    otel_setup._setup_otlp_exporter(FakeProvider(), settings)
+
+    assert calls["exporter_kwargs"] == {
+        "endpoint": "phoenix:4317",
+        "headers": [("authorization", "Bearer system-api-key")],
+        "insecure": True,
+    }
+
+
+def test_debug_timeline_router_is_not_registered():
+    """旧自建调试页已移除，避免开发人员误把它当作生产观测入口。"""
+    from app.api import router
+
+    assert not any(route.path.startswith("/debug") for route in router.routes)
 
 
 def test_setup_runtime_tracing_attaches_logging_exporter_when_otlp_disabled(monkeypatch):
@@ -1219,6 +1288,7 @@ def test_setup_runtime_tracing_attaches_logging_exporter_when_otlp_disabled(monk
         AGENTSCOPE_OTEL_LOGGING_ENABLED=True,
         AGENTSCOPE_OTEL_EXPORTER_ENABLED=False,
         AGENTSCOPE_OTEL_EXPORTER_ENDPOINT=None,
+        AGENTSCOPE_OTEL_EXPORTER_PROJECT_NAME="datalogue-test",
     )
 
     otel_setup.setup_runtime_tracing(settings)
@@ -1226,6 +1296,7 @@ def test_setup_runtime_tracing_attaches_logging_exporter_when_otlp_disabled(monk
     assert calls["provider"] is calls["logging_provider"]
     assert calls["logging_enabled"] is True
     assert "otlp_provider" not in calls
+    assert calls["provider"].resource.attributes["openinference.project.name"] == "datalogue-test"
 
 
 def test_otel_span_log_payload_only_keeps_usage_and_drops_model_messages(monkeypatch):

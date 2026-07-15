@@ -1,4 +1,4 @@
-import React, { Fragment, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './icons';
 import { useAuth } from '../auth/auth-context';
@@ -13,6 +13,9 @@ function Sidebar() {
   const { user } = useAuth();
   const [navCounts, setNavCounts] = useState({});
   const path = location.pathname;
+  const displayName = user?.full_name || user?.username || '未登录用户';
+  const roleLabel = user?.is_superuser ? '超级管理员' : user?.role === 'admin' ? '管理员' : '工作区成员';
+  const avatarText = displayName.trim().slice(0, 1).toUpperCase() || '?';
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +74,8 @@ function Sidebar() {
     {
       label: '系统管理',
       items: [
+        { id: 'audit',       label: '查询审计', icon: 'log' },
+        { id: 'models',      label: 'LLM 模型', icon: 'brain' },
         { id: 'settings',    label: '系统设置', icon: 'cog' },
       ],
     },
@@ -88,30 +93,36 @@ function Sidebar() {
         <span className="kbd">⌘ K</span>
       </button>
 
-      {groups.map((g, i) => (
-        <Fragment key={i}>
-          <div className="nav-section">{g.label}</div>
-          {g.items.map(n => (
-            <button
-              key={n.id}
-              className={'nav-item ' + (isActive(n.id) ? 'active' : '')}
-              onClick={() => go(n.id)}
-            >
-              <Icon name={n.icon} />
-              <span>{n.label}</span>
-              {n.dot && <span className="nav-dot" />}
-              {n.isNew && !n.count && <span className="nav-new">NEW</span>}
-              {n.count && <span className="count">{n.count}</span>}
-            </button>
-          ))}
-        </Fragment>
-      ))}
+      <nav className="sidebar-nav" aria-label="主导航">
+        {groups.map((g, i) => (
+          <div className="nav-group" key={i}>
+            <div className="nav-section">{g.label}</div>
+            {g.items.map(n => {
+              const active = isActive(n.id);
+              return (
+                <button
+                  key={n.id}
+                  className={'nav-item ' + (active ? 'active' : '')}
+                  aria-current={active ? 'page' : undefined}
+                  onClick={() => go(n.id)}
+                >
+                  <Icon name={n.icon} />
+                  <span>{n.label}</span>
+                  {n.dot && <span className="nav-dot" />}
+                  {n.isNew && !n.count && <span className="nav-new">NEW</span>}
+                  {n.count && <span className="count">{n.count}</span>}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </nav>
 
       <div className="sidebar-footer">
-        <div className="avatar">YL</div>
+        <div className="avatar">{avatarText}</div>
         <div className="who">
-          <span className="name">Yan Lin</span>
-          <span className="role">运营 · 华东区</span>
+          <span className="name">{displayName}</span>
+          <span className="role">{roleLabel}</span>
         </div>
         <Icon name="chev" />
       </div>

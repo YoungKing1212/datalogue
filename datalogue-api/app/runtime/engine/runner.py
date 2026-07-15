@@ -217,50 +217,65 @@ class AgentTeamTaskRunner:
         """把 Datalogue LLM 配置转换成 AgentScope Service session 可运行的模型配置。"""
 
         if request.model_credential_id and request.model_name:
-            # 显式选择模型时使用请求携带的 AgentScope credential/model；默认模型仍由 DB 配置表决定。
-            return {
-                "type": "openai_credential",
-                "credential_id": request.model_credential_id,
-                "model": request.model_name,
-                "parameters": _safe_model_parameters(request.model_parameters),
-            }
+            credentials = await self._list_credentials_safely()
+            credential = _find_credential(credentials, request.model_credential_id)
+            if credential is None:
+                raise ValueError(
+                    "AGENTSCOPE_SELECTED_MODEL_CREDENTIAL_NOT_FOUND: "
+                    f"选择的 AgentScope credential '{request.model_credential_id}' 不存在或已被删除。"
+                )
+            # AgentScope 的 credential type 决定实际 ChatModel；不能把 DeepSeek 等原生凭据伪装成 OpenAI。
+            return _build_credential_chat_model_config(
+                credential=credential,
+                model=request.model_name,
+                parameters=_safe_model_parameters(request.model_parameters),
+            )
 
         return await self._build_default_chat_model_config()
 
     async def _build_default_chat_model_config(self) -> dict[str, Any]:
-        """未显式选择模型时，优先从 Datalogue LLM 配置表派生 session 模型配置。"""
-
-        resolved = resolve_llm_config(self.settings, role="agent_team_leader", db=self.db)
-        if resolved.source == "database":
-            if not resolved.credential_id:
-                raise ValueError("DATALOGUE_LLM_CONFIG_MISSING_CREDENTIAL_ID: 数据库 LLM 配置缺少 credential_id")
-            credentials = await self._list_credentials_safely()
-            if _find_credential(credentials, resolved.credential_id) is None:
-                raise ValueError(
-                    "AGENTSCOPE_MODEL_CREDENTIAL_NOT_CONFIGURED: "
-                    f"LLM 配置表已启用模型 '{resolved.name}'，但 AgentScope credential "
-                    f"'{resolved.credential_id}' 不存在；请在设置页重新保存该模型的 API Key。"
-                )
-            return {
-                "type": "openai_credential",
-                "credential_id": resolved.credential_id,
-                "model": resolved.model,
-                "parameters": {
-                    "thinking_enable": bool(resolved.thinking_enabled),
-                },
-            }
+        """未显式选择模型时，只按数据库保存的 credential 关联构造默认会话模型。"""
 
         credentials = await self._list_credentials_safely()
+        resolved = resolve_llm_config(self.settings, role="agent_team_leader", db=self.db)
+        if resolved.source == "database":
+            if not resolved.credential_id or not resolved.credential_type:
+                raise ValueError(
+                    "DATALOGUE_LLM_CONFIG_CREDENTIAL_LINK_MISSING: "
+                    f"数据库模型配置 '{resolved.name}' 未关联 AgentScope credential；"
+                    "请在设置页重新保存该模型以完成凭据绑定。"
+                )
+            credential = _find_credential(credentials, resolved.credential_id)
+            if credential is None:
+                raise ValueError(
+                    "AGENTSCOPE_MODEL_CREDENTIAL_NOT_CONFIGURED: "
+                    f"数据库模型配置 '{resolved.name}' 关联的 AgentScope credential "
+                    f"'{resolved.credential_id}' 不存在；请在设置页重新保存该模型的 API Key。"
+                )
+            actual_type = _credential_type(credential)
+            if actual_type != resolved.credential_type:
+                raise ValueError(
+                    "AGENTSCOPE_MODEL_CREDENTIAL_TYPE_MISMATCH: "
+                    f"数据库记录为 '{resolved.credential_type}'，但 AgentScope credential "
+                    f"'{resolved.credential_id}' 实际为 '{actual_type}'；请在设置页重新保存。"
+                )
+            return {
+                "type": resolved.credential_type,
+                "credential_id": resolved.credential_id,
+                "model": resolved.model,
+                "parameters": {"thinking_enable": bool(resolved.thinking_enabled)},
+            }
+
         default_credential = _find_credential(credentials, DEFAULT_MODEL_CREDENTIAL_ID)
         if default_credential is None:
             await self._ensure_default_model_credential()
             model_name = self.settings.LLM_MODEL
+            credential_type = "openai_credential"
         else:
-            data = default_credential.get("data") if isinstance(default_credential, dict) else None
-            data = data if isinstance(data, dict) else {}
-            model_name = _model_name_from_credential_data(data) or self.settings.LLM_MODEL
+            model_name = _model_name_from_credential_data(_credential_data(default_credential)) or self.settings.LLM_MODEL
+            credential_type = _credential_type(default_credential)
         return {
-            "type": "openai_credential",
+            "type": credential_type,
             "credential_id": DEFAULT_MODEL_CREDENTIAL_ID,
             "model": model_name,
             "parameters": {"thinking_enable": False},
@@ -296,6 +311,45 @@ def _find_credential(credentials: list[dict[str, Any]], credential_id: str) -> d
         if _credential_id(item) == credential_id:
             return item
     return None
+
+
+def _credential_data(item: dict[str, Any]) -> dict[str, Any]:
+    """归一 AgentScope credential 响应，兼容顶层与 data 嵌套两种服务响应。"""
+
+    data = item.get("data") if isinstance(item, dict) else None
+    return data if isinstance(data, dict) else item
+
+
+def _credential_type(item: dict[str, Any]) -> str:
+    """读取 credential 的真实类型；该类型必须原样传给 AgentScope session。"""
+
+    credential_type = _credential_data(item).get("type")
+    if isinstance(credential_type, str) and credential_type.strip():
+        return credential_type.strip()
+    credential_id = _credential_id(item)
+    raise ValueError(
+        "AGENTSCOPE_MODEL_CREDENTIAL_TYPE_MISSING: "
+        f"AgentScope credential '{credential_id}' 缺少 type，无法创建聊天模型。"
+    )
+
+
+def _build_credential_chat_model_config(
+    *,
+    credential: dict[str, Any],
+    model: str,
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    """构造只含运行参数的 AgentScope 会话模型配置，密钥始终留在 credential 内。"""
+
+    credential_id = _credential_id(credential)
+    if not credential_id:
+        raise ValueError("AGENTSCOPE_MODEL_CREDENTIAL_ID_MISSING: AgentScope credential 缺少 id。")
+    return {
+        "type": _credential_type(credential),
+        "credential_id": credential_id,
+        "model": model,
+        "parameters": parameters,
+    }
 
 
 def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg) -> str:
@@ -364,8 +418,7 @@ def _safe_model_parameters(parameters: dict[str, Any] | None) -> dict[str, Any]:
 def _credential_id(item: dict[str, Any]) -> str:
     """兼容 AgentScope Service 可能返回顶层 id 或 data.id 的 credential 结构。"""
 
-    data = item.get("data") if isinstance(item, dict) else None
-    data = data if isinstance(data, dict) else {}
+    data = _credential_data(item)
     raw_id = item.get("id") or item.get("credential_id") or data.get("id")
     return str(raw_id or "")
 

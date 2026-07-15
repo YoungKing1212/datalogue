@@ -20,6 +20,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.observability import observation_span, set_span_attributes
 from app.domains.bi.agent.runtime_context import build_bi_runtime_context
 from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
@@ -37,6 +38,7 @@ from app.domains.bi.worker.validator import (
 from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
 from app.domains.bi.toolkit import build_bi_atomic_toolkit
 from app.core.models.dataset import SemanticDataset
+from app.core.models.datasource import Datasource
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,61 @@ class BIWorkerQueryRuntime:
         self.validator = BIWorkerQueryValidator()
 
     async def execute_query_plan(
+        self,
+        dataset_id: int,
+        confirmed_question: str,
+        query_plan: BIWorkerQueryPlan,
+        context_state: ProgressiveContextState,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """记录 Query Plan 全阶段耗时，底层 AgentScope Tool span 继续保留原始工具 I/O。"""
+
+        datasource_type = "unknown"
+        if self.db is not None:
+            try:
+                dataset = self.db.get(SemanticDataset, dataset_id)
+                datasource = (
+                    self.db.get(Datasource, dataset.datasource_id) if dataset is not None else None
+                )
+                datasource_type = (
+                    getattr(datasource, "dialect", None)
+                    or getattr(datasource, "db_type", None)
+                    or "unknown"
+                )
+            except Exception:
+                # 数据源类型仅用于观测筛选，读取失败绝不能影响原有查询计划执行语义。
+                logger.debug("读取观测数据源类型失败: dataset_id=%s", dataset_id, exc_info=True)
+        with observation_span(
+            "datalogue.bi.query_plan.execute",
+            {
+                "datalogue.dataset_id": dataset_id,
+                "datalogue.datasource_type": str(datasource_type),
+                "datalogue.business_trace_id": trace_id,
+                "datalogue.query.intent": query_plan.intent,
+                "datalogue.query.filter_count": len(query_plan.filters),
+                "datalogue.query.metric_count": len(query_plan.metrics),
+            },
+        ) as span:
+            payload = await self._execute_query_plan(
+                dataset_id=dataset_id,
+                confirmed_question=confirmed_question,
+                query_plan=query_plan,
+                context_state=context_state,
+                trace_id=trace_id,
+            )
+            if isinstance(payload, dict):
+                set_span_attributes(
+                    span,
+                    {
+                        "datalogue.artifact_ref": payload.get("artifact_ref"),
+                        "datalogue.query.row_count": payload.get("row_count"),
+                        "datalogue.query.column_count": payload.get("column_count"),
+                        "datalogue.query.failure_type": payload.get("failure_type"),
+                    },
+                )
+            return payload
+
+    async def _execute_query_plan(
         self,
         dataset_id: int,
         confirmed_question: str,
@@ -609,7 +666,9 @@ def _log_tool_result_errors(
             texts = []
             if isinstance(output, list):
                 for block in output:
-                    text = getattr(block, "text", None) or (block if isinstance(block, str) else None)
+                    text = getattr(block, "text", None) or (
+                        block if isinstance(block, str) else None
+                    )
                     if text:
                         texts.append(str(text))
             elif isinstance(output, str):
@@ -621,23 +680,36 @@ def _log_tool_result_errors(
                     parsed = None
                 if isinstance(parsed, dict):
                     code_val = parsed.get("code") or parsed.get("status", "")
-                    error_val = parsed.get("error_summary", "") or parsed.get("error", "") or parsed.get("message", "")
+                    error_val = (
+                        parsed.get("error_summary", "")
+                        or parsed.get("error", "")
+                        or parsed.get("message", "")
+                    )
                     logger.warning(
                         "[bi_worker._execute_plan] tool_result[%d] dataset_id=%s trace_id=%s "
                         "code=%s error_summary=%s",
-                        i, dataset_id, trace_id, code_val, error_val,
+                        i,
+                        dataset_id,
+                        trace_id,
+                        code_val,
+                        error_val,
                     )
                 else:
                     logger.warning(
                         "[bi_worker._execute_plan] tool_result[%d] dataset_id=%s trace_id=%s raw=%s",
-                        i, dataset_id, trace_id, text[:500],
+                        i,
+                        dataset_id,
+                        trace_id,
+                        text[:500],
                     )
         elif tr.get("code"):
             # 无 output 的扁平 tool_result（如权限拒绝等），直接从 dict 字段取
             logger.warning(
                 "[bi_worker._execute_plan] tool_result[%d] dataset_id=%s trace_id=%s "
                 "tool=%s code=%s status=%s",
-                i, dataset_id, trace_id,
+                i,
+                dataset_id,
+                trace_id,
                 tr.get("name", "?"),
                 tr.get("code"),
                 tr.get("status"),

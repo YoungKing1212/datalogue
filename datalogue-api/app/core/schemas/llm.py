@@ -44,6 +44,7 @@ class LLMModelConfigUpdate(BaseModel):
 class LLMModelConfigOut(BaseModel):
     id: int
     credential_id: Optional[str] = None
+    credential_type: Optional[str] = None
     name: str
     provider: str
     base_url: str

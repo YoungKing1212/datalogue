@@ -73,6 +73,8 @@ def _create_llm_config(db_session, *, status: str = "active") -> LLMModelConfig:
         description="由设置页维护",
         request_timeout_seconds=45,
         thinking_enabled=True,
+        credential_id="agentscope-page-model",
+        credential_type="openai_credential",
     )
     db_session.add(config)
     db_session.commit()
@@ -82,7 +84,7 @@ def _create_llm_config(db_session, *, status: str = "active") -> LLMModelConfig:
 
 def test_local_llm_config_api_is_available(client, db_session, monkeypatch):
     config = _create_llm_config(db_session)
-    credential_id = credential_id_for_model_config(config.id)
+    credential_id = config.credential_id
 
     async def fake_list_credentials():
         return [{"id": credential_id}]
@@ -101,7 +103,7 @@ def test_local_llm_config_api_is_available(client, db_session, monkeypatch):
 
 def test_resolve_llm_config_uses_database_config_before_env(db_session, monkeypatch):
     config = _create_llm_config(db_session)
-    _FakeHttpxClient.credential_id = credential_id_for_model_config(config.id)
+    _FakeHttpxClient.credential_id = config.credential_id
     monkeypatch.setattr("app.core.llm_config.httpx.Client", _FakeHttpxClient)
 
     resolved = resolve_llm_config(
@@ -118,7 +120,8 @@ def test_resolve_llm_config_uses_database_config_before_env(db_session, monkeypa
 
     assert _FakeHttpxClient.last_request == ("/credential/", {"X-User-ID": "datalogue-agent-team"})
     assert resolved.source == "database"
-    assert resolved.credential_id == credential_id_for_model_config(config.id)
+    assert resolved.credential_id == config.credential_id
+    assert resolved.credential_type == "openai_credential"
     assert resolved.name == "页面配置模型"
     assert resolved.provider == "openai-compatible"
     assert resolved.base_url == "https://db.example/v1"

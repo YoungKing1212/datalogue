@@ -42,6 +42,33 @@ services:
       retries: 10
     restart: unless-stopped
 
+  phoenix:
+    # 固定到已验证的 Phoenix 18.0.0 manifest digest，禁止跟随 latest 漂移。
+    image: arizephoenix/phoenix:version-18.0.0@sha256:949b445c8ce45b2bb98da42e7ec46dc2afc272c09edd69f9d063e343f5ec703c
+    container_name: datalogue-phoenix
+    environment:
+      # 与 Datalogue 共用 PostgreSQL 和 datalogue 数据库，但 Phoenix 的所有表固定落在 phoenix Schema。
+      PHOENIX_SQL_DATABASE_URL: "postgresql://datalogue:${DB_PASSWORD:-datalogue}@db:5432/datalogue"
+      PHOENIX_SQL_DATABASE_SCHEMA: "phoenix"
+      # Phoenix 仅供内部开发使用：启用本地账号认证、首位管理员强密码与 14 天留存。
+      PHOENIX_ENABLE_AUTH: "true"
+      PHOENIX_SECRET: "${PHOENIX_SECRET:?请在 .env 设置高强度 PHOENIX_SECRET}"
+      PHOENIX_ENABLE_STRONG_PASSWORD_POLICY: "true"
+      PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD: "${PHOENIX_ADMIN_INITIAL_PASSWORD:?请在 .env 设置 PHOENIX_ADMIN_INITIAL_PASSWORD}"
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "14"
+      PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_ALLOWED_PROVIDERS: "NONE"
+    ports:
+      # 只允许宿主机经 SSH 隧道访问 UI；OTLP gRPC 仅在 Docker 内网通过 expose 提供。
+      - "6006:6006"
+      - "4317:4317"
+    # expose:
+    #   - "4317"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
   api:
     build:
       context: ./datalogue-api
@@ -72,7 +99,15 @@ services:
       # 运行环境
       APP_ENV: "${APP_ENV:-production}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      LANGFUSE_ENABLED: "${LANGFUSE_ENABLED:-false}"
+      # Phoenix 的初始化分两步：先启动 Phoenix 创建 system key，再把以下开关与 key 写入部署机密并重启 API。
+      # exporter 不作为 API 依赖；Phoenix 停机时问数与健康检查仍保持可用。
+      AGENTSCOPE_OTEL_TRACING_ENABLED: "${AGENTSCOPE_OTEL_TRACING_ENABLED:-false}"
+      AGENTSCOPE_OTEL_LOGGING_ENABLED: "false"
+      AGENTSCOPE_OTEL_EXPORTER_ENABLED: "${AGENTSCOPE_OTEL_EXPORTER_ENABLED:-false}"
+      AGENTSCOPE_OTEL_EXPORTER_ENDPOINT: "phoenix:4317"
+      AGENTSCOPE_OTEL_EXPORTER_INSECURE: "true"
+      AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN: "${PHOENIX_SYSTEM_API_KEY:-}"
+      AGENTSCOPE_OTEL_EXPORTER_PROJECT_NAME: "${PHOENIX_PROJECT_NAME:-datalogue-production}"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:

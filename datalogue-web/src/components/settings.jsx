@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Icon } from './icons';
 import { del as apiDelete, get, patch, post } from '../api/client';
@@ -34,13 +34,11 @@ function SettingsScreen() {
     ]},
     { title: '数据与模型', items: [
       { id: 'datasources', label: '数据源',     icon: 'database' },
-      { id: 'models',      label: 'LLM 模型',  icon: 'brain' },
       { id: 'glossary',    label: '业务词典',   icon: 'book' },
     ]},
     { title: '开发者', items: [
       { id: 'apikeys',     label: 'API 密钥',   icon: 'key' },
       { id: 'webhooks',    label: 'Webhooks',  icon: 'plug' },
-      { id: 'audit',       label: '审计日志',   icon: 'log' },
     ]},
   ];
 
@@ -69,11 +67,9 @@ function SettingsScreen() {
         {section === 'users'      && canManageUsers && <UserCreateScreen />}
         {section === 'usage'      && <UsageSection />}
         {section === 'datasources'&& <DatasourcesSection />}
-        {section === 'models'     && <ModelsSection />}
         {section === 'glossary'   && <GlossarySection />}
         {section === 'apikeys'    && <ApiKeysSection />}
         {section === 'webhooks'   && <WebhooksSection />}
-        {section === 'audit'      && <AuditSection />}
       </div>
     </div>
   );
@@ -563,21 +559,42 @@ function buildFormFromPreset(presetId, currentForm = emptyModelForm) {
 
 function ModelsSection() {
   const [models, setModels] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [form, setForm] = useState(() => buildFormFromPreset('agentscope_openai'));
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState(null);
   const [message, setMessage] = useState('');
   const [editorOpen, setEditorOpen] = useState(false); // 控制 credential 编辑弹窗的显隐
+  const [initialFormSnapshot, setInitialFormSnapshot] = useState(null);
+  const templateFieldRef = useRef(null);
+  const editorTriggerRef = useRef(null);
 
   const selectedPreset = findPreset(form.preset_id);
   const isTestingCurrentModel = form.id != null && testingId === form.id;
   const providerChoices = LLM_PROVIDER_OPTIONS.some(item => item.value === form.provider)
     ? LLM_PROVIDER_OPTIONS
     : [...LLM_PROVIDER_OPTIONS, { value: form.provider, label: form.provider }];
+  const activeModels = models.filter(model => model.status === 'active');
+  const configuredKeys = models.filter(model => model.api_key_set).length;
+  const latestActiveModel = activeModels.at(-1);
+  // 新建和编辑都需要保护用户已填写但尚未保存的连接信息，避免误关闭弹窗造成配置丢失。
+  const hasUnsavedChanges = Boolean(initialFormSnapshot && JSON.stringify(form) !== initialFormSnapshot);
+
+  useEffect(() => {
+    if (!editorOpen) return;
+    // 新增或编辑时让焦点直接进入模板选择，键盘用户无需额外定位。
+    const deferFocus = window.requestAnimationFrame || ((callback) => setTimeout(callback, 0));
+    deferFocus(() => templateFieldRef.current?.focus());
+  }, [editorOpen]);
 
   const loadConfig = async () => {
-    const credentials = await get('/api/agentscope-control/credentials');
-    setModels((Array.isArray(credentials) ? credentials : []).map(normalizeCredentialRow).filter(Boolean));
+    setLoading(true);
+    try {
+      const credentials = await get('/api/agentscope-control/credentials');
+      setModels((Array.isArray(credentials) ? credentials : []).map(normalizeCredentialRow).filter(Boolean));
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -588,7 +605,7 @@ function ModelsSection() {
     const preset = inferPreset(model);
     const modelChoice = getModelChoice(preset, model.model);
     const isKnownProvider = LLM_PROVIDER_OPTIONS.some(item => item.value === model.provider);
-    setForm({
+    const nextForm = {
       id: model.id,
       name: model.name,
       provider: model.provider,
@@ -602,19 +619,58 @@ function ModelsSection() {
       status: model.status,
       description: model.description || '',
       request_timeout_seconds: model.request_timeout_seconds || 60,
-    });
+    };
+    editorTriggerRef.current = document.activeElement;
+    setForm(nextForm);
+    setInitialFormSnapshot(JSON.stringify(nextForm));
     setEditorOpen(true); // 编辑改为在弹窗内进行，避免直接改动顶部表单造成的怪异交互
   };
 
-  const resetForm = () => setForm(buildFormFromPreset('agentscope_openai'));
+  const resetForm = () => {
+    const nextForm = buildFormFromPreset('agentscope_openai');
+    setForm(nextForm);
+    setInitialFormSnapshot(JSON.stringify(nextForm));
+  };
 
   const openCreate = () => { // 打开“新增 credential”弹窗（重置为默认模板）
+    editorTriggerRef.current = document.activeElement;
     resetForm();
     setMessage('');
     setEditorOpen(true);
   };
 
-  const closeEditor = () => setEditorOpen(false); // 关闭弹窗但保留列表提示信息
+  const closeEditor = () => {
+    if (hasUnsavedChanges && !window.confirm('尚未保存修改，确定要关闭吗？')) return;
+    setEditorOpen(false);
+    const deferFocus = window.requestAnimationFrame || ((callback) => setTimeout(callback, 0));
+    deferFocus(() => editorTriggerRef.current?.focus());
+  };
+
+  const handleEditorKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeEditor();
+      return;
+    }
+
+    if (event.key === 'Tab') {
+      // 弹窗打开期间将键盘焦点限制在编辑器内，避免 Tab 跳到被遮罩的后台页面。
+      const focusableItems = [...event.currentTarget.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      )];
+      const firstItem = focusableItems[0];
+      const lastItem = focusableItems.at(-1);
+
+      if (!firstItem || !lastItem) return;
+      if (event.shiftKey && document.activeElement === firstItem) {
+        event.preventDefault();
+        lastItem.focus();
+      } else if (!event.shiftKey && document.activeElement === lastItem) {
+        event.preventDefault();
+        firstItem.focus();
+      }
+    }
+  };
 
   const changePreset = (presetId) => {
     setForm(current => buildFormFromPreset(presetId, {
@@ -722,127 +778,143 @@ function ModelsSection() {
 
   return (
     <>
-      <SetSection title="LLM 模型" desc="保留模型配置入口，但持久化对象改为 AgentScope credential；可用模型由 ModelCard 发现。">
-        {message && <div className="st-inline-alert">{message}</div>}
-
-        <div className="st-toolbar-row">
-          <button className="btn primary" onClick={openCreate}><Icon name="plus" />新增 credential</button>
-        </div>
-
-        <div className="st-table llm-config-table">
-          <div className="st-th llm-models">
-            <span>模型</span><span>Base URL</span><span>状态</span><span>测试</span><span></span>
+      <section className="llm-section" aria-labelledby="llm-control-title">
+        <div className="llm-control-panel">
+          <div className="llm-panel-copy">
+            <div className="llm-eyebrow"><span className="llm-eyebrow-signal" />AGENTSCOPE · 模型运行概览</div>
+            <h2 id="llm-control-title">LLM 模型控制台</h2>
+            <p>集中管理问数运行时使用的模型凭证。密钥仅托管于 AgentScope，页面不会回显明文。</p>
           </div>
-          {models.length === 0 && (
-            <div className="st-empty-row">暂无模型配置</div>
-          )}
-          {models.map(model => (
-            <div className="st-tr llm-models" key={model.id}>
-              <span className="llm-model-cell">
-                <div className="st-row-label">{model.name}</div>
-                <div className="st-row-hint mono llm-model-meta">{model.provider} · {model.model || 'ModelCard 自动发现'} · {model.api_key_set ? 'Key 已保存' : '无 Key'}</div>
-              </span>
-              <span className="mono text-3 llm-url-cell" title={model.base_url}>{model.base_url}</span>
-              <span>
-                <span className={'st-ds-status ' + (model.status === 'active' ? 'connected' : 'error')}>
-                  <span className="dot" />{model.status === 'active' ? '启用' : '停用'}
-                </span>
-              </span>
-              <span className="text-3 llm-test-cell">
-                {model.last_test_result?.ok ? `通过 · ${model.last_test_result.latency_ms}ms` : model.last_error_message || '未测试'}
-              </span>
-              <span className="st-llm-actions">
-                <button className="icon-btn" data-tip="发现可用模型" aria-label="发现可用模型" disabled={testingId === model.id} onClick={() => testModel(model)}><Icon name="beaker" /></button>
-                <button className="icon-btn" data-tip="编辑" aria-label="编辑" onClick={() => startEdit(model)}><Icon name="edit" /></button>
-                <button className="icon-btn" data-tip={model.status === 'active' ? '停用' : '启用'} aria-label={model.status === 'active' ? '停用' : '启用'} onClick={() => toggleStatus(model)}><Icon name="pause" /></button>
-                <button className="icon-btn danger" data-tip="删除" aria-label="删除" onClick={() => removeModel(model)}><Icon name="trash" /></button>
-              </span>
-            </div>
-          ))}
+          <div className="llm-runtime-readout" aria-label="模型运行概览">
+            <div className="llm-readout-status"><span className="llm-pulse-dot" />当前启用模型</div>
+            <div className="llm-readout-model">{latestActiveModel?.model || '等待接入模型'}</div>
+            <div className="llm-readout-meta">{latestActiveModel ? `${latestActiveModel.provider} · 已启用` : '创建首个 credential 后开始服务'}</div>
+          </div>
         </div>
-      </SetSection>
+
+        <div className="llm-stat-grid" aria-label="模型配置统计">
+          <div className="llm-stat-card"><span>已接入 credential</span><strong>{models.length}</strong><small>全部连接配置</small></div>
+          <div className="llm-stat-card is-live"><span>运行中</span><strong>{activeModels.length}</strong><small>当前允许被调用</small></div>
+          <div className="llm-stat-card"><span>密钥就绪</span><strong>{configuredKeys}<em> / {models.length || 0}</em></strong><small>由 AgentScope 安全托管</small></div>
+          <div className="llm-stat-card"><span>供应商</span><strong>{new Set(models.map(model => model.provider)).size}</strong><small>支持多模型切换</small></div>
+        </div>
+
+        {message && <div className="st-inline-alert llm-inline-alert" role="status" aria-live="polite">{message}</div>}
+
+        <div className="llm-list-heading">
+          <div>
+            <div className="llm-list-kicker">CONNECTION INVENTORY</div>
+            <h3>模型连接</h3>
+            <p>发现模型用于校验接入能力，不会写入或暴露 API Key。</p>
+          </div>
+          <button ref={editorTriggerRef} className="btn primary llm-add-button" onClick={openCreate}><Icon name="plus" />新增 credential</button>
+        </div>
+
+        {loading && models.length === 0 ? (
+          <div className="llm-loading-grid" aria-label="正在加载模型连接" aria-busy="true">
+            {[0, 1, 2, 3].map(item => <div className="llm-loading-card" key={item}><span /><span /><span /></div>)}
+          </div>
+        ) : models.length === 0 ? (
+          <div className="llm-empty-state">
+            <div className="llm-empty-orbit"><Icon name="brain" /></div>
+            <div>
+              <h3>尚未建立模型连接</h3>
+              <p>从一个接入模板开始，完成后可立即发现该服务支持的模型。</p>
+            </div>
+            <button className="btn ghost llm-action-button" onClick={openCreate}>创建第一个 credential <Icon name="plus" /></button>
+          </div>
+        ) : (
+          <div className="llm-card-grid">
+            {models.map(model => {
+              const isActive = model.status === 'active';
+              const testSummary = model.last_test_result?.ok
+                ? `连接通过 · ${model.last_test_result.latency_ms ?? '--'}ms`
+                : model.last_error_message || '尚未发现模型';
+              return (
+                <article className={'llm-credential-card ' + (isActive ? 'is-active' : 'is-disabled')} key={model.id}>
+                  <div className="llm-card-topline" aria-hidden="true"><span /><span /><span /></div>
+                  <header className="llm-card-header">
+                    <div className="llm-provider-mark">{(model.provider || 'AI').slice(0, 2).toUpperCase()}</div>
+                    <div className="llm-card-title">
+                      <div className="llm-card-title-row"><h3 title={model.name}>{model.name}</h3><span className={'llm-status-chip ' + (isActive ? 'live' : '')}><i />{isActive ? '运行中' : '已停用'}</span></div>
+                      <p>{model.provider} <b>·</b> {model.model || 'ModelCard 自动发现'}</p>
+                    </div>
+                  </header>
+                  {model.description && <p className="llm-card-description">{model.description}</p>}
+                  <dl className="llm-card-facts">
+                    <div><dt>连接端点</dt><dd title={model.base_url}>{model.base_url || '未填写'}</dd></div>
+                    <div><dt>密钥状态</dt><dd className={model.api_key_set ? 'is-safe' : 'is-missing'}><span />{model.api_key_set ? '已安全托管' : '等待配置'}</dd></div>
+                    <div><dt>请求超时</dt><dd>{model.request_timeout_seconds || 60}s</dd></div>
+                  </dl>
+                  <div className={'llm-discovery-state ' + (model.last_test_result?.ok ? 'is-success' : '')}>
+                    <Icon name="beaker" /><span>{testSummary}</span>
+                  </div>
+                  <footer className="llm-card-footer">
+                    <button className="btn ghost llm-discover-button llm-action-button" disabled={testingId === model.id} onClick={() => testModel(model)}>
+                      <Icon name="beaker" />{testingId === model.id ? '发现中' : '发现模型'}
+                    </button>
+                    <div className="llm-card-actions">
+                      <button className="icon-btn" title="编辑" data-tip="编辑" aria-label="编辑" onClick={() => startEdit(model)}><Icon name="edit" /></button>
+                      <button className="icon-btn" title={isActive ? '停用' : '启用'} data-tip={isActive ? '停用' : '启用'} aria-label={isActive ? '停用' : '启用'} onClick={() => toggleStatus(model)}><Icon name="pause" /></button>
+                      <button className="icon-btn danger" title="删除" data-tip="删除" aria-label="删除" onClick={() => removeModel(model)}><Icon name="trash" /></button>
+                    </div>
+                  </footer>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {editorOpen && (
         <div className="st-modal-overlay" onClick={closeEditor}>
-          <div className="st-modal" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
-            <div className="st-modal-header">
+          <div className="st-modal llm-editor-modal" role="dialog" aria-modal="true" aria-labelledby="llm-editor-title" onKeyDown={handleEditorKeyDown} onClick={e => e.stopPropagation()}>
+            <div className="st-modal-header llm-editor-header">
               <div className="st-modal-titles">
                 <div className="st-modal-eyebrow">系统设置 / LLM 模型</div>
-                <div className="st-modal-title">{form.id ? `编辑 credential · ${form.name || form.id}` : '新增 credential'}</div>
+                <div className="st-modal-title" id="llm-editor-title">{form.id ? `编辑模型连接 · ${form.name || form.id}` : '新增模型连接'}</div>
+                <p className="llm-editor-intro">凭证将由 AgentScope 安全托管，保存后即可发现可用模型。</p>
               </div>
-              <button className="icon-btn" data-tip="关闭" aria-label="关闭" onClick={closeEditor}><Icon name="x" /></button>
+              <button className="icon-btn" title="关闭" data-tip="关闭" aria-label="关闭" onClick={closeEditor}><Icon name="x" /></button>
             </div>
 
             <div className="st-modal-body">
-              <div className="st-form llm-editor">
-                <SetRow label="接入模板" hint="选择后自动填充供应商、Base URL 和默认模型" control={
-                  <select className="st-input" aria-label="接入模板" value={form.preset_id} onChange={e => changePreset(e.target.value)}>
-                    {LLM_PRESETS.map(preset => (
-                      <option key={preset.id} value={preset.id}>{preset.label}</option>
-                    ))}
-                  </select>} />
-                <SetRow label="名称" control={
-                  <input className="st-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value, name_auto: false })} placeholder="MiniMax via AgentScope" />} />
-                <SetRow label="供应商" control={
-                  <div className="llm-field-stack">
-                    <select className="st-input" aria-label="供应商" value={form.provider} onChange={e => changeProvider(e.target.value)}>
-                      {providerChoices.map(provider => (
-                        <option key={provider.value} value={provider.value}>{provider.label}</option>
-                      ))}
-                    </select>
-                    {form.provider === 'custom' && (
-                      <input
-                        className="st-input"
-                        value={form.custom_provider}
-                        onChange={e => setForm({ ...form, custom_provider: e.target.value })}
-                        placeholder="输入供应商标识，如 volcengine"
-                      />
-                    )}
-                  </div>} />
-                <SetRow label="Base URL" control={
-                  <input className="st-input" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="http://localhost:4000/v1" />} />
-                <SetRow label="模型名" hint="用于名称生成；真实可选模型由 AgentScope ModelCard 返回" control={
-                  <div className="llm-field-stack">
-                    <select className="st-input" aria-label="模型名" value={form.model_choice} onChange={e => changeModelChoice(e.target.value)}>
-                      {selectedPreset.models.map(model => (
-                        <option key={model} value={model}>{model}</option>
-                      ))}
-                      <option value="custom">自定义模型</option>
-                    </select>
-                    {form.model_choice === 'custom' && (
-                      <input
-                        className="st-input"
-                        value={form.model}
-                        onChange={e => changeModelName(e.target.value)}
-                        placeholder="输入模型名，如 datalogue-sql"
-                      />
-                    )}
-                  </div>} />
-                <SetRow label="API Key" hint={form.id ? '留空则不覆盖已保存密钥' : '保存后不再展示明文'} control={
-                  <input className="st-input" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={form.id ? '不覆盖' : 'sk-...'} />} />
-                <SetRow label="状态" control={
-                  <select className="st-input" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
-                    <option value="active">启用</option>
-                    <option value="disabled">停用</option>
-                  </select>} />
-                <SetRow label="超时" control={
-                  <input className="st-input" type="number" min="1" value={form.request_timeout_seconds} onChange={e => setForm({ ...form, request_timeout_seconds: e.target.value })} />} />
-                <SetRow label="描述" control={
-                  <textarea className="st-input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="用途、供应商或路由说明" />} />
-              </div>
+              <form className="llm-editor" onSubmit={event => { event.preventDefault(); saveModel(); }}>
+                <section className="llm-form-section" aria-labelledby="llm-access-title">
+                  <div className="llm-form-section-heading"><span>01</span><div><h4 id="llm-access-title">接入方式</h4><p>从模板开始，系统会自动填充常用连接信息。</p></div></div>
+                  <div className="llm-form-grid">
+                    <label className="llm-form-field llm-field-full"><span>接入模板</span><select ref={templateFieldRef} className="st-input" aria-label="接入模板" value={form.preset_id} onChange={e => changePreset(e.target.value)}>{LLM_PRESETS.map(preset => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
+                    <label className="llm-form-field"><span>名称</span><input className="st-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value, name_auto: false })} placeholder="MiniMax via AgentScope" /></label>
+                    <label className="llm-form-field"><span>供应商</span><select className="st-input" aria-label="供应商" value={form.provider} onChange={e => changeProvider(e.target.value)}>{providerChoices.map(provider => <option key={provider.value} value={provider.value}>{provider.label}</option>)}</select></label>
+                    {form.provider === 'custom' && <label className="llm-form-field llm-field-full"><span>供应商标识</span><input className="st-input" value={form.custom_provider} onChange={e => setForm({ ...form, custom_provider: e.target.value })} placeholder="输入供应商标识，如 volcengine" /></label>}
+                  </div>
+                </section>
+
+                <section className="llm-form-section" aria-labelledby="llm-connection-title">
+                  <div className="llm-form-section-heading"><span>02</span><div><h4 id="llm-connection-title">连接信息</h4><p>端点和密钥只用于建立安全的模型连接。</p></div></div>
+                  <div className="llm-form-grid">
+                    <label className="llm-form-field llm-field-full"><span>Base URL</span><input className="st-input mono" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="http://localhost:4000/v1" /></label>
+                    <label className="llm-form-field"><span>模型名</span><select className="st-input" aria-label="模型名" value={form.model_choice} onChange={e => changeModelChoice(e.target.value)}>{selectedPreset.models.map(model => <option key={model} value={model}>{model}</option>)}<option value="custom">自定义模型</option></select>{form.model_choice === 'custom' && <input className="st-input" value={form.model} onChange={e => changeModelName(e.target.value)} placeholder="输入模型名，如 datalogue-sql" />}</label>
+                    <label className="llm-form-field"><span>API Key <small>{form.id ? '留空则不覆盖已保存密钥' : '仅保存，之后不回显'}</small></span><input className="st-input" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={form.id ? '不覆盖' : 'sk-...'} /></label>
+                  </div>
+                </section>
+
+                <section className="llm-form-section" aria-labelledby="llm-runtime-title">
+                  <div className="llm-form-section-heading"><span>03</span><div><h4 id="llm-runtime-title">运行参数</h4><p>定义连接启用状态与单次请求的等待上限。</p></div></div>
+                  <div className="llm-form-grid">
+                    <label className="llm-form-field"><span>状态</span><select className="st-input" aria-label="状态" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}><option value="active">启用</option><option value="disabled">停用</option></select></label>
+                    <label className="llm-form-field"><span>超时（秒）</span><input className="st-input" type="number" min="1" value={form.request_timeout_seconds} onChange={e => setForm({ ...form, request_timeout_seconds: e.target.value })} /></label>
+                    <label className="llm-form-field llm-field-full"><span>描述 <small>可选</small></span><textarea className="st-input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="用途、供应商或路由说明" /></label>
+                  </div>
+                </section>
+              </form>
             </div>
 
             <div className="st-modal-footer">
-              <button className="btn ghost" onClick={closeEditor}>取消</button>
+              <button className="btn ghost llm-action-button" onClick={closeEditor}>取消</button>
               <div className="llm-form-actions">
-                <button
-                  className="btn ghost"
-                  disabled={isTestingCurrentModel}
-                  onClick={testCurrentModel}
-                >
-                  <Icon name="beaker" />{isTestingCurrentModel ? '发现中' : '发现模型'}
-                </button>
-                <button className="btn primary" disabled={saving} onClick={saveModel}><Icon name="check" />{saving ? '保存中' : '保存'}</button>
+                {form.id ? <button className="btn ghost llm-action-button" title={hasUnsavedChanges ? '请先保存连接信息' : '发现可用模型'} disabled={isTestingCurrentModel || hasUnsavedChanges} onClick={testCurrentModel}><Icon name="beaker" />{isTestingCurrentModel ? '发现中' : '发现模型'}</button> : <span className="llm-discover-hint">保存后即可发现可用模型</span>}
+                <button className="btn primary llm-action-button" disabled={saving} onClick={saveModel}><Icon name="check" />{saving ? '保存中' : '保存 credential'}</button>
               </div>
             </div>
           </div>
@@ -981,4 +1053,22 @@ function AuditSection() {
   );
 }
 
-export { SettingsScreen };
+// 独立路由复用同一套模型连接交互，确保主导航与旧设置页不出现两套凭据管理逻辑。
+function LLMModelsScreen() {
+  return (
+    <main className="llm-page" aria-label="LLM 模型配置">
+      <ModelsSection />
+    </main>
+  );
+}
+
+// 查询审计与模型配置一样需要被持续访问，因此从设置页迁出并复用唯一的审计内容实现。
+function AuditScreen() {
+  return (
+    <main className="audit-page" aria-label="查询审计">
+      <AuditSection />
+    </main>
+  );
+}
+
+export { AuditScreen, LLMModelsScreen, SettingsScreen };

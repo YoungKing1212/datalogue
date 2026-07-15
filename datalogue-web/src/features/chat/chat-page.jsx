@@ -343,6 +343,51 @@ function ComposerTextSetter({ register }) {
 }
 
 /**
+ * 当前会话的业务级依据锚点。
+ * 不读取或展示 SQL、原始行、追踪 ID 等执行面信息，只帮助用户判断本轮结果的上下文与可用状态。
+ */
+function ThreadEvidenceRail({ selectedDs, isRunning, hasResult }) {
+  const processingStatus = isRunning ? '正在整理' : hasResult ? '已完成' : '等待提问';
+  const resultStatus = hasResult ? '已生成，可在回答中查看' : isRunning ? '整理中' : '暂未生成';
+
+  return (
+    <aside className="thread-evidence-rail" aria-label="本次依据">
+      <div className="thread-evidence-rail-head">
+        <span>本次依据</span>
+        <span className={`thread-evidence-status${isRunning ? ' is-running' : ''}`}>
+          <i aria-hidden="true" />
+          {processingStatus}
+        </span>
+      </div>
+
+      <div className="thread-evidence-item">
+        <span className="thread-evidence-icon"><Icon name="database" /></span>
+        <div>
+          <span className="thread-evidence-label">数据集</span>
+          <strong>{selectedDs?.name || '由系统自动选择'}</strong>
+        </div>
+      </div>
+
+      <div className="thread-evidence-item">
+        <span className="thread-evidence-icon"><Icon name="table" /></span>
+        <div>
+          <span className="thread-evidence-label">结果</span>
+          <strong>{resultStatus}</strong>
+        </div>
+      </div>
+
+      <div className="thread-evidence-item">
+        <span className="thread-evidence-icon"><Icon name="sparkle" /></span>
+        <div>
+          <span className="thread-evidence-label">处理状态</span>
+          <strong>{processingStatus}</strong>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+/**
  * ChatPage 内部主体（在 AssistantRuntimeProvider 之内）
  */
 function ChatPageInner({
@@ -553,6 +598,7 @@ function ChatPageInner({
   }, [datasetList]);
 
   const mainThreadId = useAuiState((s) => s.threads?.mainThreadId);
+  const isThreadRunning = useAuiState((s) => Boolean(s.thread?.isRunning));
 
   // 切换 thread 时重置 trace 数据
   useEffect(() => {
@@ -644,6 +690,12 @@ function ChatPageInner({
               modelList={modelList}
             />
           }
+        />
+
+        <ThreadEvidenceRail
+          selectedDs={selectedDs}
+          isRunning={isThreadRunning}
+          hasResult={Boolean(sqlResult)}
         />
 
         <AgentPanel

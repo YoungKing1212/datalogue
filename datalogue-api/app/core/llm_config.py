@@ -17,7 +17,8 @@ from typing import Optional
 import httpx
 from sqlalchemy.orm import Session
 
-from app.agentscope_runtime.client import DEFAULT_AGENTSCOPE_USER_ID
+# 此处必须依赖底层客户端，避免导入 facade 时回引 runner，导致默认模型解析阶段循环导入。
+from app.runtime.engine.client import DEFAULT_AGENTSCOPE_USER_ID
 from app.core.config import Settings
 from app.core.models.llm import LLMModelConfig
 
@@ -39,6 +40,7 @@ class ResolvedLLMConfig:
     request_timeout_seconds: float
     thinking_enabled: bool
     credential_id: str | None = None
+    credential_type: str | None = None
 
 
 def credential_id_for_model_config(config_id: int | None) -> str:
@@ -68,7 +70,7 @@ def credential_data_from_items(credentials: list[dict], credential_id: str) -> d
     return None
 
 
-def credential_api_key_from_items(credentials: list[dict], credential_id: str) -> str:
+def credential_api_key_from_items(credentials: list[dict], credential_id: str | None) -> str:
     """从 AgentScope credential 列表中提取指定凭证的 API Key。"""
 
     data = credential_data_from_items(credentials, credential_id)
@@ -103,7 +105,7 @@ def _fetch_agentscope_credentials(settings: Settings) -> list[dict]:
 def api_key_set_for_model_config(config: LLMModelConfig, credential_ids: set[str] | None = None) -> bool:
     """判断配置是否已有可用密钥；AgentScope credential 是密钥真相源。"""
 
-    if credential_ids and credential_id_for_model_config(config.id) in credential_ids:
+    if config.credential_id and credential_ids and config.credential_id in credential_ids:
         return True
     return False
 
@@ -113,7 +115,8 @@ def model_config_to_dict(config: LLMModelConfig, credential_ids: set[str] | None
 
     return {
         "id": config.id,
-        "credential_id": credential_id_for_model_config(config.id),
+        "credential_id": config.credential_id,
+        "credential_type": config.credential_type,
         "name": config.name,
         "provider": config.provider,
         "base_url": config.base_url,
@@ -168,7 +171,8 @@ def resolve_llm_config(
             config = _default_active_config(db)
 
     if config is not None:
-        credential_id = credential_id_for_model_config(config.id)
+        # 数据库保存 AgentScope 创建的真实 credential 关联；绝不再从本地模型 ID 推导。
+        credential_id = config.credential_id
         api_key = credential_api_key_from_items(_fetch_agentscope_credentials(settings), credential_id)
         return ResolvedLLMConfig(
             role=normalized_role,
@@ -181,6 +185,7 @@ def resolve_llm_config(
             request_timeout_seconds=float(config.request_timeout_seconds or settings.LLM_TIMEOUT_SECONDS),
             thinking_enabled=bool(config.thinking_enabled),
             credential_id=credential_id,
+            credential_type=config.credential_type,
         )
 
     return ResolvedLLMConfig(
@@ -194,4 +199,5 @@ def resolve_llm_config(
         request_timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
         thinking_enabled=False,
         credential_id=None,
+        credential_type=None,
     )

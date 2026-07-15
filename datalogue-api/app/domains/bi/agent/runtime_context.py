@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.domains.bi.skill.runtime_bridge import AgentScopeDatasetRuntimeBridge
+from app.core.observability import observation_span, set_span_attributes
 from app.core.models.dataset import SemanticDataset
 from app.core.models.datasource import Datasource
 from app.domains.query_execution.preview import preview_dataset_sql
@@ -43,11 +44,11 @@ def build_bi_runtime_context(
     allowed_tables, sql_generation_context = allowed_tables_and_sql_context(dataset)
     datasource = db.get(Datasource, dataset.datasource_id)
     raw_datasource_dialect = (
-        getattr(datasource, "dialect", None)
-        or getattr(datasource, "db_type", None)
-        or "sqlite"
+        getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "sqlite"
     )
-    datasource_dialect = normalize_execution_dialect(raw_datasource_dialect) or str(raw_datasource_dialect).lower()
+    datasource_dialect = (
+        normalize_execution_dialect(raw_datasource_dialect) or str(raw_datasource_dialect).lower()
+    )
     return {
         "dataset": dataset,
         "session_kwargs": {
@@ -93,7 +94,9 @@ def allowed_tables_and_sql_context(dataset: SemanticDataset) -> tuple[list[str],
                 }
             )
         table_schemas.append({"name": table_name, "table_name": table_name, "fields": fields})
-    return sorted(set(allowed_tables)), build_query_plan_compiler_context({"table_schemas": table_schemas})
+    return sorted(set(allowed_tables)), build_query_plan_compiler_context(
+        {"table_schemas": table_schemas}
+    )
 
 
 def _bind_query_executor(
@@ -107,10 +110,32 @@ def _bind_query_executor(
     context = getattr(toolkit, "context", None)
     if context is None:
         return
+    datasource = db.get(Datasource, dataset.datasource_id)
+    datasource_type = (
+        getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "unknown"
+    )
 
     def _execute(sql: str) -> dict[str, Any]:
         # execute_compiled_query 是唯一能读取私有 SQL 的位置；上层 Agent 只拿 artifact 引用。
-        result = preview_dataset_sql(db, dataset=dataset, sql=sql, question=question)
-        return result if isinstance(result, dict) else {"rows": []}
+        with observation_span(
+            "datalogue.bi.sql.execute",
+            {
+                "datalogue.dataset_id": dataset.id,
+                "datalogue.datasource_id": dataset.datasource_id,
+                # 只记录方言/类型，不记录连接 URL 或其中的凭证。
+                "datalogue.datasource_type": str(datasource_type),
+                "db.statement": sql,
+            },
+        ) as span:
+            result = preview_dataset_sql(db, dataset=dataset, sql=sql, question=question)
+            payload = result if isinstance(result, dict) else {"rows": []}
+            set_span_attributes(
+                span,
+                {
+                    "datalogue.query.row_count": payload.get("row_count"),
+                    "datalogue.query.column_count": payload.get("column_count"),
+                },
+            )
+            return payload
 
     context.query_executor = _execute

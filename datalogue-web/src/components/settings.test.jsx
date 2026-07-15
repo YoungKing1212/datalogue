@@ -1,8 +1,9 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 
-import { SettingsScreen } from './settings.jsx';
+import { LLMModelsScreen } from './settings.jsx';
 import { get, patch, post, del as apiDelete } from '../api/client';
 
 vi.mock('../api/client', () => ({
@@ -28,7 +29,7 @@ vi.mock('./icons', () => ({
   Icon: ({ name }) => <span data-testid={`icon-${name}`} />,
 }));
 
-describe('SettingsScreen LLM 模型配置', () => {
+describe('LLMModelsScreen 模型配置', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     get.mockResolvedValue([]);
@@ -42,9 +43,7 @@ describe('SettingsScreen LLM 模型配置', () => {
   });
 
   it('保存新增模型配置时把模型字段写入 AgentScope credential data', async () => {
-    render(<SettingsScreen />);
-
-    fireEvent.click(screen.getByRole('button', { name: /LLM 模型/ }));
+    render(<MemoryRouter><LLMModelsScreen /></MemoryRouter>);
     await waitFor(() => {
       expect(get).toHaveBeenCalledWith('/api/agentscope-control/credentials');
     });
@@ -72,7 +71,7 @@ describe('SettingsScreen LLM 模型配置', () => {
       target: { value: 'BI Worker 默认模型' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /保存$/ }));
+    fireEvent.click(screen.getByRole('button', { name: /保存 credential$/ }));
 
     await waitFor(() => {
       expect(post).toHaveBeenCalledWith('/api/agentscope-control/credentials', {
@@ -105,9 +104,7 @@ describe('SettingsScreen LLM 模型配置', () => {
       },
     ]);
 
-    render(<SettingsScreen />);
-
-    fireEvent.click(screen.getByRole('button', { name: /LLM 模型/ }));
+    render(<MemoryRouter><LLMModelsScreen /></MemoryRouter>);
     await screen.findByText('测试模型');
 
     fireEvent.click(screen.getByTitle('停用'));

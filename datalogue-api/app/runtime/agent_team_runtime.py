@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -22,8 +23,10 @@ from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
 from agentscope.message import UserMsg
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.orm import Session
 
+from app.core.observability import observation_span, set_span_attributes
 from app.core.middlewares.lifecycle import log_lifecycle, log_output
 from app.runtime.thread_resolver import new_runtime_thread_id
 from app.domains.agent_team.contracts import AgentTeamTask, AgentTeamTaskRequest
@@ -354,6 +357,21 @@ class AgentTeamTaskRuntime:
         task.message_id = assistant_message.message_id
         self.db.add(task)
         self.db.flush()
+        task_started_at = time.time()
+        # 根 span 必须在首个 SSE 事件之前进入上下文，才能覆盖客户端断流等早期终止场景，
+        # 并让后续 AgentScope HTTP/模型/工具调用都成为同一条链路的子 span。
+        task_span_scope = observation_span(
+            "datalogue.agent_team.task",
+            {
+                "datalogue.task_id": task.task_id,
+                "datalogue.thread_id": session.thread_id,
+                "datalogue.message_id": assistant_message.message_id,
+                "datalogue.dataset_id": request.dataset_id,
+                "datalogue.task_type": request.task_type,
+                "datalogue.business_trace_id": trace_id,
+            },
+        )
+        task_span = task_span_scope.__enter__()
 
         log_lifecycle(
             "agent_team.task.started",
@@ -391,7 +409,6 @@ class AgentTeamTaskRuntime:
         primary_artifact_ref: str | None = None
         latest_checkpoint_ref: str | None = None
         reasoning_summary_steps = _seed_reasoning_summary(request)
-        task_started_at = time.time()
         first_delta_at: float | None = None
         try:
             user_msg = UserMsg(name="user", content=request.question)
@@ -542,6 +559,14 @@ class AgentTeamTaskRuntime:
             )
             self.db.add(task)
             self.db.commit()
+            set_span_attributes(
+                task_span,
+                {
+                    "datalogue.task.status": "completed",
+                    "datalogue.artifact_ref": primary_artifact_ref,
+                    "datalogue.total_duration_ms": round((time.time() - task_started_at) * 1000),
+                },
+            )
             log_lifecycle(
                 "agent_team.task.completed",
                 task_id=task.task_id,
@@ -597,7 +622,16 @@ class AgentTeamTaskRuntime:
                 selected_agent=selected_agent,
                 payload={"summary": "Agent Team 任务已完成。"},
             )
+        except asyncio.CancelledError:
+            # 任务协程被取消时不能吞掉取消信号；仅写观测状态，保留原有取消语义。
+            set_span_attributes(task_span, {"datalogue.task.status": "cancelled"})
+            task_span.set_status(Status(StatusCode.ERROR, "agent team task cancelled"))
+            raise
         except Exception as exc:
+            # 异常已转换为 SSE 失败事件，需显式标记 span 才能在 Phoenix 中检索失败链路。
+            task_span.record_exception(exc)
+            task_span.set_status(Status(StatusCode.ERROR, "agent team task failed"))
+            set_span_attributes(task_span, {"datalogue.task.status": "failed"})
             logger.exception(
                 "Agent Team 任务执行失败: task_id=%s trace_id=%s thread_id=%s message_id=%s "
                 "selected_agent=%s error_type=%s error=%s",
@@ -651,6 +685,9 @@ class AgentTeamTaskRuntime:
                     "retryable": True,
                 },
             )
+        finally:
+            # 无论完成、失败还是客户端提前关闭 SSE，都必须结束根 span，避免产生悬挂链路。
+            task_span_scope.__exit__(None, None, None)
 
     def _create_task(
         self,

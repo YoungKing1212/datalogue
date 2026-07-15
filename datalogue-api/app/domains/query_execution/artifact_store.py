@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.models import QueryArtifact
+from app.core.observability import observation_span, set_span_attributes
 
 ArtifactKind = Literal["sql_result", "report", "subagent_result", "repair_plan"]
 
@@ -82,17 +83,23 @@ class ArtifactStore:
         encoded = jsonable_encoder(payload)
         size_bytes = self._json_size(encoded)
         self._ensure_size(size_bytes)
-        return self._insert(
-            kind=kind,
-            dataset_id=dataset_id,
-            conversation_id=conversation_id,
-            message_id=message_id,
-            trace_id=trace_id,
-            content_json=encoded,
-            content_text=None,
-            content_mime="application/json",
-            size_bytes=size_bytes,
-        )
+        with observation_span(
+            "datalogue.artifact.persist",
+            {"datalogue.artifact.kind": kind, "datalogue.artifact.size_bytes": size_bytes},
+        ) as span:
+            artifact_ref = self._insert(
+                kind=kind,
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                trace_id=trace_id,
+                content_json=encoded,
+                content_text=None,
+                content_mime="application/json",
+                size_bytes=size_bytes,
+            )
+            set_span_attributes(span, {"datalogue.artifact_ref": artifact_ref})
+            return artifact_ref
 
     def put_text(
         self,
@@ -108,17 +115,23 @@ class ArtifactStore:
         value = str(text or "")
         size_bytes = len(value.encode("utf-8"))
         self._ensure_size(size_bytes)
-        return self._insert(
-            kind=kind,
-            dataset_id=dataset_id,
-            conversation_id=conversation_id,
-            message_id=message_id,
-            trace_id=trace_id,
-            content_json=None,
-            content_text=value,
-            content_mime=content_mime,
-            size_bytes=size_bytes,
-        )
+        with observation_span(
+            "datalogue.artifact.persist",
+            {"datalogue.artifact.kind": kind, "datalogue.artifact.size_bytes": size_bytes},
+        ) as span:
+            artifact_ref = self._insert(
+                kind=kind,
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                trace_id=trace_id,
+                content_json=None,
+                content_text=value,
+                content_mime=content_mime,
+                size_bytes=size_bytes,
+            )
+            set_span_attributes(span, {"datalogue.artifact_ref": artifact_ref})
+            return artifact_ref
 
     def get(self, artifact_ref: str) -> QueryArtifact | None:
         if not artifact_ref:
@@ -139,14 +152,12 @@ class ArtifactStore:
     def attach_message_id(self, artifact_refs: list[str | None], *, message_id: int) -> int:
         """把已落库消息 id 回填到 artifact，便于按消息追踪产物。"""
 
-        refs = [ref for ref in artifact_refs if isinstance(ref, str) and ref.startswith("artifact:")]
+        refs = [
+            ref for ref in artifact_refs if isinstance(ref, str) and ref.startswith("artifact:")
+        ]
         if not refs:
             return 0
-        rows = (
-            self.db.query(QueryArtifact)
-            .filter(QueryArtifact.artifact_id.in_(refs))
-            .all()
-        )
+        rows = self.db.query(QueryArtifact).filter(QueryArtifact.artifact_id.in_(refs)).all()
         for row in rows:
             row.message_id = message_id
             self.db.add(row)

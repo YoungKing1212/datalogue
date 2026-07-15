@@ -113,6 +113,15 @@ async def test_agentscope_service_task_runner_uses_agentscope_model_selection_wi
     from app.runtime.engine.runner import AgentTeamTaskRunner
 
     client = FakeClient()
+    client.credentials = [
+        {
+            "id": "openai_credential:prod-main",
+            "data": {
+                "id": "openai_credential:prod-main",
+                "type": "openai_credential",
+            },
+        }
+    ]
     runner = AgentTeamTaskRunner(
         base_url="http://testserver/agentscope",
         settings=Settings(
@@ -165,6 +174,61 @@ async def test_agentscope_service_task_runner_uses_agentscope_model_selection_wi
     }
     assert "model_credential_id" in client.triggered_chats[0]["text"]
     assert ("legacy_model" + "_config_id") not in client.triggered_chats[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_task_runner_uses_selected_native_credential_type():
+    """显式选择 DeepSeek 时必须将真实 credential type 透传给 AgentScope Service。"""
+
+    from app.core.config import Settings
+    from app.runtime.engine.runner import AgentTeamTaskRunner
+
+    client = FakeClient()
+    client.credentials = [
+        {
+            "id": "deepseek-prod-main",
+            "data": {
+                "id": "deepseek-prod-main",
+                "type": "deepseek_credential",
+                "name": "DeepSeek · deepseek-v4-pro",
+            },
+        }
+    ]
+    runner = AgentTeamTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(OPENAI_API_KEY=None),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询销售额",
+        model_credential_id="deepseek-prod-main",
+        model_name="deepseek-v4-pro",
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="thread-1",
+        message_id="message-1",
+        selected_agent="agent_team_leader",
+    )
+
+    [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert client.created_sessions[0]["chat_model_config"] == {
+        "type": "deepseek_credential",
+        "credential_id": "deepseek-prod-main",
+        "model": "deepseek-v4-pro",
+        "parameters": {},
+    }
 
 
 @pytest.mark.asyncio
@@ -269,7 +333,6 @@ async def test_agentscope_service_task_runner_default_model_comes_from_database_
     from app.core.config import Settings
     from app.runtime.engine.runner import AgentTeamTaskRunner
     from app.core.models.llm import LLMModelConfig
-    from app.core.llm_config import credential_id_for_model_config
 
     config = LLMModelConfig(
         name="设置页默认模型",
@@ -280,10 +343,12 @@ async def test_agentscope_service_task_runner_default_model_comes_from_database_
         request_timeout_seconds=45,
         thinking_enabled=True,
     )
+    config.credential_id = "db-default-credential"
+    config.credential_type = "openai_credential"
     db_session.add(config)
     db_session.commit()
     db_session.refresh(config)
-    credential_id = credential_id_for_model_config(config.id)
+    credential_id = config.credential_id
 
     client = FakeClient()
     client.credentials = [{"id": credential_id, "data": {"id": credential_id, "type": "openai_credential"}}]
@@ -320,6 +385,75 @@ async def test_agentscope_service_task_runner_default_model_comes_from_database_
         "type": "openai_credential",
         "credential_id": credential_id,
         "model": "db-default-model",
+        "parameters": {"thinking_enable": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_task_runner_default_model_uses_database_credential_link(db_session):
+    """默认路径只使用数据库保存的原生 DeepSeek credential 关联，不再按名称匹配。"""
+
+    from app.core.config import Settings
+    from app.core.models.llm import LLMModelConfig
+    from app.runtime.engine.runner import AgentTeamTaskRunner
+
+    config = LLMModelConfig(
+        name="DeepSeek · deepseek-v4-pro",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-v4-pro",
+        status="active",
+        request_timeout_seconds=45,
+        thinking_enabled=True,
+        credential_id="native-deepseek-credential",
+        credential_type="deepseek_credential",
+    )
+    db_session.add(config)
+    db_session.commit()
+
+    client = FakeClient()
+    client.credentials = [
+        {
+            "id": "native-deepseek-credential",
+            "data": {
+                "id": "native-deepseek-credential",
+                "name": config.name,
+                "type": "deepseek_credential",
+            },
+        }
+    ]
+    runner = AgentTeamTaskRunner(
+        base_url="http://testserver/agentscope",
+        db=db_session,
+        settings=Settings(OPENAI_API_KEY=None, LLM_MODEL="env-should-not-win"),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询销售额",
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        trace_id="trace-1",
+        thread_id="thread-1",
+        message_id="message-1",
+        selected_agent="agent_team_leader",
+    )
+
+    [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert client.created_sessions[0]["chat_model_config"] == {
+        "type": "deepseek_credential",
+        "credential_id": "native-deepseek-credential",
+        "model": "deepseek-v4-pro",
         "parameters": {"thinking_enable": True},
     }
 

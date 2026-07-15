@@ -1088,3 +1088,257 @@
 - 验证方式：`test_agentscope_control_plane_api.py` 补 3 个用例（404、api_key 兜底、type 切换清 key）全部通过；`black`/`ruff` 通过；本地 uvicorn 启动 psycopg2 不再段错误；SSE 长 read 超时不影响既有 Agent Team 测试。
 - 残留风险或后续事项：BI worker set 兜底仅覆盖 dataclass 字段，若上游继续引入新的 set 字段仍需依赖 `__post_init__` 反射兜底；psycopg2 源码编译需要 brew libpq/openssl@3，CI 或部署环境需自带这些依赖。
 
+### 2026-07-14  · Phoenix 开发观测后台接入
+
+- 完成时间：2026-07-14。
+- 功能名称：Phoenix OSS 独立部署与问数主链 OpenTelemetry 观测。
+- 涉及文件：
+  - `docker-compose.yml`、`docs/Phoenix开发观测部署与验收.md` — 新增独立 Phoenix/PostgreSQL、回环 UI、认证与部署验收流程。
+  - `datalogue-api/app/runtime/engine/otel_setup.py`、`datalogue-api/app/main.py`、`datalogue-api/app/core/config.py` — 复用唯一全局 TracerProvider，经 gRPC 导出 Phoenix，并自动传播 FastAPI/HTTPX 的 W3C `traceparent`。
+  - `datalogue-api/app/runtime/agent_team_runtime.py`、`datalogue-api/app/domains/bi/worker/runtime.py`、`datalogue-api/app/domains/bi/agent/runtime_context.py`、`datalogue-api/app/domains/query_execution/artifact_store.py`、`datalogue-api/app/core/observability.py` — 建立任务根 span，补齐查询计划、受控 SQL、产物写入 span。
+  - `datalogue-api/app/api/debug_timeline.py`、`datalogue-api/app/api/__init__.py` — 删除旧自建 debug timeline 展示路由。
+  - `datalogue-api/pyproject.toml`、`datalogue-api/requirements.txt`、`datalogue-api/uv.lock`、相关测试 — 锁定 exporter 与 FastAPI/HTTPX instrumentation 依赖并覆盖配置、认证 metadata、路由清理。
+- 关键改动：
+  1. Phoenix 与业务 PostgreSQL 使用独立服务、用户与卷；UI 仅绑定 `127.0.0.1:6006`，gRPC `4317` 只在 Docker 内网暴露；启用本地认证、强密码、14 天留存、关闭 Phoenix 自身遥测和 Playground 模型提供商。
+  2. API 不使用 Phoenix SDK 或 `register()`，避免替换既有 Provider；gRPC exporter 使用小写 `authorization: Bearer <system key>` metadata，项目名通过 `openinference.project.name` Resource 属性路由，token 不进入日志或 span 属性。
+  3. 任务根 span 覆盖完成、失败、取消和生成器关闭；保留既有 `trace-agent-team-*` 仅作业务关联属性，AgentScope `TracingMiddleware` 的 Agent/模型/工具 span 与 HTTP 子调用继承同一 OTel trace。
+  4. 旧 Redis timeline 缓存没有删除，作为无 UI 的迁移期排障兜底。
+- 验证方式：`uv lock`、`uv sync --locked --no-install-project`、`python -m compileall -q app`；`pytest tests/test_agentscope_service_worker_logging.py tests/test_agentscope_service_factory.py tests/test_bi_worker_query_runtime.py tests/test_agentscope_dataset_query_executor.py tests/test_artifact_api.py tests/test_preview_count.py -q`（73 passed）；带临时非敏感变量的 `docker compose config --quiet` 通过。
+- 残留风险或后续事项：首次部署仍需管理员创建 `datalogue-otel-writer` system API key、配置 viewer 开发者账号并在真实环境完成一次链路验收；Phoenix 连续稳定运行 14 天后，单独删除 Redis timeline 缓存写入/读取及其测试。
+
+### 2026-07-14 · Phoenix 改为共享业务 PostgreSQL 的独立 Schema
+
+- 完成时间：2026-07-14。
+- 功能名称：收敛 Phoenix 存储部署资源。
+- 涉及文件：`docker-compose.yml`、`docs/Phoenix开发观测部署与验收.md`、`.codex/project-memory.md`。
+- 关键改动：删除独立 `phoenix-db` 服务和 `phoenix_pgdata` 卷；Phoenix 改为连接现有 `db` 容器的 `datalogue` 数据库，并配置 `PHOENIX_SQL_DATABASE_SCHEMA=phoenix`，使其表与业务默认 `public` Schema 隔离。
+- 验证方式：待执行 `docker compose config --quiet`；首次真实部署后应在 `datalogue` 库确认 Phoenix 表仅出现在 `phoenix` Schema。
+- 残留风险或后续事项：Phoenix 与业务共享同一 PostgreSQL 实例及 `datalogue` 数据库，实例级磁盘、连接数和备份恢复操作会相互影响；如果观测数据增长或运维隔离要求提升，可恢复到独立数据库服务。
+
+### 2026-07-14 · 整理 Docker Compose 与 API 环境配置
+
+- 完成时间：2026-07-14。
+- 功能名称：生成 Phoenix 所需 `.env` 并收敛本地 API 环境变量。
+- 涉及文件：`.env`（Git 忽略）、`.env.example`、`datalogue-api/.env`（Git 忽略）、`.codex/project-memory.md`。
+- 关键改动：根 `.env` 按数据库、服务、Phoenix、OTel 分组，生成本地 Phoenix JWT 密钥和强管理员密码；新增可提交的 `.env.example` 供部署复制；API `.env` 删除无效的 `DATALOGUE_DEBUG_TIMELINE_ENABLED`、`OTEL_TRACES_EXPORTER`、`OTEL_SERVICE_NAME`，补齐当前 AgentScope OTel/Phoenix 配置分组。Phoenix system API key 仍为空，首次启动后创建 `datalogue-otel-writer` 再填入并启用 exporter。
+- 验证方式：`docker compose config --quiet` 通过；以 `datalogue-api/.env` 初始化 `Settings`，确认旧 debug 开关已移除、Phoenix endpoint 与项目名可被正确解析，且验证输出未包含机密。
+- 残留风险或后续事项：根 `.env` 的本地随机密钥不应复制到生产；生产必须在密钥管理系统中生成并注入独立密钥，已有 PostgreSQL 数据卷也必须保留原有 `DB_PASSWORD`。
+
+### 2026-07-14 · 支持宿主机直启 API 上报 Phoenix
+
+- 完成时间：2026-07-14。
+- 功能名称：本地开发 Phoenix OTLP 回环连接。
+- 涉及文件：`docker-compose.dev.yml`、`datalogue-api/.env`（Git 忽略）、`docs/Phoenix开发观测部署与验收.md`、`.codex/project-memory.md`。
+- 关键改动：新增仅开发环境使用的 Compose 覆盖文件，将 Phoenix gRPC `4317` 仅绑定到 `127.0.0.1`；本地 API `.env` 的 exporter endpoint 改为 `127.0.0.1:4317`，保持生产 Compose 内网 endpoint `phoenix:4317` 不变。
+- 验证方式：待执行覆盖 Compose 配置校验；实际启动后由本地直启 API 发起问数，Phoenix 应出现 `datalogue-development` 项目链路。
+- 残留风险或后续事项：开发者必须自行将 Phoenix system key 写入本机 `datalogue-api/.env`，该 key 不得提交 Git 或复用为生产 key。
+
+### 2026-07-14 16:49 · LLM 模型配置页面视觉重构
+
+- 完成时间：2026-07-14 16:49。
+- 功能名称：重构系统设置中的 LLM 模型配置页面，提升连接状态与安全边界的可读性。
+- 涉及文件：
+  - `datalogue-web/src/components/settings.jsx` — 将模型列表从表格重构为运行状态总览、统计卡片和可操作的 credential 连接卡；保留新增、编辑、发现模型、启停、删除以及原有 AgentScope API 调用契约。
+  - `datalogue-web/src/styles.css` — 新增深海青绿的运行信号面板、连接卡片、状态层级、空态与 760px/520px 响应式布局。
+  - `datalogue-web/src/components/settings.test.jsx` — 为依赖 `useLocation` 的设置页单测补齐 `MemoryRouter` 夹具。
+- 关键改动：顶部以 AgentScope 模型运行面板突出当前启用模型与“密钥不回显”的安全边界；连接卡展示供应商、模型、端点、密钥托管、超时与发现状态，并为编辑、启停、删除补齐原生 `title` 与无障碍标签。根据页面一致性反馈，运行面板、状态芯片、按钮、空态与边框均收敛为平台现有蓝灰主色及其浅色衍生，不再使用独立青绿色主题。
+- 验证方式：`npm run test -- src/components/settings.test.jsx`（2/2 通过）；`npm run lint`（0 error，14 条既有警告）；`npm run build` 成功；`git diff --check` 通过。
+- 残留风险或后续事项：当前环境的浏览器连接初始化报 `Cannot redefine property: process`，未能生成实时页面截图；已由单测、静态检查、构建和响应式 CSS 断点完成代码级验证，待浏览器运行时恢复后可补充人工截图验收。
+
+### 2026-07-14 17:02 · LLM 模型配置页面设计契约
+
+- 完成时间：2026-07-14 17:02。
+- 功能名称：建立数语全局设计源文件，并明确 LLM 模型配置页的浅色运行概览、局部圆角按钮与新增 credential 弹窗设计。
+- 涉及文件：`DESIGN.md`、`.codex/project-memory.md`。
+- 关键改动：`DESIGN.md` 基于现有前端 token、设置页实现与产品截图，定义平台蓝灰视觉基线、LLM 运行面板从深蓝改为浅蓝、仅在 LLM 页面使用 8px 按钮圆角，以及新增 credential 弹窗的字段分组、保存/发现边界、可访问性、响应式和测试验收要求；未修改运行代码或 API 契约。
+- 验证方式：检查 `DESIGN.md` 已覆盖 Design skill 要求的 source of truth、品牌、目标、信息架构、视觉语言、组件、可访问性、响应式、交互状态、内容语气、实现约束和开放问题章节；`git diff --check` 通过。
+- 残留风险或后续事项：运行概览的“当前启用模型”语义、编辑弹窗的放弃修改确认及非管理员的可见权限需由产品/后端确认，已列为 `DESIGN.md` 开放问题。
+
+### 2026-07-14 16:55 · AgentScope 原生凭据与 Agent Team 运行时模型类型对齐
+
+- 完成时间：2026-07-14 16:55。
+- 功能名称：修复设置页已保存 DeepSeek credential 但 Agent Team 默认任务仍查找旧 OpenAI 凭据 ID 的运行时错配。
+- 涉及文件：`datalogue-api/app/runtime/engine/runner.py`、`datalogue-api/tests/test_agentscope_agent_team_task_runner.py`、`.codex/project-memory.md`。
+- 关键改动：
+  1. Agent Team runner 在显式模型选择时先读取 AgentScope credential，并把真实 `type`（如 `deepseek_credential`）原样传给 session；不再固定写成 `openai_credential`。
+  2. 默认模型路径以 AgentScope credential 为主：旧 `llm_model_config` 仅按展示名关联当前原生 credential，保留旧确定性 OpenAI credential ID 的兼容分支；名称变化或无旧配置时，回退到最近保存且可解析模型名的 credential。
+  3. 增加原生 DeepSeek 的显式选择和默认名称匹配回归测试，同时保留旧 OpenAI 兼容凭据路径覆盖。
+- 验证方式：`python -m compileall -q app/runtime/engine/runner.py tests/test_agentscope_agent_team_task_runner.py` 通过；`pytest tests/test_agentscope_llm_resource_boundary.py tests/test_agentscope_agent_team_task_runner.py -q` 结果为 `18 passed`；使用实际运行中的 AgentScope credential 解析得到 `type=deepseek_credential`、真实随机 credential ID 与 `model=deepseek-v4-pro`。
+- 残留风险或后续事项：原生 provider credential 不一定持久化 Datalogue 扩展的 `model/status` 字段；未显式选模型时当前按 credential 名称解析模型名，因此自定义名称应保留模型标识，或在聊天页显式选择 ModelCard 模型。后续可将“默认 credential + 默认 model”独立持久化为业务配置，消除名称解析兼容逻辑。
+
+### 2026-07-14 17:08 · LLM 数据库真相源与 AgentScope credential 显式关联
+
+- 完成时间：2026-07-14 17:08。
+- 功能名称：收敛 LLM 配置存储边界，数据库保存模型配置与真实 AgentScope credential 关联，Redis/AgentScope 仅保存运行凭据与密钥。
+- 涉及文件：`datalogue-api/app/core/models/llm.py`、`datalogue-api/app/core/llm_config.py`、`datalogue-api/app/core/schemas/llm.py`、`datalogue-api/app/api/agentscope_control_plane.py`、`datalogue-api/app/api/llm.py`、`datalogue-api/app/runtime/engine/runner.py`、`datalogue-api/alembic/env.py`、`datalogue-api/alembic/versions/b9c0d1e2f3a4_add_llm_credential_link.py`、相关 AgentScope/LLM 测试、`.codex/project-memory.md`。
+- 关键改动：
+  1. `llm_model_config` 新增唯一的 `credential_id` 与 `credential_type`；设置页经 AgentScope 控制面创建、更新、删除 credential 时，同步创建、更新、删除对应数据库模型配置，API Key 始终不写入数据库。
+  2. 控制面列表以数据库配置补齐模型名、状态、超时、描述等非敏感字段；升级前唯一同名且未绑定的旧记录只在控制面读取时做一次关联回填，运行时不再按名称猜测。
+  3. Agent Team 默认模型仅按数据库保存的 credential ID/type 查询 AgentScope；缺失、删除或类型不一致均 fail-closed 并给出可操作错误。显式模型选择仍根据真实 AgentScope credential type 创建会话。
+  4. 新增 Alembic 迁移，修正迁移环境导入到 `app.core.models`；本机数据库已执行幂等列/index 升级、执行 `alembic upgrade b9c0d1e2f3a4`，并将现有 DeepSeek 记录回填为真实随机 credential ID 与 `deepseek_credential`。
+- 验证方式：`pytest tests/test_agentscope_control_plane_api.py tests/test_agentscope_llm_resource_boundary.py tests/test_agentscope_agent_team_task_runner.py -q` 为 `24 passed`；`compileall` 通过；实际 AgentScope/数据库解析验证输出 `deepseek_credential + 真实 credential ID + deepseek-v4-pro`；`git diff --check` 通过。
+- 残留风险或后续事项：Alembic 历史中仍有既有的重复 revision `z6a7b8c9d0e1` 警告；本次目标 revision 可正常升级且当前数据库已记录到 `b9c0d1e2f3a4`，但后续应单独梳理/合并历史分支，恢复 `alembic upgrade head` 的无警告状态。后端运行进程未启用热重载，需要重启后加载本次代码。
+
+### 2026-07-14 17:13 · 按设计契约优化 LLM 设置页与左侧菜单
+
+- 完成时间：2026-07-14 17:13。
+- 功能名称：落实 `DESIGN.md` 的平台蓝灰视觉基线，重构 LLM 模型配置页和全局左侧菜单。
+- 涉及文件：
+  - `datalogue-web/src/components/settings.jsx` — 将深色运行面板改为浅蓝信息面，新增 credential 弹窗按“接入方式 / 连接信息 / 运行参数”分组；保留现有 AgentScope credential API 语义，并加入加载骨架、未保存修改保护、键盘焦点管理和发现模型的保存前置约束。
+  - `datalogue-web/src/components/sidebar.jsx` — 增强导航分组、当前页语义、活动状态和用户身份信息，消除硬编码的用户展示内容。
+  - `datalogue-web/src/styles.css` — 统一侧栏、LLM 面板、模型卡片和 720px 弹窗到平台蓝灰 token；仅针对 LLM 操作按钮使用 8px 圆角，并补齐 760px/520px 响应式与减弱动画偏好。
+  - `datalogue-web/src/components/settings.test.jsx` — 更新保存按钮语义断言，使回归测试覆盖实际可访问名称。
+- 关键改动：浅蓝运行总览突出“当前启用模型”和密钥安全边界；新建连接时明确“保存后即可发现可用模型”，编辑时未保存连接参数会禁用发现；弹窗支持首字段自动聚焦、Escape 关闭、Tab 焦点循环、关闭后焦点归还和放弃修改确认。
+- 验证方式：`npm run test -- src/components/settings.test.jsx`（2/2 通过）；`npm run lint`（0 error，13 条均为其他既有文件警告）；`npm run build` 成功；`git diff --check` 通过。
+- 残留风险或后续事项：未能进行浏览器截图级人工验收（本环境浏览器连接初始化曾报 `Cannot redefine property: process`）；建议在浏览器连接恢复后，对 760px 和 520px 实机宽度补做一次视觉走查。
+
+### 2026-07-14 17:19 · LLM 模型迁移为主导航独立页面
+
+- 完成时间：2026-07-14 17:19。
+- 功能名称：将 LLM 模型配置从系统设置二级导航迁移到左侧主菜单。
+- 涉及文件：
+  - `datalogue-web/src/App.jsx` — 新增 `/models` 路由及“数语 / 系统管理 / LLM 模型”面包屑。
+  - `datalogue-web/src/components/sidebar.jsx` — 在“系统管理”分组加入带当前页语义的 `LLM 模型` 主菜单项。
+  - `datalogue-web/src/components/settings.jsx` — 移除设置页重复的 LLM 二级入口，导出独立 `LLMModelsScreen`，复用唯一的模型连接页面与 AgentScope API 调用。
+  - `datalogue-web/src/styles.css` — 为独立页面增加桌面、平板和手机宽度下的内容容器留白。
+  - `datalogue-web/src/components/settings.test.jsx`、`DESIGN.md` — 单测改为直接覆盖独立页面；设计契约的信息架构更新为 `/models` 主导航入口。
+- 关键改动：用户点击左侧“LLM 模型”即可进入浅蓝运行概览、模型连接卡和新增 credential 弹窗；旧系统设置不再提供重复入口，避免两个页面承载同一凭据管理能力。
+- 验证方式：`npm run test -- src/components/settings.test.jsx`（2/2 通过）；`npm run lint`（0 error，13 条既有警告）；`npm run build` 与 `git diff --check` 通过。
+- 残留风险或后续事项：仍待浏览器连接恢复后进行 1440px、760px、390px 的截图级视觉验收。
+
+### 2026-07-14 17:23 · 左侧导航对齐工作台设计并补齐系统管理入口
+
+- 完成时间：2026-07-14 17:23。
+- 功能名称：依据工作台参考图完善左侧四分组导航，并让系统管理菜单均有页面承接。
+- 涉及文件：
+  - `datalogue-web/src/components/sidebar.jsx` — 系统管理分组按“查询审计 / LLM 模型 / 系统设置”排列，保留原有问数中心、语义治理和数据连接入口及全部计数/活动态行为。
+  - `datalogue-web/src/App.jsx` — 新增 `/audit` 路由与面包屑，使查询审计可直接从左栏访问。
+  - `datalogue-web/src/components/settings.jsx`、`datalogue-web/src/styles.css` — 查询审计从设置页二级菜单迁出为独立页面，并复用已有筛选、导出与审计表组件以及统一响应式容器。
+  - `DESIGN.md` — 信息架构更新为参考图对应的四分组导航与独立审计路由。
+- 关键改动：左栏每个可见菜单均映射至现有真实路由；“查询历史”继续承接个人会话历史，“查询审计”独立承接平台操作记录，避免语义混淆。
+- 验证方式：`npm run test -- src/components/settings.test.jsx`（2/2 通过）；`npm run lint`（0 error，13 条既有警告）；`npm run build` 与 `git diff --check` 通过。
+- 残留风险或后续事项：查询审计列表沿用原有页面数据源与操作实现；如需接入服务端真实审计流、日期筛选和 CSV 导出，应另行定义 API 与权限范围。
+
+### 2026-07-14 17:24 · 收紧独立管理页横向内边距
+
+- 完成时间：2026-07-14 17:24。
+- 功能名称：优化 LLM 模型与查询审计独立页面的横向内容密度。
+- 涉及文件：`datalogue-web/src/styles.css`、`DESIGN.md`、`.codex/project-memory.md`。
+- 关键改动：取消独立管理页的 1120px 最大宽度居中，改为填满主内容区；横向页边距调整为桌面 24px、760px 以下 16px、520px 以下 12px，避免与主内容区叠加形成过宽左右空白。
+- 验证方式：`npm run lint`（0 error，13 条既有 warning）；`npm run build` 与 `git diff --check` 通过。
+- 残留风险或后续事项：待浏览器连接恢复后，在真实 1440px 宽度确认内容密度；若仍偏松，可仅把桌面页边距继续收至 20px，不影响移动端规则。
+
+### 2026-07-14 17:44 · 选定石墨天青全局配色方案
+
+- 完成时间：2026-07-14 17:44。
+- 功能名称：确定数语后续界面改版的正式颜色设计方向。
+- 涉及文件：`DESIGN.md`、`.codex/project-memory.md`。
+- 关键改动：将四套视觉候选中的“石墨天青”设为设计契约；明确石墨中性灰负责背景、侧栏、边框和文字结构，天青蓝仅用于主操作、当前导航、焦点和交互链接；定义背景、表面、边框、文本、强调色与正负状态色的目标 token，以及 LLM 运行概览和侧栏的专用使用规则。
+- 验证方式：已对照已确认的石墨天青 UI 参考图和现有 `styles.css` token 结构，`git diff --check` 通过。
+- 残留风险或后续事项：当前运行代码仍保留旧蓝灰 token；待用户确认进入实施后，需统一替换 `:root` token 并复查 LLM、侧栏、卡片、弹窗及所有状态色的对比度。
+
+### 2026-07-14 17:51 · 落地石墨天青前端配色
+
+- 完成时间：2026-07-14 17:51。
+- 功能名称：将 `DESIGN.md` 选定的石墨天青方案应用至数语前端主界面。
+- 涉及文件：
+  - `datalogue-web/src/styles.css` — 全局 token 改为石墨中性灰与天青主操作色；收敛登录页、侧栏、设置表格、LLM 运行概览、credential 卡片、弹窗、空态与状态色，移除旧蓝绿渐层、紫色服务头像和 LLM 区域渐层。
+  - `datalogue-web/src/App.jsx` — 运行时主题默认值、浅色/边框 token 映射和 Tweaks 选项统一固定为 `#1976c9`，避免运行时重新注入其他主题蓝色。
+  - `DESIGN.md`、`.codex/project-memory.md` — 设计契约与完成记录同步。
+- 关键改动：背景 `#fbfcfd`、侧栏 `#f4f6f8`、结构文字 `#1c2733`、主操作 `#1976c9`；成功/警告/错误分别为 `#19805c`、`#b97616`、`#c34a36`。Ant Design 主色变量同步使用天青，确保原生控件和自定义组件不出现第二套强调色。
+- 验证方式：`npm run test -- src/components/settings.test.jsx`（2/2 通过）；`npm run lint`（0 error，13 条既有 warning）；`npm run build` 与 `git diff --check` 通过。
+- 残留风险或后续事项：当前浏览器连接无法进行截图级验收；待恢复后应按 1440px、760px、390px 检查所有核心页面，并对未被 token 覆盖的业务专用图表色做第二轮视觉校准。
+
+### 2026-07-14 18:02 · 收敛项目自有本地 SVG 图标规范
+
+- 完成时间：2026-07-14 18:02。
+- 功能名称：取消第三方图标素材方案，明确数语仅使用随源码交付的本地 SVG 图标系统。
+- 涉及文件：`DESIGN.md`、`datalogue-web/src/shared/components/README.md`、`.codex/project-memory.md`。
+- 关键改动：`DESIGN.md` 移除 Icons8、授权、署名、本地下载包及迁移计划；指定 `src/shared/components/icons.jsx` 为唯一图标入口，统一轮廓风格、颜色 token、14/16/20/24px 尺寸层级、中文无障碍标签和不展示供应商品牌 Logo 的边界。共享组件说明同步禁止第三方图标 CDN、API 与授权素材。
+- 验证方式：检索确认设计契约与共享组件说明均未保留 Icons8 接入规则；`git diff --check` 通过。
+- 残留风险或后续事项：当前图标均为项目内 JSX SVG，未引入任何第三方素材；后续新增图标需先集中补入 `icons.jsx`，避免各业务页面再次出现独立 SVG 实现。
+
+### 2026-07-15 09:09 · 对话问数连续画布设计契约
+
+- 完成时间：2026-07-15 09:09。
+- 功能名称：为对话问数页面建立“问题—结论—依据”连续画布的设计方向，并生成桌面端视觉稿。
+- 涉及文件：`DESIGN.md`、`.codex/project-memory.md`。
+- 关键改动：在设计源文件中补充 `/chat` 路由的内容层级、回答首段的结论摘要与关键指标带、桌面端轻量依据栏、空态提问画布、生成/完成/失败状态、无障碍、1280px/980px/760px/520px 响应式和安全边界；明确用户可见层不展示 SQL、schema、原始数据行或内部推理原文，复用现有 `DatalogueComposer`、`Thread`、`ArtifactCard` 与安全过滤链路。
+- 验证方式：核对 `chat-page.jsx`、`MyComposer.jsx`、`MyMessage.jsx`、现有聊天截图和石墨天青 token；`git diff --check` 通过。
+- 残留风险或后续事项：本次仅生成设计稿和契约，未改动运行代码；“依据栏”的数据更新时间和建议追问的生成策略仍待产品/数据治理确认。
+
+### 2026-07-15 09:14 · 对话 Thread 消息单元设计契约
+
+- 完成时间：2026-07-15 09:14。
+- 功能名称：定义对话问数 Thread 的消息层级、动作与安全状态呈现。
+- 涉及文件：`DESIGN.md`、`.codex/project-memory.md`。
+- 关键改动：新增 Thread 专项规范，明确用户消息右对齐、AI 回答结论先行且不使用大面积气泡、指标带最多三项、结果与依据附在正文后、处理摘要默认折叠、Action Bar 的键盘/触屏可见性，以及生成中、结果为空、受控失败、历史只读与 980px/760px/520px 响应式规则；保持 `DatalogueThread`、`AIMessage`、`ArtifactCard`、`DatalogueComposer` 的现有职责和数据脱敏边界。
+- 验证方式：核对 `DatalogueThread.jsx`、`MyMessage.jsx`、`DatalogueActionBar.jsx`、`artifact-card.jsx` 及对应 CSS；`git diff --check` 通过。
+- 残留风险或后续事项：本次仅形成可开发设计契约，尚未编写 Thread UI；实现时需补充完成态、受控失败、只读回放和键盘焦点的组件测试。
+
+### 2026-07-14 18:05 · Agent Team 默认模型 credential 旧 ID 故障修复
+
+- 完成时间：2026-07-14 18:05。
+- 功能名称：修复 Agent Team 仍使用旧推导 credential ID 导致默认模型无法创建会话的问题。
+- 涉及文件：`datalogue-api/app/core/llm_config.py`、`.codex/project-memory.md`。
+- 关键改动：默认模型解析直接依赖底层 AgentScope 客户端常量，避免经 `app.agentscope_runtime` facade 回引 runner 形成循环导入；重启未开启热重载的 API 后，运行时按数据库保存的真实 credential ID/type 解析 DeepSeek 模型，不再尝试 `datalogue-openai-compatible-model-1`。
+- 验证方式：`pytest tests/test_agentscope_control_plane_api.py tests/test_agentscope_llm_resource_boundary.py tests/test_agentscope_agent_team_task_runner.py -q`（24 passed）；真实控制面返回 active 的 `deepseek_credential`，并实际构造出 `deepseek-v4-pro` 的 session 模型配置；`/health` 返回 200。
+- 残留风险或后续事项：本地 API 进程未启用热重载，后续修改 AgentScope 运行时代码后仍需显式重启；测试输出仍有 Pydantic/`crypt` 的既有弃用警告，和本次功能无关。
+
+### 2026-07-15 09:25 · 落地对话问数结论优先界面
+
+- 完成时间：2026-07-15 09:25。
+- 功能名称：依据已确认的 Thread 视觉稿与 `DESIGN.md`，改造对话问数正式页面。
+- 涉及文件：
+  - `datalogue-web/src/features/chat/MyMessage.jsx` — AI 消息改为“数语 / 生成状态 / 结论正文 / 依据与结果 / 动作栏”的连续阅读流；过滤 BI Worker 调试原文，并将用户可见过程统一为“处理摘要”。
+  - `datalogue-web/src/features/chat/chat-page.jsx` — 在大屏加入只含数据集、结果可用性与处理状态的 `ThreadEvidenceRail`，运行时打开完整链路时自动让位给现有 `AgentPanel`。
+  - `datalogue-web/src/styles.css` — 落地 720px 结论画布、右对齐用户问题、无大气泡的 AI 回答、天青静态生成状态、轻量结果操作栏和 1320px/980px/760px 响应式收敛。
+  - `datalogue-web/src/assistant/MyMessage.test.jsx` — 更新处理摘要和调试原文不可见的渲染断言。
+- 关键改动：Thread 用户可见层不再展示 SQL、schema、原始数据行、query plan 或 BI Worker 调试内容；完成态不再显示“已生成”，生成中使用“正在整理结论”与静态天青点。右侧依据栏仅复用已存在的选择数据集与结果状态，不新增接口或暴露执行元数据。
+- 验证方式：`npm run lint`（0 error，13 条既有 warning）；`npm run test -- src/assistant/MyMessage.test.jsx -t "does not render BI Worker raw thinking content in the Thread|labels BI Worker thinking reasoning separately"`（2/2 通过）；`npm run test -- src/features/chat/chat-page.test.jsx`（26/26 通过）；`npm run build` 与 `git diff --check` 通过。
+- 残留风险或后续事项：`src/assistant/MyMessage.test.jsx` 全量运行仍有 1 条既有分页断言失败（测试期待默认每页 100 行，当前 `DataTable` 默认每页 20 行），与本次 Thread 视觉改造无关；受当前浏览器连接限制，尚未补做 1440px/760px/390px 的实机截图验收。
+
+### 2026-07-15 · 修复本地 Phoenix OTLP 端口与认证配置
+
+- 完成时间：2026-07-15。
+- 功能名称：恢复本地直启 API 向 Phoenix 的 Trace 上报通路。
+- 涉及文件：`datalogue-api/.env`（Git 忽略）、`.codex/project-memory.md`；运行态 Phoenix 容器。
+- 关键改动：修正误配的 `localhost:4137` HTTP endpoint 为 gRPC `127.0.0.1:4317`，修复 system API key 环境变量缺少等号导致未被 Settings 解析的问题；用 `docker-compose.dev.yml` 强制重建 Phoenix，使其 gRPC 端口仅绑定宿主机回环地址。
+- 验证方式：`Settings` 校验 exporter 已启用、endpoint 正确且 token 非空；`nc -zvw 3 127.0.0.1 4317` 连接成功；Phoenix 容器显示 `127.0.0.1:4317->4317/tcp`。
+- 残留风险或后续事项：本地 API 进程必须显式重启后才会按新环境变量创建 exporter；因 system key 曾以错误格式写入配置，建议在 Phoenix Settings 新建并替换一个 key 后删除旧 key。
+
+### 2026-07-15 · 修复 Phoenix 本地 gRPC TLS 握手失败
+
+- 完成时间：2026-07-15。
+- 功能名称：支持无 TLS 的本地 Phoenix OTLP gRPC collector。
+- 涉及文件：`datalogue-api/app/core/config.py`、`datalogue-api/app/runtime/engine/otel_setup.py`、`datalogue-api/.env`（Git 忽略）、`.env`（Git 忽略）、`.env.example`、`datalogue-api/.env.example`、`docker-compose.yml`、测试与部署文档。
+- 关键改动：新增 `AGENTSCOPE_OTEL_EXPORTER_INSECURE`；OTLP gRPC exporter 将该值传给 `insecure` 参数。本地回环与 Docker 内网 Phoenix 设为 `true`，避免 exporter 对明文 collector 发起 TLS 握手；公网 TLS collector 的默认值保持 `false`。
+- 验证方式：OTel 配置/metadata 单测 `36 passed`，`ruff` 与 `black` 通过；本地 `.env` Settings 解析确认 endpoint 为 `127.0.0.1:4317` 且 insecure 为 true；开发覆盖 Compose 配置校验通过。
+- 残留风险或后续事项：修改后必须重启本地 API 才能重建 exporter；部署到远程 TLS collector 时不可沿用 `insecure=true`。
+
+### 2026-07-15 10:35 · 定位 Phoenix 18 OTLP 成功但未入库问题
+
+- 完成时间：2026-07-15 10:35。
+- 功能名称：定位本地 Phoenix Trace 列表为空的服务端版本问题，并固定部署镜像。
+- 涉及文件：`docker-compose.yml`、`.codex/project-memory.md`；临时运行态验证容器与 `phoenix_otel_probe` Schema（已清理）。
+- 关键改动：Compose 镜像固定为 `arizephoenix/phoenix:version-15.10@sha256:732f178b4fa1c4b9719f66a717be9f99970c84f30d61f92c4c63cf65bffce489`，避免 `latest` 漂移至 18.0.0。确认 18.0.0 对有效 system key 的 OTLP gRPC/HTTP 请求返回成功但 `phoenix.traces`、`phoenix.spans` 均不写入；隔离运行 15.10.1 后，同一 gRPC 探针立即写入 1 条 Trace 与 1 个 Span。
+- 验证方式：有效 key 请求 `/v1/projects` 返回 200、无效 key 返回 401；正式 Schema 入库计数为 0；隔离 Schema 入库计数为 Trace=1、Span=1；`docker compose config -q` 通过；临时容器和 Schema 已删除。
+- 残留风险或后续事项：正式 `phoenix` Schema 已被 18.0.0 迁移到 `eaf1907ae453`，而 15.10.1 使用 `575aa27302ee`，不能直接切换镜像。需要用户明确选择：重建空的正式 Schema（会要求重新创建 Phoenix 管理员和 system key），或改用新的正式 Schema 以保留旧 Schema 仅作备份。
+
+### 2026-07-15 10:52 · 固定 Phoenix 18 并确认 OTLP 认证边界
+
+- 完成时间：2026-07-15 10:52。
+- 功能名称：按确认继续使用 Phoenix 18.0.0，并隔离验证 OTLP collector 的入库与认证行为。
+- 涉及文件：`docker-compose.yml`、`.env.example`、`datalogue-api/.env.example`、`datalogue-api/.env`（Git 忽略）、`.codex/project-memory.md`；临时 `phoenix_v18_probe` Schema（已删除）。
+- 关键改动：正式镜像固定为 `arizephoenix/phoenix:version-18.0.0@sha256:949b445c8ce45b2bb98da42e7ec46dc2afc272c09edd69f9d063e343f5ec703c`，不再使用 `latest`。隔离 18.0.0 实例确认 gRPC OTLP 可正常写入 Trace/Span，排除版本和网络问题；正式实例当前缺少可用的 collector writer key，本地 API 的旧 token 已清空，避免继续静默丢弃数据。
+- 验证方式：隔离实例成功入库 Trace=1、Span=1；临时容器及 Schema 已清理；正式实例保持 18.0.0；`docker compose config -q` 通过。
+- 残留风险或后续事项：需在 Phoenix 管理界面重新生成 `datalogue-otel-writer` system API key，并同时写入根 `.env` 的 `PHOENIX_SYSTEM_API_KEY` 与 `datalogue-api/.env` 的 `AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN`，然后重启本地 API；完成前不会有新 Trace 入库。
+
+### 2026-07-15 11:10 · 修复本地 Phoenix 被 Colima 旧实例劫持
+
+- 完成时间：2026-07-15 11:10。
+- 功能名称：修复本地直启 API 使用正确 Phoenix API key 仍返回 401 的端口路由问题。
+- 涉及文件：`datalogue-api/.env`（Git 忽略）、`.codex/project-memory.md`；本机 Colima/OrbStack 运行态。
+- 关键改动：确认当前 Docker context 为 OrbStack，但运行中的 Colima 将旧 `datalogue-phoenix` 转发到 `127.0.0.1:6006/4317`，使浏览器和本地 API 命中旧实例。已按用户确认停止 Colima，保留 OrbStack 中的 Phoenix 18.0.0 与数据库；API endpoint 保持 `127.0.0.1:4317`，不改业务本地地址。
+- 验证方式：配置 token 的 JWT 签名、`ApiKey:3` 数据库记录、SYSTEM 角色均校验有效；停止 Colima 后 IPv4 REST 校验由 401 变为 200，gRPC 探针成功入库，正式 `phoenix` Schema 计数为 Trace=2、Span=2。
+- 残留风险或后续事项：Colima 中旧 Phoenix/数据库处于停止状态但未删除；若日后重新启动 Colima，会再次占用 127.0.0.1 的 Phoenix 端口，应避免与 OrbStack 同时运行或为其中一套服务改用非冲突端口。

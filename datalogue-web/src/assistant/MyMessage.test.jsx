@@ -238,7 +238,7 @@ describe('MyMessage — C-ready 渲染', () => {
     ];
 
     render(<AIMessage />);
-    fireEvent.click(screen.getByText('推理摘要'));
+    fireEvent.click(screen.getByText('处理摘要'));
 
     expect(screen.getByText('BI Worker')).toBeInTheDocument();
     expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
@@ -261,13 +261,13 @@ describe('MyMessage — C-ready 渲染', () => {
     ];
 
     render(<AIMessage />);
-    fireEvent.click(screen.getByText('推理摘要'));
+    fireEvent.click(screen.getByText('处理摘要'));
 
-    expect(screen.getByText('BI Worker 思考')).toBeInTheDocument();
+    expect(screen.getByText('分析进度')).toBeInTheDocument();
     expect(screen.queryByText('任务处理')).not.toBeInTheDocument();
   });
 
-  it('renders BI Worker raw thinking part as a monospace pre block', () => {
+  it('does not render BI Worker raw thinking content in the Thread', () => {
     setMockMessage();
     mockMessageState.message.content = [
       {
@@ -282,12 +282,10 @@ describe('MyMessage — C-ready 渲染', () => {
     ];
 
     render(<AIMessage />);
-    fireEvent.click(screen.getByText('推理摘要'));
-
-    const pre = screen.getByLabelText('BI Worker 调试原文');
-    expect(pre.tagName).toBe('PRE');
-    expect(pre.textContent).toBe('主表：plan_task_daily_record\nLIMIT 100');
-    expect(pre.className).toContain('cot-ant-raw');
+    expect(screen.queryByText('处理摘要')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('BI Worker 调试原文')).not.toBeInTheDocument();
+    expect(screen.queryByText(/plan_task_daily_record/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/LIMIT 100/)).not.toBeInTheDocument();
   });
 
   it('uses each final reasoning summary title instead of the generic fallback label', () => {
@@ -313,7 +311,7 @@ describe('MyMessage — C-ready 渲染', () => {
     ];
 
     render(<AIMessage />);
-    fireEvent.click(screen.getByText('推理摘要'));
+    fireEvent.click(screen.getByText('处理摘要'));
 
     expect(screen.getByText('识别任务')).toBeInTheDocument();
     expect(screen.getByText('生成结果')).toBeInTheDocument();
@@ -706,6 +704,6 @@ describe('MyMessage — C-ready 渲染', () => {
 
     // 基本渲染检查
     expect(screen.getByText('数语')).toBeInTheDocument();
-    expect(screen.getByText('已生成')).toBeInTheDocument();
+    expect(screen.queryByText('已生成')).not.toBeInTheDocument();
   });
 });

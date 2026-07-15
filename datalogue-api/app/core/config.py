@@ -59,10 +59,17 @@ class Settings(BaseSettings):
     # WARNING: TracingMiddleware 会将模型请求/响应内容（messages、tools schema、
     # 模型输出）写入 span 属性。开启 exporter 后这些内容会外发到 collector。
     # 默认全部关闭；排障时按短时间窗口打开。
-    AGENTSCOPE_OTEL_TRACING_ENABLED: bool = False       # 启用 tracing（创建 span）
-    AGENTSCOPE_OTEL_LOGGING_ENABLED: bool = False       # tracing 开启时，把 span 打到后端日志（DEBUG 级别）
-    AGENTSCOPE_OTEL_EXPORTER_ENABLED: bool = False      # 启用 exporter（外发 span）
+    AGENTSCOPE_OTEL_TRACING_ENABLED: bool = False  # 启用 tracing（创建 span）
+    AGENTSCOPE_OTEL_LOGGING_ENABLED: bool = (
+        False  # tracing 开启时，把 span 打到后端日志（DEBUG 级别）
+    )
+    AGENTSCOPE_OTEL_EXPORTER_ENABLED: bool = False  # 启用 exporter（外发 span）
     AGENTSCOPE_OTEL_EXPORTER_ENDPOINT: str | None = None
+    # Phoenix 本地/Compose gRPC collector 未启用 TLS 时必须显式设为 true；公网 collector 保持 false。
+    AGENTSCOPE_OTEL_EXPORTER_INSECURE: bool = False
+    # OTLP exporter 认证与 Phoenix 项目路由；仅从部署机密注入，任何日志不得输出其值。
+    AGENTSCOPE_OTEL_EXPORTER_AUTH_TOKEN: str | None = None
+    AGENTSCOPE_OTEL_EXPORTER_PROJECT_NAME: str | None = None
     AGENTSCOPE_OTEL_SERVICE_NAME: str = "datalogue-api"
 
     # AgentScope 官方 Agent Service 子应用挂载配置；默认开启，让主链从 /api 旁路进入官方 service。
@@ -199,6 +206,7 @@ class Settings(BaseSettings):
         if normalized not in {"lax", "strict", "none"}:
             raise ValueError("AUTH_COOKIE_SAMESITE must be 'lax', 'strict' or 'none'")
         return normalized
+
 
 @lru_cache
 def get_settings() -> Settings:

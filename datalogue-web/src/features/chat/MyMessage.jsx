@@ -51,12 +51,11 @@ const NODE_STEP_NAMES = {
   sql_execute: '查询执行',
   sql_audit: '结果诊断',
   report_generator: '结果整理',
-  reasoning_summary: '推理摘要',
-  live_thinking: '推理过程',
+  reasoning_summary: '处理摘要',
+  live_thinking: '分析进度',
   multi_agent_handoff: 'Agent 协作',
   confirmation: '待确认',
-  'agent-worker-thinking': 'BI Worker 思考',
-  'agent-worker-raw-thinking': 'BI Worker 调试原文',
+  'agent-worker-thinking': '分析进度',
 };
 
 const NODE_ICONS = {
@@ -82,10 +81,7 @@ function safeReasoningLabelText(value) {
 }
 
 function reasoningStepLabel(part, node) {
-  if (part.reasoningKind === 'bi_worker_thinking_summary') return 'BI Worker 思考';
-  if (part.reasoningKind === 'bi_worker_raw_thinking_delta' || part.debugRaw === true) {
-    return 'BI Worker 调试原文';
-  }
+  if (part.reasoningKind === 'bi_worker_thinking_summary') return '分析进度';
   if (node && String(node).startsWith('agent-')) {
     if (NODE_STEP_NAMES[String(node).split(':')[0]]) {
       return NODE_STEP_NAMES[String(node).split(':')[0]];
@@ -97,6 +93,14 @@ function reasoningStepLabel(part, node) {
     return safeReasoningLabelText(part.title) || NODE_STEP_NAMES.reasoning_summary;
   }
   return NODE_STEP_NAMES[node] || safeReasoningLabelText(part.title) || '任务处理';
+}
+
+// 调试型 reasoning 可能携带执行面原文；Thread 用户可见层只保留业务级过程摘要。
+function isVisibleReasoningPart(part) {
+  if (!part || part.type !== 'reasoning') return false;
+  if (part.reasoningKind === 'bi_worker_raw_thinking_delta' || part.debugRaw === true) return false;
+  const text = String(part.text || part.rawDelta || '').trim();
+  return !REASONING_LABEL_BLOCKED_RE.test(text);
 }
 
 function stripThink(raw = '') {
@@ -169,20 +173,6 @@ function splitThinkingSegments(text) {
 }
 
 function ReasoningText({ part }) {
-  // BI Worker 调试原文分支：保留原始换行/JSON/列表结构，不走分段渲染，避免 <span> 拍平。
-  const isRawDebug =
-    part.debugRaw === true ||
-    part.reasoningKind === 'bi_worker_raw_thinking_delta';
-  if (isRawDebug) {
-    const rawText = typeof part.rawDelta === 'string' && part.rawDelta.length
-      ? part.rawDelta
-      : String(part.text || '').replace(/^BI Worker 调试原文：/, '');
-    return (
-      <pre className="cot-ant-raw" aria-label="BI Worker 调试原文">
-        {rawText}
-      </pre>
-    );
-  }
   const segments = splitThinkingSegments(part.text);
   if (segments.length <= 1) {
     // 短文本不拆分，pre-wrap 保留原有换行。
@@ -209,7 +199,7 @@ function ReasoningText({ part }) {
 
 function ChainOfThought({ children: _children }) {
   const message = useAuiState((s) => s.message);
-  const reasonings = (message?.content || []).filter((part) => part.type === 'reasoning');
+  const reasonings = (message?.content || []).filter(isVisibleReasoningPart);
   const isStreaming = message?.status?.type === 'running';
   if (!reasonings.length) return null;
 
@@ -245,7 +235,7 @@ function ChainOfThought({ children: _children }) {
             label: (
               <span className="cot-ant-label">
                 <Icon name="brain" style={{ width: 13, height: 13 }} />
-                <span>推理摘要</span>
+                <span>处理摘要</span>
                 <Tag variant="filled">{reasonings.length}</Tag>
               </span>
             ),
@@ -1044,33 +1034,23 @@ export function AIMessage() {
   };
 
   return (
-    <div className="msg-row msg-ai">
+    <div className={`msg-row msg-ai${isStreaming ? ' is-streaming' : ''}`}>
       <div className="ai-head">
         <div className="ai-mark" />
         <span className="name">数语</span>
-        <span className="stage">
-          {isStreaming ? (
-            <>
-              <span className="pulse" />
-              正在生成…
-            </>
-          ) : (
-            <>
-              <Icon name="check" style={{ width: 11, height: 11, color: 'var(--pos)' }} />
-              已生成
-              {timing && (
-                <span className="msg-timing">
-                  {timing.totalStreamTime ? `${(timing.totalStreamTime / 1000).toFixed(1)}s` : ''}
-                  {timing.tokenCount ? ` · ${timing.tokenCount} 字符` : ''}
-                </span>
-              )}
-            </>
-          )}
-        </span>
+        {isStreaming ? (
+          <span className="stage">
+              <span className="thread-status-dot" aria-hidden="true" />
+              正在整理结论
+          </span>
+        ) : timing?.totalStreamTime ? (
+          <span className="msg-timing">用时 {(timing.totalStreamTime / 1000).toFixed(1)} 秒</span>
+        ) : null}
       </div>
 
-      {/* 内容区 — reasoning 由 ChainOfThought 接管，text 走 markdown */}
-      <MessagePrimitive.GroupedParts
+      <div className="ai-response">
+        {/* 内容区 — reasoning 由 ChainOfThought 接管，text 走 markdown */}
+        <MessagePrimitive.GroupedParts
         groupBy={groupPartByType({
           reasoning: ['group-reasoning'],
           'tool-call': ['group-tool'],
@@ -1084,32 +1064,32 @@ export function AIMessage() {
           if (part.type === 'tool-call') return null;
           return null;
         }}
-      </MessagePrimitive.GroupedParts>
+        </MessagePrimitive.GroupedParts>
 
-      <QueryCaliberCard custom={custom} onRerun={handleRegenerate} />
+        <QueryCaliberCard custom={custom} onRerun={handleRegenerate} />
 
-      <AnswerExplanation explanation={answerExplanation} />
+        <AnswerExplanation explanation={answerExplanation} />
 
-      <TermClarificationCard
-        clarification={clarification}
-        routePayload={routePayload}
-        onSelect={handleSelectClarification}
-      />
+        <TermClarificationCard
+          clarification={clarification}
+          routePayload={routePayload}
+          onSelect={handleSelectClarification}
+        />
 
-      {/* C-ready 候选数据集确认 — 只展示 dataset_name + 业务原因 */}
-      <CandidateDatasetCard candidateDatasets={candidateDatasets} />
+        {/* C-ready 候选数据集确认 — 只展示 dataset_name + 业务原因 */}
+        <CandidateDatasetCard candidateDatasets={candidateDatasets} />
 
-      <RepairPlanCard repairPlan={repairPlan} />
+        <RepairPlanCard repairPlan={repairPlan} />
 
-      {/* C-ready ArtifactCard — 统一产物卡片 */}
-      <ArtifactCard artifact={artifactCard} onAction={handleArtifactAction} />
-      <ArtifactDetailPanel
-        detail={artifactDetail}
-        onClose={() => setArtifactDetail({ status: 'idle' })}
-      />
+        {/* C-ready ArtifactCard — 统一产物卡片 */}
+        <ArtifactCard artifact={artifactCard} onAction={handleArtifactAction} />
+        <ArtifactDetailPanel
+          detail={artifactDetail}
+          onClose={() => setArtifactDetail({ status: 'idle' })}
+        />
 
-      {/* 图表 — 有 chartType 时渲染 */}
-      {chartType && (
+        {/* 图表 — 有 chartType 时渲染 */}
+        {chartType && (
         <div className="chart-card">
           <div className="chart-head">
             <div>
@@ -1148,10 +1128,10 @@ export function AIMessage() {
           {chartType === 'line' && <LineChart data={chartData} h={200} w={640} />}
           {chartType === 'pie' && <Donut data={chartData} h={200} w={640} />}
         </div>
-      )}
+        )}
 
-      {/* 引用来源 */}
-      {citations && citations.length > 0 && (
+        {/* 引用来源 */}
+        {citations && citations.length > 0 && (
         <div className="citations">
           <span className="citations-label">数据来源：</span>
           {citations.map((c, i) => (
@@ -1160,7 +1140,8 @@ export function AIMessage() {
             </span>
           ))}
         </div>
-      )}
+        )}
+      </div>
 
       {/* 操作栏 — assistant-ui ActionBarPrimitive */}
       <ActionBarPrimitive.Root hideWhenRunning className="msg-actions">

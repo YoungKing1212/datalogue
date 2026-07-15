@@ -10,7 +10,7 @@ import { DashboardScreen } from './components/dashboard';
 import { ApisScreen } from './components/apis';
 import { HistoryScreen } from './components/history';
 import { PinnedScreen } from './components/pinned';
-import { SettingsScreen } from './components/settings';
+import { AuditScreen, LLMModelsScreen, SettingsScreen } from './components/settings';
 import { PublishDrawer } from './components/publish-drawer';
 import { NotificationsPopover, bellCount } from './components/notifications';
 import { useTweaks, TweaksPanel, TweakSection, TweakColor, TweakRadio, TweakToggle, TweakButton } from './components/tweaks-panel';
@@ -24,29 +24,20 @@ import { AuthProvider, useAuth } from './auth/auth-context';
 // App — main router with URL-based routing.
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "accent": "#3b82f6",
+  "accent": "#1976c9",
   "density": "regular",
   "agentVerbosity": "expanded",
   "showFollowups": true
 }/*EDITMODE-END*/;
 
 const ACCENT_OKLCH = {
-  "#3b82f6": "oklch(0.58 0.15 240)",
-  "#0ea5e9": "oklch(0.62 0.14 220)",
-  "#6366f1": "oklch(0.55 0.17 270)",
-  "#0d9488": "oklch(0.55 0.10 195)",
+  "#1976c9": "#1976c9",
 };
 const ACCENT_LINE = {
-  "#3b82f6": "oklch(0.58 0.15 240 / 0.30)",
-  "#0ea5e9": "oklch(0.62 0.14 220 / 0.30)",
-  "#6366f1": "oklch(0.55 0.17 270 / 0.30)",
-  "#0d9488": "oklch(0.55 0.10 195 / 0.30)",
+  "#1976c9": "#b9d8f7",
 };
 const ACCENT_SOFT = {
-  "#3b82f6": "oklch(0.58 0.15 240 / 0.10)",
-  "#0ea5e9": "oklch(0.62 0.14 220 / 0.10)",
-  "#6366f1": "oklch(0.55 0.17 270 / 0.10)",
-  "#0d9488": "oklch(0.55 0.10 195 / 0.10)",
+  "#1976c9": "#e8f3fd",
 };
 const noopTraceToggle = () => {};
 
@@ -63,6 +54,8 @@ const CRUMBS_MAP = {
   '/knowledge':    { crumb: ['数语', '语义治理', '知识库'], title: '知识库' },
   '/review':       { crumb: ['数语', '语义治理', '审核队列'], title: '审核队列' },
   '/datasources':  { crumb: ['数语', '数据连接', '数据源管理'], title: '数据源' },
+  '/audit':        { crumb: ['数语', '系统管理', '查询审计'], title: '查询审计' },
+  '/models':       { crumb: ['数语', '系统管理', 'LLM 模型'], title: 'LLM 模型' },
   '/settings':     { crumb: ['数语', '系统管理', '设置'], title: '系统设置' },
   '/users':        { crumb: ['数语', '系统管理', '用户管理'], title: '用户管理' },
 };
@@ -158,6 +151,8 @@ function AppInner({ t, setTweak }) {
             <Route path="/knowledge" element={<KnowledgeScreen key="kb-sql" initialTab="sql" />} />
             <Route path="/review" element={<KnowledgeScreen key="kb-queue" initialTab="queue" />} />
             <Route path="/datasources" element={<DatasourcesScreen />} />
+            <Route path="/audit" element={<AuditScreen />} />
+            <Route path="/models" element={<LLMModelsScreen />} />
             <Route path="/settings" element={<SettingsScreen />} />
             <Route
               path="/users"
@@ -177,7 +172,7 @@ function AppInner({ t, setTweak }) {
       <TweaksPanel title="Tweaks">
         <TweakSection label="主题色" />
         <TweakColor label="Accent" value={t.accent}
-          options={['#3b82f6', '#0ea5e9', '#6366f1', '#0d9488']}
+          options={['#1976c9']}
           onChange={(v) => setTweak('accent', v)} />
 
         <TweakSection label="布局" />

@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     _bootstrap_admin_if_needed()
     # OTel 必须在 AgentScope 子应用生命周期前初始化，否则 TracingMiddleware 会按 no-op 透传。
-    setup_runtime_tracing(settings)
+    setup_runtime_tracing(settings, app=app)
     async with AsyncExitStack() as stack:
         for child_app in getattr(app.state, "managed_lifespan_apps", []):
             # Starlette 挂载子应用不会自动进入子应用 lifespan；AgentScope 的 Redis 连接池依赖这里显式进入。

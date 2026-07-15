@@ -189,8 +189,9 @@ def test_main_lifespan_initializes_agentscope_otel_before_child_lifespan(monkeyp
     def fake_create_embedded_runtime_app(_settings):
         return FastAPI(title="fake-agentscope", lifespan=fake_child_lifespan)
 
-    def fake_setup_runtime_tracing(settings):
+    def fake_setup_runtime_tracing(settings, *, app=None):
         assert settings is main_module.settings
+        assert app is root_app
         events.append("otel")
 
     monkeypatch.setattr(main_module.Base.metadata, "create_all", lambda **_kwargs: None)

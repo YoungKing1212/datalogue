@@ -22,7 +22,8 @@ from alembic import context
 
 from app.core.database import Base
 from app.core.config import get_settings
-from app.models import *  # noqa: F401,F403
+# 导入当前 canonical 模型包，确保迁移 metadata 包含 LLM 配置等运行时实体。
+from app.core.models import *  # noqa: F401,F403
 
 config = context.config
 settings = get_settings()

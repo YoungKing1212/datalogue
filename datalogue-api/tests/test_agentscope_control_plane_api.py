@@ -49,6 +49,8 @@ class FakeAgentScopeControlPlaneClient:
                     "name": "默认凭证",
                     "type": "openai_credential",
                     "api_key": "sk-hidden",
+                    "base_url": "https://example.test/v1",
+                    "model": "gpt-test",
                 },
             }
         ]
@@ -99,7 +101,15 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
     list_response = client.get("/api/agentscope-control/credentials")
     create_response = client.post(
         "/api/agentscope-control/credentials",
-        json={"data": {"type": "openai_credential", "api_key": "sk-test"}},
+        json={
+            "data": {
+                "name": "默认凭证",
+                "type": "openai_credential",
+                "api_key": "sk-test",
+                "base_url": "https://example.test/v1",
+                "model": "gpt-test",
+            }
+        },
     )
     update_response = client.patch(
         "/api/agentscope-control/credentials/cred-1",
@@ -110,7 +120,13 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
     assert list_response.json() == [
         {
             "id": "cred-1",
-            "data": {"name": "默认凭证", "type": "openai_credential", "api_key_set": True},
+            "data": {
+                "name": "默认凭证",
+                "type": "openai_credential",
+                "base_url": "https://example.test/v1",
+                "model": "gpt-test",
+                "api_key_set": True,
+            },
         }
     ]
     assert create_response.json() == {"credential_id": "cred-1", "data": {"api_key_set": True}}
@@ -123,7 +139,7 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
     assert _contains_api_key_field(list_response.json()) is False
     assert _contains_api_key_field(create_response.json()) is False
     assert _contains_api_key_field(update_response.json()) is False
-    assert ("create_credential", {"data": {"type": "openai_credential", "api_key": "sk-test"}}) in (
+    assert ("create_credential", {"data": {"name": "默认凭证", "type": "openai_credential", "api_key": "sk-test", "base_url": "https://example.test/v1", "model": "gpt-test"}}) in (
         FakeAgentScopeControlPlaneClient.calls
     )
     # PATCH 语义收敛为 partial update：Datalogue 会先读现存 credential，把缺失字段
@@ -137,6 +153,8 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
                     "name": "更新后的凭证",
                     "type": "openai_credential",
                     "api_key": "sk-hidden",
+                    "base_url": "https://example.test/v1",
+                    "model": "gpt-test",
                 },
             },
         ),

@@ -17,10 +17,13 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
 from app.agentscope_runtime.client import AgentScopeServiceClient
 from app.core.config import get_settings
+from app.core.database import get_db
+from app.core.models.llm import LLMModelConfig
 
 router = APIRouter()
 
@@ -60,6 +63,130 @@ def _sanitize_credential_payload(payload: Any) -> Any:
     return sanitized
 
 
+def _credential_data(item: dict[str, Any]) -> dict[str, Any]:
+    data = item.get("data") if isinstance(item.get("data"), dict) else item
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def _credential_id(item: dict[str, Any]) -> str | None:
+    data = _credential_data(item)
+    value = item.get("id") or item.get("credential_id") or data.get("id")
+    return str(value) if isinstance(value, str) and value else None
+
+
+def _provider_from_credential_type(credential_type: str) -> str:
+    """将 AgentScope credential 类型投影为 Datalogue 模型供应商，供旧连接测试接口兼容读取。"""
+
+    if credential_type == "openai_credential":
+        return "openai-compatible"
+    return credential_type.removesuffix("_credential") or credential_type
+
+
+def _apply_credential_projection(
+    config: LLMModelConfig,
+    *,
+    credential_id: str,
+    data: dict[str, Any],
+) -> None:
+    """把设置页提交的非敏感字段写入数据库；api_key 始终不进入 Datalogue DB。"""
+
+    credential_type = str(data.get("type") or config.credential_type or "").strip()
+    if not credential_type:
+        raise ValueError("AgentScope credential 缺少 type")
+    config.credential_id = credential_id
+    config.credential_type = credential_type
+    config.name = str(data.get("name") or config.name or credential_id).strip()
+    config.provider = _provider_from_credential_type(credential_type)
+    config.base_url = str(data.get("base_url") or config.base_url or "").strip()
+    config.model = str(data.get("model") or data.get("model_name") or config.model or "").strip()
+    config.status = str(data.get("status") or config.status or "active").strip()
+    config.description = data.get("description") if data.get("description") is not None else config.description
+    if data.get("request_timeout_seconds") is not None:
+        config.request_timeout_seconds = float(data["request_timeout_seconds"])
+    if data.get("thinking_enabled") is not None:
+        config.thinking_enabled = bool(data["thinking_enabled"])
+    if not config.base_url or not config.model:
+        raise ValueError("LLM 配置必须包含 base_url 和 model")
+
+
+def _upsert_llm_config_projection(
+    db: Session,
+    *,
+    credential_id: str,
+    data: dict[str, Any],
+) -> LLMModelConfig:
+    """以 credential ID 为唯一关联创建或更新数据库模型配置，避免名称参与运行时关联。"""
+
+    config = db.query(LLMModelConfig).filter(LLMModelConfig.credential_id == credential_id).one_or_none()
+    if config is None:
+        # 仅用于一次性接管旧表中尚未绑定 credential 的同名记录；运行时不会再使用名称猜测。
+        name = str(data.get("name") or "").strip()
+        legacy = (
+            db.query(LLMModelConfig)
+            .filter(LLMModelConfig.credential_id.is_(None), LLMModelConfig.name == name)
+            .all()
+        )
+        config = legacy[0] if len(legacy) == 1 else LLMModelConfig(
+            name=name or credential_id,
+            provider="openai-compatible",
+            base_url=str(data.get("base_url") or ""),
+            model=str(data.get("model") or data.get("model_name") or ""),
+        )
+        if config.id is None:
+            db.add(config)
+    _apply_credential_projection(config, credential_id=credential_id, data=data)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def _serialize_credential_with_projection(
+    credential: dict[str, Any],
+    config: LLMModelConfig | None,
+) -> dict[str, Any]:
+    """把数据库配置投影回设置页，保证模型名、状态等不依赖原生 credential 的未知字段持久化。"""
+
+    credential_id = _credential_id(credential)
+    data = _credential_data(credential)
+    if config is not None:
+        data.update(
+            {
+                "id": credential_id,
+                "type": config.credential_type,
+                "name": config.name,
+                "base_url": config.base_url,
+                "model": config.model,
+                "status": config.status,
+                "description": config.description,
+                "request_timeout_seconds": config.request_timeout_seconds,
+                "thinking_enabled": bool(config.thinking_enabled),
+            }
+        )
+    return {"id": credential_id, "data": data}
+
+
+def _backfill_legacy_llm_config_link(
+    db: Session,
+    *,
+    credential_id: str,
+    data: dict[str, Any],
+) -> None:
+    """只接管一条可唯一确认的旧配置；凭据列表读取绝不凭空创建数据库模型配置。"""
+
+    if db.query(LLMModelConfig).filter(LLMModelConfig.credential_id == credential_id).first():
+        return
+    name = str(data.get("name") or "").strip()
+    legacy = (
+        db.query(LLMModelConfig)
+        .filter(LLMModelConfig.credential_id.is_(None), LLMModelConfig.name == name)
+        .all()
+    )
+    if len(legacy) != 1:
+        return
+    _apply_credential_projection(legacy[0], credential_id=credential_id, data=data)
+    db.commit()
+
+
 @router.get("/credential/schemas")
 async def list_credential_schemas():
     """读取 AgentScope 官方 credential schemas，供前端动态渲染凭证表单。"""
@@ -72,29 +199,68 @@ async def list_credential_schemas():
 
 
 @router.get("/credentials")
-async def list_credentials():
-    """读取 AgentScope credential 列表；Datalogue 不转换成旧模型配置 DTO。"""
+async def list_credentials(db: Session = Depends(get_db)):
+    """读取 AgentScope credential，并以数据库模型配置补齐设置页需要的非敏感字段。"""
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
-            return _sanitize_credential_payload(await client.list_credentials())
+            credentials = await client.list_credentials()
+        for credential in credentials:
+            credential_id = _credential_id(credential)
+            if credential_id:
+                # 对升级前的唯一同名旧配置完成一次接管，之后只依赖 credential_id 关联。
+                _backfill_legacy_llm_config_link(
+                    db,
+                    credential_id=credential_id,
+                    data=_credential_data(credential),
+                )
+        configs = {
+            config.credential_id: config
+            for config in db.query(LLMModelConfig).filter(LLMModelConfig.credential_id.is_not(None)).all()
+        }
+        return _sanitize_credential_payload(
+            [
+                _serialize_credential_with_projection(credential, configs.get(_credential_id(credential)))
+                for credential in credentials
+            ]
+        )
     except httpx.HTTPStatusError as exc:
         _raise_proxy_error(exc)
 
 
 @router.post("/credentials")
-async def create_credential(payload: dict[str, Any] = Body(...)):
-    """创建 AgentScope credential；API key 只进入 AgentScope Service。"""
+async def create_credential(payload: dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """创建 AgentScope credential 后立即把其真实 ID/type 回写数据库配置。"""
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
-            return _sanitize_credential_payload(await client.create_credential(payload))
+            created = await client.create_credential(payload)
+            credential_id = _credential_id(created)
+            if not credential_id:
+                raise ValueError("AgentScope 创建 credential 后未返回 id")
+            try:
+                _upsert_llm_config_projection(
+                    db,
+                    credential_id=credential_id,
+                    data=_credential_data(payload),
+                )
+            except Exception:
+                # 远端凭据若无本地配置关联，后续无法被默认运行时安全选择，因此尽力补偿删除。
+                await client.delete_credential(credential_id)
+                raise
+            return _sanitize_credential_payload(created)
     except httpx.HTTPStatusError as exc:
         _raise_proxy_error(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.patch("/credentials/{credential_id}")
-async def update_credential(credential_id: str, payload: dict[str, Any] = Body(...)):
+async def update_credential(
+    credential_id: str,
+    payload: dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
     """更新 AgentScope credential；不维护 Datalogue 旧模型角色映射。
 
     前端表单为了避免 API Key 泄露，只在用户显式重填 key 时才把 ``api_key`` 打进 payload；
@@ -107,11 +273,17 @@ async def update_credential(credential_id: str, payload: dict[str, Any] = Body(.
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
             merged_payload = await _merge_credential_patch(client, credential_id, payload)
-            return _sanitize_credential_payload(
-                await client.update_credential(credential_id, merged_payload)
-            )
+            updated = await client.update_credential(credential_id, merged_payload)
+        _upsert_llm_config_projection(
+            db,
+            credential_id=credential_id,
+            data=_credential_data(merged_payload),
+        )
+        return _sanitize_credential_payload(updated)
     except httpx.HTTPStatusError as exc:
         _raise_proxy_error(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 async def _merge_credential_patch(
@@ -164,12 +336,15 @@ async def _merge_credential_patch(
 
 
 @router.delete("/credentials/{credential_id}")
-async def delete_credential(credential_id: str):
-    """删除 AgentScope credential；调用方负责处理仍引用该凭证的 session。"""
+async def delete_credential(credential_id: str, db: Session = Depends(get_db)):
+    """删除 AgentScope credential 及其数据库模型配置，避免产生孤儿默认配置。"""
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
-            return await client.delete_credential(credential_id)
+            result = await client.delete_credential(credential_id)
+        db.query(LLMModelConfig).filter(LLMModelConfig.credential_id == credential_id).delete()
+        db.commit()
+        return result
     except httpx.HTTPStatusError as exc:
         _raise_proxy_error(exc)
 
