@@ -1,8 +1,9 @@
+# 本地 Agent 技能、插件与 OMX 运行状态均属于机器环境，不进入项目版本库
 .superpowers/
 .claude/
 .playwright-mcp/
 .playwright-cli/
-.agents/skills/
+.agents/
 .gstack/
 .codex/config.toml
 .codex/项目记忆.md
@@ -11,11 +12,28 @@
 .worktrees/
 skills-lock.json
 feishu-cli-auth-qrcode.png
-outputs
-.omx
+outputs/
+.omx/
 
 # 本地浏览器/E2E 临时截图不要放在仓库根目录；需要长期保存的截图放入 docs/assets/screenshots/。
 /*.png
+
+# 环境变量与本地密钥；示例模板必须保留在版本控制中
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+!**/.env.*.example
+*.key
+*.pem
+*.crt
+*.cert
+*.p12
+*.pfx
+*.jks
+*.keystore
 
 # Python
 __pycache__/
@@ -27,17 +45,32 @@ __pycache__/
 venv/
 ENV/
 env/
-.env
-.env.local
-.env.*.local
+*.egg-info/
+.eggs/
+build/
+dist/
+site/
+pip-wheel-metadata/
 
 # Python tools
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+.black_cache/
+.hypothesis/
+.tox/
+.nox/
+.pyre/
+.pytype/
+.dmypy.json
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 wheelhouse/
 datalogue-api/wheelhouse/
 datalogue-api/data/
+datalogue-api/logs/
 
 # IDE
 .idea/
@@ -49,8 +82,38 @@ datalogue-api/data/
 # Node
 datalogue-web/node_modules/
 datalogue-web/dist/
+datalogue-web/coverage/
+# 后端是纯 Python 工程，防止在后端目录误执行 npm 后生成空锁文件
+datalogue-api/package-lock.json
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.vite/
+.eslintcache
+*.tsbuildinfo
+
+# 测试、日志与临时运行产物
+playwright-report/
+test-results/
+logs/
 *.log
+*.pid
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# 数据库备份与本地转储；版本化 SQL 源文件不在此范围
+backups/
+*.dump
+*.backup
 
 # OS
 .DS_Store
+*.DS_Store?
+.AppleDouble
+.LSOverride
 Thumbs.db

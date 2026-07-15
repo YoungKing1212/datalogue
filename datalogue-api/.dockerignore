@@ -3,6 +3,13 @@
 .gitattributes
 .gitignore
 .gitmodules
+.github/
+.omx/
+.codex/
+.claude/
+.codegraph/
+.superpowers/
+.worktrees/
 
 # ── 环境与密钥 ─────────────────────────────────────────
 .env
@@ -11,6 +18,10 @@
 *.pem
 *.crt
 *.cert
+*.p12
+*.pfx
+*.jks
+*.keystore
 
 # ── Python 缓存 ────────────────────────────────────────
 __pycache__/
@@ -33,14 +44,19 @@ env/
 .coverage
 .coverage.*
 htmlcov/
+coverage.xml
+test-results/
+playwright-report/
 tests/
 *.test.py
+*_test.py
 
 # ── Lint / 类型检查缓存 ────────────────────────────────
 .ruff_cache/
 .mypy_cache/
 .black_cache/
 .hypothesis/
+.nox/
 
 # ── IDE ─────────────────────────────────────────────────
 .idea/
@@ -60,12 +76,18 @@ Thumbs.db
 # ── 日志与运行时数据 ───────────────────────────────────
 logs/
 data/
+wheelhouse/
 *.log
 *.pid
+*.sqlite
+*.sqlite3
 
 # ── Docker 构建文件 ────────────────────────────────────
 Dockerfile
 docker-compose*.yml
+docker-compose*.yaml
+compose*.yml
+compose*.yaml
 .dockerignore
 scripts/
 Makefile
@@ -80,3 +102,5 @@ tmp/
 temp/
 *.bak
 *.tmp
+*.orig
+*.rej

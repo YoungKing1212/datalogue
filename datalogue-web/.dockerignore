@@ -4,21 +4,42 @@ dist
 .vite
 coverage
 build
+.nyc_output
+.eslintcache
+playwright-report
+test-results
 
 # ── 版本控制 ──────────────────────────────────────────
 .git
 .gitignore
 .gitattributes
+.github
+.omx
+.codex
+.claude
+.codegraph
 
 # ── 环境与密钥 ────────────────────────────────────────
 .env
 .env.*
-!.env.example
+*.key
+*.pem
+*.crt
+*.cert
+*.p12
+*.pfx
 
 # ── 测试与缓存 ────────────────────────────────────────
-.nyc_output
+tests
 tests/**/__snapshots__
-.eslintcache
+**/*.test.js
+**/*.test.jsx
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.js
+**/*.spec.jsx
+**/*.spec.ts
+**/*.spec.tsx
 
 # ── IDE / OS ──────────────────────────────────────────
 .idea
@@ -43,3 +64,6 @@ docs
 tmp
 temp
 *.bak
+*.tmp
+*.orig
+*.rej
