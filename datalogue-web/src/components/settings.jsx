@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Icon } from './icons';
+import { LLMProviderLogo, resolveLLMProviderBrand } from './llm-provider-logo';
 import { del as apiDelete, get, patch, post } from '../api/client';
 import { useAuth } from '../auth/auth-context';
 import { UserCreateScreen } from './user-create';
@@ -783,7 +784,7 @@ function ModelsSection() {
           <div className="llm-panel-copy">
             <div className="llm-eyebrow"><span className="llm-eyebrow-signal" />AGENTSCOPE · 模型运行概览</div>
             <h2 id="llm-control-title">LLM 模型控制台</h2>
-            <p>集中管理问数运行时使用的模型凭证。密钥仅托管于 AgentScope，页面不会回显明文。</p>
+            <p>集中管理问数运行时使用的模型凭证。密钥会加密保存并同步至 AgentScope，页面不会回显明文。</p>
           </div>
           <div className="llm-runtime-readout" aria-label="模型运行概览">
             <div className="llm-readout-status"><span className="llm-pulse-dot" />当前启用模型</div>
@@ -795,7 +796,7 @@ function ModelsSection() {
         <div className="llm-stat-grid" aria-label="模型配置统计">
           <div className="llm-stat-card"><span>已接入 credential</span><strong>{models.length}</strong><small>全部连接配置</small></div>
           <div className="llm-stat-card is-live"><span>运行中</span><strong>{activeModels.length}</strong><small>当前允许被调用</small></div>
-          <div className="llm-stat-card"><span>密钥就绪</span><strong>{configuredKeys}<em> / {models.length || 0}</em></strong><small>由 AgentScope 安全托管</small></div>
+          <div className="llm-stat-card"><span>密钥就绪</span><strong>{configuredKeys}<em> / {models.length || 0}</em></strong><small>本地加密保存并同步运行副本</small></div>
           <div className="llm-stat-card"><span>供应商</span><strong>{new Set(models.map(model => model.provider)).size}</strong><small>支持多模型切换</small></div>
         </div>
 
@@ -827,6 +828,7 @@ function ModelsSection() {
           <div className="llm-card-grid">
             {models.map(model => {
               const isActive = model.status === 'active';
+              const brandKey = resolveLLMProviderBrand(model);
               const testSummary = model.last_test_result?.ok
                 ? `连接通过 · ${model.last_test_result.latency_ms ?? '--'}ms`
                 : model.last_error_message || '尚未发现模型';
@@ -834,7 +836,9 @@ function ModelsSection() {
                 <article className={'llm-credential-card ' + (isActive ? 'is-active' : 'is-disabled')} key={model.id}>
                   <div className="llm-card-topline" aria-hidden="true"><span /><span /><span /></div>
                   <header className="llm-card-header">
-                    <div className="llm-provider-mark">{(model.provider || 'AI').slice(0, 2).toUpperCase()}</div>
+                    <div className="llm-provider-mark" title={model.provider || '自定义供应商'}>
+                      {brandKey ? <LLMProviderLogo model={model} /> : <Icon name="brain" />}
+                    </div>
                     <div className="llm-card-title">
                       <div className="llm-card-title-row"><h3 title={model.name}>{model.name}</h3><span className={'llm-status-chip ' + (isActive ? 'live' : '')}><i />{isActive ? '运行中' : '已停用'}</span></div>
                       <p>{model.provider} <b>·</b> {model.model || 'ModelCard 自动发现'}</p>
@@ -873,7 +877,7 @@ function ModelsSection() {
               <div className="st-modal-titles">
                 <div className="st-modal-eyebrow">系统设置 / LLM 模型</div>
                 <div className="st-modal-title" id="llm-editor-title">{form.id ? `编辑模型连接 · ${form.name || form.id}` : '新增模型连接'}</div>
-                <p className="llm-editor-intro">凭证将由 AgentScope 安全托管，保存后即可发现可用模型。</p>
+                <p className="llm-editor-intro">密钥将加密保存并同步至 AgentScope，保存后即可发现可用模型。</p>
               </div>
               <button className="icon-btn" title="关闭" data-tip="关闭" aria-label="关闭" onClick={closeEditor}><Icon name="x" /></button>
             </div>
@@ -895,7 +899,7 @@ function ModelsSection() {
                   <div className="llm-form-grid">
                     <label className="llm-form-field llm-field-full"><span>Base URL</span><input className="st-input mono" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="http://localhost:4000/v1" /></label>
                     <label className="llm-form-field"><span>模型名</span><select className="st-input" aria-label="模型名" value={form.model_choice} onChange={e => changeModelChoice(e.target.value)}>{selectedPreset.models.map(model => <option key={model} value={model}>{model}</option>)}<option value="custom">自定义模型</option></select>{form.model_choice === 'custom' && <input className="st-input" value={form.model} onChange={e => changeModelName(e.target.value)} placeholder="输入模型名，如 datalogue-sql" />}</label>
-                    <label className="llm-form-field"><span>API Key <small>{form.id ? '留空则不覆盖已保存密钥' : '仅保存，之后不回显'}</small></span><input className="st-input" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={form.id ? '不覆盖' : 'sk-...'} /></label>
+                    <label className="llm-form-field"><span>API Key <small>{form.id ? '留空则不覆盖已保存密钥' : '加密保存，之后不回显'}</small></span><input className="st-input" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={form.id ? '不覆盖' : 'sk-...'} /></label>
                   </div>
                 </section>
 

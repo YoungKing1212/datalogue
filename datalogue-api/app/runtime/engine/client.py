@@ -21,7 +21,6 @@ from urllib.parse import quote
 
 import httpx
 
-
 DEFAULT_AGENTSCOPE_USER_ID = "datalogue-agent-team"
 # SSE 是长连接，模型推理期间可能数十秒没有新行；保留长 read 超时避免无限挂起。
 AGENTSCOPE_SSE_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
@@ -131,7 +130,9 @@ class AgentScopeServiceClient:
         parsed = response.json()
         return parsed if isinstance(parsed, dict) else {"data": parsed}
 
-    async def update_credential(self, credential_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def update_credential(
+        self, credential_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """更新 AgentScope credential；credential_id 只做路径编码，不进入 Datalogue DB。"""
 
         response = await self.http.patch(
@@ -186,13 +187,32 @@ class AgentScopeServiceClient:
     ) -> str:
         """把 Datalogue 当前 OpenAI-compatible 配置同步到 AgentScope credential 存储。"""
 
+        return await self.upsert_credential(
+            credential_id=credential_id,
+            name=name,
+            credential_type="openai_credential",
+            api_key=api_key,
+            base_url=base_url,
+        )
+
+    async def upsert_credential(
+        self,
+        *,
+        credential_id: str,
+        name: str,
+        credential_type: str,
+        api_key: str,
+        base_url: str | None,
+    ) -> str:
+        """以稳定 ID 写入 AgentScope credential，供本地加密密钥自动恢复运行副本。"""
+
         response = await self.http.post(
             self._url("/credential/"),
             json={
                 "data": {
                     "id": credential_id,
                     "name": name,
-                    "type": "openai_credential",
+                    "type": credential_type,
                     "api_key": api_key,
                     "base_url": base_url,
                 },
@@ -201,7 +221,7 @@ class AgentScopeServiceClient:
         )
         response.raise_for_status()
         payload = response.json()
-        result = payload.get("credential_id") or credential_id
+        result = payload.get("credential_id") or payload.get("id") or credential_id
         if not isinstance(result, str) or not result:
             raise ValueError("AGENTSCOPE_SERVICE_CREDENTIAL_ID_MISSING")
         return result
@@ -220,7 +240,9 @@ class AgentScopeServiceClient:
             "chat_model_config": chat_model_config,
         }
         # AgentScope 2.0.3 官方 Service 创建会话端点注册为 /sessions/；缺少尾斜杠会触发 307。
-        response = await self.http.post(self._url("/sessions/"), json=payload, headers=self._headers())
+        response = await self.http.post(
+            self._url("/sessions/"), json=payload, headers=self._headers()
+        )
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

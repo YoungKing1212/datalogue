@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 
 import { LLMModelsScreen } from './settings.jsx';
+import { resolveLLMProviderBrand } from './llm-provider-logo.jsx';
 import { get, patch, post, del as apiDelete } from '../api/client';
 
 vi.mock('../api/client', () => ({
@@ -114,5 +115,18 @@ describe('LLMModelsScreen 模型配置', () => {
         data: { status: 'disabled' },
       });
     });
+  });
+});
+
+describe('LLM 厂商标识识别', () => {
+  it.each([
+    [{ provider: 'openai', model: 'gpt-4o' }, 'openai'],
+    [{ provider: 'openai-compatible', model: 'MiniMax-M3', base_url: 'https://api.minimaxi.com/v1' }, 'minimax'],
+    [{ provider: 'deepseek', model: 'deepseek-chat' }, 'deepseek'],
+    [{ provider: 'qwen', model: 'qwen-max' }, 'qwen'],
+    [{ provider: 'anthropic', model: 'claude-sonnet-4' }, 'anthropic'],
+    [{ provider: 'custom', model: 'internal-model' }, null],
+  ])('根据供应商、模型和地址识别官方标识：%o', (model, expected) => {
+    expect(resolveLLMProviderBrand(model)).toBe(expected);
   });
 });

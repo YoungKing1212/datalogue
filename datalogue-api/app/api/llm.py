@@ -31,6 +31,7 @@ from app.core.llm_config import (
     credential_id_for_model_config,
     model_config_to_dict,
 )
+from app.core.security import encrypt_password
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -130,13 +131,17 @@ async def create_llm_model(payload: schemas.LLMModelConfigCreate, db: Session = 
         description=payload.description,
         request_timeout_seconds=payload.request_timeout_seconds,
         thinking_enabled=payload.thinking_enabled,
+        # 兼容旧接口：仍保存 AES-GCM 密文，供 AgentScope credential 丢失时自动恢复。
+        api_key_enc=encrypt_password(api_key) if api_key else None,
     )
     db.add(config)
     db.commit()
     db.refresh(config)
     if api_key:
         try:
-            config.credential_id = await _upsert_agentscope_model_credential(config=config, api_key=api_key)
+            config.credential_id = await _upsert_agentscope_model_credential(
+                config=config, api_key=api_key
+            )
             config.credential_type = "openai_credential"
             db.commit()
             db.refresh(config)
@@ -144,8 +149,15 @@ async def create_llm_model(payload: schemas.LLMModelConfigCreate, db: Session = 
             # credential 写入失败时回滚本地投影，避免页面出现不可用的“半条配置”。
             db.delete(config)
             db.commit()
-            raise HTTPException(status_code=502, detail=f"AgentScope credential 写入失败: {exc}") from exc
-    logger.info("LLM 模型配置创建成功: id=%s, provider=%s, model=%s", config.id, config.provider, config.model)
+            raise HTTPException(
+                status_code=502, detail=f"AgentScope credential 写入失败: {exc}"
+            ) from exc
+    logger.info(
+        "LLM 模型配置创建成功: id=%s, provider=%s, model=%s",
+        config.id,
+        config.provider,
+        config.model,
+    )
     credential_ids = {config.credential_id} if config.credential_id else set()
     return model_config_to_dict(config, credential_ids)
 
@@ -172,13 +184,19 @@ async def update_llm_model(
     _validate_status(data.get("status"))
     raw_api_key = data.pop("api_key", None)
     api_key = raw_api_key.strip() if isinstance(raw_api_key, str) else None
+    previous_api_key_enc = config.api_key_enc
+    previous_values = {key: getattr(config, key) for key in data}
     for key, value in data.items():
         setattr(config, key, value)
+    if api_key:
+        config.api_key_enc = encrypt_password(api_key)
     db.commit()
     db.refresh(config)
     try:
         if api_key:
-            config.credential_id = await _upsert_agentscope_model_credential(config=config, api_key=api_key)
+            config.credential_id = await _upsert_agentscope_model_credential(
+                config=config, api_key=api_key
+            )
             config.credential_type = "openai_credential"
             db.commit()
             db.refresh(config)
@@ -186,7 +204,14 @@ async def update_llm_model(
             # 已有 credential 时同步名称/Base URL，避免页面配置与运行凭据漂移。
             await _upsert_agentscope_model_credential(config=config, api_key=None)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AgentScope credential 更新失败: {exc}") from exc
+        # 外部 credential 同步失败时恢复本地改动，避免密钥或运行参数出现半成功状态。
+        for key, value in previous_values.items():
+            setattr(config, key, value)
+        config.api_key_enc = previous_api_key_enc
+        db.commit()
+        raise HTTPException(
+            status_code=502, detail=f"AgentScope credential 更新失败: {exc}"
+        ) from exc
     logger.info("LLM 模型配置更新成功: id=%s", config.id)
     credential_ids = _credential_ids(await _list_agentscope_credentials())
     return model_config_to_dict(config, credential_ids)
@@ -203,7 +228,11 @@ async def delete_llm_model(config_id: int, db: Session = Depends(get_db)):
             async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
                 await client.delete_credential(credential_id)
     except Exception:
-        logger.warning("AgentScope credential 删除失败，继续删除本地配置: credential_id=%s", credential_id, exc_info=True)
+        logger.warning(
+            "AgentScope credential 删除失败，继续删除本地配置: credential_id=%s",
+            credential_id,
+            exc_info=True,
+        )
     db.delete(config)
     db.commit()
     logger.info("LLM 模型配置删除成功: id=%s", config_id)

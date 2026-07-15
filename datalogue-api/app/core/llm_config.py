@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.runtime.engine.client import DEFAULT_AGENTSCOPE_USER_ID
 from app.core.config import Settings
 from app.core.models.llm import LLMModelConfig
+from app.core.security import decrypt_password
 
 DEFAULT_LLM_ROLE = "default"
 DEFAULT_MODEL_CREDENTIAL_ID = "datalogue-openai-compatible-lead-agent"
@@ -39,6 +40,7 @@ class ResolvedLLMConfig:
     api_key: str
     request_timeout_seconds: float
     thinking_enabled: bool
+    model_config_id: int | None = None
     credential_id: str | None = None
     credential_type: str | None = None
 
@@ -49,6 +51,23 @@ def credential_id_for_model_config(config_id: int | None) -> str:
     if config_id is None:
         return DEFAULT_MODEL_CREDENTIAL_ID
     return f"datalogue-openai-compatible-model-{config_id}"
+
+
+def credential_type_for_provider(provider: str | None) -> str:
+    """把 Datalogue 供应商标识映射为 AgentScope 原生 credential 类型。"""
+
+    normalized = (provider or "").strip().lower()
+    return {
+        "deepseek": "deepseek_credential",
+        "qwen": "dashscope_credential",
+        "dashscope": "dashscope_credential",
+        "aliyun": "dashscope_credential",
+        "anthropic": "anthropic_credential",
+        "gemini": "gemini_credential",
+        "moonshot": "moonshot_credential",
+        "xai": "xai_credential",
+        "grok": "xai_credential",
+    }.get(normalized, "openai_credential")
 
 
 def _credential_data(item: dict) -> dict:
@@ -102,12 +121,27 @@ def _fetch_agentscope_credentials(settings: Settings) -> list[dict]:
     return []
 
 
-def api_key_set_for_model_config(config: LLMModelConfig, credential_ids: set[str] | None = None) -> bool:
-    """判断配置是否已有可用密钥；AgentScope credential 是密钥真相源。"""
+def api_key_set_for_model_config(
+    config: LLMModelConfig, credential_ids: set[str] | None = None
+) -> bool:
+    """判断配置是否已有可用密钥；本地加密字段优先，兼容迁移中的远端旧凭据。"""
 
+    if bool(config.api_key_enc):
+        return True
     if config.credential_id and credential_ids and config.credential_id in credential_ids:
         return True
     return False
+
+
+def decrypt_model_api_key(config: LLMModelConfig) -> str:
+    """解密本地模型密钥，仅供服务端同步 AgentScope 或直接模型调用使用。"""
+
+    if not config.api_key_enc:
+        return ""
+    try:
+        return decrypt_password(config.api_key_enc)
+    except Exception as exc:
+        raise ValueError(f"LLM 模型配置 '{config.name}' 的本地密钥无法解密") from exc
 
 
 def model_config_to_dict(config: LLMModelConfig, credential_ids: set[str] | None = None) -> dict:
@@ -171,9 +205,13 @@ def resolve_llm_config(
             config = _default_active_config(db)
 
     if config is not None:
-        # 数据库保存 AgentScope 创建的真实 credential 关联；绝不再从本地模型 ID 推导。
+        # 优先使用本地加密密钥；旧记录未完成回填时才临时从 AgentScope 读取，保证平滑升级。
         credential_id = config.credential_id
-        api_key = credential_api_key_from_items(_fetch_agentscope_credentials(settings), credential_id)
+        api_key = decrypt_model_api_key(config)
+        if not api_key:
+            api_key = credential_api_key_from_items(
+                _fetch_agentscope_credentials(settings), credential_id
+            )
         return ResolvedLLMConfig(
             role=normalized_role,
             source="database",
@@ -182,8 +220,11 @@ def resolve_llm_config(
             base_url=config.base_url,
             model=config.model,
             api_key=api_key,
-            request_timeout_seconds=float(config.request_timeout_seconds or settings.LLM_TIMEOUT_SECONDS),
+            request_timeout_seconds=float(
+                config.request_timeout_seconds or settings.LLM_TIMEOUT_SECONDS
+            ),
             thinking_enabled=bool(config.thinking_enabled),
+            model_config_id=config.id,
             credential_id=credential_id,
             credential_type=config.credential_type,
         )

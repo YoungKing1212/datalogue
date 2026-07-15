@@ -5546,10 +5546,15 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   border-radius: 10px;
   color: var(--accent);
   background: var(--accent-soft);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: -.06em;
+}
+.llm-provider-mark .llm-provider-logo {
+  display: block;
+  width: 23px;
+  height: 23px;
+}
+.llm-provider-mark .icon {
+  width: 18px;
+  height: 18px;
 }
 .llm-card-title { min-width: 0; flex: 1; }
 .llm-card-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }

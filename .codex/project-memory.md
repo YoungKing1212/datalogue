@@ -1351,3 +1351,40 @@
 - 关键改动：后端在 QueryPlan 结构校验通过后按能力等级执行第二道 fail-closed 闸门：`1.0.0` 禁止支持实体、Join、指标和分组，`1.1.0` 最多允许三实体明确关联且继续禁止指标/分组，`1.2.0` 开放指标与维度，`1.3.0` 开放 Agent Team 安全身份和过程投影；前三期前端把协作事件压缩为通用安全进展。四期演示配置统一关闭 Report Worker、raw thinking 和 OTel 展示，不把未完全实现的智能报告、完整观测或生产部署包装成已交付能力。
 - 验证方式：后端能力、配置及工具执行前拦截测试 `14 passed`；前端能力投影测试 `17 passed`；ESLint `--quiet`、Vite build、Ruff、Black 和 `git diff --check` 通过；逐 Tag 核对 API 版本、后端默认能力与 `conf/demo/current.env` 一致。
 - 残留风险或后续事项：四级版本复用同一 AgentScope Agent Team 稳定内核，前三期隐藏的是产品可见协作而不是恢复旧查询架构；正式会议前仍需分别使用对应 Tag 和演示数据集跑真实页面问题集，尤其核对单表基础计数是否会被模型表达为指标查询。智能报告、完整观测和生产部署继续留在后续版本，不纳入本轮四期承诺。
+
+### 2026-07-15 13:03 · LLM 本地加密密钥真相源与 AgentScope 自动恢复
+
+- 完成时间：2026-07-15 13:03。
+- 功能名称：将 LLM API Key 加密保存于 `llm_model_config`，并在 AgentScope credential 丢失时自动补建运行副本。
+- 涉及文件：
+  - `datalogue-api/app/core/models/llm.py`、`datalogue-api/alembic/versions/c0d1e2f3a4b5_restore_llm_model_api_key_enc.py` — 新增 `api_key_enc` AES-GCM 密文字段及迁移。
+  - `datalogue-api/app/api/agentscope_control_plane.py`、`datalogue-api/app/api/llm.py` — 新增/更新模型时写入本地密文并与 AgentScope 同步；旧接口外部同步失败时回滚本地更新。
+  - `datalogue-api/app/core/llm_config.py`、`datalogue-api/app/runtime/engine/client.py`、`datalogue-api/app/runtime/engine/runner.py` — 本地密文优先供直接模型调用；AgentScope credential 缺失时按原生 credential type 自动恢复，且不再将 AgentScope 查询失败误报为 credential 缺失。
+  - `datalogue-api/tests/test_agentscope_control_plane_api.py`、`datalogue-api/tests/test_agentscope_agent_team_task_runner.py`、`datalogue-web/src/components/settings.jsx` — 覆盖密文持久化、密钥轮换、DeepSeek 自动恢复，并同步前端安全文案。
+- 关键改动：本地数据库成为 API Key 的持久化真相源，AgentScope credential 为可重建运行副本；响应与日志始终不返回明文 API Key。丢失 credential 但本地密钥存在时，Agent Team 自动恢复后继续创建会话；本地无密钥时才要求用户重新填写。
+- 验证方式：`datalogue-api/.venv/bin/python -m pytest tests/test_agentscope_control_plane_api.py tests/test_agentscope_llm_resource_boundary.py tests/test_agentscope_agent_team_task_runner.py -q`（27 passed）；`compileall`、Ruff、Black、`git diff --check` 通过；前端 `npm run lint`（0 error，13 条既有 warning）和 `npm run build` 通过。
+- 残留风险或后续事项：部署前必须执行 Alembic 迁移到 `c0d1e2f3a4b5` 并重启 API；`AES_KEY` 轮换需要单独设计旧/新密钥双读迁移，当前不应直接更换既有密钥。
+
+### 2026-07-15 13:52 · LLM 厂商本地图标
+
+- 完成时间：2026-07-15 13:52。
+- 功能名称：将 LLM 模型配置卡片的供应商缩写替换为对应厂商的本地官方标识。
+- 涉及文件：
+  - `datalogue-web/src/components/llm-provider-logo.jsx` — 内置 OpenAI、DeepSeek、通义千问、MiniMax、Anthropic 的 SVG 标识，并根据供应商、模型名与接入地址进行识别。
+  - `datalogue-web/src/components/settings.jsx`、`datalogue-web/src/styles.css` — 在模型卡片使用厂商标识；自定义或未知厂商保留通用 AI 兜底图标。
+  - `datalogue-web/src/components/settings.test.jsx` — 覆盖五类预设厂商与自定义厂商的图标识别规则。
+- 关键改动：图标路径随前端源码本地打包，页面运行时不请求厂商官网、CDN 或第三方图床；`openai-compatible` 配置会优先从模型名或 API 地址识别实际厂商，例如 MiniMax。
+- 验证方式：`npm test -- --run src/components/settings.test.jsx`（8 passed）；`npm run lint`（0 error，13 条既有 warning）、`npm run build` 与 `git diff --check` 通过。
+- 残留风险或后续事项：当前仅覆盖设置页已支持的五家预设厂商；未来新增供应商时，应同时在 `llm-provider-logo.jsx` 增加本地标识及识别规则。
+
+### 2026-07-15 14:01 · BI Worker AgentScope 工具集收窄
+
+- 完成时间：2026-07-15 14:01。
+- 功能名称：为 AgentScope Agent Team 的 BI Worker 移除无关通用工具，降低模型调用的工具 Schema 上下文。
+- 涉及文件：
+  - `datalogue-api/app/runtime/engine/bi_worker_agent.py` — 新增 `DatalogueRuntimeAgent`，仅为 `bi-worker` 重建包含 TeamSay、候选数据集与查询链路工具的最小 Toolkit。
+  - `datalogue-api/app/runtime/engine/app_factory.py` — 通过 AgentScope 官方 `custom_agent_cls` 扩展点注册该运行时 Agent，不修改第三方依赖源码。
+  - `datalogue-api/tests/test_bi_worker_agent.py`、`datalogue-api/tests/test_agentscope_service_factory.py` — 覆盖 allowlist、非 basic ToolGroup 移除与运行时装配。
+- 关键改动：BI Worker 不再向模型暴露 Bash、Read/Write/Edit、Glob/Grep、Task*、ToolStop、Schedule*、`reset_tools` 与未使用的 `datalogue_search_assets`；普通 Agent 保持既有通用 Toolkit。
+- 验证方式：`python -m pytest datalogue-api/tests/test_bi_worker_agent.py datalogue-api/tests/test_agentscope_service_factory.py -q`（5 passed）；`git diff --check` 通过。
+- 残留风险或后续事项：完整 `test_agentscope_service_tools.py` 中存在一条与本改动无关的既有失败：其断言仍期待旧版 `join_requirement_shape`，但当前工作区契约已含 `alias_source`、`example` 等新增字段；另一个后续优化是按路由/规划/执行阶段继续细分 BI 工具集。

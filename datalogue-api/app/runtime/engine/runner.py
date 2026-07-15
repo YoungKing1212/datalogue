@@ -41,7 +41,14 @@ from app.core.middlewares.lifecycle import log_lifecycle
 from app.core.models.agent_team_task import AgentTeamTask
 from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 from app.core.schemas.bi_workbench import DatalogueEventEnvelope, build_datalogue_event_envelope
-from app.core.llm_config import DEFAULT_MODEL_CREDENTIAL_ID, resolve_llm_config
+from app.core.llm_config import (
+    DEFAULT_MODEL_CREDENTIAL_ID,
+    credential_id_for_model_config,
+    credential_type_for_provider,
+    decrypt_model_api_key,
+    resolve_llm_config,
+)
+from app.core.models.llm import LLMModelConfig
 
 DEFAULT_LEADER_AGENT_ID = None
 _FORBIDDEN_MODEL_PARAMETER_KEYS = {"api_key", "base_url", "credential_id", "model", "type"}
@@ -243,34 +250,26 @@ class AgentTeamTaskRunner:
         return await self._build_default_chat_model_config()
 
     async def _build_default_chat_model_config(self) -> dict[str, Any]:
-        """未显式选择模型时，只按数据库保存的 credential 关联构造默认会话模型。"""
+        """未显式选择模型时，从本地密钥真相源恢复并使用 AgentScope 运行 credential。"""
 
         credentials = await self._list_credentials_safely()
         resolved = resolve_llm_config(self.settings, role="agent_team_leader", db=self.db)
         if resolved.source == "database":
-            if not resolved.credential_id or not resolved.credential_type:
-                raise ValueError(
-                    "DATALOGUE_LLM_CONFIG_CREDENTIAL_LINK_MISSING: "
-                    f"数据库模型配置 '{resolved.name}' 未关联 AgentScope credential；"
-                    "请在设置页重新保存该模型以完成凭据绑定。"
-                )
-            credential = _find_credential(credentials, resolved.credential_id)
+            config = self._get_resolved_model_config(resolved.model_config_id)
+            credential = _find_credential(credentials, resolved.credential_id or "")
             if credential is None:
-                raise ValueError(
-                    "AGENTSCOPE_MODEL_CREDENTIAL_NOT_CONFIGURED: "
-                    f"数据库模型配置 '{resolved.name}' 关联的 AgentScope credential "
-                    f"'{resolved.credential_id}' 不存在；请在设置页重新保存该模型的 API Key。"
-                )
+                credential = await self._restore_model_credential(config)
             actual_type = _credential_type(credential)
-            if actual_type != resolved.credential_type:
+            expected_type = config.credential_type or credential_type_for_provider(config.provider)
+            if actual_type != expected_type:
                 raise ValueError(
                     "AGENTSCOPE_MODEL_CREDENTIAL_TYPE_MISMATCH: "
-                    f"数据库记录为 '{resolved.credential_type}'，但 AgentScope credential "
-                    f"'{resolved.credential_id}' 实际为 '{actual_type}'；请在设置页重新保存。"
+                    f"数据库记录为 '{expected_type}'，但 AgentScope credential "
+                    f"'{config.credential_id}' 实际为 '{actual_type}'；请在设置页重新保存。"
                 )
             return {
-                "type": resolved.credential_type,
-                "credential_id": resolved.credential_id,
+                "type": actual_type,
+                "credential_id": _credential_id(credential),
                 "model": resolved.model,
                 "parameters": {"thinking_enable": bool(resolved.thinking_enabled)},
             }
@@ -293,12 +292,53 @@ class AgentTeamTaskRunner:
             "parameters": {"thinking_enable": False},
         }
 
-    async def _list_credentials_safely(self) -> list[dict[str, Any]]:
-        """读取 AgentScope credential；启动期读取失败时返回空列表，由后续 upsert/报错接管。"""
+    def _get_resolved_model_config(self, config_id: int | None) -> LLMModelConfig:
+        """按已解析主键取回模型配置，避免按名称匹配而误修复其他模型。"""
 
-        with suppress(Exception):
-            return await self.client.list_credentials()
-        return []
+        if self.db is None or config_id is None:
+            raise ValueError("DATALOGUE_LLM_CONFIG_UNAVAILABLE: 默认模型配置无法读取")
+        config = self.db.get(LLMModelConfig, config_id)
+        if config is None or config.status != "active":
+            raise ValueError("DATALOGUE_LLM_CONFIG_UNAVAILABLE: 默认模型配置不存在或已停用")
+        return config
+
+    async def _restore_model_credential(self, config: LLMModelConfig) -> dict[str, Any]:
+        """以本地 AES-GCM 密钥补建缺失的 AgentScope credential 运行副本。"""
+
+        api_key = decrypt_model_api_key(config)
+        if not api_key:
+            raise ValueError(
+                "AGENTSCOPE_MODEL_CREDENTIAL_NOT_CONFIGURED: "
+                f"LLM 配置表已启用模型 '{config.name}'，但 AgentScope credential "
+                f"'{config.credential_id or credential_id_for_model_config(config.id)}' 不存在，且本地未保存 API Key；"
+                "请在设置页重新填写该模型的 API Key。"
+            )
+        credential_id = config.credential_id or credential_id_for_model_config(config.id)
+        credential_type = config.credential_type or credential_type_for_provider(config.provider)
+        # 远端确认缺失后才写入，避免以本地旧密钥覆盖一个仍有效的 AgentScope credential。
+        restored_id = await self.client.upsert_credential(
+            credential_id=credential_id,
+            name=config.name,
+            credential_type=credential_type,
+            api_key=api_key,
+            base_url=config.base_url,
+        )
+        config.credential_id = restored_id
+        config.credential_type = credential_type
+        self.db.commit()
+        self.db.refresh(config)
+        logger.info(
+            "已从本地加密密钥恢复 AgentScope credential: model_config_id=%s credential_id=%s credential_type=%s",
+            config.id,
+            restored_id,
+            credential_type,
+        )
+        return {"id": restored_id, "data": {"id": restored_id, "type": credential_type}}
+
+    async def _list_credentials_safely(self) -> list[dict[str, Any]]:
+        """读取 AgentScope credential；请求失败必须原样上抛，不能伪装成凭证缺失。"""
+
+        return await self.client.list_credentials()
 
     async def _ensure_default_model_credential(self) -> None:
         """默认模型路径缺 credential 时，用 .env 中的 OpenAI-compatible 配置补齐 AgentScope credential。"""

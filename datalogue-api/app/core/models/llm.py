@@ -18,17 +18,21 @@ from app.core.models.base import TimestampMixin
 
 
 class LLMModelConfig(Base, TimestampMixin):
-    """数据库中的 LLM 配置真相源；密钥仍只由 AgentScope credential 保存。"""
+    """数据库中的 LLM 配置真相源；保存加密密钥并关联可重建的 AgentScope credential。"""
 
     __tablename__ = "llm_model_config"
 
     id = Column(Integer, primary_key=True, index=True)
+    # 密钥是 Datalogue 的持久化真相源；仅以 AES-GCM 密文入库，绝不经 API 或日志回传。
+    api_key_enc = Column(Text, nullable=True)
     # 真实 credential ID 由 AgentScope 创建后回写；运行时不得再根据本地主键自行拼接。
     credential_id = Column(String(200), nullable=True, unique=True, index=True)
     # credential type 决定 AgentScope 采用的 ChatModel，例如 deepseek_credential。
     credential_type = Column(String(100), nullable=True)
     name = Column(String(100), nullable=False)
-    provider = Column(String(50), nullable=False, default="openai-compatible", server_default="openai-compatible")
+    provider = Column(
+        String(50), nullable=False, default="openai-compatible", server_default="openai-compatible"
+    )
     base_url = Column(String(500), nullable=False)
     model = Column(String(200), nullable=False)
     status = Column(String(20), nullable=False, default="active", server_default="active")

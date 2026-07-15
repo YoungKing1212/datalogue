@@ -24,6 +24,7 @@ from app.agentscope_runtime.client import AgentScopeServiceClient
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.models.llm import LLMModelConfig
+from app.core.security import encrypt_password
 
 router = APIRouter()
 
@@ -88,7 +89,7 @@ def _apply_credential_projection(
     credential_id: str,
     data: dict[str, Any],
 ) -> None:
-    """把设置页提交的非敏感字段写入数据库；api_key 始终不进入 Datalogue DB。"""
+    """将 credential 的运行投影及 AES-GCM 密钥密文写入 Datalogue 数据库。"""
 
     credential_type = str(data.get("type") or config.credential_type or "").strip()
     if not credential_type:
@@ -100,11 +101,17 @@ def _apply_credential_projection(
     config.base_url = str(data.get("base_url") or config.base_url or "").strip()
     config.model = str(data.get("model") or data.get("model_name") or config.model or "").strip()
     config.status = str(data.get("status") or config.status or "active").strip()
-    config.description = data.get("description") if data.get("description") is not None else config.description
+    config.description = (
+        data.get("description") if data.get("description") is not None else config.description
+    )
     if data.get("request_timeout_seconds") is not None:
         config.request_timeout_seconds = float(data["request_timeout_seconds"])
     if data.get("thinking_enabled") is not None:
         config.thinking_enabled = bool(data["thinking_enabled"])
+    api_key = str(data.get("api_key") or "").strip()
+    if api_key:
+        # AgentScope 只保存可重建的运行副本；本地密文是恢复凭据的持久化真相源。
+        config.api_key_enc = encrypt_password(api_key)
     if not config.base_url or not config.model:
         raise ValueError("LLM 配置必须包含 base_url 和 model")
 
@@ -117,7 +124,9 @@ def _upsert_llm_config_projection(
 ) -> LLMModelConfig:
     """以 credential ID 为唯一关联创建或更新数据库模型配置，避免名称参与运行时关联。"""
 
-    config = db.query(LLMModelConfig).filter(LLMModelConfig.credential_id == credential_id).one_or_none()
+    config = (
+        db.query(LLMModelConfig).filter(LLMModelConfig.credential_id == credential_id).one_or_none()
+    )
     if config is None:
         # 仅用于一次性接管旧表中尚未绑定 credential 的同名记录；运行时不会再使用名称猜测。
         name = str(data.get("name") or "").strip()
@@ -126,11 +135,15 @@ def _upsert_llm_config_projection(
             .filter(LLMModelConfig.credential_id.is_(None), LLMModelConfig.name == name)
             .all()
         )
-        config = legacy[0] if len(legacy) == 1 else LLMModelConfig(
-            name=name or credential_id,
-            provider="openai-compatible",
-            base_url=str(data.get("base_url") or ""),
-            model=str(data.get("model") or data.get("model_name") or ""),
+        config = (
+            legacy[0]
+            if len(legacy) == 1
+            else LLMModelConfig(
+                name=name or credential_id,
+                provider="openai-compatible",
+                base_url=str(data.get("base_url") or ""),
+                model=str(data.get("model") or data.get("model_name") or ""),
+            )
         )
         if config.id is None:
             db.add(config)
@@ -216,11 +229,15 @@ async def list_credentials(db: Session = Depends(get_db)):
                 )
         configs = {
             config.credential_id: config
-            for config in db.query(LLMModelConfig).filter(LLMModelConfig.credential_id.is_not(None)).all()
+            for config in db.query(LLMModelConfig)
+            .filter(LLMModelConfig.credential_id.is_not(None))
+            .all()
         }
         return _sanitize_credential_payload(
             [
-                _serialize_credential_with_projection(credential, configs.get(_credential_id(credential)))
+                _serialize_credential_with_projection(
+                    credential, configs.get(_credential_id(credential))
+                )
                 for credential in credentials
             ]
         )
@@ -230,7 +247,7 @@ async def list_credentials(db: Session = Depends(get_db)):
 
 @router.post("/credentials")
 async def create_credential(payload: dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    """创建 AgentScope credential 后立即把其真实 ID/type 回写数据库配置。"""
+    """创建 AgentScope credential 后立即加密保存密钥并回写数据库模型配置。"""
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
@@ -261,7 +278,7 @@ async def update_credential(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
 ):
-    """更新 AgentScope credential；不维护 Datalogue 旧模型角色映射。
+    """更新 AgentScope credential；同步更新 Datalogue 的加密密钥真相源。
 
     前端表单为了避免 API Key 泄露，只在用户显式重填 key 时才把 ``api_key`` 打进 payload；
     若直接透传给 AgentScope Service，其 credential 使用 tagged-union 反序列化必然报

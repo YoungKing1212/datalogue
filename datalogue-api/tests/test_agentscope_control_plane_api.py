@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.models.llm import LLMModelConfig
+from app.core.security import decrypt_password
+
 
 class FakeAgentScopeControlPlaneClient:
     calls: list[tuple[str, object]] = []
@@ -139,9 +142,18 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
     assert _contains_api_key_field(list_response.json()) is False
     assert _contains_api_key_field(create_response.json()) is False
     assert _contains_api_key_field(update_response.json()) is False
-    assert ("create_credential", {"data": {"name": "默认凭证", "type": "openai_credential", "api_key": "sk-test", "base_url": "https://example.test/v1", "model": "gpt-test"}}) in (
-        FakeAgentScopeControlPlaneClient.calls
-    )
+    assert (
+        "create_credential",
+        {
+            "data": {
+                "name": "默认凭证",
+                "type": "openai_credential",
+                "api_key": "sk-test",
+                "base_url": "https://example.test/v1",
+                "model": "gpt-test",
+            }
+        },
+    ) in (FakeAgentScopeControlPlaneClient.calls)
     # PATCH 语义收敛为 partial update：Datalogue 会先读现存 credential，把缺失字段
     # （尤其是 api_key/type）用现值兜底再回写，避免前端脱敏表单误清空 key。
     assert (
@@ -160,6 +172,55 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
         ),
     ) in FakeAgentScopeControlPlaneClient.calls
     assert ("delete_credential", "cred-1") in FakeAgentScopeControlPlaneClient.calls
+
+
+def test_agentscope_control_plane_persists_api_key_as_local_ciphertext(client, db_session):
+    """新增 credential 时只允许在本地落 AES-GCM 密文，接口响应不得泄露明文。"""
+
+    response = client.post(
+        "/api/agentscope-control/credentials",
+        json={
+            "data": {
+                "name": "DeepSeek 主模型",
+                "type": "deepseek_credential",
+                "api_key": "sk-local-source-of-truth",
+                "base_url": "https://api.deepseek.com/v1",
+                "model": "deepseek-v4-pro",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    config = db_session.query(LLMModelConfig).filter_by(credential_id="cred-1").one()
+    assert config.api_key_enc != "sk-local-source-of-truth"
+    assert decrypt_password(config.api_key_enc) == "sk-local-source-of-truth"
+    assert "sk-local-source-of-truth" not in response.text
+
+
+def test_agentscope_control_plane_patch_updates_local_ciphertext(client, db_session):
+    """用户显式更换 API Key 后，本地密文与 AgentScope 运行副本必须同步更新。"""
+
+    config = LLMModelConfig(
+        credential_id="cred-1",
+        credential_type="openai_credential",
+        name="默认凭证",
+        provider="openai-compatible",
+        base_url="https://example.test/v1",
+        model="gpt-test",
+        api_key_enc="",
+    )
+    db_session.add(config)
+    db_session.commit()
+
+    response = client.patch(
+        "/api/agentscope-control/credentials/cred-1",
+        json={"data": {"api_key": "sk-rotated-local-key"}},
+    )
+
+    assert response.status_code == 200
+    db_session.refresh(config)
+    assert decrypt_password(config.api_key_enc) == "sk-rotated-local-key"
+    assert "sk-rotated-local-key" not in response.text
 
 
 def test_agentscope_control_plane_patch_returns_404_when_credential_missing(client):

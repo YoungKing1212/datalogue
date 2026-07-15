@@ -51,6 +51,18 @@ class FakeClient:
         )
         return credential_id
 
+    async def upsert_credential(self, *, credential_id, name, credential_type, api_key, base_url):
+        self.upserted_credentials.append(
+            {
+                "credential_id": credential_id,
+                "name": name,
+                "credential_type": credential_type,
+                "api_key": api_key,
+                "base_url": base_url,
+            }
+        )
+        return credential_id
+
     async def create_session(self, *, agent_id, name, chat_model_config=None):
         self.created_sessions.append(
             {
@@ -102,7 +114,9 @@ class AgentNotFoundThenRecoveredClient(FakeClient):
         )
         if agent_id == "agent-leader-1":
             request = httpx.Request("POST", "http://testserver/agentscope/sessions/")
-            response = httpx.Response(404, json={"detail": "Agent 'agent-leader-1' not found."}, request=request)
+            response = httpx.Response(
+                404, json={"detail": "Agent 'agent-leader-1' not found."}, request=request
+            )
             response.raise_for_status()
         return "session-1"
 
@@ -266,7 +280,10 @@ async def test_agentscope_service_task_runner_refreshes_default_leader_when_sess
     ]
 
     assert len(client.ensure_agent_requests) == 2
-    assert [item["agent_id"] for item in client.created_sessions] == ["agent-leader-1", "agent-leader-2"]
+    assert [item["agent_id"] for item in client.created_sessions] == [
+        "agent-leader-1",
+        "agent-leader-2",
+    ]
     assert client.triggered_chats[0]["agent_id"] == "agent-leader-2"
     assert client.stream_requests[0]["agent_id"] == "agent-leader-2"
     assert events
@@ -351,7 +368,9 @@ async def test_agentscope_service_task_runner_default_model_comes_from_database_
     credential_id = config.credential_id
 
     client = FakeClient()
-    client.credentials = [{"id": credential_id, "data": {"id": credential_id, "type": "openai_credential"}}]
+    client.credentials = [
+        {"id": credential_id, "data": {"id": credential_id, "type": "openai_credential"}}
+    ]
     runner = AgentTeamTaskRunner(
         base_url="http://testserver/agentscope",
         db=db_session,
@@ -390,7 +409,9 @@ async def test_agentscope_service_task_runner_default_model_comes_from_database_
 
 
 @pytest.mark.asyncio
-async def test_agentscope_service_task_runner_default_model_uses_database_credential_link(db_session):
+async def test_agentscope_service_task_runner_default_model_uses_database_credential_link(
+    db_session,
+):
     """默认路径只使用数据库保存的原生 DeepSeek credential 关联，不再按名称匹配。"""
 
     from app.core.config import Settings
@@ -455,6 +476,72 @@ async def test_agentscope_service_task_runner_default_model_uses_database_creden
         "credential_id": "native-deepseek-credential",
         "model": "deepseek-v4-pro",
         "parameters": {"thinking_enable": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_agentscope_service_task_runner_restores_missing_database_credential_from_local_key(
+    db_session,
+):
+    """运行副本缺失时，必须以本地 AES-GCM 密钥补建原生 DeepSeek credential。"""
+
+    from app.core.config import Settings
+    from app.core.models.llm import LLMModelConfig
+    from app.core.security import encrypt_password
+    from app.runtime.engine.runner import AgentTeamTaskRunner
+
+    config = LLMModelConfig(
+        name="DeepSeek · deepseek-v4-pro",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-v4-pro",
+        status="active",
+        credential_id="missing-deepseek-credential",
+        credential_type="deepseek_credential",
+        api_key_enc=encrypt_password("sk-local-deepseek"),
+    )
+    db_session.add(config)
+    db_session.commit()
+
+    client = FakeClient()
+    runner = AgentTeamTaskRunner(
+        base_url="http://testserver/agentscope",
+        db=db_session,
+        settings=Settings(OPENAI_API_KEY=None),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(task_source="chat", task_type="bi_query", question="查询销售额")
+    task = SimpleNamespace(
+        task_id="task-restore",
+        trace_id="trace-restore",
+        thread_id="thread-restore",
+        message_id="message-restore",
+        selected_agent="agent_team_leader",
+    )
+
+    [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert client.upserted_credentials == [
+        {
+            "credential_id": "missing-deepseek-credential",
+            "name": "DeepSeek · deepseek-v4-pro",
+            "credential_type": "deepseek_credential",
+            "api_key": "sk-local-deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+        }
+    ]
+    assert client.created_sessions[0]["chat_model_config"] == {
+        "type": "deepseek_credential",
+        "credential_id": "missing-deepseek-credential",
+        "model": "deepseek-v4-pro",
+        "parameters": {"thinking_enable": False},
     }
 
 
@@ -679,7 +766,10 @@ class TeamDelegationFakeClient(FakeClient):
             "tool_call_name": "AgentCreate",
             "payload": {"tool_call_name": "AgentCreate"},
         }
-        yield {"type": "message", "payload": {"content": "已创建 BI worker，正在等待 worker 返回结果。"}}
+        yield {
+            "type": "message",
+            "payload": {"content": "已创建 BI worker，正在等待 worker 返回结果。"},
+        }
         yield {"event_type": "ReplyEndEvent", "payload": {"summary": "等待 worker 返回结果"}}
         yield {"type": "message", "payload": {"content": "查询完成：共找到 8 条日志。"}}
         yield {"event_type": "ReplyEndEvent", "payload": {"summary": "查询完成：共找到 8 条日志。"}}
@@ -761,7 +851,10 @@ class WorkerProgressFakeClient(TeamDelegationFakeClient):
                 "sql": "select * from hidden_table",
             },
         )
-        yield {"type": "message", "payload": {"content": "已创建 BI worker，正在等待 worker 返回结果。"}}
+        yield {
+            "type": "message",
+            "payload": {"content": "已创建 BI worker，正在等待 worker 返回结果。"},
+        }
         yield {"event_type": "ReplyEndEvent", "payload": {"summary": "等待 worker 返回结果"}}
         yield {"type": "message", "payload": {"content": "查询完成：共找到 8 条日志。"}}
         yield {"event_type": "ReplyEndEvent", "payload": {"summary": "查询完成：共找到 8 条日志。"}}
@@ -850,10 +943,16 @@ class ConfirmedDatasetMissingArtifactFakeClient(TeamDelegationFakeClient):
             "tool_call_name": "AgentCreate",
             "payload": {"tool_call_name": "AgentCreate"},
         }
-        yield {"type": "message", "payload": {"content": "已创建 BI worker，正在等待 worker 返回结果。"}}
+        yield {
+            "type": "message",
+            "payload": {"content": "已创建 BI worker，正在等待 worker 返回结果。"},
+        }
         yield {"event_type": "ReplyEndEvent", "payload": {"summary": "等待 worker 返回结果"}}
         yield {"type": "message", "payload": {"content": "查询未完成，未生成可展示结果。"}}
-        yield {"event_type": "ReplyEndEvent", "payload": {"summary": "查询未完成，未生成可展示结果。"}}
+        yield {
+            "event_type": "ReplyEndEvent",
+            "payload": {"summary": "查询未完成，未生成可展示结果。"},
+        }
         self.post_final_event_consumed = True
         yield {"type": "message", "payload": {"content": "不应消费兜底完成后的长连接事件"}}
 
@@ -1001,7 +1100,9 @@ async def test_agentscope_service_task_runner_keeps_stream_open_for_pending_work
 
 
 @pytest.mark.asyncio
-async def test_agentscope_service_task_runner_falls_back_when_confirmed_dataset_has_no_artifact(monkeypatch):
+async def test_agentscope_service_task_runner_falls_back_when_confirmed_dataset_has_no_artifact(
+    monkeypatch,
+):
     from app.core.config import Settings
     from app.runtime.engine import runner as runner_module
     from app.runtime.engine.runner import AgentTeamTaskRunner
@@ -1087,5 +1188,8 @@ async def test_agentscope_service_task_runner_falls_back_when_confirmed_dataset_
     assert events[-2].payload["tool_name"] == "datalogue_execute_query_plan"
     assert events[-1].payload["datalogue_event_type"] == "dataset_query_result"
     assert events[-1].payload["artifact_ref"] == "artifact:test"
-    assert events[-1].payload["artifact_card"]["preview_payload"] == {"row_count": 100, "column_count": 48}
+    assert events[-1].payload["artifact_card"]["preview_payload"] == {
+        "row_count": 100,
+        "column_count": 48,
+    }
     assert client.post_final_event_consumed is False
