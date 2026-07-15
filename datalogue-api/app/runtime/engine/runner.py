@@ -31,7 +31,10 @@ from app.runtime.engine.client import AgentScopeServiceClient
 from app.domains.bi.worker.dataset_query import execute_dataset_query_for_agent_team_direct_fallback
 from app.domains.agent_team.progress_bridge import agent_progress_subscription
 from app.runtime.engine.projection import project_runtime_event
-from app.runtime.engine.registry import build_datalogue_leader_agent_spec
+from app.runtime.engine.registry import (
+    available_datalogue_worker_types,
+    build_datalogue_leader_agent_spec,
+)
 from app.domains.agent_team.task_context import store_task_context
 from app.core.config import Settings, get_settings
 from app.core.middlewares.lifecycle import log_lifecycle
@@ -39,7 +42,6 @@ from app.core.models.agent_team_task import AgentTeamTask
 from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
 from app.core.schemas.bi_workbench import DatalogueEventEnvelope, build_datalogue_event_envelope
 from app.core.llm_config import DEFAULT_MODEL_CREDENTIAL_ID, resolve_llm_config
-
 
 DEFAULT_LEADER_AGENT_ID = None
 _FORBIDDEN_MODEL_PARAMETER_KEYS = {"api_key", "base_url", "credential_id", "model", "type"}
@@ -136,24 +138,31 @@ class AgentTeamTaskRunner:
                             message_id=task.message_id,
                             selected_agent=task.selected_agent,
                         )
-                        if envelope.event_type == "message.completed" and _is_intermediate_team_reply(
-                            spawned_worker=current_reply_spawned_worker,
-                            reply_text=current_reply_text,
-                            payload=envelope.payload,
+                        if (
+                            envelope.event_type == "message.completed"
+                            and _is_intermediate_team_reply(
+                                spawned_worker=current_reply_spawned_worker,
+                                reply_text=current_reply_text,
+                                payload=envelope.payload,
+                            )
                         ):
                             # AgentCreate 只把 worker 的首次任务入队；worker 会在独立 session 中执行，
                             # 完成后通过 TeamSay 唤醒 leader。本次 ReplyEnd 只是“分派完成”，不能关闭 Datalogue SSE。
                             current_reply_spawned_worker = False
                             current_reply_text = ""
                             continue
-                        if _should_run_confirmed_dataset_fallback(request=request, payload=envelope.payload):
+                        if _should_run_confirmed_dataset_fallback(
+                            request=request, payload=envelope.payload
+                        ):
                             async for fallback_event in _run_confirmed_dataset_query_fallback(
                                 request=request,
                                 task=task,
                             ):
                                 yield fallback_event
                             break
-                        if envelope.event_type == "message.completed" and _has_pending_tool_calls(envelope.payload):
+                        if envelope.event_type == "message.completed" and _has_pending_tool_calls(
+                            envelope.payload
+                        ):
                             # AgentScope ReAct 中，带 pending tool_calls 的 ReplyEnd 只是“模型已决定调工具”；
                             # 真实业务结果要等 ToolResult/TeamSay，不能把这一段提前投成 Datalogue 终态。
                             current_reply_spawned_worker = False
@@ -272,7 +281,10 @@ class AgentTeamTaskRunner:
             model_name = self.settings.LLM_MODEL
             credential_type = "openai_credential"
         else:
-            model_name = _model_name_from_credential_data(_credential_data(default_credential)) or self.settings.LLM_MODEL
+            model_name = (
+                _model_name_from_credential_data(_credential_data(default_credential))
+                or self.settings.LLM_MODEL
+            )
             credential_type = _credential_type(default_credential)
         return {
             "type": credential_type,
@@ -306,7 +318,9 @@ class AgentTeamTaskRunner:
         )
 
 
-def _find_credential(credentials: list[dict[str, Any]], credential_id: str) -> dict[str, Any] | None:
+def _find_credential(
+    credentials: list[dict[str, Any]], credential_id: str
+) -> dict[str, Any] | None:
     for item in credentials:
         if _credential_id(item) == credential_id:
             return item
@@ -365,7 +379,8 @@ def _build_agent_input_text(*, request: AgentTeamTaskRequest, user_msg: UserMsg)
         "artifact_ref": request.artifact_ref,
         "retry_checkpoint_ref": request.retry_checkpoint_ref,
         # 该提示让 leader 使用官方 Team 工具选择 worker；Datalogue 不在这里手写 worker 路由。
-        "available_worker_types": ["bi", "report", "python", "audit"],
+        # 与 AgentScope 实际注册模板保持一致；演示关闭报告能力时不能继续诱导 Leader 创建 report worker。
+        "available_worker_types": available_datalogue_worker_types(),
     }
     directives: list[str] = []
     if request.dataset_id is not None:
@@ -402,6 +417,7 @@ def _is_agent_not_found(exc: httpx.HTTPStatusError) -> bool:
         return False
     response_text = exc.response.text.lower()
     return "agent" in response_text and "not found" in response_text
+
 
 def _safe_model_parameters(parameters: dict[str, Any] | None) -> dict[str, Any]:
     """只允许聊天请求覆盖模型运行参数，禁止把 credential 级字段塞进 session config。"""
@@ -492,8 +508,12 @@ def _is_intermediate_team_reply(
         return True
     summary = str(payload.get("summary") or payload.get("content") or "")
     text = f"{reply_text}\n{summary}".lower()
-    has_worker = any(marker in text for marker in ("worker", "成员", "子agent", "bi-worker", "bi worker"))
-    is_waiting = any(marker in text for marker in ("等待", "wait", "report back", "返回结果", "汇报"))
+    has_worker = any(
+        marker in text for marker in ("worker", "成员", "子agent", "bi-worker", "bi worker")
+    )
+    is_waiting = any(
+        marker in text for marker in ("等待", "wait", "report back", "返回结果", "汇报")
+    )
     is_planning = any(
         marker in text
         for marker in (
@@ -518,8 +538,12 @@ def _is_business_terminal_payload(payload: dict[str, Any]) -> bool:
     datalogue_event_type = str(payload.get("datalogue_event_type") or "")
     if datalogue_event_type in {"dataset_candidates", "dataset_query_result"}:
         return True
-    route_decision = payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
-    clarification = payload.get("clarification") if isinstance(payload.get("clarification"), dict) else {}
+    route_decision = (
+        payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
+    )
+    clarification = (
+        payload.get("clarification") if isinstance(payload.get("clarification"), dict) else {}
+    )
     return bool(
         payload.get("requires_user_confirmation")
         or route_decision.get("decision") in {"ambiguous", "no_match"}
@@ -527,7 +551,9 @@ def _is_business_terminal_payload(payload: dict[str, Any]) -> bool:
     )
 
 
-def _should_run_confirmed_dataset_fallback(*, request: AgentTeamTaskRequest, payload: dict[str, Any]) -> bool:
+def _should_run_confirmed_dataset_fallback(
+    *, request: AgentTeamTaskRequest, payload: dict[str, Any]
+) -> bool:
     """确认态缺 artifact 时兜底执行查询，避免 worker 自然语言失败截断真实结果卡。"""
 
     if request.dataset_id is None or _has_artifact_final_payload(payload):
@@ -539,7 +565,9 @@ def _should_run_confirmed_dataset_fallback(*, request: AgentTeamTaskRequest, pay
 def _has_artifact_final_payload(payload: dict[str, Any]) -> bool:
     """判断最终 payload 是否已经带有结果引用；有引用时必须尊重 AgentScope worker 的真实返回。"""
 
-    return bool(payload.get("artifact_ref") or payload.get("result_ref") or payload.get("artifact_card"))
+    return bool(
+        payload.get("artifact_ref") or payload.get("result_ref") or payload.get("artifact_card")
+    )
 
 
 async def _run_confirmed_dataset_query_fallback(

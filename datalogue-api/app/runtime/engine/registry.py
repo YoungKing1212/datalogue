@@ -25,6 +25,7 @@ from agentscope.permission import (
     PermissionMode,
 )
 
+from app.core.config import get_settings
 from app.prompts.agent_team import (
     BI_WORKER_PROMPT,
     LEADER_AGENT_SYSTEM_PROMPT,
@@ -55,9 +56,18 @@ class AgentTeamLeaderSpec:
 def build_datalogue_leader_agent_spec() -> AgentTeamLeaderSpec:
     """返回主链 leader 身份；worker 实例仍由 AgentScope AgentCreate 动态创建。"""
 
+    system_prompt = LEADER_AGENT_SYSTEM_PROMPT
+    if not get_settings().DATALOGUE_REPORT_WORKER_ENABLED:
+        # 本轮演示不把未完全验收的智能报告包装成已交付能力；从 Leader 决策源头禁止派生 Report Worker。
+        system_prompt += (
+            "\n\n<demo_release_boundary>\n"
+            "当前发布版本未开放 Report Worker。无论用户是否提到报告、分析或总结，"
+            "都只能使用 BI Worker 完成查询并基于安全结果摘要作答；严禁创建 report worker。\n"
+            "</demo_release_boundary>"
+        )
     return AgentTeamLeaderSpec(
         name=LEADER_AGENT_NAME,
-        system_prompt=LEADER_AGENT_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
     )
 
 
@@ -116,26 +126,38 @@ def _bi_worker_permission_context() -> PermissionContext:
 def _report_worker_permission_context() -> PermissionContext:
     """Report worker 的权限上下文：只放行 artifact 报告读取和团队汇报，其他工具 fail-closed。"""
 
-    return _load_worker_permission_context("report_worker_permissions.json", worker_label="Report Worker")
+    return _load_worker_permission_context(
+        "report_worker_permissions.json", worker_label="Report Worker"
+    )
 
 
 def build_datalogue_worker_template_specs() -> list[AgentTeamWorkerTemplateSpec]:
     """返回 Datalogue 固定 worker 类型；顺序即 AgentCreate 暴露给 leader 的稳定顺序。"""
 
-    return [
+    specs = [
         AgentTeamWorkerTemplateSpec(
             worker_type="bi",
             display_name="Datalogue BI Worker",
             description="Dataset Query worker，负责智能问数、工具调用、artifact/checkpoint refs。",
             system_prompt_template=BI_WORKER_PROMPT,
         ),
-        AgentTeamWorkerTemplateSpec(
-            worker_type="report",
-            display_name="Datalogue Report Worker",
-            description="报告 worker，负责基于 artifact_ref 和安全摘要生成报告。",
-            system_prompt_template=REPORT_WORKER_PROMPT,
-        ),
     ]
+    if get_settings().DATALOGUE_REPORT_WORKER_ENABLED:
+        specs.append(
+            AgentTeamWorkerTemplateSpec(
+                worker_type="report",
+                display_name="Datalogue Report Worker",
+                description="报告 worker，负责基于 artifact_ref 和安全摘要生成报告。",
+                system_prompt_template=REPORT_WORKER_PROMPT,
+            )
+        )
+    return specs
+
+
+def available_datalogue_worker_types() -> list[str]:
+    """返回当前配置实际注册的 Worker 类型，供运行时提示和前端能力声明复用。"""
+
+    return [spec.worker_type for spec in build_datalogue_worker_template_specs()]
 
 
 def build_datalogue_subagent_templates() -> list[SubAgentTemplate]:

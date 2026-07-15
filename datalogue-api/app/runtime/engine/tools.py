@@ -30,7 +30,12 @@ from agentscope.permission import (
 from agentscope.tool import FunctionTool, ToolBase, ToolChunk
 from pydantic import ValidationError
 
+from app.core.config import get_settings
 from app.domains.bi.worker.context import BIWorkerContextProvider
+from app.domains.bi.capability_policy import (
+    get_bi_capability_policy,
+    validate_bi_query_plan_capability,
+)
 from app.domains.bi.worker.contracts import (
     BIWorkerQueryPlan,
     BIWorkerQueryResult,
@@ -425,7 +430,9 @@ async def _team_worker_context(
 
     if storage is None or not user_id or not agent_id:
         return None
-    worker_type = await resolve_team_worker_type(storage=storage, user_id=user_id, agent_id=agent_id)
+    worker_type = await resolve_team_worker_type(
+        storage=storage, user_id=user_id, agent_id=agent_id
+    )
     if worker_type is None:
         return None
     agent_record = await storage.get_agent(user_id, agent_id)
@@ -679,6 +686,35 @@ def build_datalogue_progressive_bi_worker_tools(
 
         try:
             plan = BIWorkerQueryPlan.model_validate(query_plan)
+            # 版本能力在结构契约通过后、执行 SQL 前强制收口；提示词和前端隐藏都不能替代这道后端闸门。
+            capability_policy = get_bi_capability_policy(
+                get_settings().DATALOGUE_DEMO_CAPABILITY_LEVEL
+            )
+            capability_result = validate_bi_query_plan_capability(plan, capability_policy)
+            if not capability_result.allowed:
+                visible_reasons = [item.safe_reason for item in capability_result.violations]
+                logger.info(
+                    "[datalogue_execute_query_plan_bundle] CAPABILITY BLOCKED "
+                    "dataset_id=%s trace_id=%s level=%s codes=%s",
+                    dataset_id,
+                    trace_id,
+                    capability_result.level.value,
+                    [item.code.value for item in capability_result.violations],
+                )
+                return _tool_success_chunk(
+                    {
+                        "datalogue_event_type": "bi_capability_restriction",
+                        "status": "unsupported",
+                        "code": "CAPABILITY_LEVEL_RESTRICTED",
+                        "capability_level": capability_result.level.value,
+                        # 只回传稳定错误码和安全中文原因，不包含表、字段、关系或 QueryPlan 原文。
+                        "violation_codes": [
+                            item.code.value for item in capability_result.violations
+                        ],
+                        "safe_reason": "；".join(dict.fromkeys(visible_reasons)),
+                        "recommended_action": "请改用当前版本已开放的查询方式。",
+                    }
+                )
             # 打印完整 query_plan 结构，便于排查 LLM 生成的 DSL 是否与校验规则对齐
             logger.info(
                 "[datalogue_execute_query_plan_bundle] QUERY_PLAN dataset_id=%s trace_id=%s "
@@ -692,7 +728,10 @@ def build_datalogue_progressive_bi_worker_tools(
                 [s.target.asset_ref for s in (plan.selects or [])],
                 [m.target.asset_ref for m in (plan.metrics or [])],
                 [json.dumps(f.model_dump(), ensure_ascii=False) for f in (plan.filters or [])],
-                [json.dumps(j.model_dump(), ensure_ascii=False) for j in (plan.join_requirements or [])],
+                [
+                    json.dumps(j.model_dump(), ensure_ascii=False)
+                    for j in (plan.join_requirements or [])
+                ],
             )
             # 只保留 ProgressiveContextState 认识的字段；
             # LLM 可能把 prepare_query_context 返回的 dataset_summary 等额外字段一并传入。

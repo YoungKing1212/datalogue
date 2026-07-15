@@ -35,6 +35,7 @@ from app.domains.agent_team.event_projection import (
     build_task_envelope,
     project_agentscope_event,
 )
+from app.runtime.engine.registry import available_datalogue_worker_types
 from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,
@@ -401,7 +402,7 @@ class AgentTeamTaskRuntime:
             payload={
                 "selected_agent": selected_agent,
                 "task_type": request.task_type,
-                "available_worker_types": ["bi", "report", "python", "audit"],
+                "available_worker_types": available_datalogue_worker_types(),
             },
         )
         accumulated_text = ""
