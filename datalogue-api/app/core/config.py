@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # 自动标题后台线程开关；测试或批处理场景可关闭，避免异步 DB 副作用干扰主链验证。
     DATALOGUE_AUTO_TITLE_ENABLED: bool = True
     # 演示能力分层：默认保持现有完整主链；各版本 Tag 通过 conf/demo/*.env 收紧查询能力。
-    DATALOGUE_DEMO_CAPABILITY_LEVEL: str = "single_table"
+    DATALOGUE_DEMO_CAPABILITY_LEVEL: str = "multi_table"
     # 智能报告尚未纳入本轮四期演示，演示配置会关闭 Report Worker，避免提前触发未验收能力。
     DATALOGUE_REPORT_WORKER_ENABLED: bool = True
 
@@ -216,7 +216,7 @@ class Settings(BaseSettings):
     def _validate_demo_capability_level(cls, value: str) -> str:
         """拒绝未知演示等级，避免拼写错误时意外放开完整查询能力。"""
 
-        normalized = (value or "single_table").strip().lower()
+        normalized = (value or "multi_table").strip().lower()
         allowed = {"single_table", "multi_table", "semantic_metrics", "agent_team"}
         if normalized not in allowed:
             raise ValueError(
