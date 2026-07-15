@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : update_design_plan_v2.py
 # Description:
-#   更新 Datalogue v2 设计方案文档的辅助脚本。
+#   复现 Datalogue 2026-06-05 历史设计方案的辅助脚本。
 #
 # Responsibilities:
-#   - 根据项目设计资料生成修订后的方案内容。
-#   - 写入产品规划使用的新版文档资产。
+#   - 基于归档的 v2.0 文档生成当时的修订版本。
+#   - 只写入历史归档目录，不作为当前产品规划入口。
 #
 # Author      : yangkai
 # Created On  : 2026-06-05
@@ -24,8 +24,10 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "assets/documents/Datalogue_设计开发方案_v2.0.docx"
-OUT = ROOT / "assets/documents/Datalogue_设计开发方案_v2.0_更新版_20260605.docx"
+ARCHIVE_DIR = ROOT / "assets/archive/2026-07-03-legacy-design-plans"
+# 该脚本仅用于复现历史文档，禁止把输出重新标记为当前架构方案。
+SRC = ARCHIVE_DIR / "Datalogue_设计开发方案_v2.0.docx"
+OUT = ARCHIVE_DIR / "Datalogue_设计开发方案_v2.0_更新版_20260605.docx"
 
 
 STATUS_ROWS = [

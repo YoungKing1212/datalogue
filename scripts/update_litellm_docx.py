@@ -1,11 +1,11 @@
 # ============================================================
 # File Name   : update_litellm_docx.py
 # Description:
-#   更新 Datalogue 设计开发方案 DOCX，补充 LiteLLM 配置化接入内容。
+#   复现 2026-06-10 LiteLLM 历史设计方案 DOCX。
 #
 # Responsibilities:
-#   - 基于最新 v2.0 DOCX 生成 20260610 更新版。
-#   - 同步更新 LLM 多来源配置正文、数据库/API 表、路线图和差距矩阵。
+#   - 基于归档的 20260605 版本生成当时的 20260610 更新版。
+#   - 只写入历史归档目录，不作为当前产品规划入口。
 #
 # Author      : yangkai
 # Created On  : 2026-06-10
@@ -23,8 +23,10 @@ from docx.shared import RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "assets/documents/Datalogue_设计开发方案_v2.0_更新版_20260605.docx"
-OUT = ROOT / "assets/documents/Datalogue_设计开发方案_v2.0_更新版_20260610.docx"
+ARCHIVE_DIR = ROOT / "assets/archive/2026-07-03-legacy-design-plans"
+# 该脚本仅用于复现历史文档，禁止把输出重新标记为当前架构方案。
+SRC = ARCHIVE_DIR / "Datalogue_设计开发方案_v2.0_更新版_20260605.docx"
+OUT = ARCHIVE_DIR / "Datalogue_设计开发方案_v2.0_更新版_20260610.docx"
 
 
 def text_of(paragraph) -> str:
