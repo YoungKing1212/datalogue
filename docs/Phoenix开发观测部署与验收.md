@@ -10,7 +10,7 @@ Phoenix 是数语内部开发人员使用的链路观测后台，不对终端用
 DB_PASSWORD=<现有 datalogue PostgreSQL 密码>
 PHOENIX_SECRET=<至少 32 字符的随机 JWT 签名密钥>
 PHOENIX_ADMIN_INITIAL_PASSWORD=<符合强密码规则的管理员密码>
-PHOENIX_PORT=6006
+PHOENIX_PORT=8065
 ```
 
 先启动根 Compose 中的 PostgreSQL，再使用独立 Compose 启动 Phoenix：
@@ -23,10 +23,10 @@ docker compose -f docker-compose.phoenix.yml up -d
 通过 SSH 隧道访问管理页面，避免将 UI 或 OTLP collector 暴露到公网：
 
 ```bash
-ssh -N -L 6006:127.0.0.1:6006 <部署机用户>@<部署机地址>
+ssh -N -L 8065:127.0.0.1:8065 <部署机用户>@<部署机地址>
 ```
 
-浏览器打开 `http://127.0.0.1:6006`，以 `admin@localhost` 登录。管理员应完成以下配置：
+浏览器打开 `http://127.0.0.1:8065`，以 `admin@localhost` 登录。当前 Compose 按运维要求使用 Phoenix `latest`，每次拉取新镜像后都必须重新执行本文验收清单。管理员应完成以下配置：
 
 1. 创建 system API key，名称为 `datalogue-otel-writer`；只在创建时复制一次。
 2. 创建开发人员账号并赋予 `viewer`，开发人员只读 Trace；账号、角色及 system key 均由管理员维护。

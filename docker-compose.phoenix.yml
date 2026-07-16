@@ -7,8 +7,8 @@
 
 services:
   phoenix:
-    # 固定到已验证的 Phoenix 18.0.0 manifest digest，禁止跟随 latest 漂移。
-    image: arizephoenix/phoenix:version-18.0.0@sha256:949b445c8ce45b2bb98da42e7ec46dc2afc272c09edd69f9d063e343f5ec703c
+    # 部署环境按运维要求跟随 Phoenix 最新镜像；升级后必须重新执行观测链路验收。
+    image: arizephoenix/phoenix:latest
     container_name: datalogue-phoenix
     environment:
       # 与 Datalogue 共用 PostgreSQL 和 datalogue 数据库，但 Phoenix 表固定落在 phoenix Schema。
@@ -23,7 +23,7 @@ services:
       PHOENIX_ALLOWED_PROVIDERS: "NONE"
     ports:
       # UI 与 OTLP 仅开放给部署机本地；远程访问 UI 必须通过 SSH 隧道。
-      - "127.0.0.1:${PHOENIX_PORT:-6006}:6006"
+      - "127.0.0.1:${PHOENIX_PORT:-8065}:6006"
       - "127.0.0.1:${PHOENIX_OTLP_PORT:-4317}:4317"
     restart: unless-stopped
 
