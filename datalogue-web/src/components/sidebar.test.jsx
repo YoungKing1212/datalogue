@@ -1,9 +1,14 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Sidebar } from './sidebar.jsx';
+import { listNavigationCounts } from '../api/client';
+
+vi.mock('../api/client', () => ({
+  listNavigationCounts: vi.fn(),
+}));
 
 vi.mock('../auth/auth-context', () => ({
   useAuth: () => ({
@@ -20,37 +25,67 @@ vi.mock('./icons', () => ({
 }));
 
 describe('Sidebar navigation counts', () => {
-  it('renders simplified sidebar groups and entries', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders database-backed counts and removes old hardcoded badges', async () => {
+    listNavigationCounts.mockResolvedValue({
+      dashboard: 2,
+      history: 11,
+      datasets: 3,
+      knowledge: 9,
+      review: 1,
+      datasources: 4,
+      apis: null,
+    });
+
     render(
       <MemoryRouter initialEntries={['/datasets']}>
         <Sidebar />
       </MemoryRouter>,
     );
 
-    expect(screen.getByText('数语')).toBeInTheDocument();
-    expect(screen.getByText('问数')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /对话问数/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /模板问数/ })).toBeInTheDocument();
-    expect(screen.getByText('数据资产')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /数据集/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /指标库/ })).toBeInTheDocument();
-    expect(screen.getByText('分析洞察')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /我的分析/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /洞察中心/ })).toBeInTheDocument();
-    expect(screen.getByText('系统管理')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /团队管理/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /系统设置/ })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listNavigationCounts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(within(screen.getByRole('button', { name: /监控大盘/ })).getByText('2')).toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: /查询历史/ })).getByText('11')).toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: /数据集 & 指标/ })).getByText('3')).toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: /知识库/ })).getByText('9')).toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: /审核队列/ })).getByText('1')).toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: /数据源/ })).getByText('4')).toBeInTheDocument();
+
+    expect(within(screen.getByRole('button', { name: /API 接口/ })).queryByText('7')).not.toBeInTheDocument();
+    expect(screen.queryByText('24')).not.toBeInTheDocument();
+    expect(screen.queryByText('234')).not.toBeInTheDocument();
+    expect(screen.queryByText('6')).not.toBeInTheDocument();
+    expect(screen.queryByText('5')).not.toBeInTheDocument();
   });
 
-  it('renders footer identity with avatar and role', () => {
-    render(
-      <MemoryRouter initialEntries={['/chat']}>
-        <Sidebar />
-      </MemoryRouter>,
-    );
+  it('keeps badges empty when navigation count loading fails', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    listNavigationCounts.mockRejectedValue(new Error('network down'));
 
-    expect(screen.getByText('kenyang')).toBeInTheDocument();
-    expect(screen.getByText('超级管理员')).toBeInTheDocument();
-    expect(screen.getByText('K')).toBeInTheDocument();
+    try {
+      render(
+        <MemoryRouter initialEntries={['/datasets']}>
+          <Sidebar />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => {
+        expect(listNavigationCounts).toHaveBeenCalledTimes(1);
+      });
+
+      expect(within(screen.getByRole('button', { name: /监控大盘/ })).queryByText('6')).not.toBeInTheDocument();
+      expect(within(screen.getByRole('button', { name: /API 接口/ })).queryByText('7')).not.toBeInTheDocument();
+      expect(screen.queryByText('24')).not.toBeInTheDocument();
+      expect(screen.queryByText('234')).not.toBeInTheDocument();
+      expect(screen.queryByText('5')).not.toBeInTheDocument();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
