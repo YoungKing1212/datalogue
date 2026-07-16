@@ -14,19 +14,27 @@
 
 from __future__ import annotations
 
+import logging
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from langchain_core.messages import HumanMessage
 from sqlalchemy.orm import Session
 
 from app.agentscope_runtime.client import AgentScopeServiceClient
+from app.core import schemas
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.llm import AgentScopeChatClient, build_llm_model_kwargs
+from app.core.llm_config import decrypt_model_api_key
 from app.core.models.llm import LLMModelConfig
 from app.core.security import encrypt_password
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _agentscope_base_url() -> str:
@@ -165,6 +173,7 @@ def _serialize_credential_with_projection(
         data.update(
             {
                 "id": credential_id,
+                "config_id": config.id,
                 "type": config.credential_type,
                 "name": config.name,
                 "base_url": config.base_url,
@@ -173,6 +182,10 @@ def _serialize_credential_with_projection(
                 "description": config.description,
                 "request_timeout_seconds": config.request_timeout_seconds,
                 "thinking_enabled": bool(config.thinking_enabled),
+                # AgentScope 列表不回传明文密钥，设置页密钥状态必须以本地密文为准。
+                "api_key_set": bool(config.api_key_enc),
+                "last_test_result": config.last_test_result,
+                "last_error_message": config.last_error_message,
             }
         )
     return {"id": credential_id, "data": data}
@@ -289,7 +302,7 @@ async def update_credential(
 
     try:
         async with AgentScopeServiceClient(base_url=_agentscope_base_url()) as client:
-            merged_payload = await _merge_credential_patch(client, credential_id, payload)
+            merged_payload = await _merge_credential_patch(client, credential_id, payload, db)
             updated = await client.update_credential(credential_id, merged_payload)
         _upsert_llm_config_projection(
             db,
@@ -307,10 +320,11 @@ async def _merge_credential_patch(
     client: AgentScopeServiceClient,
     credential_id: str,
     payload: dict[str, Any],
+    db: Session,
 ) -> dict[str, Any]:
     """把前端 PATCH 语义解读为 partial update：现存字段兜底，patch 覆盖。
 
-    - 只有当 patch 中 ``api_key`` 缺失或空串时，才从 AgentScope 现存 credential 中取回。
+    - 当 patch 中 ``api_key`` 缺失或空串时，从本地 AES-GCM 密文恢复完整 credential。
     - 一旦 ``type`` 变了（切 provider），认为旧 credential 已经作废，不复用其 api_key，
       让 AgentScope 侧的 pydantic 校验按原语义抛错，前端提示用户重填 key。
     - 404 由本函数就地抛出，避免把"找不到 credential"伪装成 500。
@@ -345,9 +359,18 @@ async def _merge_credential_patch(
     if type_changed:
         merged.pop("api_key", None)
     elif not overlay_key:
-        existing_key = existing_data.get("api_key")
-        if existing_key:
-            merged["api_key"] = existing_key
+        config = (
+            db.query(LLMModelConfig)
+            .filter(LLMModelConfig.credential_id == credential_id)
+            .one_or_none()
+        )
+        local_key = decrypt_model_api_key(config) if config is not None else ""
+        existing_key = str(existing_data.get("api_key") or "").strip()
+        restored_key = local_key or existing_key
+        if restored_key:
+            # AgentScope PATCH 会按完整 tagged-union 重新校验，必须补齐必填密钥；
+            # 本地 AES-GCM 密文是真相源，列表接口是否回传明文不应影响更新。
+            merged["api_key"] = restored_key
 
     return {"data": merged}
 
@@ -375,3 +398,79 @@ async def list_models(provider: str = Query(..., min_length=1)):
             return await client.list_models(provider=provider)
     except httpx.HTTPStatusError as exc:
         _raise_proxy_error(exc)
+
+
+@router.post(
+    "/credentials/{credential_id}/test",
+    response_model=schemas.LLMTestResultOut,
+)
+async def test_credential_model(
+    credential_id: str,
+    payload: schemas.LLMModelTestRequest,
+    db: Session = Depends(get_db),
+):
+    """使用本地加密密钥真实调用指定模型，并保存最近一次测试结果。"""
+
+    config = (
+        db.query(LLMModelConfig)
+        .filter(LLMModelConfig.credential_id == credential_id)
+        .one_or_none()
+    )
+    if config is None:
+        raise HTTPException(status_code=404, detail="LLM 模型配置不存在")
+
+    model_name = payload.model.strip()
+    started_at = time.perf_counter()
+    try:
+        api_key = decrypt_model_api_key(config)
+        if not api_key:
+            raise ValueError("当前 credential 未保存 API Key")
+
+        # 测试允许选择 ModelCard 中任意候选模型，但不会修改当前运行模型。
+        test_config = SimpleNamespace(
+            provider=config.provider,
+            model=model_name,
+            thinking_enabled=bool(config.thinking_enabled),
+        )
+        llm = AgentScopeChatClient(
+            provider=config.provider,
+            model=model_name,
+            api_key=api_key,
+            api_base=config.base_url,
+            temperature=0,
+            timeout=float(config.request_timeout_seconds),
+            model_kwargs=build_llm_model_kwargs(test_config),
+            thinking_enabled=bool(config.thinking_enabled),
+            max_tokens=16,
+        )
+        response = await llm.ainvoke([HumanMessage(content="请只回复 OK，用于模型连接测试。")])
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        result = {
+            "ok": True,
+            "model": model_name,
+            "latency_ms": elapsed_ms,
+            "sample": str(response.content or "").strip()[:200],
+        }
+        config.last_test_result = result
+        config.last_error_message = None
+        db.commit()
+        return {"ok": True, "message": "模型测试成功", "detail": result}
+    except Exception as exc:  # pragma: no cover - 具体网络和供应商异常由运行环境决定
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        error_message = str(exc)[:500]
+        result = {
+            "ok": False,
+            "model": model_name,
+            "latency_ms": elapsed_ms,
+            "error": error_message,
+        }
+        config.last_test_result = result
+        config.last_error_message = error_message
+        db.commit()
+        logger.warning(
+            "AgentScope credential 模型测试失败: credential_id=%s, model=%s, error=%s",
+            credential_id,
+            model_name,
+            error_message,
+        )
+        return {"ok": False, "message": "模型测试失败", "detail": result}

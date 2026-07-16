@@ -489,6 +489,7 @@ function normalizeCredentialRow(item = {}) {
   if (!id) return null;
   return {
     id: String(id),
+    config_id: data.config_id || item.config_id || null,
     credential_id: String(id),
     name: data.name || item.name || String(id),
     provider: providerForCredentialType(credentialType),
@@ -499,9 +500,60 @@ function normalizeCredentialRow(item = {}) {
     description: data.description || '',
     request_timeout_seconds: Number(data.request_timeout_seconds || item.request_timeout_seconds || 60),
     api_key_set: apiKeySet,
-    last_test_result: null,
-    last_error_message: null,
+    last_test_result: data.last_test_result || item.last_test_result || null,
+    last_error_message: data.last_error_message || item.last_error_message || null,
   };
+}
+
+function normalizeModelCard(card = {}) {
+  const name = card.name || card.model || card.id;
+  if (!name) return null;
+  return {
+    ...card,
+    name: String(name),
+    label: card.label || card.display_name || String(name),
+    status: String(card.status || 'active').toLowerCase(),
+    input_types: Array.isArray(card.input_types) ? card.input_types : [],
+    output_types: Array.isArray(card.output_types) ? card.output_types : [],
+    context_size: Number(card.context_size) || null,
+    output_size: Number(card.output_size) || null,
+  };
+}
+
+function modelCardsWithConfiguredFallback(cards, credential) {
+  const normalized = (Array.isArray(cards) ? cards : []).map(normalizeModelCard).filter(Boolean);
+  if (!credential?.model || normalized.some(card => card.name === credential.model)) return normalized;
+  // 自定义 OpenAI-compatible 服务可能没有内置 ModelCard，仍显示已保存模型并允许真实测试。
+  return [
+    {
+      name: credential.model,
+      label: credential.model,
+      status: 'configured',
+      input_types: ['text/plain'],
+      output_types: ['text/plain'],
+      context_size: null,
+      output_size: null,
+      configured_fallback: true,
+    },
+    ...normalized,
+  ];
+}
+
+function formatTokenCount(value) {
+  if (!value) return null;
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  if (value >= 1_000) return `${Math.round(value / 100) / 10}K`;
+  return String(value);
+}
+
+function describeModelCapabilities(card) {
+  const capabilities = [];
+  if (card.input_types.some(type => type.startsWith('image/'))) capabilities.push('图片输入');
+  if (card.input_types.some(type => type.startsWith('audio/'))) capabilities.push('音频输入');
+  if (card.output_types.includes('application/x-thinking')) capabilities.push('深度思考');
+  const contextSize = formatTokenCount(card.context_size);
+  if (contextSize) capabilities.push(`${contextSize} 上下文`);
+  return capabilities.length > 0 ? capabilities.join(' · ') : '文本对话';
 }
 
 function buildCredentialPayload(form, { includeId = false } = {}) {
@@ -563,15 +615,21 @@ function ModelsSection() {
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState(() => buildFormFromPreset('agentscope_openai'));
   const [saving, setSaving] = useState(false);
-  const [testingId, setTestingId] = useState(null);
   const [message, setMessage] = useState('');
   const [editorOpen, setEditorOpen] = useState(false); // 控制 credential 编辑弹窗的显隐
   const [initialFormSnapshot, setInitialFormSnapshot] = useState(null);
+  const [catalogCredential, setCatalogCredential] = useState(null);
+  const [catalogModels, setCatalogModels] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [testingModelKey, setTestingModelKey] = useState(null);
+  const [switchingModelName, setSwitchingModelName] = useState(null);
+  const [modelTestResults, setModelTestResults] = useState({});
   const templateFieldRef = useRef(null);
   const editorTriggerRef = useRef(null);
+  const catalogRequestIdRef = useRef(0);
 
   const selectedPreset = findPreset(form.preset_id);
-  const isTestingCurrentModel = form.id != null && testingId === form.id;
   const providerChoices = LLM_PROVIDER_OPTIONS.some(item => item.value === form.provider)
     ? LLM_PROVIDER_OPTIONS
     : [...LLM_PROVIDER_OPTIONS, { value: form.provider, label: form.provider }];
@@ -748,27 +806,106 @@ function ModelsSection() {
     }
   };
 
-  const testModel = async (model) => {
-    setTestingId(model.id);
-    setMessage('');
+  const loadModelCatalog = async (model) => {
+    const requestId = ++catalogRequestIdRef.current;
+    setCatalogLoading(true);
+    setCatalogError('');
     try {
       const cards = await get(`/api/agentscope-control/model?provider=${encodeURIComponent(model.credential_type || credentialTypeForProvider(model.provider))}`);
-      await loadConfig();
-      setMessage(`AgentScope ModelCard 发现成功：${Array.isArray(cards) ? cards.length : 0} 个可用模型`);
+      if (requestId !== catalogRequestIdRef.current) return;
+      setCatalogModels(modelCardsWithConfiguredFallback(cards, model));
     } catch (err) {
-      setMessage(`测试失败：${err.message}`);
+      if (requestId !== catalogRequestIdRef.current) return;
+      setCatalogModels(modelCardsWithConfiguredFallback([], model));
+      setCatalogError(`模型目录加载失败：${err.message}`);
     } finally {
-      setTestingId(null);
+      // 只允许最后一次目录请求结束加载态，防止旧请求覆盖新 credential 的模型列表。
+      if (requestId === catalogRequestIdRef.current) setCatalogLoading(false);
     }
   };
 
-  const testCurrentModel = () => {
+  const openModelCatalog = (model) => {
+    setCatalogCredential(model);
+    setCatalogModels([]);
+    setModelTestResults({});
+    loadModelCatalog(model);
+  };
+
+  const closeModelCatalog = () => {
+    catalogRequestIdRef.current += 1; // 关闭弹窗即使旧请求失效，避免异步响应重新写回已关闭目录。
+    setCatalogCredential(null);
+    setCatalogModels([]);
+    setCatalogError('');
+    setCatalogLoading(false);
+  };
+
+  const openCurrentModelCatalog = () => {
     if (!form.id) {
-      setMessage('请先保存 AgentScope credential，再发现可用模型');
+      setMessage('请先保存 AgentScope credential，再查看模型列表');
       return;
     }
-    const model = models.find(item => item.id === form.id) || { id: form.id };
-    testModel(model);
+    const model = models.find(item => item.id === form.id);
+    if (!model) {
+      setMessage('未找到当前 credential，请刷新后重试');
+      return;
+    }
+    setEditorOpen(false);
+    openModelCatalog(model);
+  };
+
+  const testCatalogModel = async (card) => {
+    if (!catalogCredential) return;
+    const resultKey = `${catalogCredential.id}:${card.name}`;
+    setTestingModelKey(resultKey);
+    setMessage('');
+    try {
+      const result = await post(
+        `/api/agentscope-control/credentials/${encodeURIComponent(catalogCredential.id)}/test`,
+        { model: card.name },
+      );
+      setModelTestResults(current => ({ ...current, [resultKey]: result }));
+      setModels(current => current.map(item => (
+        item.id === catalogCredential.id
+          ? {
+              ...item,
+              last_test_result: result.detail || null,
+              last_error_message: result.ok ? null : result.detail?.error || result.message,
+            }
+          : item
+      )));
+      setMessage(result.ok
+        ? `${card.label} 测试成功，耗时 ${result.detail?.latency_ms ?? '--'}ms`
+        : `${card.label} 测试失败：${result.detail?.error || result.message}`);
+    } catch (err) {
+      setModelTestResults(current => ({
+        ...current,
+        [resultKey]: { ok: false, message: err.message, detail: { error: err.message } },
+      }));
+      setMessage(`${card.label} 测试失败：${err.message}`);
+    } finally {
+      setTestingModelKey(null);
+    }
+  };
+
+  const selectCatalogModel = async (card) => {
+    if (!catalogCredential || card.name === catalogCredential.model || card.status === 'sunset') return;
+    setSwitchingModelName(card.name);
+    setMessage('');
+    try {
+      await patch(`/api/agentscope-control/credentials/${encodeURIComponent(catalogCredential.id)}`, {
+        data: { model: card.name },
+      });
+      const nextCredential = { ...catalogCredential, model: card.name };
+      setCatalogCredential(nextCredential);
+      setModels(current => current.map(item => (
+        item.id === catalogCredential.id ? { ...item, model: card.name } : item
+      )));
+      setMessage(`${card.label} 已设为当前模型`);
+    } catch (err) {
+      setMessage(`切换模型失败：${err.message}`);
+    } finally {
+      setSwitchingModelName(null);
+    }
   };
 
   const removeModel = async (model) => {
@@ -830,8 +967,8 @@ function ModelsSection() {
               const isActive = model.status === 'active';
               const brandKey = resolveLLMProviderBrand(model);
               const testSummary = model.last_test_result?.ok
-                ? `连接通过 · ${model.last_test_result.latency_ms ?? '--'}ms`
-                : model.last_error_message || '尚未发现模型';
+                ? `${model.last_test_result.model || model.model} 测试通过 · ${model.last_test_result.latency_ms ?? '--'}ms`
+                : model.last_error_message || '尚未进行真实模型测试';
               return (
                 <article className={'llm-credential-card ' + (isActive ? 'is-active' : 'is-disabled')} key={model.id}>
                   <div className="llm-card-topline" aria-hidden="true"><span /><span /><span /></div>
@@ -854,8 +991,8 @@ function ModelsSection() {
                     <Icon name="beaker" /><span>{testSummary}</span>
                   </div>
                   <footer className="llm-card-footer">
-                    <button className="btn ghost llm-discover-button llm-action-button" disabled={testingId === model.id} onClick={() => testModel(model)}>
-                      <Icon name="beaker" />{testingId === model.id ? '发现中' : '发现模型'}
+                    <button className="btn ghost llm-discover-button llm-action-button" onClick={() => openModelCatalog(model)}>
+                      <Icon name="brain" />模型列表
                     </button>
                     <div className="llm-card-actions">
                       <button className="icon-btn" title="编辑" data-tip="编辑" aria-label="编辑" onClick={() => startEdit(model)}><Icon name="edit" /></button>
@@ -917,9 +1054,89 @@ function ModelsSection() {
             <div className="st-modal-footer">
               <button className="btn ghost llm-action-button" onClick={closeEditor}>取消</button>
               <div className="llm-form-actions">
-                {form.id ? <button className="btn ghost llm-action-button" title={hasUnsavedChanges ? '请先保存连接信息' : '发现可用模型'} disabled={isTestingCurrentModel || hasUnsavedChanges} onClick={testCurrentModel}><Icon name="beaker" />{isTestingCurrentModel ? '发现中' : '发现模型'}</button> : <span className="llm-discover-hint">保存后即可发现可用模型</span>}
+                {form.id ? <button className="btn ghost llm-action-button" title={hasUnsavedChanges ? '请先保存连接信息' : '查看模型列表'} disabled={hasUnsavedChanges} onClick={openCurrentModelCatalog}><Icon name="brain" />模型列表</button> : <span className="llm-discover-hint">保存后即可查看并测试模型</span>}
                 <button className="btn primary llm-action-button" disabled={saving} onClick={saveModel}><Icon name="check" />{saving ? '保存中' : '保存 credential'}</button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {catalogCredential && (
+        <div className="st-modal-overlay" onClick={closeModelCatalog}>
+          <div className="st-modal llm-model-catalog-modal" role="dialog" aria-modal="true" aria-labelledby="llm-model-catalog-title" onClick={event => event.stopPropagation()}>
+            <div className="st-modal-header llm-editor-header">
+              <div className="st-modal-titles">
+                <div className="st-modal-eyebrow">AGENTSCOPE / MODEL CARD</div>
+                <div className="st-modal-title" id="llm-model-catalog-title">可用模型 · {catalogCredential.name}</div>
+                <p className="llm-editor-intro">目录来自 AgentScope ModelCard；测试会使用当前 credential 发起一次最小真实推理，不会修改模型配置。</p>
+              </div>
+              <button className="icon-btn" title="关闭" data-tip="关闭" aria-label="关闭模型列表" onClick={closeModelCatalog}><Icon name="x" /></button>
+            </div>
+
+            <div className="st-modal-body llm-model-catalog-body">
+              <div className="llm-model-catalog-toolbar">
+                <div>
+                  <strong>{catalogLoading ? '正在读取模型目录' : `${catalogModels.length} 个候选模型`}</strong>
+                  <span>当前模型：{catalogCredential.model || '未设置'}</span>
+                </div>
+                <button className="btn ghost llm-action-button" disabled={catalogLoading} onClick={() => loadModelCatalog(catalogCredential)}>
+                  <Icon name="refresh" />{catalogLoading ? '刷新中' : '刷新列表'}
+                </button>
+              </div>
+
+              {catalogError && <div className="st-inline-alert llm-catalog-alert" role="alert">{catalogError}</div>}
+
+              {catalogLoading && catalogModels.length === 0 ? (
+                <div className="llm-model-catalog-loading" aria-busy="true">
+                  {[0, 1, 2].map(item => <span key={item} />)}
+                </div>
+              ) : catalogModels.length === 0 ? (
+                <div className="llm-model-catalog-empty">
+                  <Icon name="brain" />
+                  <div><strong>AgentScope 未返回模型目录</strong><span>请先在 credential 中填写模型名，保存后仍可对该模型进行真实测试。</span></div>
+                </div>
+              ) : (
+                <div className="llm-model-list">
+                  {catalogModels.map(card => {
+                    const resultKey = `${catalogCredential.id}:${card.name}`;
+                    const testResult = modelTestResults[resultKey];
+                    const isCurrent = card.name === catalogCredential.model;
+                    const isTesting = testingModelKey === resultKey;
+                    const isSwitching = switchingModelName === card.name;
+                    const isSunset = card.status === 'sunset';
+                    return (
+                      <article className={'llm-model-row ' + (isCurrent ? 'is-current' : '')} key={card.name}>
+                        <div className="llm-model-row-main">
+                          <div className="llm-model-row-title">
+                            <strong>{card.label}</strong>
+                            {isCurrent && <span className="llm-model-current-chip">当前</span>}
+                            <span className={'llm-model-status ' + card.status}>{card.status === 'deprecated' ? '即将弃用' : card.status === 'sunset' ? '已下线' : card.configured_fallback ? '已配置' : '可用'}</span>
+                          </div>
+                          <code>{card.name}</code>
+                          <p>{describeModelCapabilities(card)}{card.output_size ? ` · 最大输出 ${formatTokenCount(card.output_size)}` : ''}</p>
+                          {testResult && (
+                            <div className={'llm-model-test-result ' + (testResult.ok ? 'is-success' : 'is-error')}>
+                              <Icon name={testResult.ok ? 'check' : 'warn'} />
+                              <span>{testResult.ok
+                                ? `测试通过 · ${testResult.detail?.latency_ms ?? '--'}ms · ${testResult.detail?.sample || '已响应'}`
+                                : `测试失败 · ${testResult.detail?.error || testResult.message}`}</span>
+                            </div>
+                          )}
+                        </div>
+                        <div className="llm-model-row-actions">
+                          <button className="btn ghost llm-action-button" disabled={isCurrent || isSunset || Boolean(switchingModelName)} onClick={() => selectCatalogModel(card)}>
+                            {isCurrent ? '当前模型' : isSunset ? '已下线' : isSwitching ? '切换中' : '设为当前'}
+                          </button>
+                          <button className="btn primary llm-action-button" aria-label={`测试模型 ${card.name}`} disabled={isTesting} onClick={() => testCatalogModel(card)}>
+                            <Icon name="beaker" />{isTesting ? '测试中' : '测试'}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>

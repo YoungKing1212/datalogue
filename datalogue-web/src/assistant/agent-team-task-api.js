@@ -1,7 +1,10 @@
 // Agent Team task stream client - Chat UI 和 Workbench 的唯一执行流入口。
 
+import { authenticatedFetch } from '../api/client';
+
 export async function* streamAgentTeamTask(payload, { signal } = {}) {
-  const res = await fetch('/api/agent-team/tasks/stream', {
+  // 流式请求必须复用 REST 客户端的 Bearer Token 与 401 刷新逻辑，否则统一鉴权会中断问数主链。
+  const res = await authenticatedFetch('/api/agent-team/tasks/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

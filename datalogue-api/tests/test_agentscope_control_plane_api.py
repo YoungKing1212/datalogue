@@ -14,9 +14,10 @@
 from __future__ import annotations
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.core.models.llm import LLMModelConfig
-from app.core.security import decrypt_password
+from app.core.security import decrypt_password, encrypt_password
 
 
 class FakeAgentScopeControlPlaneClient:
@@ -43,15 +44,13 @@ class FakeAgentScopeControlPlaneClient:
 
     async def list_credentials(self):
         self.calls.append(("list_credentials", None))
-        # 现实中 AgentScope 存储层永远吐出带 type/api_key 明文的 credential data，
-        # 这里对齐真实结构以便 partial-update 合并逻辑能被完整覆盖。
+        # AgentScope 列表接口不会回传明文密钥，PATCH 必须从 Datalogue 本地密文恢复。
         return [
             {
                 "id": "cred-1",
                 "data": {
                     "name": "默认凭证",
                     "type": "openai_credential",
-                    "api_key": "sk-hidden",
                     "base_url": "https://example.test/v1",
                     "model": "gpt-test",
                 },
@@ -101,7 +100,6 @@ def test_agentscope_control_plane_proxies_credential_schemas(client):
 
 
 def test_agentscope_control_plane_proxies_credential_crud(client):
-    list_response = client.get("/api/agentscope-control/credentials")
     create_response = client.post(
         "/api/agentscope-control/credentials",
         json={
@@ -114,6 +112,7 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
             }
         },
     )
+    list_response = client.get("/api/agentscope-control/credentials")
     update_response = client.patch(
         "/api/agentscope-control/credentials/cred-1",
         json={"data": {"name": "更新后的凭证"}},
@@ -128,7 +127,15 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
                 "type": "openai_credential",
                 "base_url": "https://example.test/v1",
                 "model": "gpt-test",
+                "id": "cred-1",
+                "config_id": list_response.json()[0]["data"]["config_id"],
+                "status": "active",
+                "description": None,
+                "request_timeout_seconds": 60.0,
+                "thinking_enabled": False,
                 "api_key_set": True,
+                "last_test_result": None,
+                "last_error_message": None,
             },
         }
     ]
@@ -164,7 +171,7 @@ def test_agentscope_control_plane_proxies_credential_crud(client):
                 "data": {
                     "name": "更新后的凭证",
                     "type": "openai_credential",
-                    "api_key": "sk-hidden",
+                    "api_key": "sk-test",
                     "base_url": "https://example.test/v1",
                     "model": "gpt-test",
                 },
@@ -233,14 +240,26 @@ def test_agentscope_control_plane_patch_returns_404_when_credential_missing(clie
     assert "not found" in response.text.lower()
 
 
-def test_agentscope_control_plane_patch_preserves_existing_api_key(client):
+def test_agentscope_control_plane_patch_preserves_existing_api_key(client, db_session):
+    config = LLMModelConfig(
+        credential_id="cred-1",
+        credential_type="openai_credential",
+        name="默认凭证",
+        provider="openai-compatible",
+        base_url="https://example.test/v1",
+        model="gpt-test",
+        api_key_enc=encrypt_password("sk-local-preserved"),
+    )
+    db_session.add(config)
+    db_session.commit()
+
     response = client.patch(
         "/api/agentscope-control/credentials/cred-1",
         json={"data": {"description": "只改描述，不重填 key"}},
     )
 
     assert response.status_code == 200
-    # 前端只改描述、没送 api_key → Datalogue 用 AgentScope 里的现存 api_key 兜底。
+    # 前端只改描述、没送 api_key → Datalogue 从本地 AES-GCM 密文恢复密钥。
     matching = [
         call
         for call in FakeAgentScopeControlPlaneClient.calls
@@ -249,7 +268,7 @@ def test_agentscope_control_plane_patch_preserves_existing_api_key(client):
     assert matching, "expected update_credential to be invoked"
     _, (_, forwarded_payload) = matching[-1]
     forwarded_data = forwarded_payload["data"]
-    assert forwarded_data["api_key"] == "sk-hidden"
+    assert forwarded_data["api_key"] == "sk-local-preserved"
     assert forwarded_data["description"] == "只改描述，不重填 key"
 
 
@@ -279,3 +298,82 @@ def test_agentscope_control_plane_proxies_models(client):
     assert response.status_code == 200
     assert response.json() == [{"name": "gpt-4.1", "model_type": "chat"}]
     assert ("list_models", "openai_credential") in FakeAgentScopeControlPlaneClient.calls
+
+
+def test_agentscope_control_plane_tests_selected_model(client, db_session, monkeypatch):
+    """模型列表里的测试按钮必须使用本地密钥真实调用所选模型，并持久化结果。"""
+
+    config = LLMModelConfig(
+        credential_id="cred-1",
+        credential_type="openai_credential",
+        name="默认凭证",
+        provider="openai-compatible",
+        base_url="https://example.test/v1",
+        model="gpt-test",
+        api_key_enc=encrypt_password("sk-local-test"),
+        request_timeout_seconds=45,
+    )
+    db_session.add(config)
+    db_session.commit()
+
+    class FakeAgentScopeChatClient:
+        init_kwargs: dict | None = None
+
+        def __init__(self, **kwargs):
+            FakeAgentScopeChatClient.init_kwargs = kwargs
+
+        async def ainvoke(self, messages):
+            assert messages[0].content == "请只回复 OK，用于模型连接测试。"
+            return AIMessage(content="OK")
+
+    monkeypatch.setattr(
+        "app.api.agentscope_control_plane.AgentScopeChatClient",
+        FakeAgentScopeChatClient,
+    )
+
+    response = client.post(
+        "/api/agentscope-control/credentials/cred-1/test",
+        json={"model": "gpt-4.1"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["detail"]["model"] == "gpt-4.1"
+    assert payload["detail"]["sample"] == "OK"
+    assert FakeAgentScopeChatClient.init_kwargs["api_key"] == "sk-local-test"
+    assert FakeAgentScopeChatClient.init_kwargs["model"] == "gpt-4.1"
+    db_session.refresh(config)
+    assert config.last_test_result["ok"] is True
+    assert config.last_test_result["model"] == "gpt-4.1"
+    assert config.last_error_message is None
+
+
+def test_agentscope_control_plane_credentials_include_last_model_test(client, db_session):
+    """凭证列表需要回显最近测试摘要，供设置页卡片展示。"""
+
+    config = LLMModelConfig(
+        credential_id="cred-1",
+        credential_type="openai_credential",
+        name="默认凭证",
+        provider="openai-compatible",
+        base_url="https://example.test/v1",
+        model="gpt-test",
+        api_key_enc=encrypt_password("sk-local-test"),
+        last_test_result={
+            "ok": True,
+            "model": "gpt-test",
+            "latency_ms": 123,
+            "sample": "OK",
+        },
+    )
+    db_session.add(config)
+    db_session.commit()
+
+    response = client.get("/api/agentscope-control/credentials")
+
+    assert response.status_code == 200
+    data = response.json()[0]["data"]
+    assert data["config_id"] == config.id
+    assert data["last_test_result"]["latency_ms"] == 123
+    assert data["last_error_message"] is None

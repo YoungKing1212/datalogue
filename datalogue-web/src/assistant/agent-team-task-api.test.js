@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { streamAgentTeamTask } from './agent-team-task-api.js';
+import { setAccessToken } from '../api/client.js';
 
 function sseStream(lines) {
   const encoder = new TextEncoder();
@@ -14,10 +15,12 @@ function sseStream(lines) {
 
 describe('streamAgentTeamTask', () => {
   afterEach(() => {
+    setAccessToken(null);
     vi.restoreAllMocks();
   });
 
   it('posts to the new Agent Team task stream endpoint', async () => {
+    setAccessToken('stream-token');
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       body: sseStream([
@@ -37,7 +40,12 @@ describe('streamAgentTeamTask', () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       '/api/agent-team/tasks/stream',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer stream-token',
+        }),
+      }),
     );
     expect(events[0].event_envelope.event_type).toBe('task.started');
   });

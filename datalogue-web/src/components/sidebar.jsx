@@ -15,6 +15,7 @@ function Sidebar() {
   const path = location.pathname;
   const displayName = user?.full_name || user?.username || '未登录用户';
   const roleLabel = user?.is_superuser ? '超级管理员' : user?.role === 'admin' ? '管理员' : '工作区成员';
+  const canManageModels = Boolean(user?.is_superuser || user?.role === 'admin');
   const avatarText = displayName.trim().slice(0, 1).toUpperCase() || '?';
 
   useEffect(() => {
@@ -75,7 +76,7 @@ function Sidebar() {
       label: '系统管理',
       items: [
         { id: 'audit',       label: '查询审计', icon: 'log' },
-        { id: 'models',      label: 'LLM 模型', icon: 'brain' },
+        ...(canManageModels ? [{ id: 'models', label: 'LLM 模型', icon: 'brain' }] : []),
         { id: 'settings',    label: '系统设置', icon: 'cog' },
       ],
     },

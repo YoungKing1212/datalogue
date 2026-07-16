@@ -31,6 +31,7 @@ from app.core.security import (
 )
 
 router = APIRouter()
+public_router = APIRouter()
 settings = get_settings()
 
 
@@ -99,7 +100,7 @@ def register(
     return user
 
 
-@router.post("/login", response_model=schemas.TokenOut)
+@public_router.post("/login", response_model=schemas.TokenOut)
 def login(payload: schemas.LoginIn, response: Response, db: Session = Depends(get_db)) -> schemas.TokenOut:
     try:
         plain_password = decrypt_auth_password(payload.password_enc)
@@ -122,7 +123,7 @@ def login(payload: schemas.LoginIn, response: Response, db: Session = Depends(ge
     return schemas.TokenOut(access_token=access_token)
 
 
-@router.post("/refresh", response_model=schemas.TokenOut)
+@public_router.post("/refresh", response_model=schemas.TokenOut)
 def refresh(request: Request, response: Response, db: Session = Depends(get_db)) -> schemas.TokenOut:
     refresh_token = request.cookies.get(settings.AUTH_COOKIE_NAME)
     if not refresh_token:
@@ -150,7 +151,7 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     return schemas.TokenOut(access_token=_build_access_token(user))
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@public_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(response: Response) -> None:
     # 退出只需要清理 refresh cookie；即使 access token 已过期，也必须允许用户彻底退出本机登录态。
     _clear_refresh_cookie(response)

@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -115,6 +115,161 @@ describe('LLMModelsScreen 模型配置', () => {
         data: { status: 'disabled' },
       });
     });
+  });
+
+  it('展示 AgentScope 模型列表并支持逐模型真实测试', async () => {
+    get.mockImplementation(async (path) => {
+      if (path === '/api/agentscope-control/credentials') {
+        return [
+          {
+            id: 'cred-1',
+            data: {
+              name: 'OpenAI 主连接',
+              type: 'openai_credential',
+              base_url: 'https://api.openai.com/v1',
+              model: 'gpt-4o',
+              status: 'active',
+              api_key_set: true,
+            },
+          },
+        ];
+      }
+      if (path === '/api/agentscope-control/model?provider=openai_credential') {
+        return [
+          {
+            name: 'gpt-4.1',
+            label: 'GPT 4.1',
+            status: 'active',
+            input_types: ['text/plain', 'image/png'],
+            output_types: ['text/plain'],
+            context_size: 128000,
+          },
+        ];
+      }
+      return [];
+    });
+    post.mockResolvedValue({
+      ok: true,
+      message: '模型测试成功',
+      detail: {
+        model: 'gpt-4.1',
+        latency_ms: 321,
+        sample: 'OK',
+      },
+    });
+
+    render(<MemoryRouter><LLMModelsScreen /></MemoryRouter>);
+    await screen.findByText('OpenAI 主连接');
+
+    fireEvent.click(screen.getByRole('button', { name: '模型列表' }));
+
+    expect(await screen.findByText('GPT 4.1')).toBeTruthy();
+    expect(screen.getByText(/图片输入 · 128K 上下文/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '测试模型 gpt-4.1' }));
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        '/api/agentscope-control/credentials/cred-1/test',
+        { model: 'gpt-4.1' },
+      );
+    });
+    expect(await screen.findByText(/测试通过 · 321ms · OK/)).toBeTruthy();
+  });
+
+  it('忽略已关闭或已切换 credential 的旧模型目录响应', async () => {
+    let resolveOpenAI;
+    let resolveDeepSeek;
+    const openAICatalog = new Promise(resolve => { resolveOpenAI = resolve; });
+    const deepSeekCatalog = new Promise(resolve => { resolveDeepSeek = resolve; });
+
+    get.mockImplementation((path) => {
+      if (path === '/api/agentscope-control/credentials') {
+        return Promise.resolve([
+          {
+            id: 'cred-openai',
+            data: {
+              name: 'OpenAI 连接',
+              type: 'openai_credential',
+              base_url: 'https://api.openai.com/v1',
+              model: 'gpt-4o',
+              status: 'active',
+              api_key_set: true,
+            },
+          },
+          {
+            id: 'cred-deepseek',
+            data: {
+              name: 'DeepSeek 连接',
+              type: 'deepseek_credential',
+              base_url: 'https://api.deepseek.com/v1',
+              model: 'deepseek-chat',
+              status: 'active',
+              api_key_set: true,
+            },
+          },
+        ]);
+      }
+      if (path === '/api/agentscope-control/model?provider=openai_credential') {
+        return openAICatalog;
+      }
+      if (path === '/api/agentscope-control/model?provider=deepseek_credential') {
+        return deepSeekCatalog;
+      }
+      return Promise.resolve([]);
+    });
+
+    render(<MemoryRouter><LLMModelsScreen /></MemoryRouter>);
+    await screen.findByText('OpenAI 连接');
+    const modelListButtons = screen.getAllByRole('button', { name: '模型列表' });
+    fireEvent.click(modelListButtons[0]);
+    fireEvent.click(screen.getByRole('button', { name: '关闭模型列表' }));
+    fireEvent.click(modelListButtons[1]);
+
+    await act(async () => {
+      resolveDeepSeek([{ name: 'deepseek-v4', label: 'DeepSeek V4', status: 'active' }]);
+    });
+    expect(await screen.findByText('DeepSeek V4')).toBeTruthy();
+
+    await act(async () => {
+      resolveOpenAI([{ name: 'gpt-late', label: '迟到的 GPT', status: 'active' }]);
+    });
+    expect(screen.getByText('DeepSeek V4')).toBeTruthy();
+    expect(screen.queryByText('迟到的 GPT')).not.toBeInTheDocument();
+  });
+
+  it('已下线模型不可设为当前模型', async () => {
+    get.mockImplementation(async (path) => {
+      if (path === '/api/agentscope-control/credentials') {
+        return [
+          {
+            id: 'cred-1',
+            data: {
+              name: 'OpenAI 主连接',
+              type: 'openai_credential',
+              base_url: 'https://api.openai.com/v1',
+              model: 'gpt-4o',
+              status: 'active',
+              api_key_set: true,
+            },
+          },
+        ];
+      }
+      if (path === '/api/agentscope-control/model?provider=openai_credential') {
+        return [{ name: 'gpt-legacy', label: 'Legacy GPT', status: 'sunset' }];
+      }
+      return [];
+    });
+
+    render(<MemoryRouter><LLMModelsScreen /></MemoryRouter>);
+    await screen.findByText('OpenAI 主连接');
+    fireEvent.click(screen.getByRole('button', { name: '模型列表' }));
+
+    const sunsetRow = (await screen.findByText('Legacy GPT')).closest('article');
+    const switchButton = within(sunsetRow).getByRole('button', { name: '已下线' });
+    expect(switchButton).toBeDisabled();
+    fireEvent.click(switchButton);
+    expect(patch).not.toHaveBeenCalled();
   });
 });
 

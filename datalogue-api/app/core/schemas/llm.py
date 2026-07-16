@@ -14,7 +14,7 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class LLMModelConfigCreate(BaseModel):
@@ -66,3 +66,17 @@ class LLMTestResultOut(BaseModel):
     ok: bool
     message: str
     detail: Optional[dict[str, Any]] = None
+
+
+class LLMModelTestRequest(BaseModel):
+    """设置页针对某个 credential 下指定模型发起真实连通性测试。"""
+
+    model: str = Field(min_length=1, max_length=200)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("model 不能为空")
+        return normalized

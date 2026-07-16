@@ -94,7 +94,13 @@ from .bi_workbench import (
     validate_event_visibility,
 )
 from .repair_plan import RepairAction, RepairFailureClass, RepairPlan, RepairStatus
-from .llm import LLMModelConfigCreate, LLMModelConfigOut, LLMModelConfigUpdate, LLMTestResultOut
+from .llm import (
+    LLMModelConfigCreate,
+    LLMModelConfigOut,
+    LLMModelConfigUpdate,
+    LLMModelTestRequest,
+    LLMTestResultOut,
+)
 from .auth import (
     LoginIn,
     RegisterIn,
@@ -185,6 +191,7 @@ __all__ = [
     "LLMModelConfigCreate",
     "LLMModelConfigOut",
     "LLMModelConfigUpdate",
+    "LLMModelTestRequest",
     "LLMTestResultOut",
     "LoginIn",
     "RegisterIn",

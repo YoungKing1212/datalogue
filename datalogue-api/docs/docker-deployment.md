@@ -11,7 +11,7 @@
 Nginx
   ├── /        → Web:3000
   ├── /api/*   → API:8000
-  └── /agentscope/* → API:8000
+  └── /agentscope/* → 404（AgentScope 原始服务仅供容器内调用）
 
 PostgreSQL healthy
   ▼
@@ -128,13 +128,13 @@ docker compose -f docker-compose.phoenix.yml up -d
 
 Phoenix 默认仅绑定宿主机回环地址：
 
-- UI：`127.0.0.1:${PHOENIX_PORT:-6006}`
+- UI：`127.0.0.1:${PHOENIX_PORT:-8065}`
 - OTLP gRPC：`127.0.0.1:${PHOENIX_OTLP_PORT:-4317}`
 
 远程访问 UI 时使用 SSH 隧道：
 
 ```bash
-ssh -N -L 6006:127.0.0.1:6006 <部署用户>@<部署机地址>
+ssh -N -L 8065:127.0.0.1:8065 <部署用户>@<部署机地址>
 ```
 
 停止 Phoenix 不会停止业务栈：

@@ -28,6 +28,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from app.core.database import Base, get_db
+from app.api.deps import require_api_admin, require_api_user
+from app.core import models
 from app.main import app
 
 
@@ -80,7 +82,17 @@ def client(db_session):
         finally:
             pass
 
+    test_admin = models.User(
+        id=1,
+        username="pytest-admin",
+        role="admin",
+        is_superuser=True,
+        is_active=True,
+    )
     app.dependency_overrides[get_db] = override_get_db
+    # 既有业务测试默认使用管理员身份；鉴权边界测试会显式移除对应覆盖。
+    app.dependency_overrides[require_api_user] = lambda: test_admin
+    app.dependency_overrides[require_api_admin] = lambda: test_admin
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

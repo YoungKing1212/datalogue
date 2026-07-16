@@ -6,18 +6,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Sidebar } from './sidebar.jsx';
 import { listNavigationCounts } from '../api/client';
 
-vi.mock('../api/client', () => ({
-  listNavigationCounts: vi.fn(),
-}));
-
-vi.mock('../auth/auth-context', () => ({
-  useAuth: () => ({
+const { authState } = vi.hoisted(() => ({
+  authState: {
     user: {
       username: 'kenyang',
       role: 'admin',
       is_superuser: true,
     },
-  }),
+  },
+}));
+
+vi.mock('../api/client', () => ({
+  listNavigationCounts: vi.fn(),
+}));
+
+vi.mock('../auth/auth-context', () => ({
+  useAuth: () => authState,
 }));
 
 vi.mock('./icons', () => ({
@@ -27,6 +31,11 @@ vi.mock('./icons', () => ({
 describe('Sidebar navigation counts', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authState.user = {
+      username: 'kenyang',
+      role: 'admin',
+      is_superuser: true,
+    };
   });
 
   it('renders database-backed counts and removes old hardcoded badges', async () => {
@@ -87,5 +96,25 @@ describe('Sidebar navigation counts', () => {
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+
+  it('普通用户不展示 LLM 模型管理入口', async () => {
+    authState.user = {
+      username: 'member',
+      role: 'user',
+      is_superuser: false,
+    };
+    listNavigationCounts.mockResolvedValue({});
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(listNavigationCounts).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole('button', { name: /LLM 模型/ })).not.toBeInTheDocument();
   });
 });

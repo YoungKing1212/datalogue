@@ -57,3 +57,15 @@ def get_current_superuser(current_user: models.User = Depends(get_current_user))
     if not current_user.is_superuser and current_user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员权限")
     return current_user
+
+
+def require_api_user(current_user: models.User = Depends(get_current_user)) -> models.User:
+    """统一业务 API 登录拦截依赖，便于路由聚合层集中保护所有接口。"""
+
+    return current_user
+
+
+def require_api_admin(current_user: models.User = Depends(get_current_superuser)) -> models.User:
+    """统一系统配置 API 管理员拦截依赖。"""
+
+    return current_user

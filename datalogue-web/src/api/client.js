@@ -119,7 +119,7 @@ function buildFallbackErrorMessage(status) {
   return `请求失败（HTTP ${status}）`;
 }
 
-async function request(path, options = {}, retried = false) {
+export async function authenticatedFetch(path, options = {}, retried = false) {
   const headers = { ...(options.headers || {}) };
   if (_accessToken && !headers.Authorization) {
     headers.Authorization = `Bearer ${_accessToken}`;
@@ -139,12 +139,18 @@ async function request(path, options = {}, retried = false) {
   if (allowRetry) {
     const refreshed = await _refreshHandler();
     if (refreshed) {
-      return request(path, options, true);
+      return authenticatedFetch(path, options, true);
     }
     if (typeof _authFailureHandler === 'function') {
       _authFailureHandler();
     }
   }
+
+  return res;
+}
+
+async function request(path, options = {}) {
+  const res = await authenticatedFetch(path, options);
 
   if (!res.ok) {
     const contentType = res.headers.get('content-type') || '';

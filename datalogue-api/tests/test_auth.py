@@ -11,8 +11,12 @@
 # Created On  : 2026-07-09
 # ============================================================
 
+from fastapi.routing import APIRoute
 
+from app.api.deps import get_current_user, require_api_admin, require_api_user
+from app.core import models
 from app.core.security import encrypt_auth_password
+from app.main import app
 
 
 def _login(client, username: str, plain_password: str):
@@ -115,6 +119,64 @@ def test_register_requires_admin(client):
         json={"username": "noadmin", "password": "secret123"},
     )
     assert register_res.status_code == 401
+
+
+def test_business_api_uses_unified_login_interceptor(client):
+    """业务路由未携带 access token 时，应在进入端点前统一返回 401。"""
+
+    saved_override = client.app.dependency_overrides.pop(require_api_user)
+    try:
+        response = client.get("/api/dataset")
+    finally:
+        client.app.dependency_overrides[require_api_user] = saved_override
+
+    assert response.status_code == 401
+
+
+def test_llm_control_plane_requires_admin(client):
+    """普通登录用户即使通过统一登录拦截，也不能访问模型密钥控制面。"""
+
+    saved_override = client.app.dependency_overrides.pop(require_api_admin)
+    client.app.dependency_overrides[get_current_user] = lambda: models.User(
+        id=2,
+        username="normal-user",
+        role="user",
+        is_superuser=False,
+        is_active=True,
+    )
+    try:
+        response = client.get("/api/agentscope-control/credentials")
+    finally:
+        client.app.dependency_overrides.pop(get_current_user, None)
+        client.app.dependency_overrides[require_api_admin] = saved_override
+
+    assert response.status_code == 403
+
+
+def test_all_api_routes_keep_unified_auth_boundary():
+    """除登录、刷新和退出外，所有 /api 路由都必须挂载统一鉴权依赖。"""
+
+    public_routes = {
+        ("POST", "/api/auth/login"),
+        ("POST", "/api/auth/refresh"),
+        ("POST", "/api/auth/logout"),
+    }
+    admin_prefixes = ("/api/llm", "/api/agentscope-control")
+
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+            continue
+        methods = route.methods or set()
+        dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
+        for method in methods:
+            if (method, route.path) in public_routes:
+                continue
+            expected_dependency = (
+                require_api_admin if route.path.startswith(admin_prefixes) else require_api_user
+            )
+            assert expected_dependency in dependency_calls, (
+                f"{method} {route.path} 未挂载统一鉴权依赖"
+            )
 
 
 def test_manage_user_edit_reset_password_and_delete(client, db_session):

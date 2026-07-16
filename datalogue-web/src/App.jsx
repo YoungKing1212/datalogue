@@ -171,7 +171,14 @@ function AppInner({ t, setTweak }) {
             <Route path="/review" element={<KnowledgeScreen key="kb-queue" initialTab="queue" />} />
             <Route path="/datasources" element={<DatasourcesScreen />} />
             <Route path="/audit" element={<AuditScreen />} />
-            <Route path="/models" element={<LLMModelsScreen />} />
+            <Route
+              path="/models"
+              element={(
+                <RequireSuperuser>
+                  <LLMModelsScreen />
+                </RequireSuperuser>
+              )}
+            />
             <Route path="/settings" element={<SettingsScreen />} />
             <Route
               path="/users"
