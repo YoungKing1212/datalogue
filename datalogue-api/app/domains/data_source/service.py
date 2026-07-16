@@ -114,6 +114,32 @@ def normalize_execution_dialect(db_type: str | None, dialect: str | None = None)
     return capability.dialect if capability else normalized_db_type
 
 
+def resolve_schema_name(ds: Datasource, schema_name: str | None = None) -> str | None:
+    """解析数据源实际使用的 Schema，显式选择优先于产品默认值。"""
+
+    explicit = str(schema_name or "").strip()
+    if explicit:
+        return explicit
+    configured = str(getattr(ds, "default_schema", None) or "").strip()
+    if configured:
+        return configured
+    db_type = normalize_db_type(getattr(ds, "db_type", None))
+    capability = CAPABILITIES.get(db_type)
+    capability_default = str(getattr(capability, "default_schema", None) or "").strip()
+    if capability_default:
+        return capability_default
+    options = getattr(ds, "connection_options", None)
+    options = options if isinstance(options, dict) else {}
+    if db_type in {"trino", "presto"}:
+        return str(options.get("schema") or "").strip() or None
+    if db_type == "bigquery":
+        return str(options.get("dataset") or "").strip() or None
+    if db_type == "oracle":
+        return str(getattr(ds, "username", None) or "").strip().upper() or None
+    # MySQL/Doris 的 Schema 即 database；其他兼容数据源也保留 database_name 兜底。
+    return str(getattr(ds, "database_name", None) or "").strip() or None
+
+
 def build_datasource_context(
     ds: Datasource | None,
     *,
@@ -190,10 +216,11 @@ def test_connection(ds: Datasource) -> dict[str, Any]:
         }
 
 
-def sync_source_tables(ds: Datasource) -> dict[str, Any]:
-    """连接数据源，拉取所有表和字段信息。"""
+def sync_source_tables(ds: Datasource, schema_name: str | None = None) -> dict[str, Any]:
+    """连接数据源，拉取指定 Schema 的表和字段信息。"""
     try:
-        return get_adapter(getattr(ds, "db_type", None)).sync_source_tables(ds)
+        schema = resolve_schema_name(ds, schema_name)
+        return get_adapter(getattr(ds, "db_type", None)).sync_source_tables(ds, schema_name=schema)
     except ValueError as exc:
         raise RuntimeError(_diagnostic("UNSUPPORTED_DB_TYPE", "当前数据源类型尚未注册", exc))
     except Exception as exc:
@@ -239,7 +266,7 @@ def quote_identifier(name: str, db_type: str | None) -> str:
 
 def _table_ref(schema: str | None, table: str, db_type: str | None) -> str:
     table_q = quote_identifier(table, db_type)
-    if schema and not is_mysql_protocol_type(db_type) and normalize_db_type(db_type) != "sqlite":
+    if schema and normalize_db_type(db_type) != "sqlite":
         return f"{quote_identifier(schema, db_type)}.{table_q}"
     return table_q
 

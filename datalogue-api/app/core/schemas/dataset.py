@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class DatasetCreate(BaseModel):
     name: str
     datasource_id: int
+    schema_name: Optional[str] = Field(default=None, max_length=100)
     tables_json: Dict[str, Any] = {}
     description: Optional[str] = None
     prompt_instructions: Optional[str] = None
@@ -42,6 +43,7 @@ class DatasetOut(BaseModel):
     id: int
     name: str
     datasource_id: int
+    schema_name: str
     tables_json: Dict[str, Any]
     description: Optional[str] = None
     prompt_instructions: Optional[str] = None
@@ -68,6 +70,7 @@ class SqlPreviewOut(BaseModel):
     columns: List[str] = []
     rows: List[Dict[str, Any]] = []
     row_count: int = 0
+    total_row_count: int = 0
     sql_guard: Dict[str, Any] = {}
     error: Optional[str] = None
 

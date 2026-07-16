@@ -74,6 +74,7 @@ def allowed_tables_and_sql_context(dataset: SemanticDataset) -> tuple[list[str],
         table_name = str(getattr(source_table, "table_name", "") or "").strip()
         if not table_name:
             continue
+        qualified_table_name = f"{schema_name}.{table_name}" if schema_name else table_name
         allowed_tables.append(table_name)
         if schema_name:
             allowed_tables.append(f"{schema_name}.{table_name}")
@@ -93,7 +94,14 @@ def allowed_tables_and_sql_context(dataset: SemanticDataset) -> tuple[list[str],
                     or column_name,
                 }
             )
-        table_schemas.append({"name": table_name, "table_name": table_name, "fields": fields})
+        table_schemas.append(
+            {
+                "name": qualified_table_name,
+                "table_name": qualified_table_name,
+                "schema_name": schema_name or None,
+                "fields": fields,
+            }
+        )
     return sorted(set(allowed_tables)), build_query_plan_compiler_context(
         {"table_schemas": table_schemas}
     )

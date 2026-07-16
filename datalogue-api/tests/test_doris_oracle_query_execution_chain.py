@@ -40,6 +40,7 @@ def _add_dataset_with_selected_table(db_session, *, db_type="doris", dialect="do
     dataset = SemanticDataset(
         name="测试数据集",
         datasource_id=ds.id,
+        schema_name="public",
         tables_json={},
         status="active",
         query_constraints={"enabled": True, "default_limit": 10, "max_limit": 100},

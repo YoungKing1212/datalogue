@@ -37,6 +37,8 @@ class SemanticDataset(Base, TimestampMixin):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     datasource_id = Column(Integer, ForeignKey("datasource.id"), nullable=False)
+    # 数据集固定绑定一个物理 Schema；选表、同步和问数均以此作为跨库隔离边界。
+    schema_name = Column(String(100), nullable=False, default="public")
     tables_json = Column(JSON, default=dict)
     description = Column(Text)
     # 数据集级 LLM 约束（硬性要求）。由用户在前端编辑；当前用于候选数据集匹配评分。

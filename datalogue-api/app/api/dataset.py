@@ -43,6 +43,7 @@ from app.services.dataset_manifest import (
 from app.services.capability_manifest import build_dataset_capability_manifest
 from app.domains.query_execution.preview import preview_dataset_sql
 from app.domains.query_execution.query_constraints import normalize_query_constraints
+from app.domains.data_source.service import resolve_schema_name
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -99,6 +100,14 @@ def list_datasets(datasource_id: int | None = None, db: Session = Depends(get_db
 def create_dataset(payload: schemas.DatasetCreate, db: Session = Depends(get_db)):
     logger.info(f"创建数据集: name={payload.name}")
     data = payload.model_dump()
+    datasource = db.get(models.Datasource, payload.datasource_id)
+    if not datasource:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    schema_name = resolve_schema_name(datasource, data.get("schema_name"))
+    if not schema_name:
+        # 数据集必须落到确定的物理 Schema，禁止创建后再靠连接默认值猜测查询范围。
+        raise HTTPException(status_code=400, detail="请选择数据集使用的 Schema")
+    data["schema_name"] = schema_name
     data["query_constraints"] = normalize_query_constraints(data.get("query_constraints"))
     ds = models.SemanticDataset(**data)
     db.add(ds)
@@ -1974,12 +1983,26 @@ def select_tables_for_dataset(
         logger.warning(f"数据集不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据集不存在")
 
-    added = 0
-    added_table_ids = []
+    source_tables = []
     for st_id in payload.source_table_ids:
         st = db.get(models.SourceTable, st_id)
         if not st:
             continue
+        source_tables.append(st)
+
+    invalid_tables = [
+        st
+        for st in source_tables
+        if st.datasource_id != ds.datasource_id or st.schema_name != ds.schema_name
+    ]
+    if invalid_tables:
+        # 选表是数据集查询权限边界，服务端必须拒绝跨数据源或跨 Schema 的 source_table ID。
+        raise HTTPException(status_code=400, detail="所选表不属于当前数据集绑定的数据源和 Schema")
+
+    added = 0
+    added_table_ids = []
+    for st in source_tables:
+        st_id = st.id
         # 检查是否已存在
         existing = (
             db.query(models.DatasetSourceTable)

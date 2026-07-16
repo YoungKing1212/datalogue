@@ -1,7 +1,7 @@
 // 数据集页面能力卡计数回归测试。
 // 关键职责：确保“数据表”能力卡展示当前数据集已选择的数据表数量，而不是数据源 schema 全量表数量。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DatasetsScreen } from '../../../src/components/datasets';
 
 vi.mock('../../../src/components/analysis-blueprints', () => ({
@@ -23,6 +23,7 @@ const api = vi.hoisted(() => ({
   deleteDimension: vi.fn(),
   updateDimension: vi.fn(),
   listDatasources: vi.fn(),
+  getDatasourceSchemas: vi.fn(),
   syncDatasourceTables: vi.fn(),
   listSourceTables: vi.fn(),
   getSourceTableColumns: vi.fn(),
@@ -63,11 +64,13 @@ describe('DatasetsScreen selected table count', () => {
     localStorage.clear();
 
     api.listDatasets.mockResolvedValue([
-      { id: 7, name: '零售数据集', datasource_id: 11 },
+      { id: 7, name: '零售数据集', datasource_id: 11, schema_name: 'public' },
     ]);
     api.listDatasources.mockResolvedValue([
-      { id: 11, name: '零售库' },
+      { id: 11, name: '零售库', default_schema: 'public', database_name: 'retail' },
     ]);
+    api.getDatasourceSchemas.mockResolvedValue({ schemas: ['public', 'archive'] });
+    api.createDataset.mockResolvedValue({ id: 8 });
     api.listDatasetMetrics.mockResolvedValue([]);
     api.listDatasetDimensions.mockResolvedValue([]);
     api.listBusinessTerms.mockResolvedValue([]);
@@ -94,5 +97,47 @@ describe('DatasetsScreen selected table count', () => {
       expect(within(dataTableTab).getByText('1')).toBeInTheDocument();
     });
     expect(within(dataTableTab).queryByText('3')).not.toBeInTheDocument();
+    expect(api.listSourceTables).toHaveBeenCalledWith(11, 'public');
+  }, 10000);
+
+  it('新建数据集时加载并提交所选 Schema', async () => {
+    api.listDatasets
+      .mockResolvedValueOnce([
+        { id: 7, name: '零售数据集', datasource_id: 11, schema_name: 'public' },
+      ])
+      .mockResolvedValue([
+        { id: 8, name: '归档数据集', datasource_id: 11, schema_name: 'archive' },
+        { id: 7, name: '零售数据集', datasource_id: 11, schema_name: 'public' },
+      ]);
+    api.listSourceTables.mockImplementation((_datasourceId, schema) => Promise.resolve(
+      schema === 'archive' ? [] : [
+        { id: 101, datasource_id: 11, schema_name: 'public', table_name: 'orders' },
+      ],
+    ));
+    api.syncDatasourceTables.mockResolvedValue({ ok: true, total_tables: 1 });
+    render(<DatasetsScreen />);
+
+    fireEvent.click(screen.getByRole('button', { name: /新建数据集/ }));
+    fireEvent.change(screen.getByPlaceholderText('如: 零售业务数据集'), {
+      target: { value: '归档数据集' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '请选择数据源' }));
+    fireEvent.click(await screen.findByText('零售库'));
+
+    await waitFor(() => expect(api.getDatasourceSchemas).toHaveBeenCalledWith(11));
+    expect(screen.getByRole('button', { name: 'public' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'public' }));
+    fireEvent.click(screen.getByText('archive'));
+    fireEvent.click(screen.getByRole('button', { name: '创建' }));
+
+    await waitFor(() => {
+      expect(api.syncDatasourceTables).toHaveBeenCalledWith(11, 'archive');
+      expect(api.createDataset).toHaveBeenCalledWith(expect.objectContaining({
+        name: '归档数据集',
+        datasource_id: 11,
+        schema_name: 'archive',
+      }));
+    });
   }, 10000);
 });

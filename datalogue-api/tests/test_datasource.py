@@ -349,7 +349,7 @@ def test_oracle_adapter_build_url_supports_sid_without_service_name():
 
 
 def test_preview_table_uses_mysql_protocol_sql_for_doris(monkeypatch):
-    """Doris 表预览使用 MySQL 协议 SQL：反引号、忽略 schema、LIMIT :limit。"""
+    """Doris 表预览使用 MySQL 协议 SQL，并用 Schema 限定跨库表名。"""
     captured = {}
 
     class FakeResult:
@@ -391,10 +391,63 @@ def test_preview_table_uses_mysql_protocol_sql_for_doris(monkeypatch):
 
     result = datasource_service.preview_table(ds, "edmadmin", "orders", 10)
 
-    assert captured["sql"] == "SELECT * FROM `orders` LIMIT :limit"
+    assert captured["sql"] == "SELECT * FROM `edmadmin`.`orders` LIMIT :limit"
     assert captured["params"] == {"limit": 10}
     assert captured["disposed"] is True
     assert result == {"columns": ["id"], "rows": [{"id": 1}]}
+
+
+def test_sync_tables_forwards_explicit_schema(client, sample_datasource, monkeypatch):
+    """DDL 同步接口把数据集选择的 Schema 原样传给数据源服务。"""
+
+    captured = {}
+
+    def fake_sync(ds, schema_name=None):
+        captured["datasource_id"] = ds.id
+        captured["schema_name"] = schema_name
+        return {"tables": [], "synced_at": "2026-07-16T12:41:00", "skipped": [], "errors": []}
+
+    monkeypatch.setattr("app.api.datasource.sync_source_tables", fake_sync)
+
+    resp = client.post(f"/api/datasource/{sample_datasource.id}/sync-tables?schema=archive")
+
+    assert resp.status_code == 200
+    assert captured == {"datasource_id": sample_datasource.id, "schema_name": "archive"}
+
+
+def test_sync_source_tables_bulk_samples_once_per_table(sample_datasource, monkeypatch):
+    """宽表同步必须按表批量采样，不能为每个字段重复连接数据源。"""
+
+    adapter = datasource_service.get_adapter("sqlite")
+    monkeypatch.setattr(
+        adapter,
+        "get_schema",
+        lambda _ds, schema_name=None: [
+            {
+                "name": "orders",
+                "schema_name": schema_name,
+                "comment": "订单表",
+                "row_count": 2,
+                "columns": [
+                    {"name": "id", "type": "INTEGER", "nullable": False},
+                    {"name": "region", "type": "TEXT", "nullable": True},
+                ],
+            }
+        ],
+    )
+    calls = []
+
+    def fake_bulk_sample(_ds, schema, table, columns):
+        calls.append((schema, table, columns))
+        return {"id": ["1", "2"], "region": ["华东"]}
+
+    monkeypatch.setattr(adapter, "sample_table_values", fake_bulk_sample)
+
+    result = adapter.sync_source_tables(sample_datasource, schema_name="main")
+
+    assert calls == [("main", "orders", ["id", "region"])]
+    assert result["tables"][0]["columns"][0]["sample_values"] == ["1", "2"]
+    assert result["tables"][0]["columns"][1]["sample_values"] == ["华东"]
 
 
 def test_preview_table_uses_oracle_fetch_first_and_schema_qualifier(monkeypatch):

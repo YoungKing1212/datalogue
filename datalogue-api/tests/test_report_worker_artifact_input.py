@@ -51,7 +51,8 @@ def test_build_sql_result_report_payload_clips_rows_cells_and_drops_internal_fie
                 },
                 {"name": "张三", "note": "ok"},
             ],
-            "row_count": 5,
+            "row_count": 2,
+            "total_row_count": 5,
             "sql": "SELECT * FROM hidden",
             "schema": {"tables": ["hidden"]},
             "query_plan": {"secret": True},
@@ -70,7 +71,8 @@ def test_build_sql_result_report_payload_clips_rows_cells_and_drops_internal_fie
             "children": [{"display": "safe chi..."}, {}],
         }
     ]
-    assert payload["row_count"] == 5
+    assert payload["row_count"] == 2
+    assert payload["total_row_count"] == 5
     assert payload["summary"] == "查询成功"
     assert "sql" not in payload
     assert "schema" not in payload

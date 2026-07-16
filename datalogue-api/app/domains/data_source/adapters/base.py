@@ -69,9 +69,9 @@ def _quote_identifier(name: str, db_type: str | None) -> str:
 
 
 def _table_ref(schema: str | None, table: str, db_type: str | None) -> str:
-    """生成带 schema 的表引用；MySQL/SQLite 沿用历史单表引用行为。"""
+    """生成带 Schema 的表引用；SQLite 保持 main 连接内的单表引用。"""
     table_q = _quote_identifier(table, db_type)
-    if schema and not is_mysql_protocol_type(db_type) and _normalize_db_type(db_type) != "sqlite":
+    if schema and _normalize_db_type(db_type) != "sqlite":
         return f"{_quote_identifier(schema, db_type)}.{table_q}"
     return table_q
 
@@ -99,6 +99,38 @@ def _sample_column_values(
         )
     rows = conn.execute(q, {"limit": limit}).fetchall()
     return [str(r[0]) for r in rows if r[0] is not None]
+
+
+def _sample_table_values(
+    conn,
+    schema: str | None,
+    table: str,
+    columns: list[str],
+    db_type: str,
+    *,
+    value_limit: int = 5,
+    scan_limit: int = 50,
+) -> dict[str, list[str]]:
+    """单次扫描一张表，为全部字段提取少量去重样例，避免逐字段重复连接和查询。"""
+    if not columns:
+        return {}
+    table_ref = _table_ref(schema, table, db_type)
+    column_refs = ", ".join(_quote_identifier(column, db_type) for column in columns)
+    if _normalize_db_type(db_type) == "oracle":
+        query = text(f"SELECT {column_refs} FROM {table_ref} FETCH FIRST :limit ROWS ONLY")
+    else:
+        query = text(f"SELECT {column_refs} FROM {table_ref} LIMIT :limit")
+    rows = conn.execute(query, {"limit": scan_limit}).mappings().all()
+    samples = {column: [] for column in columns}
+    for row in rows:
+        for column in columns:
+            value = row.get(column)
+            if value is None:
+                continue
+            rendered = str(value)
+            if rendered not in samples[column] and len(samples[column]) < value_limit:
+                samples[column].append(rendered)
+    return samples
 
 
 class DatasourceAdapter:
@@ -252,53 +284,49 @@ class DatasourceAdapter:
         finally:
             engine.dispose()
 
-    def sync_source_tables(self, ds: Datasource) -> dict[str, Any]:
-        tables = self.get_schema(ds, schema_name=ds.default_schema or self.capability.default_schema)
+    def sync_source_tables(
+        self,
+        ds: Datasource,
+        schema_name: str | None = None,
+    ) -> dict[str, Any]:
+        schema = schema_name or ds.default_schema or self.capability.default_schema
+        tables = self.get_schema(ds, schema_name=schema)
         result_tables: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         for table in tables:
+            raw_columns = table.get("columns") or []
+            column_names = [str(col.get("name")) for col in raw_columns if col.get("name")]
+            try:
+                # Doris 宽表若逐字段建连采样会长时间阻塞；每张表只执行一次受限扫描。
+                samples_by_column = self.sample_table_values(
+                    ds,
+                    table.get("schema_name"),
+                    table["name"],
+                    column_names,
+                )
+            except Exception as exc:
+                skipped.append(
+                    {
+                        "table": table.get("name"),
+                        "column": "*",
+                        "diagnostic": _diagnostic("SAMPLE_UNREADABLE", "字段样例批量采集失败", exc),
+                    }
+                )
+                samples_by_column = {}
             columns = []
-            for idx, col in enumerate(table.get("columns") or [], start=1):
-                try:
-                    columns.append(
-                        {
-                            "column_name": col.get("name"),
-                            "data_type": col.get("type"),
-                            "column_comment": col.get("comment"),
-                            "is_nullable": "YES" if col.get("nullable", True) else "NO",
-                            "column_default": col.get("default"),
-                            "ordinal_position": idx,
-                            "sample_values": self.sample_column_values(
-                                ds,
-                                table.get("schema_name"),
-                                table["name"],
-                                col.get("name"),
-                            ),
-                        }
-                    )
-                except Exception as exc:
-                    skipped.append(
-                        {
-                            "table": table.get("name"),
-                            "column": col.get("name"),
-                            "diagnostic": _diagnostic(
-                                "SAMPLE_UNREADABLE",
-                                "字段样例采集失败",
-                                exc,
-                            ),
-                        }
-                    )
-                    columns.append(
-                        {
-                            "column_name": col.get("name"),
-                            "data_type": col.get("type"),
-                            "column_comment": col.get("comment"),
-                            "is_nullable": "YES" if col.get("nullable", True) else "NO",
-                            "column_default": col.get("default"),
-                            "ordinal_position": idx,
-                            "sample_values": [],
-                        }
-                    )
+            for idx, col in enumerate(raw_columns, start=1):
+                column_name = col.get("name")
+                columns.append(
+                    {
+                        "column_name": column_name,
+                        "data_type": col.get("type"),
+                        "column_comment": col.get("comment"),
+                        "is_nullable": "YES" if col.get("nullable", True) else "NO",
+                        "column_default": col.get("default"),
+                        "ordinal_position": idx,
+                        "sample_values": samples_by_column.get(str(column_name), []),
+                    }
+                )
             result_tables.append(
                 {
                     "table_name": table["name"],
@@ -339,6 +367,27 @@ class DatasourceAdapter:
         finally:
             engine.dispose()
 
+    def sample_table_values(
+        self,
+        ds: Datasource,
+        schema: str | None,
+        table: str,
+        columns: list[str],
+    ) -> dict[str, list[str]]:
+        """使用单个连接批量采集整表字段样例。"""
+        engine = self.create_engine(ds)
+        try:
+            with engine.connect() as conn:
+                return _sample_table_values(
+                    conn,
+                    schema,
+                    table,
+                    columns,
+                    self.capability.db_type,
+                )
+        finally:
+            engine.dispose()
+
     def _table_schema(self, conn, inspector, ds, schema, table_name, db_type) -> dict[str, Any]:
         columns = []
         for col in inspector.get_columns(table_name, schema=schema):
@@ -369,13 +418,14 @@ class DatasourceAdapter:
             ],
             "row_count": self._row_count(conn, schema, table_name, db_type),
             "size": None,
-            "ddl": self._ddl(conn, table_name, db_type),
+            "ddl": self._ddl(conn, schema, table_name, db_type),
         }
 
     def _row_count(self, conn, schema: str | None, table: str, db_type: str) -> int | None:
         try:
             if is_mysql_protocol_type(db_type):
-                value = conn.execute(text(f"SELECT COUNT(*) FROM `{table}`")).scalar()
+                table_ref = _table_ref(schema, table, db_type)
+                value = conn.execute(text(f"SELECT COUNT(*) FROM {table_ref}")).scalar()
                 return int(value) if value is not None else None
             if db_type == "sqlite":
                 value = conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar()
@@ -390,10 +440,11 @@ class DatasourceAdapter:
             return None
         return None
 
-    def _ddl(self, conn, table: str, db_type: str) -> str | None:
+    def _ddl(self, conn, schema: str | None, table: str, db_type: str) -> str | None:
         try:
             if is_mysql_protocol_type(db_type):
-                result = conn.execute(text(f"SHOW CREATE TABLE `{table}`")).fetchone()
+                table_ref = _table_ref(schema, table, db_type)
+                result = conn.execute(text(f"SHOW CREATE TABLE {table_ref}")).fetchone()
                 return result[1] if result else None
         except Exception:
             return None

@@ -175,15 +175,19 @@ def get_datasource_schema(ds_id: int, schema: str | None = None, db: Session = D
 
 
 @router.post("/{ds_id}/sync-tables")
-def sync_datasource_tables(ds_id: int, db: Session = Depends(get_db)):
-    """连接数据源，同步所有表结构到 source_table / source_column。"""
-    logger.info(f"同步表结构: ds_id={ds_id}")
+def sync_datasource_tables(
+    ds_id: int,
+    schema: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """连接数据源，同步指定 Schema 的表结构到 source_table / source_column。"""
+    logger.info(f"同步表结构: ds_id={ds_id}, schema={schema}")
     ds = db.get(models.Datasource, ds_id)
     if not ds:
         logger.warning(f"数据源不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据源不存在")
     try:
-        result = sync_source_tables(ds)
+        result = sync_source_tables(ds, schema_name=schema)
     except Exception as e:
         logger.error(f"同步表结构失败: ds_id={ds_id}, error={e}")
         raise HTTPException(status_code=400, detail={"message": "同步表结构失败", "diagnostic": str(e)})

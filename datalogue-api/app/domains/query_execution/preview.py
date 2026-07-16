@@ -127,8 +127,18 @@ def _build_count_sql(expression: exp.Expression, dialect: str) -> str:
 
 
 def _apply_max_row_limit(expression: exp.Expression, dialect: str, max_rows: int) -> str:
-    """强制把外层 LIMIT 设为 max_rows。"""
-    expression.set("limit", exp.Limit(expression=exp.Literal.number(max_rows)))
+    """应用预览绝对上限；已有更小 LIMIT 时必须原样保留。"""
+    current_limit = expression.args.get("limit")
+    current_value = None
+    if isinstance(current_limit, exp.Limit):
+        value = current_limit.args.get("expression")
+        if isinstance(value, exp.Literal) and not value.is_string:
+            try:
+                current_value = int(value.this)
+            except (TypeError, ValueError):
+                current_value = None
+    target_limit = min(current_value, max_rows) if current_value is not None else max_rows
+    expression.set("limit", exp.Limit(expression=exp.Literal.number(target_limit)))
     expression.set("fetch", None)
     return expression.sql(dialect=dialect)
 
@@ -257,7 +267,8 @@ def preview_dataset_sql(
                 "sql": normalized_sql,
                 "columns": columns,
                 "rows": rows,
-                "row_count": effective_total_row_count,
+                # row_count 表示本次 artifact 实际可见结果；全量候选规模单独放 total_row_count。
+                "row_count": len(rows),
                 "total_row_count": effective_total_row_count,
                 "sql_guard": guard_payload,
                 "error": None,

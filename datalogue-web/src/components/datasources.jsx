@@ -267,7 +267,7 @@ function DatasourcesScreen() {
     setSyncing(true);
     setSyncResult(null);
     try {
-      const res = await syncDatasourceTables(selectedDs.id);
+      const res = await syncDatasourceTables(selectedDs.id, selectedSchema);
       setSyncResult(res);
       await handleSelectDs(selectedDs);
     } catch (err) {

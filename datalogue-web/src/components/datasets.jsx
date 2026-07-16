@@ -16,6 +16,7 @@ import {
   deleteDimension,
   updateDimension,
   listDatasources,
+  getDatasourceSchemas,
   syncDatasourceTables,
   listSourceTables,
   getSourceTableColumns,
@@ -327,6 +328,7 @@ function DatasetsScreen() {
   const [showMetricForm, setShowMetricForm] = useState(false);
   const [showDimForm, setShowDimForm] = useState(false);
   const [showDsForm, setShowDsForm] = useState(false);
+  const [creatingDataset, setCreatingDataset] = useState(false);
   const [showYamlImport, setShowYamlImport] = useState(false);
   const [editingMetricId, setEditingMetricId] = useState(null);
   const [editingDimId, setEditingDimId] = useState(null);
@@ -355,6 +357,7 @@ function DatasetsScreen() {
   const [dsForm, setDsForm] = useState({
     name: '',
     datasource_id: '',
+    schema_name: '',
     description: '',
     prompt_instructions: '',
     query_constraints: DEFAULT_QUERY_CONSTRAINTS,
@@ -362,6 +365,10 @@ function DatasetsScreen() {
   const [showPromptForm, setShowPromptForm] = useState(false);
   const [promptFormDs, setPromptFormDs] = useState(null);
   const [datasources, setDatasources] = useState([]);
+  const [datasetSchemas, setDatasetSchemas] = useState([]);
+  const [datasetSchemaLoading, setDatasetSchemaLoading] = useState(false);
+  const [datasetSchemaError, setDatasetSchemaError] = useState('');
+  const datasetSchemaSeqRef = useRef(0); // 快速切换数据源时，旧 Schema 请求不得覆盖当前表单。
   const [yamlText, setYamlText] = useState('');
 
   // ── 数据预览 ──
@@ -475,19 +482,57 @@ function DatasetsScreen() {
   }, [ctxMenu]);
 
   // ── 数据加载 ──
-  const loadDatasets = () => {
+  const loadDatasets = async (preferredDsId = null) => {
     setLoading(true);
-    listDatasets()
-      .then(items => {
-        setDatasets(items);
-        setActiveDsId(prev => prev || items[0]?.id || null);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    try {
+      const items = await listDatasets();
+      setDatasets(items);
+      setActiveDsId(prev => {
+        if (preferredDsId && items.some(item => item.id === preferredDsId)) return preferredDsId;
+        if (prev && items.some(item => item.id === prev)) return prev;
+        return items[0]?.id || null;
+      });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadDatasources = () => {
     listDatasources().then(setDatasources).catch(console.error);
+  };
+
+  const handleDatasetDatasourceChange = async (datasourceId) => {
+    const seq = ++datasetSchemaSeqRef.current;
+    setDsForm(prev => ({ ...prev, datasource_id: datasourceId, schema_name: '' }));
+    setDatasetSchemas([]);
+    setDatasetSchemaError('');
+    if (!datasourceId) {
+      setDatasetSchemaLoading(false);
+      return;
+    }
+    setDatasetSchemaLoading(true);
+    try {
+      const result = await getDatasourceSchemas(Number(datasourceId));
+      if (seq !== datasetSchemaSeqRef.current) return;
+      const schemas = result?.schemas || [];
+      const datasource = datasources.find(item => String(item.id) === String(datasourceId));
+      const preferred = datasource?.default_schema || datasource?.database_name || '';
+      const selectedSchema = schemas.includes(preferred) ? preferred : (schemas[0] || '');
+      setDatasetSchemas(schemas);
+      setDsForm(prev => (
+        String(prev.datasource_id) === String(datasourceId)
+          ? { ...prev, schema_name: selectedSchema }
+          : prev
+      ));
+      if (schemas.length === 0) setDatasetSchemaError('当前数据源没有可用 Schema');
+    } catch (err) {
+      if (seq !== datasetSchemaSeqRef.current) return;
+      setDatasetSchemaError(err.message || 'Schema 加载失败');
+    } finally {
+      if (seq === datasetSchemaSeqRef.current) setDatasetSchemaLoading(false);
+    }
   };
 
   const loadDsMeta = async (dsId) => {
@@ -519,7 +564,7 @@ function DatasetsScreen() {
     const ds = datasets.find(d => d.id === dsId);
     if (!ds) return;
     try {
-      const tables = await listSourceTables(ds.datasource_id);
+      const tables = await listSourceTables(ds.datasource_id, ds.schema_name);
       setAllSourceTables(tables);
     } catch (err) {
       console.error(err);
@@ -645,7 +690,7 @@ function DatasetsScreen() {
     if (!ds) { alert('请先选择数据集'); return; }
     setSyncing(true);
     try {
-      await syncDatasourceTables(ds.datasource_id);
+      await syncDatasourceTables(ds.datasource_id, ds.schema_name);
       await loadAllSourceTables(activeDsId);
     } catch (err) {
       alert('同步失败: ' + (err.message || '未知错误'));
@@ -723,10 +768,19 @@ function DatasetsScreen() {
   const handleCreateDataset = async () => {
     if (!dsForm.name) { alert('请输入数据集名称'); return; }
     if (!dsForm.datasource_id) { alert('请选择数据源'); return; }
+    if (!dsForm.schema_name) { alert('请选择 Schema'); return; }
+    const datasourceId = Number(dsForm.datasource_id);
+    setCreatingDataset(true);
     try {
-      await createDataset({
+      const catalogTables = await listSourceTables(datasourceId, dsForm.schema_name);
+      if (catalogTables.length === 0) {
+        // 首次使用某个 Schema 时先建立本地表目录，创建完成后即可直接选表。
+        await syncDatasourceTables(datasourceId, dsForm.schema_name);
+      }
+      const created = await createDataset({
         name: dsForm.name,
-        datasource_id: Number(dsForm.datasource_id),
+        datasource_id: datasourceId,
+        schema_name: dsForm.schema_name,
         description: dsForm.description || undefined,
         prompt_instructions: dsForm.prompt_instructions || undefined,
         query_constraints: normalizeQueryConstraints(dsForm.query_constraints),
@@ -737,12 +791,17 @@ function DatasetsScreen() {
       setDsForm({
         name: '',
         datasource_id: '',
+        schema_name: '',
         description: '',
         prompt_instructions: '',
         query_constraints: DEFAULT_QUERY_CONSTRAINTS,
       });
-      loadDatasets();
-    } catch (err) { alert('创建失败: ' + (err.message || '未知错误')); }
+      await loadDatasets(created.id);
+    } catch (err) {
+      alert('创建失败: ' + (err.message || 'Schema 表目录同步失败'));
+    } finally {
+      setCreatingDataset(false);
+    }
   };
 
   // ── 数据集右键菜单 ──
@@ -2320,6 +2379,11 @@ function DatasetsScreen() {
           <h1 style={{ fontSize: 20, fontWeight: 500, margin: 0, letterSpacing: '-0.02em' }}>
             {activeDs?.name || '数据集 & 指标'}
           </h1>
+          {activeDs?.schema_name && (
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+              Schema：<span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>{activeDs.schema_name}</span>
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="btn ghost" onClick={() => setShowYamlImport(true)}><Icon name="upload" />导入 YAML</button>
@@ -3257,7 +3321,22 @@ function DatasetsScreen() {
           <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 480, border: '1px solid var(--hairline)' }} onClick={e => e.stopPropagation()}>
             <h3 style={{ margin: '0 0 16px' }}>新建数据集</h3>
             <FormField label="名称" value={dsForm.name} onChange={v => setDsForm({ ...dsForm, name: v })} placeholder="如: 零售业务数据集" />
-            <FormField label="数据源" type="select" value={dsForm.datasource_id} onChange={v => setDsForm({ ...dsForm, datasource_id: v })} options={[{ value: '', label: '请选择数据源' }, ...datasources.map(d => ({ value: String(d.id), label: d.name }))]} />
+            <FormField label="数据源" type="select" value={dsForm.datasource_id} onChange={handleDatasetDatasourceChange} options={[{ value: '', label: '请选择数据源' }, ...datasources.map(d => ({ value: String(d.id), label: d.name }))]} />
+            <FormField
+              label="Schema"
+              type="select"
+              value={dsForm.schema_name}
+              onChange={v => setDsForm({ ...dsForm, schema_name: v })}
+              options={[
+                { value: '', label: datasetSchemaLoading ? '正在加载 Schema…' : '请选择 Schema' },
+                ...datasetSchemas.map(schema => ({ value: schema, label: schema })),
+              ]}
+            />
+            {datasetSchemaError && (
+              <div style={{ marginTop: -6, marginBottom: 12, fontSize: 11, color: 'var(--neg)' }}>
+                {datasetSchemaError}
+              </div>
+            )}
             <FormField label="描述 (可选)" value={dsForm.description} onChange={v => setDsForm({ ...dsForm, description: v })} placeholder="数据集用途说明…" />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '8px 10px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 12, color: 'var(--text-2)' }}>
               <Icon name="cog" style={{ width: 14, height: 14, color: 'var(--accent)' }} />
@@ -3273,7 +3352,9 @@ function DatasetsScreen() {
             />
             <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
               <button className="btn ghost" onClick={() => setShowDsForm(false)}>取消</button>
-              <button className="btn primary" onClick={handleCreateDataset}>创建</button>
+              <button className="btn primary" onClick={handleCreateDataset} disabled={creatingDataset}>
+                {creatingDataset ? '正在同步表结构…' : '创建'}
+              </button>
             </div>
           </div>
         </div>

@@ -71,8 +71,9 @@ def test_native_allowed_tables_builds_safe_compiler_context():
     assert sql_context == {
         "table_schemas": [
             {
-                "name": "plan_task_daily_record",
-                "table_name": "plan_task_daily_record",
+                "name": "ods.plan_task_daily_record",
+                "table_name": "ods.plan_task_daily_record",
+                "schema_name": "ods",
                 "fields": [
                     {
                         "name": "rzrq",

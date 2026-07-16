@@ -238,6 +238,7 @@ class TestDatasetAPI:
         data = resp.json()
         assert data["sql_guard"]["ok"] is True
         assert data["row_count"] == 1
+        assert data["total_row_count"] == 2
         assert any("裁剪为 1" in warning for warning in data["sql_guard"]["warnings"])
 
     def test_sql_preview_missing_datasource_returns_structured_error(
@@ -282,10 +283,26 @@ class TestDatasetAPI:
         data = resp.json()
         assert data["name"] == "销售分析数据集"
         assert data["datasource_id"] == sample_datasource.id
+        assert data["schema_name"] == "main"
         assert data["status"] == "active"
         assert data["query_constraints"]["enabled"] is True
         assert data["query_constraints"]["default_time_range_days"] == 30
         assert data["query_constraints"]["default_limit"] == 100
+
+    def test_create_dataset_persists_explicit_schema(self, client, sample_datasource):
+        """数据集显式选择的 Schema 必须进入持久化响应，后续用于同步和选表隔离。"""
+
+        resp = client.post(
+            "/api/dataset",
+            json={
+                "name": "归档数据集",
+                "datasource_id": sample_datasource.id,
+                "schema_name": "archive",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["schema_name"] == "archive"
 
     def test_manifest_publish_requires_manual_quality_fields(self, client, sample_dataset):
         """发布 Manifest 时必须补齐 B 类人工字段。"""
@@ -581,6 +598,27 @@ class TestDatasetAPI:
             f"/api/dataset/{sample_dataset.id}/columns/{col.id}/convert-metric"
         )
         assert resp.status_code == 404
+
+    def test_select_table_rejects_cross_schema(
+        self, client, db_session, sample_dataset, sample_datasource
+    ):
+        """服务端拒绝把其他 Schema 的表加入数据集，避免前端参数绕过查询边界。"""
+
+        table = models.SourceTable(
+            datasource_id=sample_datasource.id,
+            schema_name="archive",
+            table_name="orders_history",
+        )
+        db_session.add(table)
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/dataset/{sample_dataset.id}/select-tables",
+            json={"source_table_ids": [table.id]},
+        )
+
+        assert resp.status_code == 400
+        assert "数据源和 Schema" in resp.json()["detail"]
 
     def test_add_dimension(self, client, sample_dataset):
         """向数据集添加维度"""

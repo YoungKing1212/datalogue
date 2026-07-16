@@ -122,8 +122,8 @@ def _make_connection(count_value, detail_rows, detail_keys):
     return _FakeConnection(count_value, wrapped_detail_rows, detail_keys)
 
 
-def test_preview_returns_total_row_count_when_under_cap(monkeypatch, db_session):
-    """总量未超过 10,000 时，row_count/total_row_count 都等于真实总量。"""
+def test_preview_returns_visible_and_total_row_count_when_under_cap(monkeypatch, db_session):
+    """未截断时，实际返回行数和未限制前总量一致。"""
     _ds, dataset = _add_dataset_with_selected_table(db_session)
 
     connection = _make_connection(
@@ -146,7 +146,7 @@ def test_preview_returns_total_row_count_when_under_cap(monkeypatch, db_session)
 
 
 def test_preview_clamps_to_10000_when_total_exceeds_cap(monkeypatch, db_session):
-    """总量超过 10,000 时，实际返回 10,000 行，但 row_count 记录真实总量。"""
+    """总量超过 10,000 时，row_count 记录实际结果，total_row_count 记录候选总量。"""
     _ds, dataset = _add_dataset_with_selected_table(db_session)
 
     connection = _make_connection(
@@ -162,9 +162,38 @@ def test_preview_clamps_to_10000_when_total_exceeds_cap(monkeypatch, db_session)
     result = preview_dataset_sql(db_session, dataset=dataset, sql="SELECT order_id FROM orders")
 
     assert result["error"] is None
-    assert result["row_count"] == 25000
+    assert result["row_count"] == 10000
     assert result["total_row_count"] == 25000
     assert len(result["rows"]) == 10000
+
+
+def test_preview_preserves_smaller_explicit_limit_when_total_exceeds_cap(
+    monkeypatch, db_session
+):
+    """Top-N 查询的显式 LIMIT 不能被预览上限反向放大。"""
+    _ds, dataset = _add_dataset_with_selected_table(db_session)
+
+    connection = _make_connection(
+        count_value=2774751,
+        detail_rows=[(48387,)],
+        detail_keys=["oil_prod_mon"],
+    )
+    monkeypatch.setattr(
+        "app.domains.query_execution.preview.create_engine_for_datasource",
+        lambda _datasource: _FakeEngine(connection),
+    )
+
+    result = preview_dataset_sql(
+        db_session,
+        dataset=dataset,
+        sql="SELECT oil_prod_mon FROM orders ORDER BY oil_prod_mon DESC LIMIT 1",
+    )
+
+    assert result["error"] is None
+    assert result["row_count"] == 1
+    assert result["total_row_count"] == 2774751
+    assert len(result["rows"]) == 1
+    assert "LIMIT 1" in result["sql"]
 
 
 def test_preview_falls_back_when_count_fails(monkeypatch, db_session):

@@ -86,10 +86,8 @@ def build_sql_result_report_payload(
     source_columns = source.get("columns")
     columns = _safe_columns(source_columns)
     source_rows = _safe_rows(source.get("rows"))
-    total_row_count = _safe_int(
-        source.get("total_row_count") or source.get("row_count"),
-        fallback=len(source_rows),
-    )
+    returned_row_count = _safe_int(source.get("row_count"), fallback=len(source_rows))
+    total_row_count = _safe_int(source.get("total_row_count"), fallback=returned_row_count)
     visible_rows = source_rows[:row_limit]
     clip_state = _ClipState()
     clipped_rows = [_clip_cell_value(row, max_chars=cell_max_chars, state=clip_state) for row in visible_rows]
@@ -102,7 +100,8 @@ def build_sql_result_report_payload(
     }
     payload["columns"] = columns
     payload["rows"] = clipped_rows
-    payload["row_count"] = total_row_count
+    # artifact 的 row_count 必须反映实际保存结果，不能被未限制前的 COUNT(*) 总量覆盖。
+    payload["row_count"] = returned_row_count
     payload["total_row_count"] = total_row_count
     payload[REPORT_INPUT_META_KEY] = {
         "visible_row_limit": row_limit,

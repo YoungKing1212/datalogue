@@ -544,9 +544,10 @@ export function listCurrentSubAgentManifests() {
   return get('/api/dataset/subagent-manifests/current');
 }
 
-/** 同步数据源表结构 */
-export function syncDatasourceTables(datasourceId) {
-  return post(`/api/datasource/${datasourceId}/sync-tables`);
+/** 同步数据源指定 Schema 的表结构 */
+export function syncDatasourceTables(datasourceId, schema) {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : '';
+  return post(`/api/datasource/${datasourceId}/sync-tables${qs}`);
 }
 
 /** 获取数据源下已同步的表 */
