@@ -117,7 +117,9 @@ class QueryOrdering(StrictModel):
 class ResultShape(StrictModel):
     type: Literal["table", "metric", "chart"] = "table"
     grain: str = Field(min_length=1)
-    limit: int = Field(default=100, ge=1, le=500)
+    # 默认返回行数取安全上限 1000：明细查询未显式指定条数时尽量给全，避免出现
+    # COUNT(*) 真实总量大于实际返回行数（前端显示“共 N 行，展示前 100 行”）的割裂。
+    limit: int = Field(default=1000, ge=1, le=1000)
 
 
 class QueryEntity(StrictModel):

@@ -30,14 +30,16 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "showFollowups": true
 }/*EDITMODE-END*/;
 
+// 把默认主色重映射为更饱和的亮蓝（贴近设计稿）；保留 #1976c9 作为键，
+// 使已持久化到 localStorage 的旧值也一并应用新蓝，避免老用户仍是偏灰的蓝。
 const ACCENT_OKLCH = {
-  "#1976c9": "#1976c9",
+  "#1976c9": "#2570e0",
 };
 const ACCENT_LINE = {
-  "#1976c9": "#b9d8f7",
+  "#1976c9": "#bcd6f8",
 };
 const ACCENT_SOFT = {
-  "#1976c9": "#e8f3fd",
+  "#1976c9": "#e9f2ff",
 };
 const noopTraceToggle = () => {};
 
@@ -84,6 +86,23 @@ function TopBar({ onPublish, currentUser, onLogout }) {
       <div className="topbar-actions">
         {showTrace && (
           <>
+            <button
+              className="icon-btn"
+              title="刷新"
+              onClick={() => window.location.reload()}
+            >
+              <Icon name="refresh" />
+            </button>
+            <button
+              className="icon-btn"
+              title="分享（复制会话链接）"
+              onClick={() => {
+                // 复制当前会话链接到剪贴板，贴近设计稿的“分享”入口。
+                navigator.clipboard?.writeText(window.location.href).catch(console.error);
+              }}
+            >
+              <Icon name="share" />
+            </button>
             <Link to="/dashboard" className="btn ghost">
               <Icon name="pin" />
               保存到看板

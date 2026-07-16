@@ -1455,3 +1455,15 @@
 - 关键改动：识别并排除该旧工作树基于 2026-07-03 过渡架构对当前文档和项目记忆的过期覆盖；将旧版设计 DOCX、7 月 3 日方案和旧 QueryGraph 执行图迁入历史归档，为历史计划、验收记录、测试报告和素材目录补充边界说明，并统一校准到当前 `/api/agent-team/tasks/stream -> AgentScope Service -> Agent Team` 主链。提交 `f757b1e0` 已快进合并到 `main`，后续提交 `cd83c4f2` 修复两个历史 DOCX 生成脚本的归档路径。随后按用户确认丢弃另外两个工作树的未提交现场，移除全部残留工作树和三个对应本地分支。
 - 验证方式：`git worktree list --porcelain` 仅返回主工作区；三个本地分支均已删除；两个文档提交和当前工作区执行 `git diff --check` 通过；Python AST 解析确认历史生成脚本语法有效；旧文档和旧执行图路径无残留引用；归档说明未再把 `/api/agentic-shell/tasks/stream` 或 2026-07-03 方案标成当前主链。
 - 残留风险或后续事项：提交尚未推送到远程；主工作区原有 Docker、前端样式、忽略规则和项目记忆等未提交修改均保持不变，后续提交时仍需按功能边界拆分。
+### 2026-07-15 · 明细查询默认 limit 从 100 抬到 500
+
+- 完成时间：2026-07-15。
+- 功能名称：BI Worker 明细/指标查询默认返回行数上限由 100 调整为 500，解决前端「共 N 行（展示前 100 行）」割裂。
+- 涉及文件：`datalogue-api/app/domains/bi/worker/contracts.py`、`datalogue-api/app/runtime/engine/tools.py`、`datalogue-api/app/prompts/agent_team.py`。
+- 关键改动：
+  1. 根因：LLM 生成的 query_plan `result_shape.limit=100`（照抄 prompt 示例），经 runtime.py 透传为 `result["limit"]`，compiler `_safe_limit`（钳制 1-500）拼成 `LIMIT 100`，实际只取 100 行；而 preview 单独跑 `COUNT(*)` 得真实总数（如 158），前端 DataTable 用 row_count=158 当总数、rows=100 当数据，故显示「展示前 100 行」。
+  2. `ResultShape.limit` 默认值 100 → 500（仍受 `le=500` 上限约束），并补中文注释说明用意。
+  3. `tools.py` 两处 minimal query plan 示例 `"limit": 100` → 500（detail + metric）。
+  4. `agent_team.py` detail_query prompt 示例 `"limit":100` → 500。
+- 验证方式：`get_errors` 检查三处改动文件无语法错误；检索 tests 无对默认 limit=100 或 `LIMIT 100` 的断言，现有测试均显式传 limit，不受影响。
+- 残留风险或后续事项：`_safe_limit` 硬上限仍为 500（compiler.py），超 500 行明细仍会被截断；若需展示更多行，需同步调大 `_safe_limit` 上限与 `ResultShape.limit` 的 `le` 约束。数据集级 `query_constraints.default_limit` 默认 10000 不影响本改动（仅在 SQL 未显式 LIMIT 时兜底）。

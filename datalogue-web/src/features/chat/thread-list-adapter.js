@@ -25,6 +25,11 @@ const idMap = new Map();
 const reverseIdMap = new Map();
 let lastInitializedThread = null;
 
+// 会话更新时间缓存：remoteId -> ISO 时间字符串。
+// assistant-ui 的 ThreadListItem 只暴露内置字段，不透传自定义 updatedAt，
+// 因此在 list() 拉取时把时间写入该 map，供 ThreadList 按 remoteId 读取展示。
+export const conversationUpdatedAtMap = new Map();
+
 export function resolveRemoteId(localThreadId) {
   return idMap.get(String(localThreadId ?? ''))?.remoteId ?? null;
 }
@@ -566,6 +571,11 @@ export class DatalogueThreadListAdapter {
 
   async list({ archived = false } = {}) {
     const items = await listConversations({ archived });
+    items.forEach((c) => {
+      // 缓存会话时间供左侧列表展示；优先 updated_at，回退 created_at。
+      const iso = c.updated_at ?? c.created_at;
+      if (iso) conversationUpdatedAtMap.set(String(c.id), iso);
+    });
     return {
       threads: items.map((c) => ({
         status: c.archived ? 'archived' : 'regular',
@@ -573,6 +583,7 @@ export class DatalogueThreadListAdapter {
         externalId: c.thread_id || undefined,
         title: c.title,
         datasetId: c.dataset_id ?? undefined,
+        updatedAt: c.updated_at ?? c.created_at ?? undefined,
       })),
     };
   }

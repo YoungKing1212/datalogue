@@ -1036,7 +1036,7 @@ export function AIMessage() {
   return (
     <div className={`msg-row msg-ai${isStreaming ? ' is-streaming' : ''}`}>
       <div className="ai-head">
-        <div className="ai-mark" />
+        <div className="ai-mark"><Icon name="sparkle" /></div>
         <span className="name">数语</span>
         {isStreaming ? (
           <span className="stage">
@@ -1178,6 +1178,7 @@ export function UserMessage() {
   return (
     <div className="msg-row msg-user">
       <div className="bubble">{text}</div>
+      <div className="msg-user-avatar" aria-hidden="true"><Icon name="user" /></div>
     </div>
   );
 }

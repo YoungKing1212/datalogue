@@ -240,6 +240,16 @@ export function MyComposer({
               <span>深度归因</span>
             </button>
             <div className="spacer" />
+            <button
+              type="button"
+              className="composer-attach"
+              title="添加附件（示意）"
+              aria-label="添加附件"
+              tabIndex={-1}
+            >
+              {/* 纯样式占位：贴近设计稿的附件入口，暂不提供上传功能。 */}
+              <Icon name="attach" />
+            </button>
             <SendOrCancelButton />
           </div>
         </div>

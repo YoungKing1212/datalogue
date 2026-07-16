@@ -128,7 +128,7 @@ BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
     "minimal_detail_query_plan": {
         "intent": "detail_query",
         "question": "用户确认后的问题",
-        "result_shape": {"type": "table", "grain": "one_row_per_business_record", "limit": 100},
+        "result_shape": {"type": "table", "grain": "one_row_per_business_record", "limit": 1000},
         "data_graph": {
             "primary_entity": {"asset_ref": "asset:primary", "alias": "main", "role": "primary"},
             "supporting_entities": [],
@@ -166,7 +166,7 @@ BI_WORKER_QUERY_PLAN_CONTRACT_HINT = {
     "minimal_metric_query_plan": {
         "intent": "metric_query",
         "question": "用户确认后的指标问题",
-        "result_shape": {"type": "metric", "grain": "overall", "limit": 100},
+        "result_shape": {"type": "metric", "grain": "overall", "limit": 1000},
         "data_graph": {
             "primary_entity": {"asset_ref": "asset:primary", "alias": "main", "role": "primary"},
             "supporting_entities": [],

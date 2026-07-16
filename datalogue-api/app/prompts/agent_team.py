@@ -342,7 +342,7 @@ group_by(扁平结构,不加 target 层):
 <query_plan_example>
 明细查询最小合法示例:
 ```json
-{{"intent":"detail_query","question":"用户确认后的问题","result_shape":{{"type":"table","grain":"one_row_per_business_record","limit":100}},"data_graph":{{"primary_entity":{{"asset_ref":"table:<schema>.<table>","alias":"main","role":"primary"}},"supporting_entities":[]}},"join_requirements":[],"filters":[{{"target":{{"asset_ref":"table:<schema>.<table>.<date_field>","alias":"main","field":"<date_field>"}},"operator":">=","value":"2025-01-01","reason":"按用户指定的年份筛选"}}],"selects":[{{"target":{{"asset_ref":"table:<schema>.<table>.<content_field>","alias":"main","field":"<content_field>"}},"display_name":"展示名称","display_semantic":"业务含义","requires_decoding":false}}],"metrics":[],"group_by":[],"ordering":[],"assumptions":[]}}
+{{"intent":"detail_query","question":"用户确认后的问题","result_shape":{{"type":"table","grain":"one_row_per_business_record","limit":1000}},"data_graph":{{"primary_entity":{{"asset_ref":"table:<schema>.<table>","alias":"main","role":"primary"}},"supporting_entities":[]}},"join_requirements":[],"filters":[{{"target":{{"asset_ref":"table:<schema>.<table>.<date_field>","alias":"main","field":"<date_field>"}},"operator":">=","value":"2025-01-01","reason":"按用户指定的年份筛选"}}],"selects":[{{"target":{{"asset_ref":"table:<schema>.<table>.<content_field>","alias":"main","field":"<content_field>"}},"display_name":"展示名称","display_semantic":"业务含义","requires_decoding":false}}],"metrics":[],"group_by":[],"ordering":[],"assumptions":[]}}
 ```
 </query_plan_example>
 

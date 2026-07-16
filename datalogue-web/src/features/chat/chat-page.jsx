@@ -343,46 +343,70 @@ function ComposerTextSetter({ register }) {
 }
 
 /**
+ * 把数据集的更新时间格式化为「2024-05-13 09:45」样式；无法解析时返回 null，避免展示无意义副行。
+ */
+function formatEvidenceTime(raw) {
+  if (!raw) return null; // 无时间字段时不渲染副行
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null; // 非法时间直接跳过
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
  * 当前会话的业务级依据锚点。
  * 不读取或展示 SQL、原始行、追踪 ID 等执行面信息，只帮助用户判断本轮结果的上下文与可用状态。
+ * 采用卡片式布局：每张卡片包含图标、标题、主值与可选副行。
  */
 function ThreadEvidenceRail({ selectedDs, isRunning, hasResult }) {
   const processingStatus = isRunning ? '正在整理' : hasResult ? '已完成' : '等待提问';
-  const resultStatus = hasResult ? '已生成，可在回答中查看' : isRunning ? '整理中' : '暂未生成';
+  // 数据集副行取更新时间；仅在数据集已选且带时间时展示。
+  const datasetMeta = selectedDs ? formatEvidenceTime(selectedDs.updated_at ?? selectedDs.updatedAt) : null;
+  const resultTitle = hasResult ? '已生成 1 份' : isRunning ? '整理中' : '暂未生成';
+  const resultMeta = hasResult ? '包含图表与关键信号' : null; // 仅在有结果时补充结果构成说明
+  const statusMeta = isRunning ? '正在整理本轮结果' : hasResult ? '本轮处理已完成' : null; // 状态副行随处理阶段变化
 
   return (
     <aside className="thread-evidence-rail" aria-label="本次依据">
       <div className="thread-evidence-rail-head">
         <span>本次依据</span>
-        <span className={`thread-evidence-status${isRunning ? ' is-running' : ''}`}>
-          <i aria-hidden="true" />
-          {processingStatus}
-        </span>
       </div>
 
-      <div className="thread-evidence-item">
+      <div className="thread-evidence-card">
         <span className="thread-evidence-icon"><Icon name="database" /></span>
-        <div>
+        <div className="thread-evidence-body">
           <span className="thread-evidence-label">数据集</span>
           <strong>{selectedDs?.name || '由系统自动选择'}</strong>
+          {datasetMeta && <span className="thread-evidence-meta">更新于 {datasetMeta}</span>}
         </div>
       </div>
 
-      <div className="thread-evidence-item">
+      <div className="thread-evidence-card">
         <span className="thread-evidence-icon"><Icon name="table" /></span>
-        <div>
+        <div className="thread-evidence-body">
           <span className="thread-evidence-label">结果</span>
-          <strong>{resultStatus}</strong>
+          <strong>{resultTitle}</strong>
+          {resultMeta && <span className="thread-evidence-meta">{resultMeta}</span>}
         </div>
       </div>
 
-      <div className="thread-evidence-item">
-        <span className="thread-evidence-icon"><Icon name="sparkle" /></span>
-        <div>
+      <div className={`thread-evidence-card${hasResult && !isRunning ? ' is-done' : ''}`}>
+        <span className="thread-evidence-icon"><Icon name={hasResult && !isRunning ? 'check' : 'sparkle'} /></span>
+        <div className="thread-evidence-body">
           <span className="thread-evidence-label">处理状态</span>
           <strong>{processingStatus}</strong>
+          {statusMeta && <span className="thread-evidence-meta">{statusMeta}</span>}
         </div>
       </div>
+
+      <button
+        type="button"
+        className="thread-evidence-summary"
+        onClick={() => window.dispatchEvent(new CustomEvent('datalogue:trace-panel-open'))}
+      >
+        查看处理摘要
+        <Icon name="chev" />
+      </button>
     </aside>
   );
 }

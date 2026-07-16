@@ -349,12 +349,12 @@ def _compile_metric_select_items(
 
 
 def _safe_limit(limit: Any) -> int | None:
-    """安全地提取 LIMIT 值，限制在 1-500 范围。"""
+    """安全地提取 LIMIT 值，限制在 1-1000 范围。"""
     if limit is None:
         return None
     try:
         value = int(limit)
-        return max(1, min(value, 500))
+        return max(1, min(value, 1000))
     except (TypeError, ValueError):
         return None
 
