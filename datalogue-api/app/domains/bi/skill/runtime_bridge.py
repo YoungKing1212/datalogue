@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -30,8 +32,11 @@ from app.core.middlewares.lifecycle import log_lifecycle
 from app.domains.bi.toolkit import DatalogueBIAtomicToolkit
 from app.core.safety import DataloguePayloadSanitizer
 
-
 logger = logging.getLogger(__name__)
+DB_EXECUTION_ALREADY_OFFLOADED: ContextVar[bool] = ContextVar(
+    "datalogue_db_execution_already_offloaded",
+    default=False,
+)
 
 AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE = (
     "get_dataset_status",
@@ -44,7 +49,9 @@ AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE = (
 )
 _REPAIR_TOOL_INDEX = AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE.index("repair_dsl")
 _EXECUTE_TOOL_INDEX = AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE.index("execute_compiled_query")
-_CREATE_ARTIFACT_TOOL_INDEX = AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE.index("create_query_artifact")
+_CREATE_ARTIFACT_TOOL_INDEX = AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE.index(
+    "create_query_artifact"
+)
 
 _READ_ONLY_TOOLS = {
     "get_dataset_status",
@@ -164,7 +171,9 @@ class DatasetAgentScopeExternalTool(ToolBase):
         if self.name not in AGENTSCOPE_DATASET_EXTERNAL_TOOL_SEQUENCE:
             return self._deny("TOOL_NOT_WHITELISTED", "工具不在 DatasetAgent 白名单中。")
         if self._contains_forbidden_tool_input(tool_input):
-            return self._deny("SENSITIVE_TOOL_ARGUMENT", "工具入参包含 SQL/schema/raw rows 等禁区内容。")
+            return self._deny(
+                "SENSITIVE_TOOL_ARGUMENT", "工具入参包含 SQL/schema/raw rows 等禁区内容。"
+            )
         if self.name == "compile_dsl_to_sql" and not isinstance(tool_input.get("dsl"), dict):
             return self._deny("DSL_REQUIRED", "compile_dsl_to_sql 必须接收结构化 DSL。")
         if self.name == "execute_compiled_query":
@@ -172,18 +181,29 @@ class DatasetAgentScopeExternalTool(ToolBase):
             if not self.session.compiled_query_ref:
                 return self._deny("COMPILE_REQUIRED", "execute 必须在 compile 成功后调用。")
             if compiled_query_ref != self.session.compiled_query_ref:
-                return self._deny("COMPILED_QUERY_REF_MISMATCH", "execute 只能使用当前会话 compile 产生的句柄。")
+                return self._deny(
+                    "COMPILED_QUERY_REF_MISMATCH", "execute 只能使用当前会话 compile 产生的句柄。"
+                )
         if self.name == "repair_dsl":
             compiled_query_ref = str(tool_input.get("compiled_query_ref") or "")
             if not self.session.compiled_query_ref:
                 return self._deny("COMPILE_REQUIRED", "repair 必须在 compile 成功后调用。")
             if compiled_query_ref != self.session.compiled_query_ref:
-                return self._deny("COMPILED_QUERY_REF_MISMATCH", "repair 只能使用当前会话 compile 产生的句柄。")
+                return self._deny(
+                    "COMPILED_QUERY_REF_MISMATCH", "repair 只能使用当前会话 compile 产生的句柄。"
+                )
             if not self.session.repair_pending or self.session.repair_attempted:
-                return self._deny("REPAIR_NOT_ALLOWED", "repair_dsl 只允许在字段缺失失败后调用一次。")
+                return self._deny(
+                    "REPAIR_NOT_ALLOWED", "repair_dsl 只允许在字段缺失失败后调用一次。"
+                )
         if self.session.expected_tool_name != self.name:
-            return self._deny("TOOL_ORDER_VIOLATION", "工具调用顺序不符合 Dataset Query Skill 状态机。")
-        if self.name in {"create_query_artifact", "get_artifact_summary"} and not self.session.artifact_ref:
+            return self._deny(
+                "TOOL_ORDER_VIOLATION", "工具调用顺序不符合 Dataset Query Skill 状态机。"
+            )
+        if (
+            self.name in {"create_query_artifact", "get_artifact_summary"}
+            and not self.session.artifact_ref
+        ):
             return self._deny("ARTIFACT_REF_MISSING", "artifact 工具必须在 execute 成功后调用。")
         return PermissionDecision(
             behavior=PermissionBehavior.ALLOW,
@@ -205,7 +225,14 @@ class DatasetAgentScopeExternalTool(ToolBase):
         if isinstance(value, dict):
             for key, nested in value.items():
                 key_text = str(key).lower()
-                if key_text in {"schema", "schema_context", "raw_rows", "query_plan", "repair_patch", "blueprint_body"}:
+                if key_text in {
+                    "schema",
+                    "schema_context",
+                    "raw_rows",
+                    "query_plan",
+                    "repair_patch",
+                    "blueprint_body",
+                }:
                     return True
                 if "sql" in key_text and nested not in (None, "", [], {}):
                     return True
@@ -287,7 +314,9 @@ class AgentScopeDatasetRuntimeBridge:
             tool = self._tool_for_call(session=session, name=tool_call.name)
             decision = await tool.check_permissions(tool_input, PermissionContext())
             if decision.behavior is not PermissionBehavior.ALLOW:
-                payload = self._blocked_payload(str(decision.decision_reason or "PERMISSION_DENIED"))
+                payload = self._blocked_payload(
+                    str(decision.decision_reason or "PERMISSION_DENIED")
+                )
                 log_lifecycle(
                     "dataset_agent.runtime.tool.permission_denied",
                     dataset_id=session.dataset_id,
@@ -321,27 +350,60 @@ class AgentScopeDatasetRuntimeBridge:
                     expected_tool=session.expected_tool_name,
                 )
                 if on_tool_call is not None:
-                    on_tool_call("tool_call.started", tool_call.name, tool_call.id, {
-                        "summary": f"正在执行 {tool_call.name} …",
-                    })
-                payload = self._execute_tool(session, tool_call.name, tool_input)
-                state = ToolResultState.SUCCESS if payload.get("status") != "blocked" else ToolResultState.DENIED
+                    on_tool_call(
+                        "tool_call.started",
+                        tool_call.name,
+                        tool_call.id,
+                        {
+                            "summary": f"正在执行 {tool_call.name} …",
+                        },
+                    )
+                if DB_EXECUTION_ALREADY_OFFLOADED.get():
+                    # 上层已把整段 ORM 生命周期移到同一工作线程，保持 Session 不跨线程使用。
+                    payload = self._execute_tool(session, tool_call.name, tool_input)
+                else:
+                    # SQLAlchemy/驱动和产物存储均为同步实现，必须移出 AgentScope 事件循环。
+                    payload = await asyncio.to_thread(
+                        self._execute_tool,
+                        session,
+                        tool_call.name,
+                        tool_input,
+                    )
+                state = (
+                    ToolResultState.SUCCESS
+                    if payload.get("status") != "blocked"
+                    else ToolResultState.DENIED
+                )
                 if on_tool_call is not None:
                     status_label = "completed" if state == ToolResultState.SUCCESS else "blocked"
-                    on_tool_call(f"tool_call.{status_label}", tool_call.name, tool_call.id, {
-                        "summary": f"{tool_call.name} 已完成",
-                        "status": str(state.value if hasattr(state, "value") else state),
-                        "has_artifact": bool(payload.get("artifact_ref")),
-                    })
+                    on_tool_call(
+                        f"tool_call.{status_label}",
+                        tool_call.name,
+                        tool_call.id,
+                        {
+                            "summary": f"{tool_call.name} 已完成",
+                            "status": str(state.value if hasattr(state, "value") else state),
+                            "has_artifact": bool(payload.get("artifact_ref")),
+                        },
+                    )
             except Exception as exc:  # pragma: no cover - 防御外部 SDK/DB 异常，确保回填仍安全。
-                logger.exception("AgentScope DatasetAgent external tool execution failed: %s", tool_call.name)
-                payload = self._blocked_payload("EXTERNAL_TOOL_EXECUTION_FAILED", error_summary=str(exc))
+                logger.exception(
+                    "AgentScope DatasetAgent external tool execution failed: %s", tool_call.name
+                )
+                payload = self._blocked_payload(
+                    "EXTERNAL_TOOL_EXECUTION_FAILED", error_summary=str(exc)
+                )
                 state = ToolResultState.ERROR
                 if on_tool_call is not None:
-                    on_tool_call("tool_call.failed", tool_call.name, tool_call.id, {
-                        "summary": f"{tool_call.name} 执行失败",
-                        "error_code": "EXTERNAL_TOOL_EXECUTION_FAILED",
-                    })
+                    on_tool_call(
+                        "tool_call.failed",
+                        tool_call.name,
+                        tool_call.id,
+                        {
+                            "summary": f"{tool_call.name} 执行失败",
+                            "error_code": "EXTERNAL_TOOL_EXECUTION_FAILED",
+                        },
+                    )
 
             self._advance_session_after_tool(
                 session=session,
@@ -351,9 +413,11 @@ class AgentScopeDatasetRuntimeBridge:
             )
             session.tool_results.append({"name": tool_call.name, **payload})
             log_lifecycle(
-                "dataset_agent.runtime.tool.completed"
-                if state == ToolResultState.SUCCESS
-                else "dataset_agent.runtime.tool.blocked",
+                (
+                    "dataset_agent.runtime.tool.completed"
+                    if state == ToolResultState.SUCCESS
+                    else "dataset_agent.runtime.tool.blocked"
+                ),
                 dataset_id=session.dataset_id,
                 trace_id=session.trace_id,
                 reply_id=event.reply_id,
@@ -386,7 +450,11 @@ class AgentScopeDatasetRuntimeBridge:
             result_count=len(execution_results),
             has_session_artifact=bool(session.artifact_ref),
             has_session_error=bool(session.last_error),
-            last_error_code=(session.last_error or {}).get("code") if isinstance(session.last_error, dict) else None,
+            last_error_code=(
+                (session.last_error or {}).get("code")
+                if isinstance(session.last_error, dict)
+                else None
+            ),
         )
         return result_event
 
@@ -422,7 +490,9 @@ class AgentScopeDatasetRuntimeBridge:
                     tool_count=len(event.tool_calls),
                 )
                 external_event = await self.handle_external_execution_event(
-                    session, event, on_tool_call=on_tool_call,
+                    session,
+                    event,
+                    on_tool_call=on_tool_call,
                 )
                 results.append(external_event)
                 reply_result = await agent.reply(external_event)
@@ -569,9 +639,11 @@ class AgentScopeDatasetRuntimeBridge:
             "tool_results": session.tool_results,
         }
         log_lifecycle(
-            "dataset_agent.runtime.direct_query.completed"
-            if result["status"] == "completed"
-            else "dataset_agent.runtime.direct_query.blocked",
+            (
+                "dataset_agent.runtime.direct_query.completed"
+                if result["status"] == "completed"
+                else "dataset_agent.runtime.direct_query.blocked"
+            ),
             dataset_id=session.dataset_id,
             trace_id=session.trace_id,
             status=result["status"],
@@ -588,7 +660,9 @@ class AgentScopeDatasetRuntimeBridge:
         tool_input: dict[str, Any],
     ) -> dict[str, Any]:
         if tool_name == "get_dataset_status":
-            dataset_status = self.toolkit.execute_tool("get_dataset_status", dataset_id=session.dataset_id)
+            dataset_status = self.toolkit.execute_tool(
+                "get_dataset_status", dataset_id=session.dataset_id
+            )
             if dataset_status.get("status") in {"not_found", "disabled", "inactive"}:
                 return self._blocked_payload("DATASET_NOT_AVAILABLE")
             return self._safe_output(
@@ -650,7 +724,9 @@ class AgentScopeDatasetRuntimeBridge:
                 trace_id=session.trace_id,
             )
             if executed.get("status") != "completed":
-                return self._blocked_payload(str(executed.get("code") or executed.get("status") or "EXECUTE_BLOCKED"))
+                return self._blocked_payload(
+                    str(executed.get("code") or executed.get("status") or "EXECUTE_BLOCKED")
+                )
             session.artifact_ref = str(executed["artifact_ref"])
             return self._safe_output(
                 {
@@ -683,7 +759,9 @@ class AgentScopeDatasetRuntimeBridge:
             return self._safe_output(
                 {
                     "status": "ready",
-                    **self.toolkit.execute_tool("get_artifact_summary", artifact_ref=str(session.artifact_ref)),
+                    **self.toolkit.execute_tool(
+                        "get_artifact_summary", artifact_ref=str(session.artifact_ref)
+                    ),
                 }
             )
         return self._blocked_payload("TOOL_NOT_WHITELISTED")
@@ -794,7 +872,11 @@ class AgentScopeDatasetRuntimeBridge:
 
     def _safe_output(self, payload: dict[str, Any]) -> dict[str, Any]:
         safe_payload = self._sanitizer.sanitize_output(payload)
-        return safe_payload if isinstance(safe_payload, dict) else self._blocked_payload("OUTPUT_SANITIZED")
+        return (
+            safe_payload
+            if isinstance(safe_payload, dict)
+            else self._blocked_payload("OUTPUT_SANITIZED")
+        )
 
     def _blocked_payload(self, code: str, *, error_summary: Any | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"status": "blocked", "code": code}
@@ -838,7 +920,11 @@ def build_dataset_agentscope_tools(
 
 
 def _tool_input_schema(name: str) -> dict[str, Any]:
-    base_schema: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
+    base_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
     if name == "compile_dsl_to_sql":
         return {
             "type": "object",

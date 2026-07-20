@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from app.core import models
+from app.api.deps import require_api_user
 from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,
@@ -25,7 +26,6 @@ from app.services.runtime_mirror import (
     record_agentscope_ref,
 )
 from app.domains.query_execution.artifact_store import ArtifactStore
-
 
 FORBIDDEN_KEYS = {
     "sql",
@@ -55,6 +55,60 @@ def _assert_no_forbidden_keys(value):
             _assert_no_forbidden_keys(item)
 
 
+def test_workbench_thread_and_retry_hide_other_user_session(client, db_session):
+    """as_* 线程全文与 retry 都必须校验 session owner。"""
+
+    conversation = models.Conversation(title="他人会话", user_id=3, archived=False)
+    db_session.add(conversation)
+    db_session.commit()
+    session = create_agentscope_session(
+        db_session,
+        thread_id="as_00000000-0000-0000-0000-000000000002",
+        title="他人会话",
+        legacy_conversation_id=conversation.id,
+        metadata={"user_id": 3},
+    )
+    failed = create_running_assistant_message(
+        db_session, thread_id=session.thread_id, lease_seconds=30
+    )
+    mark_message_failed(
+        db_session,
+        message_id=failed.message_id,
+        error_summary="执行失败",
+        payload={"checkpoint_ref": "checkpoint://foreign"},
+    )
+    record_agentscope_ref(
+        db_session,
+        thread_id=session.thread_id,
+        message_id=failed.message_id,
+        ref_type="checkpoint",
+        ref_value="checkpoint://foreign",
+        relation="checkpoint",
+    )
+    normal_user = models.User(
+        id=2,
+        username="normal-owner",
+        role="user",
+        is_superuser=False,
+        is_active=True,
+    )
+    client.app.dependency_overrides[require_api_user] = lambda: normal_user
+
+    thread_response = client.get(f"/api/workbench/thread/{session.thread_id}")
+    retry_response = client.post(
+        "/api/workbench/actions/retry",
+        json={
+            "thread_id": session.thread_id,
+            "message_id": failed.message_id,
+            "checkpoint_ref": "checkpoint://foreign",
+            "selected_action": "retry_last_step",
+        },
+    )
+
+    assert thread_response.status_code == 404
+    assert retry_response.status_code == 404
+
+
 def test_get_workbench_thread_returns_agentscope_view(client, db_session, sample_dataset):
     thread = create_agentscope_session(
         db_session,
@@ -68,7 +122,9 @@ def test_get_workbench_thread_returns_agentscope_view(client, db_session, sample
         content_summary="查询杨凯 2024 年工作日志",
         payload={"intent": "worklog_query"},
     )
-    assistant = create_running_assistant_message(db_session, thread_id=thread.thread_id, lease_seconds=60)
+    assistant = create_running_assistant_message(
+        db_session, thread_id=thread.thread_id, lease_seconds=60
+    )
     completed = mark_message_completed(
         db_session,
         message_id=assistant.message_id,
@@ -77,7 +133,11 @@ def test_get_workbench_thread_returns_agentscope_view(client, db_session, sample
     )
     artifact_ref = ArtifactStore(db_session).put_json(
         kind="sql_result",
-        payload={"columns": ["work_date"], "rows": [{"work_date": "2024-01-01"}], "summary": "共 10 条工作日志"},
+        payload={
+            "columns": ["work_date"],
+            "rows": [{"work_date": "2024-01-01"}],
+            "summary": "共 10 条工作日志",
+        },
         dataset_id=sample_dataset.id,
         trace_id="trace-workbench-1",
     )
@@ -119,7 +179,9 @@ def test_get_workbench_thread_returns_agentscope_view(client, db_session, sample
     assert payload["timeline"][0]["event_type"] == "answer.completed"
     assert payload["timeline"][0]["summary"] == "已完成查询"
     assert payload["primary_artifact_ref"] == artifact_ref
-    assert {"ref_type": "trace", "ref": "trace:trace-workbench-1", "relation": "trace"} in payload["related_refs"]
+    assert {"ref_type": "trace", "ref": "trace:trace-workbench-1", "relation": "trace"} in payload[
+        "related_refs"
+    ]
     assert payload["available_actions"][0]["action_id"] == "retry"
     assert payload["available_actions"][0]["enabled"] is False
     assert payload["status_summary"] == {
@@ -192,7 +254,9 @@ def test_get_workbench_thread_returns_retryable_failed_status(client, db_session
         thread_id="as_abababab-abab-abab-abab-abababababab",
         title="失败重试测试",
     )
-    failed = create_running_assistant_message(db_session, thread_id=thread.thread_id, lease_seconds=60)
+    failed = create_running_assistant_message(
+        db_session, thread_id=thread.thread_id, lease_seconds=60
+    )
     mark_message_failed(
         db_session,
         message_id=failed.message_id,
@@ -229,14 +293,18 @@ def test_get_workbench_thread_requires_checkpoint_on_latest_failed_message(clien
         thread_id="as_acacacac-acac-acac-acac-acacacacacac",
         title="检查点归属测试",
     )
-    older = create_running_assistant_message(db_session, thread_id=thread.thread_id, lease_seconds=60)
+    older = create_running_assistant_message(
+        db_session, thread_id=thread.thread_id, lease_seconds=60
+    )
     mark_message_failed(
         db_session,
         message_id=older.message_id,
         error_summary="旧失败",
         payload={"checkpoint_ref": "checkpoint://older"},
     )
-    latest = create_running_assistant_message(db_session, thread_id=thread.thread_id, lease_seconds=60)
+    latest = create_running_assistant_message(
+        db_session, thread_id=thread.thread_id, lease_seconds=60
+    )
     mark_message_failed(
         db_session,
         message_id=latest.message_id,
@@ -274,9 +342,10 @@ def test_get_workbench_artifact_returns_sanitized_view(client, db_session, sampl
     artifact_ref = ArtifactStore(db_session).put_json(
         kind="sql_result",
         payload={
-            "columns": ["work_date"],
-            "rows": [{"work_date": "2024-01-01"}],
+            "columns": ["work_date", "audit_text"],
+            "rows": [{"work_date": "2024-01-01", "audit_text": "SELECT value FROM audit_log"}],
             "summary": "共 10 条工作日志",
+            "report_input_meta": {"total_row_count": 10, "truncated": True},
         },
         dataset_id=sample_dataset.id,
         conversation_id=25,
@@ -292,11 +361,11 @@ def test_get_workbench_artifact_returns_sanitized_view(client, db_session, sampl
     assert payload["dataset_id"] == sample_dataset.id
     assert payload["preview_payload"] == {
         "summary": "共 10 条工作日志",
-        "columns": ["work_date"],
-        "rows": [{"work_date": "2024-01-01"}],
+        "columns": ["work_date", "audit_text"],
+        "rows": [{"work_date": "2024-01-01", "audit_text": "SELECT value FROM audit_log"}],
         "row_count": 1,
-        "total_row_count": 1,
-        "truncated": False,
+        "total_row_count": 10,
+        "truncated": True,
     }
     assert "content_json" not in payload
     assert "content_text" not in payload

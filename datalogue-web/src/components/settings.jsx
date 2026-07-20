@@ -5,6 +5,7 @@ import { LLMProviderLogo, resolveLLMProviderBrand } from './llm-provider-logo';
 import { del as apiDelete, get, patch, post } from '../api/client';
 import { useAuth } from '../auth/auth-context';
 import { UserCreateScreen } from './user-create';
+import { PrototypeNotice } from '../shared/components/prototype-notice';
 
 // Settings — account, workspace, model, integrations, API keys.
 
@@ -13,6 +14,7 @@ function SettingsScreen() {
   const location = useLocation();
   const canManageUsers = user?.role === 'admin' || user?.is_superuser;
   const [section, setSection] = useState('account');
+  const isPrototypeSection = !['account', 'users'].includes(section);
 
   useEffect(() => {
     // 兼容旧路由 /users 的跳转：统一收敛到系统设置内的用户管理子页。
@@ -60,6 +62,7 @@ function SettingsScreen() {
       </div>
 
       <div className="st-main">
+        {isPrototypeSection && <PrototypeNotice />}
         {section === 'account'    && <AccountSection />}
         {section === 'notify'     && <NotifySection />}
         {section === 'appearance' && <AppearanceSection />}

@@ -33,7 +33,6 @@ def _derive_key(key_str: str) -> bytes:
 
 
 AES_KEY_BYTES = _derive_key(_settings.AES_KEY)
-AUTH_TRANSPORT_KEY_BYTES = _derive_key(_settings.AUTH_TRANSPORT_KEY)
 
 
 def hash_password(plain: str) -> str:
@@ -95,20 +94,5 @@ def decrypt_password(cipher_b64: str) -> str:
     data = base64.b64decode(cipher_b64)
     nonce, ct = data[:12], data[12:]
     aesgcm = AESGCM(AES_KEY_BYTES)
-    pt = aesgcm.decrypt(nonce, ct, None)
-    return pt.decode("utf-8")
-
-
-def encrypt_auth_password(plain: str) -> str:
-    aesgcm = AESGCM(AUTH_TRANSPORT_KEY_BYTES)
-    nonce = os.urandom(12)
-    ct = aesgcm.encrypt(nonce, plain.encode("utf-8"), None)
-    return base64.b64encode(nonce + ct).decode("utf-8")
-
-
-def decrypt_auth_password(cipher_b64: str) -> str:
-    data = base64.b64decode(cipher_b64)
-    nonce, ct = data[:12], data[12:]
-    aesgcm = AESGCM(AUTH_TRANSPORT_KEY_BYTES)
     pt = aesgcm.decrypt(nonce, ct, None)
     return pt.decode("utf-8")

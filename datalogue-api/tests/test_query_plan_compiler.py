@@ -141,7 +141,8 @@ def test_contains_operator_emits_escape_clause():
 
     assert compiled["ok"] is True
     assert "ESCAPE '\\'" in compiled["sql"]
-    assert "LIKE '%foo%'" in compiled["sql"]
+    assert "LIKE :filter_0" in compiled["sql"]
+    assert compiled["params"]["filter_0"] == "%foo%"
 
 
 def test_contains_operator_escapes_percent_literal():
@@ -152,9 +153,24 @@ def test_contains_operator_escapes_percent_literal():
     compiled = _compile(plan=plan)
 
     assert compiled["ok"] is True
-    # 转义后的 % 应以 \% 形式出现在 SQL 中，且附带 ESCAPE 子句
-    assert "\\%" in compiled["sql"]
+    # 转义后的 % 只能存在于绑定参数中，不能重新内联进 SQL。
+    assert "\\%" not in compiled["sql"]
+    assert compiled["params"]["filter_0"] == "%50\\%%"
     assert "ESCAPE '\\'" in compiled["sql"]
+
+
+def test_filter_value_with_backslash_and_quote_remains_bound_parameter():
+    """过滤值中的反斜杠与引号不能因 Guard/数据库解析差异改写 WHERE 语义。"""
+
+    attack_value = "\\' OR 1=1 --"
+    plan = _base_plan()
+    plan["filters"] = [{"field": "order_id", "operator": "=", "value": attack_value}]
+
+    compiled = _compile(plan=plan)
+
+    assert compiled["ok"] is True
+    assert attack_value not in compiled["sql"]
+    assert compiled["params"]["filter_0"] == attack_value
 
 
 # ---- join_requirements 编译契约（改动 C 新增）----

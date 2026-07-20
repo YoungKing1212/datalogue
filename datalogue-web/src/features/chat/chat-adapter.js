@@ -15,36 +15,19 @@
 import { agentTeamEnvelopeToChatEvent } from '../../assistant/agent-team-event-adapter';
 import { streamAgentTeamTask } from '../../assistant/agent-team-task-api';
 import { resolveRecentInitializedRemoteId, resolveRemoteId, resolveRecentPendingLocalId, ensureConversationForThread } from './thread-list-adapter';
+import { NODE_DISPLAY_NAMES, nodeDisplayName } from './node-display';
+import {
+  looksLikeInternalPlanningText,
+  safeUserVisibleList,
+  safeUserVisibleText,
+  sanitizeUserVisibleTrace,
+} from './user-visible-safety';
 
 const BUSINESS_SESSION_PREFIX = 'assistant-thread';
 
-// 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐，作为前端兜底）
-const NODE_DISPLAY = {
-  message_gateway: '任务理解',
-  'message-gateway': '任务理解',
-  lead_agent_tools: '能力匹配',
-  manifest_route: '场景匹配',
-  clarification_resolution: '澄清处理',
-  intent_recognition: '意图识别',
-  entry_intent_classification: '入口判断',
-  analysis_blueprint_execute: '分析蓝图执行',
-  candidate_assets: '数据资产匹配',
-  schema_recall: '数据范围确认',
-  term_normalize_node: '术语标准化',
-  semantic_asset_resolution_node: '语义资产解析',
-  metric_resolution_node: '指标解析',
-  dsl_generate: '查询生成',
-  dsl_validate: '查询校验',
-  dsl_compiler: '执行计划生成',
-  sql_execute: '查询执行',
-  sql_audit: '结果诊断',
-  repair_patch: '自动修复',
-  report_generator: '结果整理',
-};
-
 function safeStepLabel(node, displayName) {
   // 后端 display_name 可能仍是内部节点名，普通 Chat 可见层统一映射为业务文案。
-  return NODE_DISPLAY[node] || NODE_DISPLAY[displayName] || '任务处理';
+  return nodeDisplayName(node, displayName);
 }
 
 
@@ -292,91 +275,8 @@ export function buildBusinessSessionId({ threadId, conversationId, fallbackSessi
   return fallbackSessionId;
 }
 
-const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
-  'sql',
-  'sql_result',
-  'sqlResult',
-  'sql_diagnosis',
-  'sqlDiagnosis',
-  'sql_audit_result',
-  'sqlAuditResult',
-  'raw_sql',
-  'direct_sql',
-  'llm_sql',
-  'compiled_sql',
-  'sql_list',
-  'candidate_assets',
-  'candidateAssets',
-  'dsl',
-  'rows',
-  'columns',
-  'column_labels',
-  'columnLabels',
-  'schema',
-  'schemas',
-  'table',
-  'tables',
-  'field',
-  'fields',
-  'raw_result',
-  'rawResult',
-  'repair_patch',
-  'repairPatch',
-  'RepairPatch',
-  'node',
-  'display_name',
-  'displayName',
-  'trace_only_metadata',
-  'traceOnlyMetadata',
-  'replacement_field_ref',
-  'replacementFieldRef',
-  'raw_rows',
-  'rawRows',
-  'debug_raw',
-  'debugRaw',
-  'raw_delta',
-  'rawDelta',
-  'blueprint',
-  'blueprints',
-]);
-
-function sanitizeUserVisibleTrace(value) {
-  if (Array.isArray(value)) return value.map(sanitizeUserVisibleTrace);
-  if (!value || typeof value !== 'object') return value;
-  const out = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (USER_VISIBLE_TRACE_FORBIDDEN_KEYS.has(key)) continue;
-    out[key] = sanitizeUserVisibleTrace(item);
-  }
-  return out;
-}
-
-const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|delete\s+from|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_row|schema/i;
-const INTERNAL_PLANNING_PATTERN = /\b(the\s+user\s+wants?\s+to|let\s+me\s+break|i\s+need\s+to\s+create|worker\s+type\s+should\s+be|i\s+should\s+present|teamsay)\b/i;
-const INTERNAL_PLANNING_COMPACT_MARKERS = [
-  'theuserwantstoquery',
-  'letmebreakthisdown',
-  'ineedtocreate',
-  'theworkertypeshouldbe',
-  'bothhaveascore',
-  'ishouldpresent',
-  'taskcompletedteamdissolved',
-];
-
-function looksLikeInternalPlanningText(value) {
-  if (value == null) return false;
-  const text = String(value).trim();
-  if (!text) return false;
-  const compact = text.toLowerCase().replace(/[^a-z0-9]/g, '');
-  return INTERNAL_PLANNING_PATTERN.test(text)
-    || INTERNAL_PLANNING_COMPACT_MARKERS.some((marker) => compact.includes(marker));
-}
-
 function safeDisplayText(value) {
-  if (value == null) return null;
-  const text = String(value).trim();
-  if (!text || INTERNAL_TEXT_PATTERN.test(text) || looksLikeInternalPlanningText(text)) return null;
-  return text.slice(0, 160);
+  return safeUserVisibleText(value, { rejectPlanning: true });
 }
 
 function datasetConfirmationAnswer(routeDecision) {
@@ -397,17 +297,7 @@ function datasetConfirmationAnswer(routeDecision) {
 }
 
 function safeDisplayList(values, limit = 6) {
-  if (!Array.isArray(values)) return [];
-  const seen = new Set();
-  const result = [];
-  for (const value of values) {
-    const text = safeDisplayText(value);
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    result.push(text);
-    if (result.length >= limit) break;
-  }
-  return result;
+  return safeUserVisibleList(values, { limit, rejectPlanning: true });
 }
 
 function reasoningGroupKey(part = {}) {
@@ -869,6 +759,10 @@ function isPreservedStreamingReasoning(part = {}) {
   const parentId = String(part.parentId || '');
   return parentId.startsWith('agent-')
     || parentId === 'live_thinking'
+    || parentId === 'multi_agent_handoff'
+    || parentId === 'confirmation'
+    || parentId === 'task.step'
+    || parentId === 'repair_patch'
     || part.reasoningKind === 'bi_worker_thinking_summary'
     || part.reasoningKind === 'bi_worker_raw_thinking_delta';
 }
@@ -968,6 +862,14 @@ function buildTimingMetadata(messageTiming, toolGroups = []) {
     })
     .filter(Boolean);
   return compactObject({ message, tools });
+}
+
+async function* captureAsyncStreamError(stream, onError) {
+  try {
+    yield* stream;
+  } catch (error) {
+    onError(error);
+  }
 }
 
 /**
@@ -1099,9 +1001,13 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
       const repairTimeline = [];
       let repairPlan = null;
       const rawThinkingDeltas = new Map();
+      let streamArtifactCard = null;
+      let sourceArtifactRef = null;
+      let currentPhase = null;
 
       // C-ready 业务时间线累加器：从 SSE 事件推断五类节点
       const taskTimeline = [];
+      let streamError = null;
 
       // 工具：构造当前 message content
       // 流式阶段正文保持为空，Leader 独白与步骤只在思考链呈现；正文只在 final 收敛为干净答案。
@@ -1110,10 +1016,22 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         ...toolParts,
         { type: 'text', text: '' },
       ];
+      const buildStreamingChunk = () => ({
+        content: buildContent(),
+        metadata: {
+          custom: compactObject({
+            currentPhase,
+            taskTimeline: taskTimeline.map((item) => ({ ...item })),
+            artifactCard: safeArtifactCard(streamArtifactCard),
+          }),
+        },
+      });
 
-      for await (const rawEvent of stream) {
+      for await (const rawEvent of captureAsyncStreamError(stream, (error) => { streamError = error; })) {
         if (abortSignal.aborted) break;
-        const ev = agentTeamEnvelopeToChatEvent(rawEvent);
+        // 问数主链路已经进入完整 Agent Team 阶段；显式指定能力等级，避免构建环境缺省值
+        // 把 handoff、Worker 思考、工具调用和修复事件压缩成通用进度，导致 final 无法重建完整消息。
+        const ev = agentTeamEnvelopeToChatEvent(rawEvent, { capabilityLevel: 'agent_team' });
         if (!ev) continue;
 
         if (ev.type === 'token') {
@@ -1130,7 +1048,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
               status: 'running',
             });
           }
-          yield { content: buildContent() };
+          yield buildStreamingChunk();
         } else if (ev.type === 'route_decision') {
           emitTrace(ev);
           upsertReasoningPart(reasonings, {
@@ -1146,7 +1064,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             text: datasetName ? `已匹配数据集「${datasetName}」` : '正在匹配数据集',
             status: ev.decision === 'selected' || ev.decision === 'locked' ? 'done' : 'running',
           });
-          yield { content: buildContent() };
+          yield buildStreamingChunk();
         } else if (ev.type === 'agent_handoff') {
           emitTrace(ev);
           upsertReasoningPart(reasonings, buildStructuredReasoningPart(ev));
@@ -1156,9 +1074,10 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             text: ev.summary || '已完成 Agent 路由',
             status: ev.status === 'failed' ? 'error' : 'done',
           });
-          yield { content: buildContent() };
+          yield buildStreamingChunk();
         } else if (ev.type === 'agent_progress') {
           emitTrace(ev);
+          currentPhase = ev.phase || currentPhase;
           let progressEvent = ev;
           if (ev.reasoningKind === 'bi_worker_raw_thinking_delta' && ev.debugRaw === true) {
             const key = ev.streamGroupId || ev.replyId || 'default';
@@ -1167,13 +1086,14 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             progressEvent = { ...ev, rawDelta: nextRaw };
           }
           upsertReasoningPart(reasonings, buildStructuredReasoningPart(progressEvent));
+          const isReportProgress = ev.phase === 'report';
           upsertTaskTimelineEvent(taskTimeline, {
-            type: ev.agentRole === 'worker' ? 'bi_execution' : 'task_understood',
-            label: ev.agentRole === 'worker' ? 'BI 执行' : '任务理解',
+            type: isReportProgress ? 'report_generation' : (ev.agentRole === 'worker' ? 'bi_execution' : 'task_understood'),
+            label: isReportProgress ? '报告生成' : (ev.agentRole === 'worker' ? 'BI 执行' : '任务理解'),
             text: ev.summary || ev.title || '正在处理任务',
             status: ev.status === 'completed' ? 'done' : ev.status === 'failed' ? 'error' : 'running',
           });
-          yield { content: buildContent() };
+          yield buildStreamingChunk();
         } else if (ev.type === 'tool_call') {
           emitTrace(ev);
           upsertToolCallPart(toolParts, ev);
@@ -1184,7 +1104,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             text: ev.summary || '正在完成查询处理',
             status: ev.status === 'completed' ? 'done' : ev.status === 'failed' ? 'error' : 'running',
           });
-          yield { content: buildContent() };
+          yield buildStreamingChunk();
         } else if (ev.type === 'confirmation') {
           emitTrace(ev);
           const confirmation = structuredEventSummary(ev);
@@ -1196,10 +1116,24 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             text: ev.summary || '需要确认后继续执行',
             status: 'running',
           });
-          yield { content: buildContent() };
+          yield buildStreamingChunk();
         } else if (ev.type === 'artifact_ref') {
           emitTrace(ev);
           const refs = safeRefs(ev.refs);
+          const artifactRef = refs.artifactRef || refs.reportRef || null;
+          sourceArtifactRef = sourceArtifactRef || artifactRef;
+          streamArtifactCard = safeArtifactCard(ev.artifactCard) || (artifactRef ? {
+            title: refs.reportRef && !refs.artifactRef ? '分析报告' : '查询结果',
+            status: 'completed',
+            summary_for_chat: ev.summary || '已生成查询结果',
+            preview_payload: null,
+            primary_ref: artifactRef,
+            related_refs: [],
+            actions: [
+              { action_type: 'view', label: '查看详情', ref: artifactRef, disabled: false },
+              { action_type: 'copy', label: '复制结果', ref: artifactRef, disabled: false },
+            ],
+          } : streamArtifactCard);
           upsertTaskTimelineEvent(taskTimeline, {
             type: 'artifact_created',
             label: '结果产物',
@@ -1208,7 +1142,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             primaryRef: refs.artifactRef || refs.reportRef || null,
             rowCount: ev.rowCount ?? null,
           });
-          yield { content: buildContent() };
+          yield buildStreamingChunk();
         } else if (ev.type === 'lead_agent_tools') {
           emitTrace(ev);
           emitResolvedConversation(unstable_threadId, ev.thread_context?.conversation_id);
@@ -1217,7 +1151,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             text: formatLeadAgentToolsAsReasoning(ev),
             parentId: 'lead_agent_tools',
           });
-          yield { content: buildContent() };
+          yield buildStreamingChunk();
         } else if (ev.type === 'step') {
           // 通知 AgentPanel（保持现有行为）
           emitTrace(ev);
@@ -1226,7 +1160,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
           if (ev.status === 'done' && ev.node !== 'error') {
             const stepLabel = safeStepLabel(ev.node, ev.display_name);
             let stepReasoningText = formatStepAsReasoning(ev);
-            if (!NODE_DISPLAY[ev.node]) {
+            if (!NODE_DISPLAY_NAMES[ev.node]) {
               // 未知节点：优先展示安全 summary；退化为纯“任务处理”标签、无业务 detail 的兜底步骤直接跳过，避免噪声堆叠。
               const summary = safeDisplayText(ev.display_name);
               stepReasoningText = summary && summary !== stepLabel && summary !== ev.node ? summary : null;
@@ -1237,7 +1171,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
                 text: stepReasoningText,
                 parentId: ev.node,
               });
-              yield { content: buildContent() };
+              yield buildStreamingChunk();
             }
           }
           // 业务时间线：将 step 映射为业务级节点
@@ -1281,8 +1215,25 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
             });
           }
         } else if (ev.type === 'final') {
-          finalPayload = ev;
+          if (finalPayload?.entry_route === 'report_worker_result'
+            && ev.entry_route !== 'report_worker_result'
+            && ev.entry_route !== 'agent_team_failed') {
+            // 报告工具结果已经给出最终正文时，后续任务收口事件只补充上下文，不能再产生第二份回答。
+            finalPayload = { ...ev, ...finalPayload };
+          } else {
+            finalPayload = ev;
+          }
         }
+      }
+
+      if (streamError) {
+        if (streamError.name !== 'AbortError') {
+          yield {
+            content: [{ type: 'text', text: `连接失败：${streamError.message || '服务暂不可用'}` }],
+            status: { type: 'incomplete', reason: 'error' },
+          };
+        }
+        return;
       }
 
       if (abortSignal.aborted) {
@@ -1306,11 +1257,11 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         // 业务时间线收尾：BI 执行完成、结果产物、下一步
         const biExec = taskTimeline.find((t) => t.type === 'bi_execution');
         if (biExec) biExec.status = 'done';
-        if (finalPayload.answer || finalPayload.sql_result || finalPayload.result_ref || finalPayload.report_ref) {
-          taskTimeline.push({
+        if (finalPayload.answer || finalPayload.sql_result || finalPayload.result_ref || finalPayload.report_ref || sourceArtifactRef) {
+          upsertTaskTimelineEvent(taskTimeline, {
             type: 'artifact_created',
             label: '结果产物',
-            text: finalPayload.result_ref ? '已生成查询结果' : finalPayload.report_ref ? '已生成分析报告' : '已生成回答',
+            text: (finalPayload.result_ref || sourceArtifactRef) ? '已生成查询结果' : finalPayload.report_ref ? '已生成分析报告' : '已生成回答',
             status: 'done',
           });
         }
@@ -1322,13 +1273,13 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
         });
 
         // 构建 C-ready ArtifactCard 数据
-        let artifactCard = null;
+        let artifactCard = streamArtifactCard;
         if (finalPayload.artifact_card) {
           // 后端已提供 C-ready ArtifactCard 时仍需过一层清洗，避免 preview 携带 raw rows。
           artifactCard = safeArtifactCard(finalPayload.artifact_card);
-        } else {
+        } else if (!artifactCard) {
           // 从现有 final 字段推断生成 ArtifactCard
-          const hasResult = finalPayload.result_ref;
+          const hasResult = finalPayload.result_ref || sourceArtifactRef;
           const hasReport = finalPayload.report_ref;
           if (hasResult || hasReport) {
             artifactCard = {
@@ -1338,10 +1289,10 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
                 ? safeDisplayText(finalPayload.answer).slice(0, 120)
                 : '查询已执行完成',
               preview_payload: null,
-              primary_ref: finalPayload.result_ref || finalPayload.report_ref || null,
+              primary_ref: hasResult || finalPayload.report_ref || null,
               related_refs: [],
               actions: [
-                { action_type: 'view', label: '查看详情', ref: finalPayload.result_ref || finalPayload.report_ref || '', disabled: false },
+                { action_type: 'view', label: '查看详情', ref: hasResult || finalPayload.report_ref || '', disabled: false },
                 { action_type: 'copy', label: '复制结果', ref: '', disabled: false },
                 { action_type: 'export', label: '导出', ref: '', disabled: true },
               ],
@@ -1423,10 +1374,12 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
               queryCaliber: safeQueryCaliber(finalPayload),
               resultRef: finalPayload.result_ref
                 || finalPayload.response_metadata?.subagent_tool_result?.result_ref
+                || sourceArtifactRef
                 || null,
               reportRef: finalPayload.report_ref
                 || finalPayload.response_metadata?.subagent_tool_result?.report_ref
                 || null,
+              errorCode: finalPayload.error_code || null,
               subagentToolResults: safeSubagentToolResults(
                 finalPayload.subagent_tool_results
                   || finalPayload.response_metadata?.subagent_tool_results,
@@ -1435,6 +1388,7 @@ export function makeChatAdapter({ datasetIdRef, modelConfigIdRef }) {
               routePayload: null,
               clarification: safeClarification(finalPayload.clarification, finalPayload.route_payload),
               messageId: finalPayload.message_id || null,
+              threadId: finalPayload.thread_id || null,
               stepTrace,
               // C-ready 数据结构
               taskTimeline,

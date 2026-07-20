@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Fragment } from 'react';
-import { BrowserRouter, Routes, Route, useLocation, Link, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation, useNavigate, Link, Navigate } from 'react-router-dom';
 import { Spin } from 'antd';
 import { Icon } from './shared/components/icons';
 import { Sidebar } from './components/sidebar';
@@ -13,10 +13,9 @@ import { PinnedScreen } from './components/pinned';
 import { AuditScreen, LLMModelsScreen, SettingsScreen } from './components/settings';
 import { PublishDrawer } from './components/publish-drawer';
 import { NotificationsPopover, bellCount } from './components/notifications';
-import { useTweaks, TweaksPanel, TweakSection, TweakColor, TweakRadio, TweakToggle, TweakButton } from './components/tweaks-panel';
+import { useTweaks } from './features/app-tweaks';
 import { DatasourcesScreen } from './components/datasources';
 import { KnowledgeScreen } from './components/knowledge';
-import { EditorModalHost } from './components/editor-modal';
 import WorkbenchRoute from './components/workbench-route';
 import { LoginPage } from './components/login-page';
 import { AuthProvider, useAuth } from './auth/auth-context';
@@ -30,6 +29,11 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "showFollowups": true
 }/*EDITMODE-END*/;
 
+// Vite 会在生产构建时把 DEV 分支裁掉，因此调试面板及其 postMessage 协议不会进入生产产物。
+const DevTweaks = import.meta.env.DEV
+  ? React.lazy(() => import('./components/dev-tweaks').then((module) => ({ default: module.DevTweaks })))
+  : null;
+
 // 把默认主色重映射为更饱和的亮蓝（贴近设计稿）；保留 #1976c9 作为键，
 // 使已持久化到 localStorage 的旧值也一并应用新蓝，避免老用户仍是偏灰的蓝。
 const ACCENT_OKLCH = {
@@ -41,8 +45,6 @@ const ACCENT_LINE = {
 const ACCENT_SOFT = {
   "#1976c9": "#e9f2ff",
 };
-const noopTraceToggle = () => {};
-
 // 路径到面包屑的映射
 const CRUMBS_MAP = {
   '/':             { crumb: ['数语', '工作台'], title: '工作台' },
@@ -62,7 +64,78 @@ const CRUMBS_MAP = {
   '/users':        { crumb: ['数语', '系统管理', '用户管理'], title: '用户管理' },
 };
 
-function TopBar({ onPublish, currentUser, onLogout }) {
+const SEARCH_ROUTES = Object.entries(CRUMBS_MAP)
+  .filter(([path]) => path !== '/chat/' && path !== '/users')
+  .map(([path, item]) => ({ path, title: item.title, keywords: item.crumb.join(' ') }));
+
+function GlobalSearch({ open, onClose }) {
+  const [query, setQuery] = useState('');
+  const navigate = useNavigate();
+  const normalized = query.trim().toLowerCase();
+  const matches = SEARCH_ROUTES.filter((item) => (
+    !normalized || `${item.title} ${item.keywords}`.toLowerCase().includes(normalized)
+  ));
+
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  if (!open) return null;
+  const selectRoute = (path) => {
+    navigate(path);
+    onClose();
+  };
+
+  return (
+    <div className="global-search-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="global-search-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="全局搜索"
+        onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') onClose();
+        }}
+      >
+        <div className="global-search-input-wrap">
+          <Icon name="search" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索页面或功能"
+            aria-label="搜索页面或功能"
+          />
+          <span className="kbd">Esc</span>
+        </div>
+        <div className="global-search-results">
+          {matches.length ? matches.map((item) => (
+            <button key={item.path} type="button" onClick={() => selectRoute(item.path)}>
+              <span>{item.title}</span>
+              <small>{item.keywords}</small>
+            </button>
+          )) : (
+            <div className="global-search-empty">没有匹配的页面</div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function NotFoundPage() {
+  return (
+    <div className="not-found-page">
+      <span>404</span>
+      <h1>页面不存在</h1>
+      <p>地址可能已失效，您可以返回工作台继续使用。</p>
+      <Link className="btn primary" to="/">返回工作台</Link>
+    </div>
+  );
+}
+
+function TopBar({ onPublish, onSearch, onMenu, currentUser, onLogout }) {
   const [notifOpen, setNotifOpen] = useState(false);
   const location = useLocation();
   const count = bellCount();
@@ -76,6 +149,15 @@ function TopBar({ onPublish, currentUser, onLogout }) {
 
   return (
     <div className="topbar">
+      <button
+        type="button"
+        className="icon-btn mobile-menu-btn"
+        title="打开导航"
+        aria-label="打开导航"
+        onClick={onMenu}
+      >
+        <Icon name="menu" />
+      </button>
       <div className="crumb">
         {c.crumb.map((b, i) => (
           <Fragment key={i}>
@@ -89,6 +171,7 @@ function TopBar({ onPublish, currentUser, onLogout }) {
             <button
               className="icon-btn"
               title="刷新"
+              aria-label="刷新"
               onClick={() => window.location.reload()}
             >
               <Icon name="refresh" />
@@ -96,6 +179,7 @@ function TopBar({ onPublish, currentUser, onLogout }) {
             <button
               className="icon-btn"
               title="分享（复制会话链接）"
+              aria-label="分享会话链接"
               onClick={() => {
                 // 复制当前会话链接到剪贴板，贴近设计稿的“分享”入口。
                 navigator.clipboard?.writeText(window.location.href).catch(console.error);
@@ -113,16 +197,19 @@ function TopBar({ onPublish, currentUser, onLogout }) {
             </button>
           </>
         )}
-        <button className="icon-btn" title="搜索"><Icon name="search" /></button>
+        <button className="icon-btn" title="搜索" aria-label="全局搜索" onClick={onSearch}>
+          <Icon name="search" />
+        </button>
         {currentUser && (
           <>
             <span className="topbar-user">{currentUser.username}</span>
-            <button className="btn ghost" onClick={onLogout}>退出登录</button>
+            <button className="btn ghost topbar-logout" onClick={onLogout}>退出登录</button>
           </>
         )}
         <button
           className={'icon-btn notif-btn ' + (notifOpen ? 'on' : '')}
           title="消息"
+          aria-label="消息通知"
           onClick={() => setNotifOpen(v => !v)}>
           <Icon name="bell" />
           {count > 0 && <span className="notif-badge">{count}</span>}
@@ -135,7 +222,18 @@ function TopBar({ onPublish, currentUser, onLogout }) {
 
 function AppInner({ t, setTweak }) {
   const [publishOpen, setPublishOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [traceOpen, setTraceOpen] = useState(false);
   const { user, logout } = useAuth();
+  const location = useLocation();
+
+  // 路由切换后收起移动抽屉，避免内容页被残留遮罩覆盖。
+  useEffect(() => {
+    setMobileNavOpen(false);
+    setSearchOpen(false);
+    if (!location.pathname.startsWith('/chat')) setTraceOpen(false);
+  }, [location.pathname]);
 
   // Apply accent CSS variable
   useEffect(() => {
@@ -152,14 +250,26 @@ function AppInner({ t, setTweak }) {
 
   return (
     <div className="app">
-      <Sidebar />
+      <Sidebar open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
+      <button
+        type="button"
+        className={`sidebar-backdrop${mobileNavOpen ? ' open' : ''}`}
+        aria-label="关闭导航"
+        onClick={() => setMobileNavOpen(false)}
+      />
       <div className="main">
-        <TopBar onPublish={() => setPublishOpen(true)} currentUser={user} onLogout={logout} />
+        <TopBar
+          onPublish={() => setPublishOpen(true)}
+          onSearch={() => setSearchOpen(true)}
+          onMenu={() => setMobileNavOpen(true)}
+          currentUser={user}
+          onLogout={logout}
+        />
         <div className="content">
           <Routes>
             <Route path="/" element={<Workspace />} />
-            <Route path="/chat" element={<ChatPage traceOpen={false} setTraceOpen={noopTraceToggle} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
-            <Route path="/chat/:id" element={<ChatPage traceOpen={false} setTraceOpen={noopTraceToggle} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
+            <Route path="/chat/:id" element={<ChatPage traceOpen={traceOpen} setTraceOpen={setTraceOpen} showFollowups={t.showFollowups} agentVerbosity={t.agentVerbosity} />} />
             <Route path="/workbench/:threadId" element={<WorkbenchRoute />} />
             <Route path="/workbench/:threadId/:artifactRef" element={<WorkbenchRoute />} />
             <Route path="/datasets" element={<DatasetsScreen />} />
@@ -188,33 +298,18 @@ function AppInner({ t, setTweak }) {
                 </RequireSuperuser>
               )}
             />
+            <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </div>
       </div>
 
       {publishOpen && <PublishDrawer onClose={() => setPublishOpen(false)} />}
-      <EditorModalHost />
-
-      <TweaksPanel title="Tweaks">
-        <TweakSection label="主题色" />
-        <TweakColor label="Accent" value={t.accent}
-          options={['#1976c9']}
-          onChange={(v) => setTweak('accent', v)} />
-
-        <TweakSection label="布局" />
-        <TweakRadio label="密度" value={t.density} options={['compact', 'regular', 'comfy']}
-          onChange={(v) => setTweak('density', v)} />
-
-        <TweakSection label="问数体验" />
-        <TweakRadio label="Agent 推理" value={t.agentVerbosity}
-          options={[{value:'minimal', label:'简洁'},{value:'expanded', label:'展开'},{value:'full', label:'完整'}]}
-          onChange={(v) => setTweak('agentVerbosity', v)} />
-        <TweakToggle label="显示追问 chips" value={t.showFollowups}
-          onChange={(v) => setTweak('showFollowups', v)} />
-
-        <TweakSection label="调试" />
-        <TweakButton label="打开发布接口 Drawer" onClick={() => setPublishOpen(true)} />
-      </TweaksPanel>
+      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
+      {DevTweaks && (
+        <React.Suspense fallback={null}>
+          <DevTweaks t={t} setTweak={setTweak} onOpenPublish={() => setPublishOpen(true)} />
+        </React.Suspense>
+      )}
     </div>
   );
 }
@@ -233,6 +328,11 @@ function RequireAuth({ children }) {
 
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  if (user.must_change_password) {
+    // 临时密码登录态只能停留在改密页，防止业务页面先发出必然失败的数据请求。
+    return <Navigate to="/login" replace state={{ from: location, passwordChangeRequired: true }} />;
   }
 
   return children;

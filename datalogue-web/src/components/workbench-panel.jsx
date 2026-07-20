@@ -6,12 +6,11 @@ import { fetchWorkbenchArtifact, fetchWorkbenchThread, requestWorkbenchRetry } f
 import { Icon } from './icons';
 import DataTable from '../shared/components/DataTable';
 
-const FORBIDDEN_TEXT_RE = /\b(select|from|join|where|schema|raw_rows|raw_result|field_patch)\b/i;
 const RUNNING_REFRESH_INTERVAL_MS = 2000;
 
 function safeText(value, fallback = '') {
   const text = String(value ?? '').trim();
-  if (!text || FORBIDDEN_TEXT_RE.test(text)) return fallback;
+  if (!text) return fallback;
   return text.slice(0, 180);
 }
 

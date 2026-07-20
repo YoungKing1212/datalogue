@@ -5,6 +5,7 @@ const exportedRepositoryMock = vi.hoisted(() => ({
 }));
 
 const fetchWorkbenchThreadMock = vi.hoisted(() => vi.fn());
+const listConversationPageMock = vi.hoisted(() => vi.fn(async () => ({ items: [], next_cursor: null })));
 
 vi.mock('@assistant-ui/react', () => ({
   ExportedMessageRepository: exportedRepositoryMock,
@@ -17,7 +18,7 @@ vi.mock('assistant-stream', () => ({
 }));
 
 vi.mock('../api/client', () => ({
-  listConversations: vi.fn(async () => []),
+  listConversationPage: listConversationPageMock,
   createConversation: vi.fn(async () => ({ id: 25, thread_id: 'legacy-thread-25' })),
   renameConversation: vi.fn(async () => {}),
   archiveConversation: vi.fn(async () => {}),
@@ -32,10 +33,11 @@ vi.mock('./workbench-api', () => ({
 
 import {
   DatalogueThreadListAdapter,
+  messagesFromBackend,
   messagesFromWorkbench,
   resolveRecentInitializedRemoteId,
   resolveRemoteId,
-} from './thread-list-adapter';
+} from '../features/chat/thread-list-adapter';
 
 const AGENTSCOPE_THREAD_ID = 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
@@ -65,6 +67,31 @@ function sampleWorkbenchView() {
 }
 
 describe('thread-list AgentScope handoff', () => {
+  it('把 assistant-ui 游标透传给后端并返回下一页游标', async () => {
+    listConversationPageMock.mockResolvedValueOnce({
+      items: [{ id: 7, title: '分页会话', archived: false, updated_at: '2026-07-17T08:00:00Z' }],
+      next_cursor: 'cursor-next',
+    });
+
+    const page = await new DatalogueThreadListAdapter().list({ after: 'cursor-current' });
+
+    expect(listConversationPageMock).toHaveBeenLastCalledWith({ after: 'cursor-current', limit: 50 });
+    expect(page.nextCursor).toBe('cursor-next');
+    expect(page.threads[0]).toMatchObject({ remoteId: '7', title: '分页会话', status: 'regular' });
+  });
+
+  it('历史窗口被截断时明确插入提示消息', () => {
+    const messages = messagesFromBackend({
+      conversation: { id: 7 },
+      messages: [{ id: 9, role: 'user', content: '最近一条', created_at: '2026-07-17T08:00:00Z' }],
+      message_page: { limit: 200, has_more: true, next_before_message_id: 8 },
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0].metadata.custom.historyWindowTruncated).toBe(true);
+    expect(messages[0].content[0].text).toContain('最近 200 条');
+  });
+
   it('remaps local draft thread to as_* after chat final resolves thread id', async () => {
     fetchWorkbenchThreadMock.mockResolvedValue(sampleWorkbenchView());
     window.dispatchEvent(

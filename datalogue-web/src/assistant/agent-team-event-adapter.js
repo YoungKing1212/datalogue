@@ -80,7 +80,14 @@ function safeTiming(source = {}) {
 
 function safeRefs(payload = {}) {
   const refs = {
-    artifactRef: safeText(payload.artifact_ref || payload.artifactRef || payload.result_ref || payload.resultRef),
+    artifactRef: safeText(
+      payload.artifact_ref
+        || payload.artifactRef
+        || payload.result_ref
+        || payload.resultRef
+        || payload.source_artifact_ref
+        || payload.sourceArtifactRef,
+    ),
     reportRef: safeText(payload.report_ref || payload.reportRef),
     checkpointRef: safeText(payload.checkpoint_ref || payload.checkpointRef),
   };
@@ -191,6 +198,37 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}, options = {}) {
   if (envelope.event_type === 'message.delta') {
     return { type: 'token', content: payload.content || '' };
   }
+  const isReportWorkerResult = envelope.event_type === 'report_worker_result'
+    || envelope.event_type === 'report.completed'
+    || payload.datalogue_event_type === 'report_worker_result';
+  if (isReportWorkerResult) {
+    const sourceArtifactRef = payload.source_artifact_ref
+      || payload.sourceArtifactRef
+      || payload.artifact_ref
+      || payload.artifactRef
+      || null;
+    return {
+      type: 'final',
+      answer: payload.report_markdown || payload.reportMarkdown || payload.answer || payload.summary || '',
+      result_ref: sourceArtifactRef,
+      artifact_ref: sourceArtifactRef,
+      report_ref: payload.report_ref || payload.reportRef || null,
+      report_status: payload.status || 'succeeded',
+      report_worker_agent_id: payload.report_worker_agent_id
+        || payload.reportWorkerAgentId
+        || payload.worker_agent_id
+        || payload.workerAgentId
+        || null,
+      report_worker_session_id: payload.report_worker_session_id
+        || payload.reportWorkerSessionId
+        || payload.worker_session_id
+        || payload.workerSessionId
+        || null,
+      entry_route: 'report_worker_result',
+      ...baseEvent(streamEvent, envelope),
+      event_envelope: envelope,
+    };
+  }
   if (envelope.event_type === 'message.completed') {
     const progressiveLabel = PROGRESSIVE_EVENT_LABELS[payload.datalogue_event_type];
     if (progressiveLabel) {
@@ -238,16 +276,19 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}, options = {}) {
     const agentName = safeText(payload.agent_name || payload.agentName || payload.agent || payload.worker_agent_name)
       || (agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
     const rawDelta = rawThinkingDelta(payload);
+    const phase = safeText(payload.phase) || null;
+    const isReportPhase = phase === 'report';
     return {
       type: 'agent_progress',
       kind: 'agent_progress',
       status: lifecycleStatus(envelope.event_type, payload),
-      title: safeText(payload.title || payload.phase) || '执行进展',
-      summary: safeText(payload.summary || payload.message || payload.text) || '',
+      title: isReportPhase ? '正在整理报告' : (safeText(payload.title || payload.phase) || '执行进展'),
+      summary: safeText(payload.summary || payload.message || payload.text)
+        || (isReportPhase ? '正在根据查询结果生成分析报告。' : ''),
       agent: safeAgentName(agentName),
       agentRole,
       agentName,
-      phase: safeText(payload.phase) || null,
+      phase,
       replyId: safeText(payload.reply_id || payload.replyId) || null,
       workerSessionId: safeText(payload.worker_session_id || payload.workerSessionId) || null,
       workerAgentId: safeText(payload.worker_agent_id || payload.workerAgentId) || null,
@@ -318,13 +359,18 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}, options = {}) {
     };
   }
   if (envelope.event_type === 'artifact.created') {
+    const refs = safeRefs(payload);
+    const artifactCard = payload.artifact_card && typeof payload.artifact_card === 'object'
+      ? payload.artifact_card
+      : null;
     return {
       type: 'artifact_ref',
       kind: 'artifact',
       status: 'completed',
       title: safeText(payload.title) || '结果产物',
       summary: safeText(payload.summary) || '已生成结果产物',
-      refs: safeRefs(payload),
+      refs,
+      artifactCard,
       rowCount: payload.row_count ?? payload.rowCount ?? null,
       timing: safeTiming(payload),
       ...baseEvent(streamEvent, envelope),
@@ -354,13 +400,27 @@ export function agentTeamEnvelopeToChatEvent(streamEvent = {}, options = {}) {
     };
   }
   if (envelope.event_type === 'task.failed') {
+    const errorCode = payload.error_code || payload.errorCode || payload.code || payload.error?.code || '';
+    const reportRequiredFailed = errorCode === 'REPORT_WORKER_REQUIRED_NOT_COMPLETED';
+    const refs = safeRefs(payload);
     return {
       type: 'final',
-      answer: payload.error_summary || '任务执行失败，内部细节已隐藏。',
+      answer: reportRequiredFailed
+        ? '数据查询已完成，但分析报告暂时生成失败。您仍可以查看查询结果。'
+        : (safeText(payload.error_summary) || '任务执行失败，内部细节已隐藏。'),
+      result_ref: refs.artifactRef || null,
+      artifact_ref: refs.artifactRef || null,
+      report_ref: refs.reportRef || null,
+      error_code: reportRequiredFailed ? errorCode : null,
       task_id: streamEvent.task_id || envelope.task_id,
       trace_id: envelope.trace_id || null,
       entry_route: 'agent_team_failed',
-      event_envelope: envelope,
+      event_envelope: {
+        event_type: envelope.event_type,
+        task_id: envelope.task_id,
+        trace_id: envelope.trace_id,
+        thread_id: envelope.thread_id,
+      },
     };
   }
   if (envelope.event_type?.startsWith('repair.')) {

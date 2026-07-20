@@ -18,7 +18,7 @@
 rg -n "关键词|文件名" .codex/project-memory.md
 ```
 
-完成任务后仍需按 `AGENTS.md` 追加 `.codex/project-memory.md`。
+任务实际产生项目需求、代码/测试/运行配置/项目文档改动、缺陷修复或关键技术决策时，才按 `AGENTS.md` 追加 `.codex/project-memory.md`。普通对话、问答、临时分析、状态确认、纯阅读/审查和项目无关事项不记录。
 
 ## Skill routing
 

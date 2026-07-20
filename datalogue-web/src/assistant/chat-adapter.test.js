@@ -3,8 +3,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { makeChatAdapter, buildBusinessSessionId } from './chat-adapter';
-import { buildHistoryMessageCustom, ensureConversationForThread } from './thread-list-adapter';
+import { makeChatAdapter, buildBusinessSessionId } from '../features/chat/chat-adapter';
+import { buildHistoryMessageCustom, ensureConversationForThread } from '../features/chat/thread-list-adapter';
 
 vi.mock('./agent-team-task-api', () => ({
   streamAgentTeamTask: vi.fn(),
@@ -113,6 +113,22 @@ describe('chat-adapter C-ready metadata', () => {
     vi.clearAllMocks();
     window.__DATALOGUE_PENDING_CLARIFICATION_RESPONSE__ = null;
     window.history.pushState({}, '', '/chat');
+  });
+
+  it('turns async stream iteration failures into an incomplete user-visible chunk', async () => {
+    streamAgentTeamTask.mockReturnValue({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          throw new Error('network down');
+        },
+      }),
+    });
+    const adapter = makeChatAdapter({ datasetIdRef: { current: 12 } });
+
+    const chunks = await collectRun(adapter);
+
+    expect(chunks.at(-1)?.status).toEqual({ type: 'incomplete', reason: 'error' });
+    expect(chunks.at(-1)?.content?.[0]?.text).toContain('连接失败');
   });
 
   it('uses Agent Team task stream as the default chat send path', async () => {
@@ -1793,5 +1809,113 @@ describe('chat-adapter C-ready metadata', () => {
     const encoded = JSON.stringify(final);
     expect(encoded).not.toMatch(/pattern|input/i);
     expect(encoded).not.toContain('/tmp/private');
+  });
+
+  it('shows the query artifact before report completion and emits only one final report answer', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'artifact.created',
+          task_id: 'task-required-report',
+          payload: {
+            summary: '查询结果已生成。',
+            artifact_ref: 'artifact:query-required-report',
+            row_count: 12,
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'agent.progress',
+          task_id: 'task-required-report',
+          payload: {
+            agent_role: 'worker',
+            phase: 'report',
+            status: 'running',
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'report_worker_result',
+          task_id: 'task-required-report',
+          payload: {
+            source_artifact_ref: 'artifact:query-required-report',
+            report_ref: 'artifact:report-required-report',
+            report_markdown: '## 分析结论\n销售额保持增长。',
+            report_worker_agent_id: 'report-agent-1',
+            report_worker_session_id: 'report-session-1',
+            status: 'completed',
+          },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'message.completed',
+          task_id: 'task-required-report',
+          payload: { summary: '任务已完成。' },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询销售趋势' }));
+    const artifactChunk = chunks.find((chunk) => (
+      chunk.metadata?.custom?.artifactCard?.primary_ref === 'artifact:query-required-report'
+    ));
+    const reportProgressChunk = chunks.find((chunk) => chunk.metadata?.custom?.currentPhase === 'report');
+    const completeChunks = chunks.filter((chunk) => chunk.status?.type === 'complete');
+    const final = chunks.at(-1);
+
+    expect(artifactChunk).toBeTruthy();
+    expect(artifactChunk.status).toBeUndefined();
+    expect(reportProgressChunk.metadata.custom.taskTimeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'report_generation', status: 'running' }),
+    ]));
+    expect(completeChunks).toHaveLength(1);
+    expect(final.content.filter((part) => part.type === 'text')).toEqual([
+      { type: 'text', text: '## 分析结论\n销售额保持增长。' },
+    ]);
+    expect(final.metadata.custom).toMatchObject({
+      resultRef: 'artifact:query-required-report',
+      reportRef: 'artifact:report-required-report',
+      artifactCard: { primary_ref: 'artifact:query-required-report' },
+    });
+  });
+
+  it('keeps the early result card when required report generation fails', async () => {
+    streamAgentTeamTask.mockReturnValue(events([
+      {
+        event_envelope: {
+          event_type: 'artifact.created',
+          task_id: 'task-required-report-failed',
+          payload: { artifact_ref: 'artifact:query-report-failed', summary: '查询结果已生成。' },
+        },
+      },
+      {
+        event_envelope: {
+          event_type: 'task.failed',
+          task_id: 'task-required-report-failed',
+          payload: {
+            error_code: 'REPORT_WORKER_REQUIRED_NOT_COMPLETED',
+            error_summary: 'SELECT private_col FROM hidden_table',
+            artifact_ref: 'artifact:query-report-failed',
+          },
+        },
+      },
+    ]));
+
+    const adapter = makeChatAdapter({ transport: 'stream', datasetIdRef: { current: 7 } });
+    const chunks = await collectRun(adapter, runInput({ question: '查询销售趋势' }));
+    const final = chunks.at(-1);
+    const finalText = final.content.find((part) => part.type === 'text')?.text;
+
+    expect(finalText).toBe('数据查询已完成，但分析报告暂时生成失败。您仍可以查看查询结果。');
+    expect(final.metadata.custom).toMatchObject({
+      resultRef: 'artifact:query-report-failed',
+      errorCode: 'REPORT_WORKER_REQUIRED_NOT_COMPLETED',
+      artifactCard: { primary_ref: 'artifact:query-report-failed' },
+    });
+    expect(JSON.stringify(final)).not.toMatch(/SELECT|private_col|hidden_table/i);
   });
 });

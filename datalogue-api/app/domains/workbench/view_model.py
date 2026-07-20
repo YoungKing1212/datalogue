@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, cast
 
 from fastapi.encoders import jsonable_encoder
@@ -36,6 +35,7 @@ from app.core.schemas.agentscope_workbench import (
     WorkbenchThreadView,
     WorkbenchTimelineItem,
 )
+from app.core.safety.text_patterns import INTERNAL_ERROR_TEXT_RE, SQL_STATEMENT_TEXT_RE
 from app.domains.query_execution.artifact_store import ArtifactStore
 from app.domains.query_execution.repair_plan import sanitize_repair_plan_artifact_payload
 
@@ -68,46 +68,65 @@ _FORBIDDEN_OUTPUT_KEYS = {
     "content_text",
     "control_plane",
 }
-_SQL_TEXT_RE = re.compile(
-    r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
-    r".{0,200}\b(from|into|set|table|join|where|values)\b"
-)
-_INTERNAL_TEXT_RE = re.compile(
-    r"(?is)\b(psycopg2|sqlalchemy|traceback|undefinedcolumn|undefinedtable|programmingerror|operationalerror)\b"
-)
-
-
-def sanitize_workbench_view_payload(payload: Any) -> Any:
+def sanitize_workbench_view_payload(payload: Any, *, parent_key: str | None = None) -> Any:
     """扫描工作台最终输出；命中执行面字段名或 SQL 文本时 fail-closed。"""
 
     if isinstance(payload, dict):
+        if parent_key in {"rows", "columns"}:
+            # 查询结果中的列名和单元格是用户数据，不属于执行面载荷；这里继续由产物权限和行数上限控制。
+            return payload
         for key, value in payload.items():
             key_text = str(key).lower()
             if key_text in _FORBIDDEN_OUTPUT_KEYS or "sql" in key_text:
                 raise ValueError("WORKBENCH_VIEW_PAYLOAD_LEAK_DETECTED")
-            sanitize_workbench_view_payload(value)
+            sanitize_workbench_view_payload(value, parent_key=key_text)
         return payload
     if isinstance(payload, list):
         for item in payload:
-            sanitize_workbench_view_payload(item)
+            sanitize_workbench_view_payload(item, parent_key=parent_key)
         return payload
     if isinstance(payload, str):
-        if _SQL_TEXT_RE.search(payload) or _INTERNAL_TEXT_RE.search(payload):
+        if parent_key not in {"rows", "columns"} and (
+            SQL_STATEMENT_TEXT_RE.search(payload) or INTERNAL_ERROR_TEXT_RE.search(payload)
+        ):
             raise ValueError("WORKBENCH_VIEW_PAYLOAD_LEAK_DETECTED")
     return payload
 
 
-def build_workbench_thread_view(db: Session, *, thread_id: str) -> WorkbenchThreadView:
+def build_workbench_thread_view(
+    db: Session,
+    *,
+    thread_id: str,
+    owner_user_id: int | None = None,
+    allow_all: bool = False,
+) -> WorkbenchThreadView:
     """按线程 id 构建工作台视图；as_* 走 AgentScope mirror，conv_* 走旧会话只读回放。"""
 
     normalized = (thread_id or "").strip()
     if normalized.startswith("conv_"):
-        return build_legacy_conversation_view(db, legacy_conversation_id=_parse_legacy_conversation_id(normalized))
+        return build_legacy_conversation_view(
+            db,
+            legacy_conversation_id=_parse_legacy_conversation_id(normalized),
+            owner_user_id=owner_user_id,
+            allow_all=allow_all,
+        )
     if not normalized.startswith("as_"):
         raise WorkbenchViewNotFoundError("workbench thread not found")
 
-    session = db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == normalized).one_or_none()
+    session = (
+        db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == normalized).one_or_none()
+    )
     if session is None:
+        raise WorkbenchViewNotFoundError("workbench thread not found")
+    if (
+        owner_user_id is not None
+        and not allow_all
+        and not _session_owned_by_user(
+            db,
+            session=session,
+            owner_user_id=owner_user_id,
+        )
+    ):
         raise WorkbenchViewNotFoundError("workbench thread not found")
 
     messages = (
@@ -130,7 +149,11 @@ def build_workbench_thread_view(db: Session, *, thread_id: str) -> WorkbenchThre
         .all()
     )
     primary_ref = _select_primary_artifact_ref(refs)
-    related_refs = [_ref_to_view(ref) for ref in refs if not (ref.relation == "primary" and ref.ref_value == primary_ref)]
+    related_refs = [
+        _ref_to_view(ref)
+        for ref in refs
+        if not (ref.relation == "primary" and ref.ref_value == primary_ref)
+    ]
     available_actions = _build_agentscope_actions(messages, refs)
     view = WorkbenchThreadView(
         thread_id=session.thread_id,
@@ -151,10 +174,19 @@ def build_workbench_thread_view(db: Session, *, thread_id: str) -> WorkbenchThre
     return _validated_thread_view(view)
 
 
-def build_legacy_conversation_view(db: Session, *, legacy_conversation_id: int) -> WorkbenchThreadView:
+def build_legacy_conversation_view(
+    db: Session,
+    *,
+    legacy_conversation_id: int,
+    owner_user_id: int | None = None,
+    allow_all: bool = False,
+) -> WorkbenchThreadView:
     """构建旧会话只读视图；不做数据迁移，也不把旧 result_ref/report_ref 伪造成 ArtifactCard。"""
 
-    conversation = db.query(Conversation).filter(Conversation.id == legacy_conversation_id).one_or_none()
+    conversation_query = db.query(Conversation).filter(Conversation.id == legacy_conversation_id)
+    if owner_user_id is not None and not allow_all:
+        conversation_query = conversation_query.filter(Conversation.user_id == owner_user_id)
+    conversation = conversation_query.one_or_none()
     if conversation is None:
         raise WorkbenchViewNotFoundError("legacy conversation not found")
     messages = (
@@ -186,18 +218,34 @@ def build_workbench_artifact_view(
     *,
     artifact_ref: str,
     thread_id: str | None = None,
+    owner_user_id: int | None = None,
+    allow_all: bool = False,
 ) -> WorkbenchArtifactView:
     """读取 artifact 工作台摘要；只接受 artifact:<uuid> 句柄，其他 ref 统一 fail-closed。"""
 
     if not artifact_ref or not artifact_ref.startswith("artifact:"):
         raise WorkbenchViewNotFoundError("artifact not found")
-    if thread_id and not _thread_owns_artifact_ref(db, thread_id=thread_id, artifact_ref=artifact_ref):
-        raise WorkbenchViewNotFoundError("artifact not found")
     artifact = ArtifactStore(db).get(artifact_ref)
     if artifact is None:
         raise WorkbenchViewNotFoundError("artifact not found")
+    if thread_id and not _thread_owns_artifact_ref(
+        db,
+        thread_id=thread_id,
+        artifact_ref=artifact_ref,
+        owner_user_id=owner_user_id,
+        allow_all=allow_all,
+    ):
+        raise WorkbenchViewNotFoundError("artifact not found")
+    if (
+        owner_user_id is not None
+        and not allow_all
+        and not _user_owns_artifact(db, artifact=artifact, owner_user_id=owner_user_id)
+    ):
+        raise WorkbenchViewNotFoundError("artifact not found")
 
-    preview_payload = _artifact_preview_payload(artifact.kind, artifact.content_json, artifact.content_text)
+    preview_payload = _artifact_preview_payload(
+        artifact.kind, artifact.content_json, artifact.content_text
+    )
     view = WorkbenchArtifactView(
         artifact_ref=artifact.artifact_id,
         kind=_public_artifact_kind(artifact.kind),
@@ -215,23 +263,94 @@ def build_workbench_artifact_view(
     return view
 
 
-def _thread_owns_artifact_ref(db: Session, *, thread_id: str, artifact_ref: str) -> bool:
+def _thread_owns_artifact_ref(
+    db: Session,
+    *,
+    thread_id: str,
+    artifact_ref: str,
+    owner_user_id: int | None = None,
+    allow_all: bool = False,
+) -> bool:
     normalized = (thread_id or "").strip()
     if normalized.startswith("as_"):
+        session = (
+            db.query(AgentScopeSession)
+            .filter(AgentScopeSession.thread_id == normalized)
+            .one_or_none()
+        )
+        if session is None:
+            return False
+        if (
+            owner_user_id is not None
+            and not allow_all
+            and not _session_owned_by_user(
+                db,
+                session=session,
+                owner_user_id=owner_user_id,
+            )
+        ):
+            return False
         return (
-            db.query(AgentScopeRef)
-            .filter(AgentScopeRef.thread_id == normalized)
+            db.query(AgentScopeRef).filter(AgentScopeRef.thread_id == normalized)
             # Workbench 对外统一使用 artifact:<uuid> 句柄；内部 ref_type 仍保留 result/report 等业务语义。
             # 因此归属校验必须按 ref_value 精确匹配，而不是要求 ref_type 固定为 artifact。
-            .filter(AgentScopeRef.ref_value == artifact_ref)
-            .first()
+            .filter(AgentScopeRef.ref_value == artifact_ref).first()
             is not None
         )
     if normalized.startswith("conv_"):
-        legacy_view = build_legacy_conversation_view(db, legacy_conversation_id=_parse_legacy_conversation_id(normalized))
+        legacy_view = build_legacy_conversation_view(
+            db,
+            legacy_conversation_id=_parse_legacy_conversation_id(normalized),
+            owner_user_id=owner_user_id,
+            allow_all=allow_all,
+        )
         if legacy_view.primary_artifact_ref == artifact_ref:
             return True
         return any(ref.get("ref") == artifact_ref for ref in legacy_view.related_refs)
+    return False
+
+
+def _session_owned_by_user(db: Session, *, session: AgentScopeSession, owner_user_id: int) -> bool:
+    """兼容新 session 的显式 owner 与历史 session 的 legacy conversation 归属。"""
+
+    metadata = session.metadata_json if isinstance(session.metadata_json, dict) else {}
+    if str(metadata.get("user_id", "")) == str(owner_user_id):
+        return True
+    if session.legacy_conversation_id is None:
+        return False
+    return (
+        db.query(Conversation.id)
+        .filter(
+            Conversation.id == session.legacy_conversation_id,
+            Conversation.user_id == owner_user_id,
+        )
+        .first()
+        is not None
+    )
+
+
+def _user_owns_artifact(db: Session, *, artifact, owner_user_id: int) -> bool:
+    if artifact.conversation_id is not None:
+        return (
+            db.query(Conversation.id)
+            .filter(
+                Conversation.id == artifact.conversation_id,
+                Conversation.user_id == owner_user_id,
+            )
+            .first()
+            is not None
+        )
+
+    # 无 legacy conversation 的新产物必须通过 AgentScope ref 反查到当前用户 session。
+    refs = db.query(AgentScopeRef).filter(AgentScopeRef.ref_value == artifact.artifact_id).all()
+    for ref in refs:
+        session = (
+            db.query(AgentScopeSession)
+            .filter(AgentScopeSession.thread_id == ref.thread_id)
+            .one_or_none()
+        )
+        if session and _session_owned_by_user(db, session=session, owner_user_id=owner_user_id):
+            return True
     return False
 
 
@@ -280,7 +399,9 @@ def _event_to_timeline_item(event: AgentScopeEvent) -> WorkbenchTimelineItem:
         message_id=event.message_id,
         task_id=event.task_id,
         trace_id=event.trace_id,
-        summary=_safe_text(payload.get("summary") if isinstance(payload, dict) else None, fallback=None),
+        summary=_safe_text(
+            payload.get("summary") if isinstance(payload, dict) else None, fallback=None
+        ),
         payload=payload,
         created_at=event.created_at,
     )
@@ -309,7 +430,11 @@ def _checkpoint_ref_for_message(refs: list[AgentScopeRef], message_id: str | Non
     if not message_id:
         return None
     for ref in reversed(refs):
-        if ref.message_id == message_id and ref.ref_type == "checkpoint" and str(ref.ref_value).startswith(("checkpoint://", "checkpoint:")):
+        if (
+            ref.message_id == message_id
+            and ref.ref_type == "checkpoint"
+            and str(ref.ref_value).startswith(("checkpoint://", "checkpoint:"))
+        ):
             return ref.ref_value
     return None
 
@@ -387,40 +512,63 @@ def _build_legacy_status_summary(
     )
 
 
-def _build_agentscope_actions(messages: list[AgentScopeMessage], refs: list[AgentScopeRef]) -> list[WorkbenchActionView]:
+def _build_agentscope_actions(
+    messages: list[AgentScopeMessage], refs: list[AgentScopeRef]
+) -> list[WorkbenchActionView]:
     latest_terminal = next(
         (
             message
             for message in reversed(messages)
-            if message.role == "assistant" and message.status in {"failed", "interrupted", "completed"}
+            if message.role == "assistant"
+            and message.status in {"failed", "interrupted", "completed"}
         ),
         None,
     )
-    checkpoint_ref = _checkpoint_ref_for_message(refs, latest_terminal.message_id if latest_terminal is not None else None)
-    retryable = bool(latest_terminal and latest_terminal.status in {"failed", "interrupted"} and checkpoint_ref)
+    checkpoint_ref = _checkpoint_ref_for_message(
+        refs, latest_terminal.message_id if latest_terminal is not None else None
+    )
+    retryable = bool(
+        latest_terminal and latest_terminal.status in {"failed", "interrupted"} and checkpoint_ref
+    )
     # View Model 只声明动作可见性；真实重跑交给 Workbench action 和 Chat checkpoint 主链。
     return [
         WorkbenchActionView(
             action_id="retry",
             label="重试",
             enabled=retryable,
-            disabled_reason=None
-            if retryable
-            else ("当前消息缺少可用检查点。" if latest_terminal and latest_terminal.status in {"failed", "interrupted"} else "当前消息不需要重试。"),
+            disabled_reason=(
+                None
+                if retryable
+                else (
+                    "当前消息缺少可用检查点。"
+                    if latest_terminal and latest_terminal.status in {"failed", "interrupted"}
+                    else "当前消息不需要重试。"
+                )
+            ),
             checkpoint_ref=checkpoint_ref,
             message_id=latest_terminal.message_id if latest_terminal is not None else None,
         )
     ]
 
 
-def _extract_existing_artifact_card_refs(messages: list[Message]) -> tuple[str | None, list[dict[str, Any]]]:
+def _extract_existing_artifact_card_refs(
+    messages: list[Message],
+) -> tuple[str | None, list[dict[str, Any]]]:
     for message in reversed(messages):
         metadata = message.response_metadata if isinstance(message.response_metadata, dict) else {}
         artifact_card = metadata.get("artifact_card")
         if not isinstance(artifact_card, dict):
             continue
-        primary = metadata.get("primary_ref") if isinstance(metadata.get("primary_ref"), dict) else artifact_card.get("primary_ref")
-        primary_ref = primary.get("ref_id") if isinstance(primary, dict) and str(primary.get("ref_id", "")).startswith("artifact:") else None
+        primary = (
+            metadata.get("primary_ref")
+            if isinstance(metadata.get("primary_ref"), dict)
+            else artifact_card.get("primary_ref")
+        )
+        primary_ref = (
+            primary.get("ref_id")
+            if isinstance(primary, dict) and str(primary.get("ref_id", "")).startswith("artifact:")
+            else None
+        )
         raw_related = metadata.get("related_refs") or artifact_card.get("related_refs") or []
         related_refs = [_legacy_ref_to_view(ref) for ref in raw_related if isinstance(ref, dict)]
         return primary_ref, related_refs
@@ -435,7 +583,9 @@ def _legacy_ref_to_view(ref: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _artifact_preview_payload(kind: str, content_json: Any, content_text: str | None) -> dict[str, Any]:
+def _artifact_preview_payload(
+    kind: str, content_json: Any, content_text: str | None
+) -> dict[str, Any]:
     if kind == "repair_plan":
         safe = sanitize_repair_plan_artifact_payload(content_json)
         summary = _safe_text(safe.get("business_summary"), fallback="修复方案摘要已生成。")
@@ -455,11 +605,11 @@ def _artifact_preview_payload(kind: str, content_json: Any, content_text: str | 
         }
     if kind == "sql_result" and isinstance(content_json, dict):
         # 返回查询结果的数据行与元信息，供前端渲染分页表格
-        content_json.pop("report_input_meta", None)  # 移除内部元信息，不暴露给前端
+        meta = content_json.pop("report_input_meta", None)  # 先读取分页元信息，再从公开载荷移除。
+        meta = meta if isinstance(meta, dict) else {}
         columns = content_json.get("columns", [])
         rows = content_json.get("rows", [])
         row_count = content_json.get("row_count", len(rows))
-        meta = content_json.get("report_input_meta", {}) if isinstance(content_json.get("report_input_meta"), dict) else {}
         return {
             "summary": _safe_text(content_json.get("summary"), fallback="查询产物已生成。"),
             "columns": columns,
@@ -498,6 +648,6 @@ def _safe_text(value: Any, *, fallback: str | None) -> str | None:
     text = str(value or "").strip()
     if not text:
         return fallback
-    if _SQL_TEXT_RE.search(text) or _INTERNAL_TEXT_RE.search(text):
+    if SQL_STATEMENT_TEXT_RE.search(text) or INTERNAL_ERROR_TEXT_RE.search(text):
         return fallback
     return text[:500]

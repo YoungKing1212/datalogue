@@ -24,7 +24,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARCHIVE_DIR = ROOT / "assets/archive/2026-07-03-legacy-design-plans"
+ARCHIVE_DIR = ROOT / "docs/archive/2026-07-03-legacy-design-plans"
 # 该脚本仅用于复现历史文档，禁止把输出重新标记为当前架构方案。
 SRC = ARCHIVE_DIR / "Datalogue_设计开发方案_v2.0.docx"
 OUT = ARCHIVE_DIR / "Datalogue_设计开发方案_v2.0_更新版_20260605.docx"

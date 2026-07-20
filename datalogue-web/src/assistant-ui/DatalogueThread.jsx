@@ -3,7 +3,7 @@
 
 import React, { createContext, useContext } from 'react';
 import { ThreadPrimitive } from '@assistant-ui/react';
-import { AIMessage, UserMessage as DefaultUserMessage } from '../assistant/MyMessage';
+import { AIMessage, UserMessage as DefaultUserMessage } from '../features/chat/MyMessage';
 
 const TraceContext = createContext({
   traceSteps: [],
@@ -23,7 +23,7 @@ function AssistantMessageWithTrace() {
 
 /**
  * DatalogueThread — P1 Thread 外壳。
- * 默认复用现有 MyMessage 的可见渲染；后续 P2 可通过 props 注入 DatalogueMessage，不在本层暴露内部查询细节。
+ * 默认复用当前唯一的 MyMessage 可见渲染，不在本层暴露内部查询细节。
  */
 export function DatalogueThread({
   empty,

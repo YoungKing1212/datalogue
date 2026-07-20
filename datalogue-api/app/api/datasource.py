@@ -15,14 +15,13 @@
 
 from typing import List
 import logging
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import encrypt_password
 from app.core import schemas, models
+from app.core.time import utc_now_naive
 from app.domains.data_source.service import (
     enrich_datasource_defaults,
     get_capabilities,
@@ -92,7 +91,9 @@ def update_datasource(ds_id: int, payload: schemas.DatasourceUpdate, db: Session
     target_db_type = data.get("db_type", ds.db_type)
     target_dialect = data.get("dialect", ds.dialect)
     if target_db_type or target_dialect:
-        data["dialect"] = normalize_execution_dialect(target_db_type, target_dialect)  # 部分更新也兜住 Doris 历史脏 dialect。
+        data["dialect"] = normalize_execution_dialect(
+            target_db_type, target_dialect
+        )  # 部分更新也兜住 Doris 历史脏 dialect。
     if "password" in data:
         pwd = data.pop("password")
         if pwd:
@@ -152,7 +153,9 @@ def get_datasource_schemas(ds_id: int, db: Session = Depends(get_db)):
         schemas = get_schemas(ds)
     except Exception as e:
         logger.error(f"获取Schema列表失败: ds_id={ds_id}, error={e}")
-        raise HTTPException(status_code=400, detail={"message": "获取 Schema 列表失败", "diagnostic": str(e)})
+        raise HTTPException(
+            status_code=400, detail={"message": "获取 Schema 列表失败", "code": "SCHEMA_UNREADABLE"}
+        )
     logger.info(f"返回 {len(schemas)} 个schema")
     return {"schemas": schemas}
 
@@ -169,7 +172,9 @@ def get_datasource_schema(ds_id: int, schema: str | None = None, db: Session = D
         tables = get_schema(ds, schema_name=schema)
     except Exception as e:
         logger.error(f"获取Schema失败: ds_id={ds_id}, error={e}")
-        raise HTTPException(status_code=400, detail={"message": "获取 Schema 失败", "diagnostic": str(e)})
+        raise HTTPException(
+            status_code=400, detail={"message": "获取 Schema 失败", "code": "SCHEMA_UNREADABLE"}
+        )
     logger.info(f"返回 {len(tables)} 张表")
     return {"tables": tables}
 
@@ -190,7 +195,9 @@ def sync_datasource_tables(
         result = sync_source_tables(ds, schema_name=schema)
     except Exception as e:
         logger.error(f"同步表结构失败: ds_id={ds_id}, error={e}")
-        raise HTTPException(status_code=400, detail={"message": "同步表结构失败", "diagnostic": str(e)})
+        raise HTTPException(
+            status_code=400, detail={"message": "同步表结构失败", "code": "SCHEMA_SYNC_FAILED"}
+        )
 
     tables_data = result["tables"]
     synced_at = result["synced_at"]
@@ -307,7 +314,9 @@ def sync_datasource_tables(
 
 
 @router.get("/{ds_id}/source-tables")
-def list_datasource_source_tables(ds_id: int, schema: str | None = None, db: Session = Depends(get_db)):
+def list_datasource_source_tables(
+    ds_id: int, schema: str | None = None, db: Session = Depends(get_db)
+):
     """获取数据源下已同步的 source_table 列表。"""
     logger.info(f"获取数据源表列表: ds_id={ds_id}, schema={schema}")
     ds = db.get(models.Datasource, ds_id)
@@ -378,7 +387,7 @@ def update_source_column(
     col.effective_desc, col.desc_source = resolve_description(col)
     if "user_description" in data or "user_semantic_role" in data:
         col.review_status = "confirmed"
-        col.reviewed_at = datetime.utcnow()
+        col.reviewed_at = utc_now_naive()
     db.commit()
     db.refresh(col)
     logger.info(f"字段标注更新成功: column_id={column_id}, desc_source={col.desc_source}")
@@ -399,27 +408,50 @@ def trigger_source_table_annotation(
 
     result = annotate_table_columns(db, table_id, force=force)
     if result["failed"] and result.get("error"):
-        raise HTTPException(status_code=500, detail=result["error"])
+        raise HTTPException(status_code=500, detail="字段标注失败，内部错误已记录")
     return result
 
 
 @router.post("/{ds_id}/preview")
-def preview_datasource_table(ds_id: int, payload: dict, db: Session = Depends(get_db)):
+def preview_datasource_table(
+    ds_id: int,
+    payload: schemas.DatasourcePreviewRequest,
+    db: Session = Depends(get_db),
+):
     """从数据源实时查询某张表的前 N 条数据。"""
-    logger.info(f"预览表数据: ds_id={ds_id}, payload={payload}")
+    logger.info(
+        "预览表数据: ds_id=%s schema=%s table=%s limit=%s",
+        ds_id,
+        payload.schema_name,
+        payload.table,
+        payload.limit,
+    )
     ds = db.get(models.Datasource, ds_id)
     if not ds:
         logger.warning(f"数据源不存在: ds_id={ds_id}")
         raise HTTPException(status_code=404, detail="数据源不存在")
 
-    schema = payload.get("schema", "public")
-    table = payload.get("table")
-    limit = payload.get("limit", 5)
-    if not table:
-        raise HTTPException(status_code=400, detail="table 字段不能为空")
+    table_query = db.query(models.SourceTable).filter(
+        models.SourceTable.datasource_id == ds_id,
+        models.SourceTable.table_name == payload.table,
+    )
+    if payload.schema_name:
+        table_query = table_query.filter(models.SourceTable.schema_name == payload.schema_name)
+    matched_tables = table_query.limit(2).all()
+    if len(matched_tables) != 1:
+        # 未同步表和跨 schema 同名歧义都 fail-closed，客户端不能把裸标识符直接带到 SQL 层。
+        raise HTTPException(status_code=404, detail="表不存在、未同步或 schema 不明确")
+    source_table = matched_tables[0]
 
     try:
-        return preview_table(ds, schema, table, limit)
+        return preview_table(
+            ds,
+            source_table.schema_name,
+            source_table.table_name,
+            payload.limit,
+        )
     except Exception as e:
         logger.error(f"预览查询失败: ds_id={ds_id}, error={e}")
-        raise HTTPException(status_code=400, detail={"message": "查询失败", "diagnostic": str(e)})
+        raise HTTPException(
+            status_code=400, detail={"message": "查询失败", "code": "DATASOURCE_PREVIEW_FAILED"}
+        )

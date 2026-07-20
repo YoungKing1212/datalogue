@@ -1,6 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from './icons';
+import { PrototypeNotice } from '../shared/components/prototype-notice';
 
 // Workspace — homepage with ask hero, suggested questions, KPI snapshot, recent threads.
 
@@ -39,6 +40,7 @@ function Workspace() {
 
   return (
     <div className="workspace">
+      <PrototypeNotice>核心指标和最近会话为演示数据；问数入口可正常进入真实聊天。</PrototypeNotice>
       <h1 className="hello">下午好，Yan Lin <span className="accent">— 想看点什么？</span></h1>
       <p className="sub">输入业务问题，数语会自动选取指标、生成SQL、绘制图表并解释结果。</p>
 

@@ -19,6 +19,7 @@ import pytest
 from sse_starlette.sse import AppStatus
 
 from app.core.config import get_settings
+from app.core import models
 
 
 class FakeAgentScopeStreamRunner:
@@ -150,3 +151,32 @@ def test_agent_team_tasks_stream_api_fails_closed(client, sample_dataset, monkey
     }
     assert "select * from hidden_table" not in response_text
     assert "hidden_table" not in response_text
+
+
+def test_agent_team_tasks_stream_rejects_foreign_conversation_before_sse(
+    client,
+    db_session,
+    sample_dataset,
+):
+    """任务入口必须在建立 SSE 前拒绝其他用户的 conversation_id。"""
+
+    foreign_conversation = models.Conversation(
+        title="他人任务会话",
+        user_id=2,
+        archived=False,
+    )
+    db_session.add(foreign_conversation)
+    db_session.commit()
+
+    response = client.post(
+        "/api/agent-team/tasks/stream",
+        json={
+            "task_source": "chat",
+            "task_type": "bi_query",
+            "question": "读取他人会话",
+            "dataset_id": sample_dataset.id,
+            "conversation_id": foreign_conversation.id,
+        },
+    )
+
+    assert response.status_code == 404

@@ -16,6 +16,7 @@ from .datasource import (
     DatasourceCreate,
     DatasourceUpdate,
     DatasourceOut,
+    DatasourcePreviewRequest,
 )
 from .dataset import (
     DatasetCreate,
@@ -70,10 +71,12 @@ from .dataset import (
 )
 from .capability_manifest import CapabilityManifest, CapabilityManifestSummary
 from .conversation import (
+    ConversationPageOut,
     ConversationOut,
     ConversationDetailOut,
     ConversationCreate,
     ConversationRename,
+    MessagePageOut,
 )
 from .chat import ChatFeedback
 from .agentscope_agent_team_task import (
@@ -102,7 +105,9 @@ from .llm import (
     LLMTestResultOut,
 )
 from .auth import (
+    ChangePasswordIn,
     LoginIn,
+    PasswordResetOut,
     RegisterIn,
     TokenOut,
     UserManageItemOut,
@@ -115,6 +120,7 @@ __all__ = [
     "DatasourceUpdate",
     "DatasourceOut",
     "DatasourceCapabilityOut",
+    "DatasourcePreviewRequest",
     "DatasetCreate",
     "DatasetUpdate",
     "DatasetOut",
@@ -167,9 +173,11 @@ __all__ = [
     "CapabilityManifest",
     "CapabilityManifestSummary",
     "ConversationOut",
+    "ConversationPageOut",
     "ConversationDetailOut",
     "ConversationCreate",
     "ConversationRename",
+    "MessagePageOut",
     "ChatFeedback",
     "AgentTeamTaskRequest",
     "AgentTeamTaskSource",
@@ -193,7 +201,9 @@ __all__ = [
     "LLMModelConfigUpdate",
     "LLMModelTestRequest",
     "LLMTestResultOut",
+    "ChangePasswordIn",
     "LoginIn",
+    "PasswordResetOut",
     "RegisterIn",
     "TokenOut",
     "UserManageItemOut",

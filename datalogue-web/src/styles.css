@@ -46,6 +46,10 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .icon { width: 16px; height: 16px; flex-shrink: 0; }
 ::selection { background: var(--accent-soft); color: var(--text); }
 input:focus, textarea:focus, button:focus { outline: none; }
+:where(button, a, input, textarea, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 /* layout shell */
 .app {
@@ -64,6 +68,8 @@ input:focus, textarea:focus, button:focus { outline: none; }
   gap: 4px;
   overflow-y: auto;
 }
+.sidebar-backdrop,
+.icon-btn.mobile-menu-btn { display: none; }
 .sidebar > * { flex-shrink: 0; }
 .sidebar .brand {
   display: flex;
@@ -620,6 +626,140 @@ input:focus, textarea:focus, button:focus { outline: none; }
 
 /* content area */
 .content { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; scrollbar-gutter: stable; }
+
+/* 全局页面搜索：只索引当前可访问的产品页面，不伪造后端全文检索能力。 */
+.global-search-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 160;
+  display: grid;
+  place-items: start center;
+  padding: min(14vh, 120px) 20px 20px;
+  background: rgba(28, 39, 51, 0.28);
+  backdrop-filter: blur(3px);
+}
+.global-search-dialog {
+  width: min(560px, 100%);
+  max-height: min(620px, 74vh);
+  overflow: hidden;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+.global-search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+.global-search-input-wrap input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font-size: 15px;
+}
+.global-search-input-wrap .kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  color: var(--text-3);
+  font-size: 10px;
+}
+.global-search-results {
+  display: grid;
+  gap: 4px;
+  max-height: min(540px, 64vh);
+  overflow-y: auto;
+  padding: 8px;
+}
+.global-search-results button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  text-align: left;
+}
+.global-search-results button:hover { background: var(--accent-soft); }
+.global-search-results button span { font-weight: 600; }
+.global-search-results button small {
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.global-search-empty { padding: 30px 16px; color: var(--text-3); text-align: center; }
+.not-found-page {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  min-height: 100%;
+  padding: 32px 20px;
+  text-align: center;
+}
+.not-found-page > span { color: var(--accent); font: 700 13px/1 var(--font-mono); }
+.not-found-page h1 { margin: 12px 0 4px; font-size: 26px; }
+.not-found-page p { margin: 0 0 20px; color: var(--text-3); }
+
+/* 主壳层响应式：小屏改为单列，侧栏进入可关闭抽屉。 */
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    height: 100dvh;
+  }
+  .main { height: 100dvh; }
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 150;
+    width: min(84vw, 300px);
+    transform: translateX(-102%);
+    transition: transform 0.2s ease;
+    box-shadow: 18px 0 48px rgba(28, 39, 51, 0.16);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 149;
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 0;
+    background: rgba(28, 39, 51, 0.32);
+    transition: opacity 0.2s ease;
+  }
+  .sidebar-backdrop.open { pointer-events: auto; opacity: 1; }
+  .icon-btn.mobile-menu-btn { display: grid; flex: 0 0 auto; }
+  .topbar { height: 52px; padding: 0 12px; gap: 8px; }
+  .topbar-actions { gap: 3px; }
+  .topbar-user,
+  .topbar-actions > .btn:not(.topbar-logout),
+  .topbar-actions .icon-btn[title="刷新"],
+  .topbar-actions .icon-btn[title^="分享"] { display: none; }
+  .topbar-logout { height: 28px; padding: 0 8px; }
+  .workspace { padding: 24px 16px 48px; }
+  .thread-list-col { display: none; }
+  .chat-layout { flex-direction: row; }
+  .data-table-pagination { flex-wrap: wrap; gap: 8px; }
+}
+
+@media (max-width: 520px) {
+  .topbar-logout { font-size: 0; width: 30px; padding: 0; }
+  .topbar-logout::after { content: "退"; font-size: 12px; }
+  .crumb { font-size: 12px; }
+  .global-search-backdrop { padding: 10px; align-items: start; }
+  .global-search-dialog { margin-top: 54px; max-height: calc(100dvh - 74px); }
+  .global-search-results button { align-items: flex-start; flex-direction: column; gap: 2px; }
+}
 
 /* ─── WORKSPACE ─── */
 .workspace { max-width: 1100px; margin: 0 auto; padding: 44px 32px 80px; }
@@ -10338,4 +10478,48 @@ select.st-input { appearance: none; background-image: url("data:image/svg+xml,%3
   .chat-layout:not(.aui-bare-preview):not(.aui-agentscope-preview) .ai-response > .ai-message > p:first-child {
     font-size: 15px;
   }
+}
+
+/* 放在 Chat 末段之后，确保覆盖桌面 thread-list 的后置声明。 */
+@media (max-width: 900px) {
+  .chat-layout > .thread-list-col { display: none; }
+  .chat-layout > .chat-main { width: 100%; }
+}
+
+@media (max-width: 520px) {
+  .ce-stage { overflow-x: hidden; }
+  .ce-bar { flex-wrap: wrap; }
+  .ce-pill {
+    flex: 1 1 calc(50% - 4px);
+    max-width: none;
+    justify-content: center;
+  }
+}
+.prototype-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in oklch, var(--warn) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--warn) 8%, var(--surface));
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.prototype-notice.compact {
+  margin: 8px 12px;
+  padding: 7px 9px;
+}
+
+.prototype-notice-badge {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--warn);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
 }

@@ -47,36 +47,6 @@ vi.mock('@assistant-ui/react', () => ({
   useMessageTiming: () => null,
 }));
 
-vi.mock('../assistant-ui', () => ({
-  DatalogueActionBar: ({
-    visible,
-    feedbackTitle,
-    feedbackDisabled,
-    onApprove,
-    onReject,
-  }) => (
-    <div className={`msg-actions ${visible ? 'visible' : ''}`} data-testid="datalogue-action-bar">
-      <button type="button" title="复制回答">复制</button>
-      <button
-        type="button"
-        title={feedbackTitle || '点赞'}
-        disabled={feedbackDisabled}
-        onClick={onApprove}
-      >
-        点赞
-      </button>
-      <button
-        type="button"
-        title={feedbackTitle || '点踩'}
-        disabled={feedbackDisabled}
-        onClick={onReject}
-      >
-        点踩
-      </button>
-    </div>
-  ),
-}));
-
 // Mock 子组件
 vi.mock('../shared/components/icons', () => ({
   Icon: ({ name, style }) => <span data-testid={`icon-${name}`} style={style} />,
@@ -111,22 +81,6 @@ vi.mock('../components/artifact-card', () => ({
                 ...action,
                 actionType: action.action_type || action.action_id,
               };
-              if (normalized.actionType === 'retry') {
-                window.dispatchEvent(
-                  new CustomEvent('datalogue:artifact-action', {
-                    detail: {
-                      actionType: 'retry',
-                      checkpointRef:
-                        normalized.checkpoint_ref
-                        || normalized.checkpointRef
-                        || normalized.payload_ref
-                        || normalized.payloadRef
-                        || null,
-                    },
-                  }),
-                );
-                return;
-              }
               onAction?.(normalized);
             }}
           >
@@ -147,7 +101,7 @@ vi.mock('./workbench-api', () => ({
 }));
 
 // 需要在 mock 之后导入组件
-import { AIMessage } from './MyMessage';
+import { AIMessage } from '../features/chat/MyMessage';
 import { getArtifact } from '../api/client';
 import { requestWorkbenchRetry } from './workbench-api';
 import {
@@ -207,6 +161,25 @@ describe('MyMessage — C-ready 渲染', () => {
     });
 
     render(<AIMessage />);
+    expect(screen.getByTestId('artifact-card')).toBeInTheDocument();
+    expect(screen.getByText('查询结果')).toBeInTheDocument();
+  });
+
+  it('keeps the artifact card visible while the report worker is running', () => {
+    setMockMessage({
+      currentPhase: 'report',
+      artifactCard: {
+        title: '查询结果',
+        status: 'completed',
+        primary_ref: 'artifact:query-1',
+        actions: [],
+      },
+    });
+    mockMessageState.message.status = { type: 'running' };
+
+    render(<AIMessage />);
+
+    expect(screen.getByText('正在整理报告')).toBeInTheDocument();
     expect(screen.getByTestId('artifact-card')).toBeInTheDocument();
     expect(screen.getByText('查询结果')).toBeInTheDocument();
   });
@@ -462,6 +435,8 @@ describe('MyMessage — C-ready 渲染', () => {
       },
     });
     setMockMessage({
+      threadId: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      messageId: 'msg-74',
       artifactCard: {
         title: '查询结果',
         status: 'error',
@@ -481,6 +456,8 @@ describe('MyMessage — C-ready 渲染', () => {
 
     await waitFor(() => {
       expect(requestWorkbenchRetry).toHaveBeenCalledWith({
+        thread_id: 'as_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        message_id: 'msg-74',
         checkpoint_ref: 'checkpoint://conv-31-msg-74/query_context_ready',
         selected_action: 'retry_last_step',
       });

@@ -1,53 +1,18 @@
 // 前端 API 客户端 — 统一封装 fetch，对接后端 FastAPI 服务
 
 const BASE_URL = ''; // Vite proxy 已配置 /api 转发，无需写死域名
-const AUTH_TRANSPORT_KEY = import.meta.env.VITE_AUTH_TRANSPORT_KEY || 'datalogue-auth-transport-key';
 let _accessToken = null;
 let _refreshHandler = null;
 let _authFailureHandler = null;
 
-let _authTransportCryptoKeyPromise = null;
-
-function bytesToBase64(bytes) {
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode(...chunk);
+function assertSecureAuthTransport() {
+  const location = globalThis.location;
+  if (!location) return;
+  const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
+  // 本地开发允许 HTTP；任何远端部署都必须由 HTTPS 提供真实的传输机密性。
+  if (location.protocol !== 'https:' && !localHosts.has(location.hostname)) {
+    throw new Error('登录仅支持 HTTPS，请使用安全地址重新打开本页面');
   }
-  return btoa(binary);
-}
-
-async function getAuthTransportCryptoKey() {
-  if (_authTransportCryptoKeyPromise) return _authTransportCryptoKeyPromise;
-  _authTransportCryptoKeyPromise = (async () => {
-    if (!globalThis.crypto?.subtle) {
-      throw new Error('当前浏览器环境不支持 Web Crypto，请更换环境后重试');
-    }
-    const encoder = new TextEncoder();
-    const keyMaterial = encoder.encode(AUTH_TRANSPORT_KEY);
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', keyMaterial);
-    return globalThis.crypto.subtle.importKey(
-      'raw',
-      digest,
-      { name: 'AES-GCM' },
-      false,
-      ['encrypt'],
-    );
-  })();
-  return _authTransportCryptoKeyPromise;
-}
-
-async function encryptAuthPassword(plainPassword) {
-  const key = await getAuthTransportCryptoKey();
-  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
-  const payload = new TextEncoder().encode(plainPassword);
-  const encrypted = await globalThis.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, payload);
-  const cipherBytes = new Uint8Array(encrypted);
-  const merged = new Uint8Array(iv.length + cipherBytes.length);
-  merged.set(iv, 0);
-  merged.set(cipherBytes, iv.length);
-  return bytesToBase64(merged);
 }
 
 export function setAccessToken(token) {
@@ -242,10 +207,10 @@ export async function del(path) {
 }
 
 export async function loginAuth(payload) {
-  const passwordEnc = await encryptAuthPassword(payload.password || '');
+  assertSecureAuthTransport();
   const data = await post('/api/auth/login', {
     username: payload.username,
-    password_enc: passwordEnc,
+    password: payload.password || '',
   });
   setAccessToken(data?.access_token || null);
   return data;
@@ -267,6 +232,10 @@ export async function logoutAuth() {
 
 export function getCurrentUser() {
   return get('/api/auth/me');
+}
+
+export function changeCurrentPassword(payload) {
+  return post('/api/auth/change-password', payload);
 }
 
 export function createUserAccount(payload) {
@@ -296,6 +265,13 @@ export function listConversations({ archived = false } = {}) {
   return get(`/api/conversation?archived=${archived}`);
 }
 
+/** assistant-ui 线程列表游标分页；after 由后端生成，调用方不得解析。 */
+export function listConversationPage({ after = null, limit = 50 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (after) params.set('after', after);
+  return get(`/api/conversation/page?${params.toString()}`);
+}
+
 /** 获取左侧功能栏导航数量。 */
 export function listNavigationCounts() {
   return get('/api/navigation/counts');
@@ -322,8 +298,10 @@ export function unarchiveConversation(id) {
 }
 
 /** 获取对话详情（含消息） */
-export function getConversation(id) {
-  return get(`/api/conversation/${id}`);
+export function getConversation(id, { messageLimit = 200, beforeMessageId = null } = {}) {
+  const params = new URLSearchParams({ message_limit: String(messageLimit) });
+  if (beforeMessageId != null) params.set('before_message_id', String(beforeMessageId));
+  return get(`/api/conversation/${id}?${params.toString()}`);
 }
 
 /** 按需读取查询产物 */
@@ -514,25 +492,22 @@ export function getDatasetSubAgentManifest(datasetId) {
 }
 
 /** 保存当前数据集 SubAgent Manifest 草稿 */
-export function saveDatasetSubAgentManifest(datasetId, manualFields, createdBy = null) {
+export function saveDatasetSubAgentManifest(datasetId, manualFields) {
   return put(`/api/dataset/${datasetId}/subagent-manifest`, {
     manual_fields: manualFields,
-    created_by: createdBy,
   });
 }
 
 /** 发布当前数据集 SubAgent Manifest */
-export function publishDatasetSubAgentManifest(datasetId, manualFields = null, createdBy = null) {
+export function publishDatasetSubAgentManifest(datasetId, manualFields = null) {
   return post(`/api/dataset/${datasetId}/subagent-manifest/publish`, {
     manual_fields: manualFields,
-    created_by: createdBy,
   });
 }
 
 /** 回滚历史 SubAgent Manifest 为新的 current 版本 */
-export function rollbackDatasetSubAgentManifest(datasetId, manifestVersion, createdBy = null, reason = '') {
+export function rollbackDatasetSubAgentManifest(datasetId, manifestVersion, reason = '') {
   return post(`/api/dataset/${datasetId}/subagent-manifest/${encodeURIComponent(manifestVersion)}/rollback`, {
-    created_by: createdBy,
     reason,
   });
 }

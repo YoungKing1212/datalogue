@@ -30,3 +30,5 @@ class User(Base, TimestampMixin):
     role = Column(String(16), nullable=False, default="user", server_default="user")
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     is_superuser = Column(Boolean, nullable=False, default=False, server_default="false")
+    # 管理员重置密码后阻断业务访问，直到用户本人设置不可预测的新密码。
+    must_change_password = Column(Boolean, nullable=False, default=False, server_default="false")

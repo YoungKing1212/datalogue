@@ -57,7 +57,9 @@ SENSITIVE_COLUMN_PATTERN = re.compile(
     r"(phone|mobile|tel|email|mail|id_card|identity|idcard|token|secret|password|passwd|pwd|key|api_key|access_key|credential)",
     re.IGNORECASE,
 )
-EMAIL_PATTERN = re.compile(r"([A-Za-z0-9._%+-]{1,3})[A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+EMAIL_PATTERN = re.compile(
+    r"([A-Za-z0-9._%+-]{1,3})[A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"
+)
 MOBILE_PATTERN = re.compile(r"(?<!\d)(1[3-9]\d)\d{4}(\d{4})(?!\d)")
 ID_CARD_PATTERN = re.compile(r"(?<!\d)(\d{6})\d{8}([\dXx]{4})(?!\d)")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_\-.=]{24,}$")
@@ -610,7 +612,12 @@ def execute_analysis_blueprint(
     except Exception as e:
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         code = "TIMEOUT" if _is_timeout_exception(e) else "EXECUTION_ERROR"
-        diagnosis = _build_diagnosis(code, str(e))
+        safe_detail = (
+            "执行超时，请缩小查询范围后重试。"
+            if code == "TIMEOUT"
+            else "执行失败，内部错误已记录。"
+        )
+        diagnosis = _build_diagnosis(code, safe_detail)
         logger.exception(
             "分析蓝图执行失败: blueprint_id=%s code=%s elapsed_ms=%s params=%s error=%s",
             bp.id,
@@ -632,7 +639,7 @@ def execute_analysis_blueprint(
         )
         return {
             "ok": False,
-            "error": f"分析蓝图执行失败: {e}",
+            "error": "分析蓝图执行失败，内部错误已记录",
             "sql": sql,
             "sql_preview": sql_preview,
             "params": params,

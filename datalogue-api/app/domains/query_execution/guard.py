@@ -91,6 +91,7 @@ FORBIDDEN_EXPRESSION_CLASSES: tuple[type[exp.Expression], ...] = tuple(
         getattr(exp, "Alter", None),
         getattr(exp, "Merge", None),
         getattr(exp, "Command", None),
+        getattr(exp, "Into", None),
     )
     if cls is not None
 )
@@ -104,6 +105,7 @@ FORBIDDEN_EXPRESSION_NAMES = {
     "Alter": "alter",
     "Merge": "merge",
     "Command": "command",
+    "Into": "select into",
 }
 
 
@@ -129,15 +131,11 @@ def _strip_comments(sql: str) -> str:
         if quote:
             out.append(ch)
             if ch == quote:
-                if quote == "'" and nxt == "'":
+                if nxt == quote:
                     out.append(nxt)
                     i += 2
                     continue
                 quote = None
-            elif ch == "\\" and quote == "'" and nxt:
-                out.append(nxt)
-                i += 2
-                continue
             i += 1
             continue
 
@@ -176,15 +174,11 @@ def _mask_quoted_content(sql: str) -> str:
         if quote:
             out.append(" ")
             if ch == quote:
-                if quote == "'" and nxt == "'":
+                if nxt == quote:
                     out.append(" ")
                     i += 2
                     continue
                 quote = None
-            elif ch == "\\" and quote == "'" and nxt:
-                out.append(" ")
-                i += 2
-                continue
             i += 1
             continue
         if ch in ("'", '"', "`"):
@@ -253,8 +247,25 @@ def _dangerous_function_from_ast(expression: exp.Expression) -> str | None:
     return None
 
 
+def _normalized_table_name(table: exp.Table) -> str:
+    """保留 catalog/schema/table 全限定名，避免授权比较丢失 schema。"""
+
+    parts = [table.catalog, table.db, table.name]
+    return ".".join(str(part).strip("`\"[]").lower() for part in parts if part)
+
+
+def _normalize_allowed_table_name(value: Any) -> str:
+    """规范化配置侧授权表名，但不丢弃 schema/catalog。"""
+
+    return ".".join(
+        part.strip().strip("`\"[]").lower()
+        for part in str(value or "").split(".")
+        if part.strip()
+    )
+
+
 def _sql_table_names(expression: exp.Expression) -> set[str]:
-    """从 SQLGlot AST 中提取查询涉及的物理表名。"""
+    """从 SQLGlot AST 中提取查询涉及的物理表全限定名。"""
     cte_names = {
         str(cte.alias).strip("`\"[]").lower()
         for cte in expression.find_all(exp.CTE)
@@ -265,8 +276,8 @@ def _sql_table_names(expression: exp.Expression) -> set[str]:
         name = table.name
         if not name:
             continue
-        normalized = str(name).strip("`\"[]").lower()
-        if normalized not in cte_names:
+        normalized = _normalized_table_name(table)
+        if normalized and not ("." not in normalized and normalized in cte_names):
             names.add(normalized)
     return names
 
@@ -278,11 +289,17 @@ def _check_allowed_tables(
     """校验 SQL 只能访问当前数据集授权表。"""
     if not allowed_tables:
         return None
-    allowed = {str(name).split(".")[-1].strip("`\"[]").lower() for name in allowed_tables if name}
+    allowed = {_normalize_allowed_table_name(name) for name in allowed_tables if name}
     if not allowed:
         return None
     used_tables = _sql_table_names(expression)
-    blocked = sorted(name for name in used_tables if name not in allowed)
+    blocked = sorted(
+        name
+        for name in used_tables
+        # 未限定查询可匹配同名授权项；一旦 SQL 显式指定 schema/catalog，就必须精确授权。
+        if name not in allowed
+        and not ("." not in name and any(item.split(".")[-1] == name for item in allowed))
+    )
     if blocked:
         return _fail(
             "SQL_GUARD_BLOCKED",
@@ -314,7 +331,7 @@ def _normalize_limit_with_sqlglot(
     """使用 SQLGlot AST 按查询约束补齐或裁剪外层行数限制。"""
     warnings: list[str] = []
     if not constraints.get("enabled"):
-        return expression.sql(dialect=dialect), warnings
+        return _restore_named_bind_parameters(expression.sql(dialect=dialect)), warnings
 
     default_limit = int(constraints["default_limit"])
     max_limit = int(constraints["max_limit"])
@@ -325,11 +342,17 @@ def _normalize_limit_with_sqlglot(
         if current > max_limit:
             expression.set("limit", exp.Limit(expression=exp.Literal.number(max_limit)))
             warnings.append(f"结果行数限制已从 {current} 裁剪为 {max_limit}")
-        return expression.sql(dialect=dialect), warnings
+        return _restore_named_bind_parameters(expression.sql(dialect=dialect)), warnings
 
     expression.set("limit", exp.Limit(expression=exp.Literal.number(target_limit)))
     warnings.append(f"未指定返回行数，已自动补充限制 {target_limit}")
-    return expression.sql(dialect=dialect), warnings
+    return _restore_named_bind_parameters(expression.sql(dialect=dialect)), warnings
+
+
+def _restore_named_bind_parameters(sql: str) -> str:
+    """SQLGlot 会把 PostgreSQL 的 :name 渲染成 pyformat；执行层统一使用 SQLAlchemy named bind。"""
+
+    return re.sub(r"%\(([A-Za-z_][A-Za-z0-9_]*)\)s", r":\1", sql)
 
 
 def guard_readonly_sql(

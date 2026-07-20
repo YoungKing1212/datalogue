@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Icon } from './icons';
+import { PrototypeNotice } from '../shared/components/prototype-notice';
 
 // PublishDrawer — modal/drawer flow: turn a chat session into a published API.
 // Steps: 1) 基本信息 → 2) 参数化变量 → 3) 响应 & 缓存 → 4) 发布
@@ -37,6 +38,7 @@ function PublishDrawer({ onClose }) {
           </div>
           <button className="icon-btn" onClick={onClose}><Icon name="x" /></button>
         </div>
+        <PrototypeNotice compact>发布流程尚未接入后端，当前填写内容不会保存。</PrototypeNotice>
 
         {/* Stepper */}
         <div className="pd-stepper">
@@ -65,7 +67,11 @@ function PublishDrawer({ onClose }) {
             {step > 1 && <button className="btn" onClick={() => setStep(step-1)}>上一步</button>}
             {step < 4
               ? <button className="btn primary" onClick={() => setStep(step+1)}>下一步 →</button>
-              : <button className="btn primary"><Icon name="api" />发布接口</button>}
+              : (
+                <button className="btn primary" disabled title="功能原型，尚未接入发布接口">
+                  <Icon name="api" />发布接口（未接入）
+                </button>
+              )}
           </div>
         </div>
       </div>

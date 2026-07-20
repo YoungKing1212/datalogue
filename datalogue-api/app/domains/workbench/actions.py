@@ -73,11 +73,23 @@ def run_lease_recovery(db: Session, *, now: datetime) -> list[AgentScopeMessage]
     return recovered
 
 
-def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> WorkbenchRetryResponse:
+def request_controlled_retry(
+    db: Session,
+    *,
+    request: WorkbenchRetryRequest,
+    owner_user_id: int | None = None,
+    allow_all: bool = False,
+) -> WorkbenchRetryResponse:
     """受理 Workbench retry；创建新 running message，真实重跑仍交给后续 chat/checkpoint 链路。"""
 
     normalized_thread_id = _normalize_action_thread_id(request.thread_id)
     if normalized_thread_id.startswith("conv_"):
+        if owner_user_id is not None and not allow_all and not _legacy_thread_owned_by_user(
+            db,
+            thread_id=normalized_thread_id,
+            owner_user_id=owner_user_id,
+        ):
+            raise WorkbenchActionNotFoundError("workbench thread not found")
         return WorkbenchRetryResponse(
             thread_id=normalized_thread_id,
             retry_message_id=None,
@@ -91,6 +103,12 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
 
     session = db.query(AgentScopeSession).filter(AgentScopeSession.thread_id == normalized_thread_id).one_or_none()
     if session is None:
+        raise WorkbenchActionNotFoundError("workbench thread not found")
+    if owner_user_id is not None and not allow_all and not _session_owned_by_user(
+        db,
+        session=session,
+        owner_user_id=owner_user_id,
+    ):
         raise WorkbenchActionNotFoundError("workbench thread not found")
     source_message = (
         db.query(AgentScopeMessage)
@@ -165,6 +183,40 @@ def request_controlled_retry(db: Session, *, request: WorkbenchRetryRequest) -> 
             checkpoint_ref=request.checkpoint_ref,
         ),
         run_request=None,
+    )
+
+
+def _session_owned_by_user(db: Session, *, session: AgentScopeSession, owner_user_id: int) -> bool:
+    metadata = session.metadata_json if isinstance(session.metadata_json, dict) else {}
+    if str(metadata.get("user_id", "")) == str(owner_user_id):
+        return True
+    if session.legacy_conversation_id is None:
+        return False
+    from app.core.models import Conversation  # 延迟导入，避免工作台动作模块扩大模型初始化依赖。
+
+    return (
+        db.query(Conversation.id)
+        .filter(
+            Conversation.id == session.legacy_conversation_id,
+            Conversation.user_id == owner_user_id,
+        )
+        .first()
+        is not None
+    )
+
+
+def _legacy_thread_owned_by_user(db: Session, *, thread_id: str, owner_user_id: int) -> bool:
+    try:
+        conversation_id = int(thread_id.removeprefix("conv_"))
+    except ValueError:
+        return False
+    from app.core.models import Conversation
+
+    return (
+        db.query(Conversation.id)
+        .filter(Conversation.id == conversation_id, Conversation.user_id == owner_user_id)
+        .first()
+        is not None
     )
 
 

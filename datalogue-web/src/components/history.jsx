@@ -11,9 +11,13 @@ function HistoryScreen() {
   const [query, setQuery] = useState('');
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
 
   // 页面加载时拉取真实对话列表
   useEffect(() => {
+    setLoading(true);
+    setLoadError('');
     listConversations()
       .then((data) => {
         // 后端返回的 conversation 数据结构转换为前端需要的格式
@@ -37,9 +41,10 @@ function HistoryScreen() {
       })
       .catch((err) => {
         console.error('加载历史会话失败:', err);
+        setLoadError('历史会话加载失败，请检查网络后重试。');
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [reloadKey]);
 
   const filters = [
     { id: 'all',       label: '全部',       count: sessions.length },
@@ -111,6 +116,12 @@ function HistoryScreen() {
       </div>
 
       {loading && <div style={{padding: 40, textAlign: 'center', color: 'var(--text-3)'}}>加载中…</div>}
+      {!loading && loadError && (
+        <div role="alert" style={{padding: 40, textAlign: 'center', color: 'var(--text-2)'}}>
+          <p>{loadError}</p>
+          <button className="btn ghost" onClick={() => setReloadKey((value) => value + 1)}>重新加载</button>
+        </div>
+      )}
 
       <div className="hp-list">
         {Object.entries(buckets).map(([date, items]) => (
@@ -151,7 +162,7 @@ function HistoryScreen() {
             ))}
           </Fragment>
         ))}
-        {!loading && visible.length === 0 && (
+        {!loading && !loadError && visible.length === 0 && (
           <div style={{padding: 60, textAlign: 'center', color: 'var(--text-3)'}}>
             暂无会话，去 <button className="btn ghost" onClick={() => navigate('/chat')}>问数</button> 开始第一个对话吧
           </div>

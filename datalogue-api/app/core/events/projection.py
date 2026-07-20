@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from agentscope.event import ExternalExecutionResultEvent, RequireExternalExecutionEvent
@@ -23,6 +22,7 @@ from agentscope.message import ToolResultBlock
 from sqlalchemy.orm import Session
 
 from app.core.models.agentscope_workbench import AgentScopeEvent
+from app.core.safety.text_patterns import INTERNAL_ERROR_TEXT_RE, SQL_QUERY_TEXT_RE
 from app.core.schemas.bi_workbench import (
     DatalogueEventEnvelope,
     DatalogueEventType,
@@ -31,31 +31,7 @@ from app.core.schemas.bi_workbench import (
 from app.services.runtime_mirror import record_agentscope_event, record_agentscope_ref
 
 
-USER_VISIBLE_EVENT_TYPES = {
-    "task.started",
-    "route.started",
-    "dataset.candidates",
-    "dataset.selected",
-    "dataset.query.started",
-    "dataset.query.completed",
-    "repair.evaluated",
-    "repair.plan_created",
-    "repair.patch_applied",
-    "repair.rerun_started",
-    "repair.rerun_completed",
-    "artifact.created",
-    "answer.completed",
-    "error",
-    "error.blocked",
-}
 _FORBIDDEN_KEY_FRAGMENTS = ("sql", "schema", "raw", "row", "record", "result", "query_plan", "field_patch")
-_SQL_TEXT_RE = re.compile(r"\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b", re.IGNORECASE)
-_INTERNAL_TEXT_RE = re.compile(
-    r"(\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b)"
-    r"|(\b(psycopg2|sqlalchemy|traceback|undefinedcolumn|undefinedtable|programmingerror|operationalerror)\b)"
-    r"|(\b(column|table|relation)\s+['\"]?[\w.]+['\"]?\s+(does not exist|not found))",
-    re.IGNORECASE,
-)
 _ARTIFACT_ANSWER_RAW_KEYS = {
     "summary",
     "answer",
@@ -424,7 +400,7 @@ def _sanitize_generic_value(value: Any) -> Any:
 
 
 def _safe_event_text(text: str, *, fallback: str) -> str:
-    if _INTERNAL_TEXT_RE.search(text):
+    if SQL_QUERY_TEXT_RE.search(text) or INTERNAL_ERROR_TEXT_RE.search(text):
         return fallback
     return text
 
@@ -488,7 +464,9 @@ def _assert_no_internal_details(value: object) -> None:
     elif isinstance(value, list):
         for item in value:
             _assert_no_internal_details(item)
-    elif isinstance(value, str) and (_SQL_TEXT_RE.search(value) or _INTERNAL_TEXT_RE.search(value)):
+    elif isinstance(value, str) and (
+        SQL_QUERY_TEXT_RE.search(value) or INTERNAL_ERROR_TEXT_RE.search(value)
+    ):
         raise ValueError("AGENTSCOPE_MIRROR_PAYLOAD_LEAK_DETECTED")
 
 

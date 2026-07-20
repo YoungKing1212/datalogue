@@ -22,8 +22,9 @@ from urllib.parse import quote
 import httpx
 
 DEFAULT_AGENTSCOPE_USER_ID = "datalogue-agent-team"
-# SSE 是长连接，模型推理期间可能数十秒没有新行；保留长 read 超时避免无限挂起。
-AGENTSCOPE_SSE_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
+# SSE 是长连接，模型推理或外部工具确认期间可能长期没有新行；读取阶段不能因空闲超时截断可恢复事件流。
+# 连接、写入与连接池仍保留有界超时，避免连接建立阶段无限挂起。
+AGENTSCOPE_SSE_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
 
 
 class AgentScopeServiceClient:

@@ -14,8 +14,12 @@
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+DEFAULT_SECRET_KEY = "change-me"
+DEFAULT_AES_KEY = "your-32-byte-aes-key-here!!"
+DEFAULT_BOOTSTRAP_ADMIN_PASSWORD = "Datalogue@123456.com"
 
 
 class Settings(BaseSettings):
@@ -27,9 +31,8 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "MiniMax-M2.7"
     LLM_TIMEOUT_SECONDS: float = 60.0
 
-    SECRET_KEY: str = "change-me"
-    AES_KEY: str = "your-32-byte-aes-key-here!!"
-    AUTH_TRANSPORT_KEY: str = "datalogue-auth-transport-key"
+    SECRET_KEY: str = DEFAULT_SECRET_KEY
+    AES_KEY: str = DEFAULT_AES_KEY
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     AUTH_COOKIE_NAME: str = "refresh_token"
@@ -37,7 +40,8 @@ class Settings(BaseSettings):
     AUTH_COOKIE_SAMESITE: str = "lax"
     AUTH_COOKIE_PATH: str = "/api/auth"
     BOOTSTRAP_ADMIN_USERNAME: str = "admin"
-    BOOTSTRAP_ADMIN_PASSWORD: str = "admin"
+    # 仅用于新环境首次建号；已有管理员密码由数据库保存，启动时不会被覆盖。
+    BOOTSTRAP_ADMIN_PASSWORD: str = DEFAULT_BOOTSTRAP_ADMIN_PASSWORD
     CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     APP_ENV: str = "development"
@@ -54,7 +58,7 @@ class Settings(BaseSettings):
     DATALOGUE_DEBUG_STREAM_RAW_THINKING: bool = False
     # 自动标题后台线程开关；测试或批处理场景可关闭，避免异步 DB 副作用干扰主链验证。
     DATALOGUE_AUTO_TITLE_ENABLED: bool = True
-    # 演示能力分层：默认保持现有完整主链；各版本 Tag 通过 conf/demo/*.env 收紧查询能力。
+    # 演示能力分层：默认保持现有完整主链；需要收紧时由部署环境显式注入。
     DATALOGUE_DEMO_CAPABILITY_LEVEL: str = "agent_team"
     # 智能报告尚未纳入本轮四期演示，演示配置会关闭 Report Worker，避免提前触发未验收能力。
     DATALOGUE_REPORT_WORKER_ENABLED: bool = True
@@ -88,6 +92,8 @@ class Settings(BaseSettings):
     AGENTSCOPE_REDIS_URL: Optional[str] = "redis://localhost:6379/0"
     AGENTSCOPE_WORKSPACE_BASEDIR: str = "data/agentscope/workspaces"
     AGENTSCOPE_WORKSPACE_TTL_SECONDS: float = 3600.0
+    # 单次问数任务的硬截止时间；覆盖模型、工具和事件流，避免下游挂起永久占用协程与 span。
+    AGENT_TEAM_TASK_TIMEOUT_SECONDS: float = 300.0
 
     MULTITURN_ENABLED: bool = False
     MULTITURN_LOCK_TTL_SECONDS: int = 300
@@ -224,6 +230,26 @@ class Settings(BaseSettings):
                 "single_table, multi_table, semantic_metrics, agent_team"
             )
         return normalized
+
+    @model_validator(mode="after")
+    def _reject_insecure_production_defaults(self) -> "Settings":
+        """生产环境必须显式注入密钥与初始口令，避免示例值静默上线。"""
+
+        if self.APP_ENV.strip().lower() not in {"prod", "production"}:
+            return self
+
+        insecure_fields = []
+        if self.SECRET_KEY == DEFAULT_SECRET_KEY:
+            insecure_fields.append("SECRET_KEY")
+        if self.AES_KEY == DEFAULT_AES_KEY:
+            insecure_fields.append("AES_KEY")
+        if self.BOOTSTRAP_ADMIN_PASSWORD == DEFAULT_BOOTSTRAP_ADMIN_PASSWORD:
+            insecure_fields.append("BOOTSTRAP_ADMIN_PASSWORD")
+        if insecure_fields:
+            raise ValueError(f"生产环境禁止使用默认安全配置：{', '.join(insecure_fields)}")
+        if not self.AUTH_COOKIE_SECURE:
+            raise ValueError("生产环境必须启用 AUTH_COOKIE_SECURE")
+        return self
 
 
 @lru_cache

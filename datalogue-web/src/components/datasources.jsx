@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Icon } from './icons';
 import {
   listDatasources,
@@ -70,6 +70,7 @@ function DatasourcesScreen() {
   const [tablePage, setTablePage] = useState(1);
   const [syncResult, setSyncResult] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  const schemaRequestSeqRef = useRef(0);
   const TABLE_PAGE_SIZE = 10;
 
   // 新建/编辑表单
@@ -115,6 +116,7 @@ function DatasourcesScreen() {
   }, [selectedDs]);
 
   const handleSelectDs = async (ds) => {
+    const seq = ++schemaRequestSeqRef.current;
     setSelectedDs(ds);
     setDsTab('overview');
     setSchemas([]);
@@ -128,6 +130,7 @@ function DatasourcesScreen() {
     setSchemaLoading(true);
     try {
       const res = await getDatasourceSchemas(ds.id);
+      if (seq !== schemaRequestSeqRef.current) return;
       const schemaList = res?.schemas || [];
       setSchemas(schemaList);
       // 如果有 schema，默认选中第一个并加载其表
@@ -135,17 +138,20 @@ function DatasourcesScreen() {
         const firstSchema = schemaList[0];
         setSelectedSchema(firstSchema);
         const tableRes = await getDatasourceSchema(ds.id, firstSchema);
+        if (seq !== schemaRequestSeqRef.current) return;
         setSchema(tableRes?.tables || []);
       }
     } catch (err) {
       console.error('加载 Schema 失败:', err);
     } finally {
-      setSchemaLoading(false);
+      if (seq === schemaRequestSeqRef.current) setSchemaLoading(false);
     }
   };
 
   const handleSelectSchema = async (schemaName) => {
     if (!selectedDs || schemaName === selectedSchema) return;
+    const seq = ++schemaRequestSeqRef.current;
+    const datasourceId = selectedDs.id;
     setSelectedSchema(schemaName);
     setSchema([]);
     setSchemaLoading(true);
@@ -153,12 +159,13 @@ function DatasourcesScreen() {
     setTablePage(1);
     setExpandedTable(null);
     try {
-      const res = await getDatasourceSchema(selectedDs.id, schemaName);
+      const res = await getDatasourceSchema(datasourceId, schemaName);
+      if (seq !== schemaRequestSeqRef.current) return;
       setSchema(res?.tables || []);
     } catch (err) {
       console.error('加载表失败:', err);
     } finally {
-      setSchemaLoading(false);
+      if (seq === schemaRequestSeqRef.current) setSchemaLoading(false);
     }
   };
 
@@ -229,20 +236,29 @@ function DatasourcesScreen() {
       return;
     }
     try {
+      let savedDatasource = null;
       if (editingDs) {
         const data = { ...form };
         if (!data.password) delete data.password;
-        await updateDatasource(editingDs.id, data);
+        savedDatasource = await updateDatasource(editingDs.id, data);
       } else {
-        await createDatasource(form);
+        savedDatasource = await createDatasource(form);
       }
       setShowDrawer(false);
       setEditingDs(null);
-      loadDatasources();
-      if (editingDs && selectedDs?.id === editingDs.id) {
-        const updated = datasources.find(d => d.id === editingDs.id);
-        if (updated) setSelectedDs({ ...updated, name: form.name });
+      if (savedDatasource) {
+        setDatasources((prev) => {
+          const exists = prev.some((item) => item.id === savedDatasource.id);
+          return exists
+            ? prev.map((item) => item.id === savedDatasource.id ? savedDatasource : item)
+            : [savedDatasource, ...prev];
+        });
       }
+      if (editingDs && selectedDs?.id === editingDs.id) {
+        // 保存响应是真相源，避免详情继续显示请求前缓存值。
+        setSelectedDs(savedDatasource || { ...selectedDs, ...form, password: undefined });
+      }
+      loadDatasources();
     } catch (err) {
       alert((editingDs ? '更新' : '创建') + '失败: ' + err.message);
     }

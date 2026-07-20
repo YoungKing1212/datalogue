@@ -18,7 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class LoginIn(BaseModel):
     username: str = Field(..., min_length=1, max_length=255)
-    password_enc: str = Field(..., min_length=1, max_length=2048)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=12, max_length=128)
 
 
 class RegisterIn(BaseModel):
@@ -38,6 +43,12 @@ class UserUpdateIn(BaseModel):
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    must_change_password: bool = False
+
+
+class PasswordResetOut(BaseModel):
+    temporary_password: str
+    must_change_password: bool = True
 
 
 class UserOut(BaseModel):
@@ -47,6 +58,7 @@ class UserOut(BaseModel):
     full_name: str | None = None
     role: Literal["admin", "user"]
     is_superuser: bool
+    must_change_password: bool
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -59,5 +71,6 @@ class UserManageItemOut(BaseModel):
     role: Literal["admin", "user"]
     is_active: bool
     is_superuser: bool
+    must_change_password: bool
 
     model_config = ConfigDict(from_attributes=True)

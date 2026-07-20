@@ -4,7 +4,7 @@
 
 > 设计图主视角：只看 `datalogue_execute_query_plan_bundle` tool 内部，不展开用户对话、Leader 编排或前端 Workbench 全链路。
 
-![datalogue_execute_query_plan_bundle 工具内部执行链路](assets/datalogue_execute_query_plan_bundle_internal_chain.png)
+![datalogue_execute_query_plan_bundle 工具内部执行链路](../assets/diagrams/architecture/datalogue_execute_query_plan_bundle_internal_chain.png)
 
 ## 1. 链路定位
 

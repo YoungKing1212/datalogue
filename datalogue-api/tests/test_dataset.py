@@ -287,7 +287,8 @@ class TestDatasetAPI:
         assert data["status"] == "active"
         assert data["query_constraints"]["enabled"] is True
         assert data["query_constraints"]["default_time_range_days"] == 30
-        assert data["query_constraints"]["default_limit"] == 100
+        # 当前查询链会先 COUNT 再按产物上限截断；默认 10000 与分页详情、预览上限保持一致。
+        assert data["query_constraints"]["default_limit"] == 10000
 
     def test_create_dataset_persists_explicit_schema(self, client, sample_datasource):
         """数据集显式选择的 Schema 必须进入持久化响应，后续用于同步和选表隔离。"""

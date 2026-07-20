@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import httpx
@@ -20,6 +21,7 @@ import pytest
 from agentscope.message import UserMsg
 
 from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.domains.agent_team import progress_bridge
 
 
 class FakeClient:
@@ -92,6 +94,55 @@ class FakeClient:
 
     async def aclose(self):
         self.closed = True
+
+
+def test_progress_bridge_uses_redis_when_publisher_has_no_local_subscriber(monkeypatch):
+    published = []
+
+    class FakeRedisClient:
+        def publish(self, channel, payload):
+            published.append((channel, payload))
+            return 1
+
+        def close(self):
+            return None
+
+    class FakeSyncRedis:
+        @staticmethod
+        def from_url(*_args, **_kwargs):
+            return FakeRedisClient()
+
+    monkeypatch.setattr(progress_bridge, "_redis_url", lambda: "redis://example/0")
+    monkeypatch.setattr(progress_bridge, "SyncRedis", FakeSyncRedis)
+
+    delivered = progress_bridge.publish_agent_event(
+        leader_session_id="session-cross-process",
+        event_type="agent.progress",
+        payload={"summary": "跨进程进度"},
+    )
+
+    assert delivered == 1
+    assert published[0][0].endswith("session-cross-process")
+    assert "跨进程进度" in published[0][1]
+
+
+@pytest.mark.asyncio
+async def test_progress_bridge_wakes_subscription_from_worker_thread(monkeypatch):
+    monkeypatch.setattr(progress_bridge, "_redis_url", lambda: None)
+
+    async with progress_bridge.agent_progress_subscription(
+        leader_session_id="session-thread-worker"
+    ) as queue:
+        delivered = await asyncio.to_thread(
+            progress_bridge.publish_agent_event,
+            leader_session_id="session-thread-worker",
+            event_type="agent.progress",
+            payload={"summary": "线程工具已完成"},
+        )
+        event = await asyncio.wait_for(queue.get(), timeout=1)
+
+    assert delivered == 1
+    assert event["payload"]["summary"] == "线程工具已完成"
 
 
 class AgentNotFoundThenRecoveredClient(FakeClient):
@@ -707,6 +758,27 @@ async def test_agentscope_service_task_runner_delegates_to_agent_team_leader_ses
 
 
 @pytest.mark.asyncio
+async def test_worker_progress_is_isolated_by_leader_session():
+    """同一 AgentScope user 下的并发任务不能互相收到 Worker 进度。"""
+
+    from app.domains.agent_team.progress_bridge import (
+        agent_progress_subscription,
+        publish_agent_progress,
+    )
+
+    async with agent_progress_subscription(leader_session_id="leader-a") as queue_a:
+        async with agent_progress_subscription(leader_session_id="leader-b") as queue_b:
+            delivered = publish_agent_progress(
+                leader_session_id="leader-a",
+                payload={"summary": "仅 A 可见"},
+            )
+
+            assert delivered == 1
+            assert (await queue_a.get())["payload"]["summary"] == "仅 A 可见"
+            assert queue_b.empty()
+
+
+@pytest.mark.asyncio
 async def test_agentscope_service_task_runner_treats_selected_dataset_as_confirmed():
     from app.core.config import Settings
     from app.runtime.engine.runner import AgentTeamTaskRunner
@@ -838,7 +910,7 @@ class WorkerProgressFakeClient(TeamDelegationFakeClient):
             "payload": {"tool_call_name": "AgentCreate"},
         }
         publish_agent_progress(
-            user_id=self.user_id,
+            leader_session_id=session_id,
             payload={
                 "agent_role": "worker",
                 "agent_name": "bi-worker",
@@ -905,7 +977,7 @@ class WorkerCandidateFallbackFakeClient(TeamDelegationFakeClient):
             "payload": {"tool_call_name": "AgentCreate"},
         }
         publish_agent_event(
-            user_id=self.user_id,
+            leader_session_id=session_id,
             event_type="message.completed",
             payload={
                 "datalogue_event_type": "dataset_candidates",
@@ -955,6 +1027,323 @@ class ConfirmedDatasetMissingArtifactFakeClient(TeamDelegationFakeClient):
         }
         self.post_final_event_consumed = True
         yield {"type": "message", "payload": {"content": "不应消费兜底完成后的长连接事件"}}
+
+
+class MandatoryReportFakeClient(FakeClient):
+    async def stream_session(self, session_id, *, agent_id=None):
+        self.stream_requests.append({"session_id": session_id, "agent_id": agent_id})
+        yield {
+            "event_type": "artifact.created",
+            "payload": {
+                "datalogue_event_type": "dataset_query_result",
+                "summary": "查询结果已生成。",
+                "artifact_ref": "artifact:query-runner-1",
+            },
+        }
+        yield {
+            "event_type": "ReplyEndEvent",
+            "payload": {"summary": "查询已经完成。"},
+        }
+        yield {
+            "event_type": "report_worker_result",
+            "payload": {
+                "datalogue_event_type": "report_worker_result",
+                "status": "completed",
+                "source_artifact_ref": "artifact:query-runner-1",
+                "report_ref": "artifact:report:runner-1",
+                "report_markdown": "# 报告\n\n查询结果正常。",
+                "summary": "报告已生成。",
+                "report_worker_agent_id": "report-agent-runner-1",
+                "report_worker_session_id": "report-session-runner-1",
+                "report_attempts": 1,
+            },
+        }
+        self.post_final_event_consumed = True
+        yield {"type": "message", "payload": {"content": "不应消费报告完成后的事件"}}
+
+
+class MissingMandatoryReportFakeClient(FakeClient):
+    async def stream_session(self, session_id, *, agent_id=None):
+        self.stream_requests.append({"session_id": session_id, "agent_id": agent_id})
+        yield {
+            "event_type": "artifact.created",
+            "payload": {
+                "datalogue_event_type": "dataset_query_result",
+                "summary": "查询结果已生成。",
+                "artifact_ref": "artifact:query-runner-failed",
+            },
+        }
+        for _ in range(3):
+            yield {
+                "event_type": "ReplyEndEvent",
+                "payload": {"summary": "跳过报告并完成任务。"},
+            }
+
+
+class ReportArrivesAfterLeaderEofFakeClient(FakeClient):
+    async def stream_session(self, session_id, *, agent_id=None):
+        from app.domains.agent_team.progress_bridge import publish_agent_event
+
+        self.stream_requests.append({"session_id": session_id, "agent_id": agent_id})
+        yield {
+            "event_type": "artifact.created",
+            "payload": {
+                "datalogue_event_type": "dataset_query_result",
+                "artifact_ref": "artifact:query-after-eof",
+                "summary": "查询结果已生成。",
+            },
+        }
+
+        async def publish_after_eof():
+            await asyncio.sleep(0.01)
+            publish_agent_event(
+                leader_session_id=session_id,
+                event_type="report_worker_result",
+                payload={
+                    "datalogue_event_type": "report_worker_result",
+                    "status": "completed",
+                    "source_artifact_ref": "artifact:query-after-eof",
+                    "report_ref": "artifact:report:after-eof",
+                    "report_markdown": "# 报告\n\n跨进程事件已收到。",
+                    "summary": "报告已生成。",
+                    "report_worker_agent_id": "report-agent-after-eof",
+                    "report_worker_session_id": "report-session-after-eof",
+                    "report_attempts": 1,
+                },
+            )
+
+        asyncio.create_task(publish_after_eof())
+
+
+class ReportFailureThenSuccessFakeClient(FakeClient):
+    async def stream_session(self, session_id, *, agent_id=None):
+        self.stream_requests.append({"session_id": session_id, "agent_id": agent_id})
+        yield {
+            "event_type": "artifact.created",
+            "payload": {
+                "datalogue_event_type": "dataset_query_result",
+                "artifact_ref": "artifact:query-report-retry",
+                "summary": "查询结果已生成。",
+            },
+        }
+        yield {
+            "event_type": "report_worker_result",
+            "payload": {
+                "datalogue_event_type": "report_worker_result",
+                "status": "failed",
+                "source_artifact_ref": "artifact:query-report-retry",
+                "code": "REPORT_TRUNCATION_NOTICE_REQUIRED",
+            },
+        }
+        yield {
+            "event_type": "report_worker_result",
+            "payload": {
+                "datalogue_event_type": "report_worker_result",
+                "status": "completed",
+                "source_artifact_ref": "artifact:query-report-retry",
+                "report_ref": "artifact:report:retry-success",
+                "report_markdown": "# 报告\n\n已补充限制说明。",
+                "summary": "报告重试成功。",
+                "report_worker_agent_id": "report-agent-retry",
+                "report_worker_session_id": "report-session-retry",
+                "report_attempts": 2,
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_runner_requires_structured_report_result_before_final():
+    from app.core.config import Settings
+    from app.runtime.engine.runner import AgentTeamTaskRunner
+
+    client = MandatoryReportFakeClient()
+    runner = AgentTeamTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(
+            OPENAI_API_KEY="sk-test",
+            OPENAI_BASE_URL="https://example.test/v1",
+            LLM_MODEL="test-model",
+            DATALOGUE_REPORT_WORKER_ENABLED=True,
+        ),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询并整理报告",
+        dataset_id=10,
+    )
+    task = SimpleNamespace(
+        task_id="task-report-gate",
+        trace_id="trace-report-gate",
+        thread_id="thread-report-gate",
+        message_id="message-report-gate",
+        selected_agent="agent_team_leader",
+    )
+
+    events = [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert [event.event_type for event in events] == [
+        "artifact.created",
+        "agent.progress",
+        "message.completed",
+    ]
+    assert events[-1].payload["datalogue_event_type"] == "report_worker_result"
+    assert len(client.triggered_chats) == 2
+    assert "禁止重新执行 BI" in client.triggered_chats[-1]["text"]
+    assert "datalogue_submit_report" in client.triggered_chats[-1]["text"]
+    assert client.post_final_event_consumed is False
+
+
+@pytest.mark.asyncio
+async def test_runner_corrects_at_most_twice_and_never_reexecutes_bi():
+    from app.core.config import Settings
+    from app.domains.agent_team.report_execution import (
+        ReportWorkerRequiredNotCompletedError,
+    )
+    from app.runtime.engine.runner import AgentTeamTaskRunner
+
+    client = MissingMandatoryReportFakeClient()
+    runner = AgentTeamTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(
+            OPENAI_API_KEY="sk-test",
+            OPENAI_BASE_URL="https://example.test/v1",
+            LLM_MODEL="test-model",
+            DATALOGUE_REPORT_WORKER_ENABLED=True,
+        ),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询但跳过报告",
+        dataset_id=10,
+    )
+    task = SimpleNamespace(
+        task_id="task-report-gate-failed",
+        trace_id="trace-report-gate-failed",
+        thread_id="thread-report-gate-failed",
+        message_id="message-report-gate-failed",
+        selected_agent="agent_team_leader",
+    )
+    emitted = []
+
+    with pytest.raises(ReportWorkerRequiredNotCompletedError):
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        ):
+            emitted.append(event)
+
+    assert [event.event_type for event in emitted].count("artifact.created") == 1
+    assert all(event.event_type != "message.completed" for event in emitted)
+    assert len(client.triggered_chats) == 3  # 首次任务 + 两次纠偏
+    correction_texts = [item["text"] for item in client.triggered_chats[1:]]
+    assert all("禁止重新执行 BI" in text for text in correction_texts)
+
+
+@pytest.mark.asyncio
+async def test_runner_waits_for_report_progress_after_leader_stream_eof():
+    from app.core.config import Settings
+    from app.runtime.engine.runner import AgentTeamTaskRunner
+
+    client = ReportArrivesAfterLeaderEofFakeClient()
+    runner = AgentTeamTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(
+            OPENAI_API_KEY="sk-test",
+            OPENAI_BASE_URL="https://example.test/v1",
+            LLM_MODEL="test-model",
+            DATALOGUE_REPORT_WORKER_ENABLED=True,
+        ),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询并等待跨进程报告",
+        dataset_id=10,
+    )
+    task = SimpleNamespace(
+        task_id="task-report-after-eof",
+        trace_id="trace-report-after-eof",
+        thread_id="thread-report-after-eof",
+        message_id="message-report-after-eof",
+        selected_agent="agent_team_leader",
+    )
+
+    events = [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert [event.event_type for event in events] == [
+        "artifact.created",
+        "message.completed",
+    ]
+    assert events[-1].payload["report_ref"] == "artifact:report:after-eof"
+
+
+@pytest.mark.asyncio
+async def test_runner_corrects_failed_report_submission_without_rerunning_bi():
+    from app.core.config import Settings
+    from app.runtime.engine.runner import AgentTeamTaskRunner
+
+    client = ReportFailureThenSuccessFakeClient()
+    runner = AgentTeamTaskRunner(
+        base_url="http://testserver/agentscope",
+        settings=Settings(
+            OPENAI_API_KEY="sk-test",
+            OPENAI_BASE_URL="https://example.test/v1",
+            LLM_MODEL="test-model",
+            DATALOGUE_REPORT_WORKER_ENABLED=True,
+        ),
+        client=client,
+    )
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询并在报告失败后纠偏",
+        dataset_id=10,
+    )
+    task = SimpleNamespace(
+        task_id="task-report-retry",
+        trace_id="trace-report-retry",
+        thread_id="thread-report-retry",
+        message_id="message-report-retry",
+        selected_agent="agent_team_leader",
+    )
+
+    events = [
+        event
+        async for event in runner.stream(
+            request=request,
+            task=task,
+            user_msg=UserMsg(name="user", content=request.question),
+        )
+    ]
+
+    assert [event.event_type for event in events] == [
+        "artifact.created",
+        "agent.progress",
+        "message.completed",
+    ]
+    assert events[-1].payload["report_attempts"] == 2
+    assert len(client.triggered_chats) == 2
+    assert "禁止重新执行 BI" in client.triggered_chats[-1]["text"]
 
 
 @pytest.mark.asyncio
@@ -1156,6 +1545,7 @@ async def test_agentscope_service_task_runner_falls_back_when_confirmed_dataset_
             OPENAI_API_KEY="sk-test",
             OPENAI_BASE_URL="https://example.test/v1",
             LLM_MODEL="test-model",
+            DATALOGUE_REPORT_WORKER_ENABLED=False,
         ),
         client=client,
     )

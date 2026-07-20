@@ -12,13 +12,16 @@
 # ============================================================
 
 import logging
+import asyncio
 
 import pytest
 
 from app.core.config import get_settings
 from app.core.models.agent_team_task import AgentTeamTask
 from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.core.schemas.bi_workbench import build_datalogue_event_envelope
 from app.runtime import AgentTeamTaskRuntime
+from app.runtime.agent_team_runtime import _iterate_with_overall_timeout
 
 
 class FakeAgentScopeRunner:
@@ -31,6 +34,22 @@ class FailingAgentScopeRunner:
         if False:
             yield None
         raise RuntimeError("select * from hidden_table")
+
+
+@pytest.mark.asyncio
+async def test_agent_team_stream_has_absolute_timeout():
+    async def hanging_events():
+        await asyncio.sleep(1)
+        yield "late"
+
+    with pytest.raises(TimeoutError):
+        _ = [
+            event
+            async for event in _iterate_with_overall_timeout(
+                hanging_events(),
+                timeout_seconds=0.01,
+            )
+        ]
 
 
 class MissingDatasetAgentScopeRunner:
@@ -141,6 +160,74 @@ class ArtifactFinalAgentScopeRunner:
         }
 
 
+class ArtifactCreatedThenReportRunner:
+    async def stream(self, *, request, task, user_msg):
+        yield build_datalogue_event_envelope(
+            event_type="artifact.created",
+            visibility="user_visible",
+            task_id=task.task_id,
+            trace_id=task.trace_id,
+            thread_id=task.thread_id,
+            message_id=task.message_id,
+            selected_agent=task.selected_agent,
+            payload={
+                "datalogue_event_type": "dataset_query_result",
+                "summary": "查询结果已生成。",
+                "artifact_ref": "artifact:query-runtime-1",
+                "row_count": 8,
+                "column_count": 3,
+            },
+        )
+        yield build_datalogue_event_envelope(
+            event_type="message.completed",
+            visibility="user_visible",
+            task_id=task.task_id,
+            trace_id=task.trace_id,
+            thread_id=task.thread_id,
+            message_id=task.message_id,
+            selected_agent=task.selected_agent,
+            payload={
+                "datalogue_event_type": "report_worker_result",
+                "status": "completed",
+                "source_artifact_ref": "artifact:query-runtime-1",
+                "report_ref": "artifact:report:runtime-1",
+                "report_markdown": "# 查询报告\n\n共 8 条结果。",
+                "summary": "报告已生成。",
+                "report_worker_agent_id": "report-agent-1",
+                "report_worker_session_id": "report-session-1",
+                "report_attempts": 1,
+            },
+        )
+
+
+class ArtifactCreatedWithoutReportRunner:
+    async def stream(self, *, request, task, user_msg):
+        yield build_datalogue_event_envelope(
+            event_type="artifact.created",
+            visibility="user_visible",
+            task_id=task.task_id,
+            trace_id=task.trace_id,
+            thread_id=task.thread_id,
+            message_id=task.message_id,
+            selected_agent=task.selected_agent,
+            payload={
+                "datalogue_event_type": "dataset_query_result",
+                "summary": "查询结果已生成。",
+                "artifact_ref": "artifact:query-runtime-failed",
+            },
+        )
+        yield build_datalogue_event_envelope(
+            event_type="message.completed",
+            visibility="user_visible",
+            task_id=task.task_id,
+            trace_id=task.trace_id,
+            thread_id=task.thread_id,
+            message_id=task.message_id,
+            selected_agent=task.selected_agent,
+            payload={"summary": "查询完成，可以结束任务。"},
+        )
+
+
 @pytest.fixture(autouse=True)
 def disable_auto_title_for_runtime_unit_tests(monkeypatch):
     """Runtime 单元测试不验证标题生成，默认关闭后台 DB 线程以避免 teardown 并发副作用。"""
@@ -191,6 +278,118 @@ async def test_agent_team_task_runtime_completes_task(db_session):
 
 
 @pytest.mark.asyncio
+async def test_agent_team_task_runtime_completes_only_after_report_worker_result(db_session):
+    runtime = AgentTeamTaskRuntime(db=db_session, runner=ArtifactCreatedThenReportRunner())
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询并生成报告",
+        dataset_id=10,
+    )
+
+    events = [event async for event in runtime.stream(request)]
+
+    assert [event.event_type for event in events] == [
+        "task.started",
+        "agent.selected",
+        "artifact.created",
+        "message.completed",
+        "task.completed",
+    ]
+    final_message = events[-2]
+    assert final_message.payload["summary"] == "# 查询报告\n\n共 8 条结果。"
+    assert final_message.payload["report_ref"] == "artifact:report:runtime-1"
+    assert events[-1].payload["report_status"] == "succeeded"
+    stored = db_session.query(AgentTeamTask).filter_by(task_id=events[0].task_id).one()
+    assert stored.status == "completed"
+    assert stored.final_payload_json["report_required"] is True
+    assert stored.final_payload_json["report_status"] == "succeeded"
+    assert stored.final_payload_json["report_worker_agent_id"] == "report-agent-1"
+    assert stored.artifact_refs_json == [
+        "artifact:query-runtime-1",
+        "artifact:report:runtime-1",
+    ]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "合同总金额是多少",
+        "本月订单数是多少",
+        "查询最近三条日志",
+        "列出五条异常记录",
+        "按部门统计人员数",
+        "按月份汇总销售额",
+        "比较华东和华南收入",
+        "统计各产品毛利率",
+        "分析季度收入趋势",
+        "统计客户复购率",
+        "查询最大单笔合同",
+        "查询最小库存商品",
+        "统计项目延期数量",
+        "按负责人汇总工时",
+        "分析渠道转化率",
+        "统计城市订单分布",
+        "比较同比和环比增长",
+        "汇总年度预算执行率",
+        "分析异常退款原因分布",
+        "统计多维度经营指标",
+    ],
+)
+@pytest.mark.asyncio
+async def test_twenty_representative_queries_all_require_report_worker(db_session, question):
+    runtime = AgentTeamTaskRuntime(db=db_session, runner=ArtifactCreatedThenReportRunner())
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question=question,
+        dataset_id=10,
+    )
+
+    events = [event async for event in runtime.stream(request)]
+
+    assert sum(event.event_type == "artifact.created" for event in events) == 1
+    report_finals = [
+        event
+        for event in events
+        if event.event_type == "message.completed"
+        and event.payload.get("datalogue_event_type") == "report_worker_result"
+    ]
+    assert len(report_finals) == 1
+    stored = db_session.query(AgentTeamTask).filter_by(task_id=events[0].task_id).one()
+    assert stored.status == "completed"
+    assert stored.final_payload_json["report_status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_agent_team_task_runtime_rejects_completed_without_report_and_keeps_artifact(
+    db_session,
+):
+    runtime = AgentTeamTaskRuntime(db=db_session, runner=ArtifactCreatedWithoutReportRunner())
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        task_type="bi_query",
+        question="查询但报告失败",
+        dataset_id=10,
+    )
+
+    events = [event async for event in runtime.stream(request)]
+
+    assert [event.event_type for event in events] == [
+        "task.started",
+        "agent.selected",
+        "artifact.created",
+        "task.failed",
+    ]
+    failed = events[-1]
+    assert failed.payload["error_code"] == "REPORT_WORKER_REQUIRED_NOT_COMPLETED"
+    assert failed.payload["artifact_ref"] == "artifact:query-runtime-failed"
+    assert failed.payload["report_status"] == "failed"
+    stored = db_session.query(AgentTeamTask).filter_by(task_id=events[0].task_id).one()
+    assert stored.status == "failed"
+    assert stored.error_payload_json["error_code"] == "REPORT_WORKER_REQUIRED_NOT_COMPLETED"
+    assert stored.artifact_refs_json == ["artifact:query-runtime-failed"]
+@pytest.mark.asyncio
 async def test_agent_team_task_runtime_skips_auto_title_when_disabled(
     db_session,
     monkeypatch,
@@ -224,7 +423,9 @@ async def test_agent_team_task_runtime_skips_auto_title_when_disabled(
 
 
 @pytest.mark.asyncio
-async def test_agent_team_task_runtime_lets_bi_worker_report_dataset_candidates(db_session, sample_datasource):
+async def test_agent_team_task_runtime_lets_bi_worker_report_dataset_candidates(
+    db_session, sample_datasource
+):
     from app.core.models.dataset import SemanticDataset
 
     db_session.add_all(
@@ -311,7 +512,12 @@ async def test_agent_team_task_runtime_sanitizes_internal_planning_final_answer(
 
 
 @pytest.mark.asyncio
-async def test_agent_team_task_runtime_adds_reasoning_summary_for_final_artifact(db_session):
+async def test_agent_team_task_runtime_adds_reasoning_summary_for_final_artifact(
+    db_session,
+    monkeypatch,
+):
+    monkeypatch.setenv("DATALOGUE_REPORT_WORKER_ENABLED", "false")
+    get_settings.cache_clear()
     runtime = AgentTeamTaskRuntime(db=db_session, runner=ArtifactFinalAgentScopeRunner())
     request = AgentTeamTaskRequest(
         task_source="chat",
@@ -322,7 +528,9 @@ async def test_agent_team_task_runtime_adds_reasoning_summary_for_final_artifact
 
     events = [event async for event in runtime.stream(request)]
 
-    final_payload = next(event.payload for event in events if event.event_type == "message.completed")
+    final_payload = next(
+        event.payload for event in events if event.event_type == "message.completed"
+    )
     assert final_payload["reasoning_summary"] == [
         {
             "title": "识别任务",

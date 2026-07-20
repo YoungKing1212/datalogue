@@ -46,9 +46,15 @@ _FORBIDDEN_VALUE_TOKENS = (
 
 
 def log_lifecycle(stage: str, **fields: Any) -> None:
-    """生命周期日志已在调试期下线；保留函数签名避免迁移期调用方大面积改动。"""
+    """按 DEBUG 级别输出脱敏生命周期事件，关闭调试日志时不做序列化开销。"""
 
-    return None
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    payload = _sanitize({"stage": stage, **fields})
+    logger.debug(
+        "[datalogue.lifecycle] %s",
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+    )
 
 
 def raw_agent_logs_enabled() -> bool:
@@ -84,9 +90,15 @@ def log_agent_io(agent: str, stage: str, **fields: Any) -> None:
 
 
 def log_output(**fields: Any) -> None:
-    """用户可见结果日志已切到 OTel；保留函数签名避免迁移期调用方大面积改动。"""
+    """按 DEBUG 级别输出脱敏结果摘要；原始结果仍只允许进入 OTel/受控调试面。"""
 
-    return None
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    payload = _sanitize(fields)
+    logger.debug(
+        "[datalogue.output] %s",
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+    )
 
 
 def _sanitize(value: Any) -> Any:

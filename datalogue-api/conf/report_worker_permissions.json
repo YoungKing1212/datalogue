@@ -9,6 +9,14 @@
         "source": "datalogue-report-worker-template"
       }
     ],
+    "datalogue_submit_report": [
+      {
+        "tool_name": "datalogue_submit_report",
+        "rule_content": null,
+        "behavior": "allow",
+        "source": "datalogue-report-worker-template"
+      }
+    ],
     "TeamSay": [
       {
         "tool_name": "TeamSay",

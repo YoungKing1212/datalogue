@@ -12,6 +12,7 @@
 # ============================================================
 
 from datetime import timedelta
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import or_
@@ -24,7 +25,6 @@ from app.core import models, schemas
 from app.core.security import (
     create_token,
     decode_token,
-    decrypt_auth_password,
     hash_password,
     is_token_invalid_error,
     verify_password,
@@ -72,6 +72,19 @@ def _build_refresh_token(user: models.User) -> str:
     )
 
 
+def _require_secure_login_transport(request: Request) -> None:
+    """生产登录只接受 HTTPS；反向代理场景信任其标准转发协议头。"""
+
+    if settings.APP_ENV.strip().lower() not in {"prod", "production"}:
+        return
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    if request.url.scheme != "https" and forwarded_proto != "https":
+        raise HTTPException(
+            status_code=status.HTTP_426_UPGRADE_REQUIRED,
+            detail="登录接口仅允许通过 HTTPS 访问",
+        )
+
+
 @router.post("/register", response_model=schemas.UserOut, status_code=status.HTTP_201_CREATED)
 def register(
     payload: schemas.RegisterIn,
@@ -101,18 +114,20 @@ def register(
 
 
 @public_router.post("/login", response_model=schemas.TokenOut)
-def login(payload: schemas.LoginIn, response: Response, db: Session = Depends(get_db)) -> schemas.TokenOut:
-    try:
-        plain_password = decrypt_auth_password(payload.password_enc)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="密码密文无效") from exc
+def login(
+    payload: schemas.LoginIn,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> schemas.TokenOut:
+    _require_secure_login_transport(request)
 
     user = (
         db.query(models.User)
         .filter(or_(models.User.username == payload.username, models.User.email == payload.username))
         .first()
     )
-    if user is None or not verify_password(plain_password, user.hashed_password):
+    if user is None or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
@@ -120,7 +135,10 @@ def login(payload: schemas.LoginIn, response: Response, db: Session = Depends(ge
     access_token = _build_access_token(user)
     refresh_token = _build_refresh_token(user)
     _set_refresh_cookie(response, refresh_token)
-    return schemas.TokenOut(access_token=access_token)
+    return schemas.TokenOut(
+        access_token=access_token,
+        must_change_password=user.must_change_password,
+    )
 
 
 @public_router.post("/refresh", response_model=schemas.TokenOut)
@@ -148,7 +166,10 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     # 续期时轮转 refresh token，降低长期凭证泄露后的风险窗口。
     new_refresh_token = _build_refresh_token(user)
     _set_refresh_cookie(response, new_refresh_token)
-    return schemas.TokenOut(access_token=_build_access_token(user))
+    return schemas.TokenOut(
+        access_token=_build_access_token(user),
+        must_change_password=user.must_change_password,
+    )
 
 
 @public_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -160,6 +181,22 @@ def logout(response: Response) -> None:
 @router.get("/me", response_model=schemas.UserOut)
 def me(current_user: models.User = Depends(get_current_user)) -> schemas.UserOut:
     return current_user
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    payload: schemas.ChangePasswordIn,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> None:
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前密码错误")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码不能与当前密码相同")
+
+    current_user.hashed_password = hash_password(payload.new_password)
+    current_user.must_change_password = False  # 用户完成自助改密后才恢复业务接口访问。
+    db.commit()
 
 
 @router.get("/users", response_model=list[schemas.UserManageItemOut])
@@ -204,6 +241,8 @@ def update_user(
     if payload.email is not None:
         user.email = payload.email
     if payload.role is not None:
+        if not current_admin.is_superuser:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅超级管理员可以调整用户角色")
         user.role = payload.role
         # 当角色降为普通用户时同步移除 superuser 标记，避免权限语义不一致。
         user.is_superuser = payload.role == "admin" and user.is_superuser
@@ -218,19 +257,22 @@ def update_user(
     return user
 
 
-@router.post("/users/{user_id}/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/users/{user_id}/reset-password", response_model=schemas.PasswordResetOut)
 def reset_user_password(
     user_id: int,
     db: Session = Depends(get_db),
     _: models.User = Depends(get_current_superuser),
-) -> None:
+) -> schemas.PasswordResetOut:
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
 
-    reset_password = f"{user.username}@123456"
+    # 临时密码只在本次响应中返回，数据库只存哈希，并强制用户首次登录立即改密。
+    reset_password = secrets.token_urlsafe(18)
     user.hashed_password = hash_password(reset_password)
+    user.must_change_password = True
     db.commit()
+    return schemas.PasswordResetOut(temporary_password=reset_password)
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

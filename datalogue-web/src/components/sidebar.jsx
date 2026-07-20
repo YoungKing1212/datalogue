@@ -7,7 +7,7 @@ import { listNavigationCounts } from '../api/client';
 // Sidebar — restructured to match design doc IA: 4 groups.
 // "最近会话"区已迁出至 chat 页面的独立 ThreadList 左列。
 
-function Sidebar() {
+function Sidebar({ open = false, onClose = () => {} }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -44,7 +44,31 @@ function Sidebar() {
     return path === '/' + id;
   };
 
-  const go = (id) => navigate(id === 'home' ? '/' : '/' + id);
+  const go = (id) => {
+    navigate(id === 'home' ? '/' : '/' + id);
+    onClose();
+  };
+
+  const startNewQuestion = () => {
+    // 跨页面时先留下一次性标记；已在 Chat 页时同时发事件，让 assistant-ui 立即切到本地草稿。
+    window.__DATALOGUE_START_NEW_THREAD__ = true;
+    window.dispatchEvent(new CustomEvent('datalogue:new-thread'));
+    navigate('/chat');
+    onClose();
+  };
+
+  useEffect(() => {
+    const handleShortcut = (event) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return;
+      event.preventDefault();
+      window.__DATALOGUE_START_NEW_THREAD__ = true;
+      window.dispatchEvent(new CustomEvent('datalogue:new-thread'));
+      navigate('/chat');
+      onClose();
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, [navigate, onClose]);
 
   const groups = [
     {
@@ -83,12 +107,16 @@ function Sidebar() {
   ];
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${open ? ' open' : ''}`} aria-label="应用导航">
       <div className="brand">
         <img className="brand-logo" src="/datalogue-logo.png" alt="数语 Datalogue" />
       </div>
 
-      <button className="new-thread" onClick={() => go('chat')}>
+      <button
+        className="new-thread"
+        onClick={startNewQuestion}
+        aria-keyshortcuts="Meta+K Control+K"
+      >
         <Icon name="plus" />
         <span>新的问数</span>
         <span className="kbd">⌘ K</span>

@@ -96,7 +96,11 @@ def test_report_worker_template_has_isolated_permission_context():
     from app.runtime.engine.registry import build_datalogue_worker_template_specs
 
     template = build_datalogue_worker_template_specs()[1].to_subagent_template()
-    expected_allow_rules = {"TeamSay", "datalogue_get_artifact_report_input"}
+    expected_allow_rules = {
+        "TeamSay",
+        "datalogue_get_artifact_report_input",
+        "datalogue_submit_report",
+    }
 
     assert template.type == "report"
     assert "REPORT_WORKER_BOUNDARY" in template.system_prompt_template

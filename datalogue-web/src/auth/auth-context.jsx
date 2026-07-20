@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
+  changeCurrentPassword,
   getCurrentUser,
   loginAuth,
   logoutAuth,
@@ -76,8 +77,18 @@ export function AuthProvider({ children }) {
     }
   };
 
+  const changePassword = async (currentPassword, newPassword) => {
+    await changeCurrentPassword({
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    const current = await getCurrentUser();
+    setUser(current);
+    return current;
+  };
+
   const value = useMemo(
-    () => ({ user, ready, login, logout }),
+    () => ({ user, ready, login, logout, changePassword }),
     [user, ready],
   );
 

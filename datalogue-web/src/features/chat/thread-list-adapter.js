@@ -10,7 +10,7 @@ import {
 } from '@assistant-ui/react';
 import { createAssistantStream } from 'assistant-stream';
 import {
-  listConversations,
+  listConversationPage,
   createConversation,
   renameConversation,
   archiveConversation,
@@ -19,6 +19,12 @@ import {
 	getConversation,
 } from '../../api/client';
 import { fetchWorkbenchThread } from '../../assistant/workbench-api';
+import { NODE_DISPLAY_NAMES } from './node-display';
+import {
+  safeUserVisibleList,
+  safeUserVisibleText,
+  sanitizeUserVisibleTrace,
+} from './user-visible-safety';
 
 // 内存缓存：localThreadId -> { remoteId, externalId }
 const idMap = new Map();
@@ -100,33 +106,10 @@ if (typeof window !== 'undefined') {
  * MessageContent 用 splitThink 把它从正文剥离——不再额外拆出 reasoning part，
  * 避免与 ChainOfThought 重复展示。
  */
-// 节点显示名映射（与后端 _NODE_DISPLAY_NAMES 对齐）
-const NODE_DISPLAY = {
-  message_gateway: '任务理解',
-  'message-gateway': '任务理解',
-  lead_agent_tools: '能力匹配',
-  manifest_route: '场景匹配',
-  clarification_resolution: '澄清处理',
-  intent_recognition: '意图识别',
-  entry_intent_classification: '入口判断',
-  analysis_blueprint_execute: '分析蓝图执行',
-  candidate_assets: '数据资产匹配',
-  schema_recall: '数据范围确认',
-  term_normalize_node: '术语标准化',
-  semantic_asset_resolution_node: '语义资产解析',
-  metric_resolution_node: '指标解析',
-  dsl_generate: '查询生成',
-  dsl_validate: '查询校验',
-  dsl_compiler: '执行计划生成',
-  sql_execute: '查询执行',
-  sql_audit: '结果诊断',
-  report_generator: '结果整理',
-};
-
 function formatStepAsReasoning(step) {
   // 历史 step_trace 保留内部 display_name；回放时必须映射成业务文案。
-  const label = NODE_DISPLAY[step.node]
-    || NODE_DISPLAY[step.display_name]
+  const label = NODE_DISPLAY_NAMES[step.node]
+    || NODE_DISPLAY_NAMES[step.display_name]
     || safeDisplayText(step.display_name)
     || safeDisplayText(step.label)
     || '任务处理';
@@ -173,71 +156,12 @@ function formatStepAsReasoning(step) {
   return detail ? `${label}：${detail} ${elapsed}` : `${label} ${elapsed}`.trim();
 }
 
-const USER_VISIBLE_TRACE_FORBIDDEN_KEYS = new Set([
-  'sql',
-  'sql_result',
-  'sqlResult',
-  'sql_diagnosis',
-  'sqlDiagnosis',
-  'sql_audit_result',
-  'sqlAuditResult',
-  'raw_sql',
-  'direct_sql',
-  'llm_sql',
-  'compiled_sql',
-  'sql_list',
-  'candidate_assets',
-  'candidateAssets',
-  'dsl',
-  'rows',
-  'columns',
-  'column_labels',
-  'columnLabels',
-  'schema',
-  'schemas',
-  'table',
-  'tables',
-  'field',
-  'fields',
-  'raw_result',
-  'rawResult',
-  'node',
-  'display_name',
-  'displayName',
-]);
-
-function sanitizeUserVisibleTrace(value) {
-  if (Array.isArray(value)) return value.map(sanitizeUserVisibleTrace);
-  if (!value || typeof value !== 'object') return value;
-  const out = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (USER_VISIBLE_TRACE_FORBIDDEN_KEYS.has(key)) continue;
-    out[key] = sanitizeUserVisibleTrace(item);
-  }
-  return out;
-}
-
-const INTERNAL_TEXT_PATTERN = /\b(select|insert|update|delete|delete\s+from|from|join|where|group\s+by|order\s+by|having|union|with)\b|[`;]|hidden_table|\b\w+_col\b|raw_result|raw_row|schema/i;
-
 function safeDisplayText(value) {
-  if (value == null) return null;
-  const text = String(value).trim();
-  if (!text || INTERNAL_TEXT_PATTERN.test(text)) return null;
-  return text.slice(0, 160);
+  return safeUserVisibleText(value);
 }
 
 function safeDisplayList(values, limit = 6) {
-  if (!Array.isArray(values)) return [];
-  const seen = new Set();
-  const result = [];
-  for (const value of values) {
-    const text = safeDisplayText(value);
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    result.push(text);
-    if (result.length >= limit) break;
-  }
-  return result;
+  return safeUserVisibleList(values, { limit });
 }
 
 function safeAnswerExplanation(metadata = {}) {
@@ -442,6 +366,17 @@ export function buildHistoryMessageCustom(message, traces = []) {
 export function messagesFromBackend(detail) {
   const msgs = detail?.messages || [];
   const out = [];
+  if (detail?.message_page?.has_more) {
+    // ThreadHistoryAdapter 没有增量加载契约；明确提示当前有界窗口，避免旧消息静默消失。
+    out.push({
+      id: `history-window-${detail?.conversation?.id || 'unknown'}`,
+      role: 'assistant',
+      content: [{ type: 'text', text: `当前仅展示最近 ${detail.message_page.limit} 条消息，更早记录可通过历史接口分页读取。` }],
+      createdAt: msgs[0]?.created_at ? new Date(msgs[0].created_at) : new Date(0),
+      status: { type: 'complete', reason: 'stop' },
+      metadata: { custom: { historyWindowTruncated: true } },
+    });
+  }
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
     const parts = [];
@@ -509,11 +444,14 @@ function makeHistoryAdapter(getRemoteId) {
 	          const view = await fetchWorkbenchThread(remoteId);
 	          return ExportedMessageRepository.fromArray(messagesFromWorkbench(view));
 	        }
-	        const detail = await getConversation(remoteId);
+        const detail = await getConversation(remoteId, { messageLimit: 200 });
 	        const messages = messagesFromBackend(detail);
 	        return ExportedMessageRepository.fromArray(messages);
       } catch (e) {
         console.error('加载历史消息失败', e);
+        if (e?.status === 401 || e?.status === 403) {
+          throw e; // 鉴权失败必须交给 runtime 展示错误，不能伪装成“历史为空”。
+        }
         return { messages: [] };
       }
     },
@@ -569,8 +507,9 @@ export class DatalogueThreadListAdapter {
     this.unstable_Provider = DatalogueThreadProvider;
   }
 
-  async list({ archived = false } = {}) {
-    const items = await listConversations({ archived });
+  async list({ after } = {}) {
+    const page = await listConversationPage({ after, limit: 50 });
+    const items = page?.items || [];
     items.forEach((c) => {
       // 缓存会话时间供左侧列表展示；优先 updated_at，回退 created_at。
       const iso = c.updated_at ?? c.created_at;
@@ -583,8 +522,9 @@ export class DatalogueThreadListAdapter {
         externalId: c.thread_id || undefined,
         title: c.title,
         datasetId: c.dataset_id ?? undefined,
-        updatedAt: c.updated_at ?? c.created_at ?? undefined,
+        lastMessageAt: c.updated_at || c.created_at ? new Date(c.updated_at || c.created_at) : undefined,
       })),
+      nextCursor: page?.next_cursor || undefined,
     };
   }
 
@@ -658,7 +598,7 @@ export class DatalogueThreadListAdapter {
         title: view.messages?.[0]?.content_summary || '问数工作台',
       };
     }
-    const detail = await getConversation(remoteId);
+    const detail = await getConversation(remoteId, { messageLimit: 1 });
     const c = detail?.conversation || {};
     return {
       status: c.archived ? 'archived' : 'regular',

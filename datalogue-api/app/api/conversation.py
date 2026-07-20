@@ -11,16 +11,48 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-import re
+import base64
+import binascii
+import json
+from datetime import datetime, timezone
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, extract, func, or_
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_api_user
 from app.core.database import get_db
 from app.core import schemas, models
+from app.core.safety.text_patterns import SQL_STATEMENT_TEXT_RE
 
 router = APIRouter()
+
+
+def _encode_conversation_cursor(sort_time: datetime, conversation_id: int) -> str:
+    """把排序时间和主键编码为不透明游标，避免 offset 在并发写入时跳项。"""
+
+    raw = json.dumps(
+        {"sort_time": sort_time.isoformat(), "id": conversation_id},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_conversation_cursor(cursor: str) -> tuple[datetime, int]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        return datetime.fromisoformat(str(payload["sort_time"])), int(payload["id"])
+    except (binascii.Error, KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="会话分页游标无效") from exc
+
+
+def _utc_epoch(value: datetime) -> float:
+    """把数据库 UTC 时间统一为 epoch；旧 SQLite 返回 naive 值时按 UTC 解释。"""
+
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return normalized.timestamp()
 
 
 _PUBLIC_HISTORY_BLOCKED_KEYS = {
@@ -67,10 +99,6 @@ _PUBLIC_HISTORY_BLOCKED_KEYS = {
     "table",
     "tables",
 }
-_PUBLIC_HISTORY_SQL_RE = re.compile(
-    r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
-    r".{0,200}\b(from|into|set|table|join|where|values)\b"
-)
 _PUBLIC_HISTORY_STEP_LABELS = {
     "message_gateway": "任务理解",
     "message-gateway": "任务理解",
@@ -134,7 +162,7 @@ def _safe_public_history_value(value: Any, *, key_name: str = "") -> Any:
         ]
     if isinstance(value, str):
         text = value.strip()
-        if _PUBLIC_HISTORY_SQL_RE.search(text):
+        if SQL_STATEMENT_TEXT_RE.search(text):
             return None
         return text[:1000]
     return value
@@ -496,11 +524,15 @@ def _agentscope_message_to_public(
 def list_conversations(
     archived: bool = Query(default=False, description="true 取归档列表，false 取常规列表"),
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
 ):
     """列出对话，默认仅返回未归档。"""
     return (
         db.query(models.Conversation)
-        .filter(models.Conversation.archived == archived)
+        .filter(
+            models.Conversation.archived == archived,
+            models.Conversation.user_id == current_user.id,
+        )
         .order_by(  # 新建空会话可能只有 created_at，排序需稳定兜底。
             models.Conversation.updated_at.desc().nullslast(),
             models.Conversation.created_at.desc().nullslast(),
@@ -510,15 +542,57 @@ def list_conversations(
     )
 
 
+@router.get("/page", response_model=schemas.ConversationPageOut)
+def page_conversations(
+    archived: bool | None = Query(default=None, description="为空时同时返回常规与归档会话"),
+    limit: int = Query(default=50, ge=1, le=100),
+    after: str | None = Query(default=None, max_length=500),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
+):
+    """按最近更新时间游标分页；返回 limit+1 判定下一页，不执行额外 COUNT。"""
+
+    sort_time = func.coalesce(models.Conversation.updated_at, models.Conversation.created_at)
+    # SQLite 的 datetime 文本精度与绑定格式不同，直接比较会把同一秒误判成更早；
+    # 用 SQLAlchemy 的跨方言 epoch 提取做游标比较，ID 继续承担同刻稳定排序。
+    sort_epoch = extract("epoch", sort_time)
+    query = db.query(models.Conversation).filter(models.Conversation.user_id == current_user.id)
+    if archived is not None:
+        query = query.filter(models.Conversation.archived == archived)
+    if after:
+        cursor_time, cursor_id = _decode_conversation_cursor(after)
+        cursor_epoch = _utc_epoch(cursor_time)
+        query = query.filter(
+            or_(
+                sort_epoch < cursor_epoch,
+                and_(sort_epoch == cursor_epoch, models.Conversation.id < cursor_id),
+            )
+        )
+    rows = query.order_by(sort_time.desc(), models.Conversation.id.desc()).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    next_cursor = None
+    if has_more and items:
+        last = items[-1]
+        last_sort_time = last.updated_at or last.created_at
+        if last_sort_time is not None:
+            next_cursor = _encode_conversation_cursor(last_sort_time, last.id)
+    return {"items": items, "next_cursor": next_cursor}
+
+
 @router.post("", response_model=schemas.ConversationOut, status_code=201)
-def create_conversation(payload: schemas.ConversationCreate, db: Session = Depends(get_db)):
+def create_conversation(
+    payload: schemas.ConversationCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
+):
     """创建空会话（assistant-ui initialize 流程使用，title 缺省为「新对话」）。"""
     import uuid
 
     conv = models.Conversation(
         title=payload.title,
         thread_id=payload.thread_id or f"thread-{uuid.uuid4().hex[:12]}",
-        user_id=1,
+        user_id=current_user.id,
         dataset_id=payload.dataset_id,
         archived=False,
     )
@@ -529,8 +603,14 @@ def create_conversation(payload: schemas.ConversationCreate, db: Session = Depen
 
 
 @router.get("/{conv_id}", response_model=schemas.ConversationDetailOut)
-def get_conversation(conv_id: int, db: Session = Depends(get_db)):
-    conv = db.get(models.Conversation, conv_id)
+def get_conversation(
+    conv_id: int,
+    message_limit: int = Query(default=200, ge=1, le=500),
+    before_message_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
+):
+    conv = _owned_conversation_or_404(db, conv_id=conv_id, user_id=current_user.id)
     if not conv:
         raise HTTPException(status_code=404, detail="对话不存在")
     # 消息主数据源是 agentscope_message：一个 conversation 可能关联多个 as_ session
@@ -542,28 +622,37 @@ def get_conversation(conv_id: int, db: Session = Depends(get_db)):
         .all()
     ]
     if thread_ids:
-        as_messages = (
-            db.query(models.AgentScopeMessage)
-            .filter(models.AgentScopeMessage.thread_id.in_(thread_ids))
-            .order_by(
-                models.AgentScopeMessage.created_at.asc(),
-                models.AgentScopeMessage.id.asc(),
-            )
-            .all()
+        message_query = db.query(models.AgentScopeMessage).filter(
+            models.AgentScopeMessage.thread_id.in_(thread_ids)
         )
-        messages = [_agentscope_message_to_public(m, conv_id) for m in as_messages]
+        if before_message_id is not None:
+            message_query = message_query.filter(models.AgentScopeMessage.id < before_message_id)
+        # assistant-ui history adapter 只支持一次 load；默认只取最近 200 条，旧页可通过 before_message_id 按需读取。
+        page_rows = message_query.order_by(models.AgentScopeMessage.id.desc()).limit(message_limit + 1).all()
+        has_more = len(page_rows) > message_limit
+        as_messages = list(reversed(page_rows[:message_limit]))
+        messages = [_agentscope_message_to_public(message, conv_id) for message in as_messages]
     else:
         # 回退：agentscope 改造前的老会话消息只在 legacy message 表。
-        legacy_messages = (
-            db.query(models.Message)
-            .filter(models.Message.conversation_id == conv_id)
-            .order_by(models.Message.created_at)
-            .all()
-        )
+        message_query = db.query(models.Message).filter(models.Message.conversation_id == conv_id)
+        if before_message_id is not None:
+            message_query = message_query.filter(models.Message.id < before_message_id)
+        page_rows = message_query.order_by(models.Message.id.desc()).limit(message_limit + 1).all()
+        has_more = len(page_rows) > message_limit
+        legacy_messages = list(reversed(page_rows[:message_limit]))
         messages = [
             _public_message(_with_observability_links(message)) for message in legacy_messages
         ]
-    return {"conversation": conv, "messages": messages}
+    next_before_message_id = page_rows[message_limit - 1].id if has_more else None
+    return {
+        "conversation": conv,
+        "messages": messages,
+        "message_page": {
+            "has_more": has_more,
+            "next_before_message_id": next_before_message_id,
+            "limit": message_limit,
+        },
+    }
 
 
 @router.patch("/{conv_id}", response_model=schemas.ConversationOut)
@@ -571,11 +660,10 @@ def rename_conversation(
     conv_id: int,
     payload: schemas.ConversationRename,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
 ):
     """重命名对话。"""
-    conv = db.get(models.Conversation, conv_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="对话不存在")
+    conv = _owned_conversation_or_404(db, conv_id=conv_id, user_id=current_user.id)
     conv.title = payload.title
     db.commit()
     db.refresh(conv)
@@ -583,11 +671,13 @@ def rename_conversation(
 
 
 @router.post("/{conv_id}/archive", response_model=schemas.ConversationOut)
-def archive_conversation(conv_id: int, db: Session = Depends(get_db)):
+def archive_conversation(
+    conv_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
+):
     """归档对话。"""
-    conv = db.get(models.Conversation, conv_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="对话不存在")
+    conv = _owned_conversation_or_404(db, conv_id=conv_id, user_id=current_user.id)
     conv.archived = True
     db.commit()
     db.refresh(conv)
@@ -595,11 +685,13 @@ def archive_conversation(conv_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{conv_id}/unarchive", response_model=schemas.ConversationOut)
-def unarchive_conversation(conv_id: int, db: Session = Depends(get_db)):
+def unarchive_conversation(
+    conv_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
+):
     """取消归档。"""
-    conv = db.get(models.Conversation, conv_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="对话不存在")
+    conv = _owned_conversation_or_404(db, conv_id=conv_id, user_id=current_user.id)
     conv.archived = False
     db.commit()
     db.refresh(conv)
@@ -607,14 +699,16 @@ def unarchive_conversation(conv_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{conv_id}")
-def delete_conversation(conv_id: int, db: Session = Depends(get_db)):
+def delete_conversation(
+    conv_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
+):
     """删除会话及其关联的全部数据。
 
     删除顺序：先清理外键依赖表，再删 messages，最后删 conversation。
     """
-    conv = db.get(models.Conversation, conv_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="对话不存在")
+    conv = _owned_conversation_or_404(db, conv_id=conv_id, user_id=current_user.id)
 
     # 1) 可观测性追溯索引（引用 message.id + conversation.id）
     db.query(models.ObservabilityTraceIndex).filter(
@@ -639,10 +733,44 @@ def delete_conversation(conv_id: int, db: Session = Depends(get_db)):
         models.PendingClarification.conversation_id == conv_id
     ).delete()
 
-    # 6) 消息（Conversation 的 cascade 会处理，但显式先删避免 bulk-delete 侧漏）
+    # 6) AgentScope 主存储没有数据库外键级联，必须按关联 session 显式清理，避免留下可枚举的孤儿全文。
+    agent_thread_ids = [
+        row.thread_id
+        for row in db.query(models.AgentScopeSession.thread_id)
+        .filter(models.AgentScopeSession.legacy_conversation_id == conv_id)
+        .all()
+    ]
+    if agent_thread_ids:
+        db.query(models.AgentScopeRef).filter(models.AgentScopeRef.thread_id.in_(agent_thread_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(models.AgentScopeEvent).filter(models.AgentScopeEvent.thread_id.in_(agent_thread_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(models.AgentScopeMessage).filter(models.AgentScopeMessage.thread_id.in_(agent_thread_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(models.AgentScopeSession).filter(models.AgentScopeSession.thread_id.in_(agent_thread_ids)).delete(
+            synchronize_session=False
+        )
+
+    # 7) 消息（Conversation 的 cascade 会处理，但显式先删避免 bulk-delete 侧漏）
     db.query(models.Message).filter(models.Message.conversation_id == conv_id).delete()
 
-    # 7) 会话本体
+    # 8) 会话本体
     db.delete(conv)
     db.commit()
     return {"ok": True}
+
+
+def _owned_conversation_or_404(db: Session, *, conv_id: int, user_id: int) -> models.Conversation:
+    """按资源归属查询；不存在与越权统一返回 404，避免泄露可枚举 ID。"""
+
+    conversation = (
+        db.query(models.Conversation)
+        .filter(models.Conversation.id == conv_id, models.Conversation.user_id == user_id)
+        .one_or_none()
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return conversation

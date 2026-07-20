@@ -32,7 +32,7 @@ class DatasetQuerySkill:
         self,
         *,
         db: Session,
-        query_executor: Callable[[str], Any] | None = None,
+        query_executor: Callable[[str, dict[str, Any]], Any] | None = None,
     ) -> None:
         self.db = db
         self.query_executor = query_executor

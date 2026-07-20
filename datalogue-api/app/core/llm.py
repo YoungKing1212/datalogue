@@ -49,26 +49,18 @@ from app.core.llm_config import DEFAULT_LLM_ROLE, resolve_llm_config
 
 _settings = get_settings()
 logger = logging.getLogger(__name__)
-STRUCTURED_OUTPUT_RESPONSE_FORMAT = {"type": "json_object"}
 ROLE_CALL_POLICIES: dict[str, dict[str, Any]] = {
     "intent": {
         "max_tokens": 20480,
-        "response_format": STRUCTURED_OUTPUT_RESPONSE_FORMAT,
-        "structured_output": True,
     },
     "lead_agent": {
         "max_tokens": 20480,
-        "response_format": STRUCTURED_OUTPUT_RESPONSE_FORMAT,
-        "structured_output": True,
     },
     "dsl": {
         "max_tokens": 20480,
-        "response_format": STRUCTURED_OUTPUT_RESPONSE_FORMAT,
-        "structured_output": True,
     },
     "sql_audit": {
         "max_tokens": 20480,
-        "structured_output": False,
     },
 }
 
@@ -175,7 +167,6 @@ class AgentScopeChatClient:
         model_kwargs: dict[str, Any],
         thinking_enabled: bool,
         max_tokens: int | None = None,
-        response_format: dict[str, Any] | None = None,
         call_policy: dict[str, Any] | None = None,
     ) -> None:
         self.provider = provider
@@ -187,7 +178,6 @@ class AgentScopeChatClient:
         self.timeout = timeout
         self.model_kwargs = model_kwargs
         self.max_tokens = max_tokens
-        self.response_format = response_format
         self.streaming = True
         self.thinking_enabled = thinking_enabled
         self.datalogue_thinking_enabled = thinking_enabled
@@ -195,7 +185,7 @@ class AgentScopeChatClient:
         self.datalogue_call_policy = call_policy or {}
 
     def _parameters(self) -> OpenAIChatModel.Parameters:
-        """生成 AgentScope 参数；结构化输出后续用原生 structured output 单独接入。"""
+        """生成 AgentScope 原生参数。"""
 
         return OpenAIChatModel.Parameters(
             max_tokens=self.max_tokens,
@@ -362,7 +352,6 @@ def get_llm(
         model_kwargs=model_kwargs,
         thinking_enabled=config.thinking_enabled,
         max_tokens=call_policy.get("max_tokens"),
-        response_format=call_policy.get("response_format"),
         call_policy=call_policy,
     )
     return llm

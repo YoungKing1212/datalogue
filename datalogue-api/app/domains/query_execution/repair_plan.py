@@ -20,6 +20,7 @@ from typing import Any, cast
 
 from fastapi.encoders import jsonable_encoder
 
+from app.core.safety.text_patterns import SQL_STATEMENT_TEXT_RE
 from app.core.schemas.repair_plan import RepairAction, RepairFailureClass, RepairPlan
 
 
@@ -65,12 +66,6 @@ _FORBIDDEN_ACTION_KEYS = {
     "control_plane",
 }
 
-_SQL_TEXT_RE = re.compile(
-    r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
-    r".{0,200}\b(from|into|set|table|join|where|values)\b"
-)
-
-
 def classify_sql_failure(error: Any) -> RepairFailureClass:
     """把数据库/Guard/执行异常归一为 C1 RepairFailureClass。"""
 
@@ -100,7 +95,7 @@ def _contains_forbidden_action_payload(value: Any, *, key_name: str = "") -> boo
         return any(_contains_forbidden_action_payload(item, key_name=key_name) for item in value)
     if isinstance(value, str):
         lowered = value.lower()
-        return _SQL_TEXT_RE.search(value) is not None or any(
+        return SQL_STATEMENT_TEXT_RE.search(value) is not None or any(
             token in lowered
             for token in ("raw_sql", "raw_result", "schema_context", "control_plane")
         )

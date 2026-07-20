@@ -23,13 +23,13 @@
 import json
 import re
 import logging
-from datetime import datetime
 from typing import Dict, Any, List, Tuple
 
 from sqlalchemy.orm import Session
 
 from app.core.models.dataset import SourceTable, SourceColumn
 from app.core.llm import get_llm
+from app.core.time import utc_now_naive
 from app.prompts import ANNOTATION_SYSTEM_PROMPT, TABLE_ANNOTATION_PROMPT
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -192,7 +192,7 @@ def _annotate_table_description(
         desc = raw.strip('"').strip("'")
         if desc and len(desc) >= 3 and desc != table.table_name:
             table.ai_description = desc
-            table.annotated_at = datetime.utcnow()
+            table.annotated_at = utc_now_naive()
             refresh_table_effective_desc(table)
             return True
     except Exception as e:
@@ -326,7 +326,7 @@ def annotate_table_columns(
         col.suggested_synonyms = synonyms if isinstance(synonyms, list) else []
         col.suggested_enum_values = enum_values if isinstance(enum_values, list) else []
         col.review_status = "pending_review"
-        col.annotated_at = datetime.utcnow()
+        col.annotated_at = utc_now_naive()
 
         # 重新解析生效值
         refresh_effective_desc(col)

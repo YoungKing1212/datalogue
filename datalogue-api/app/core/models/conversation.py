@@ -11,13 +11,12 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-from datetime import datetime
-
 from sqlalchemy import Boolean, Column, Float, Integer, String, Text, JSON, ForeignKey, DateTime, func
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.core.time import utc_now_naive
 
 
 def _json_type():
@@ -90,7 +89,7 @@ class PendingClarification(Base):
     expires_at = Column(DateTime, nullable=False)
     resolved_at = Column(DateTime)
     selected_payload = Column(JSON)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
 
 
 class ObservabilityTraceIndex(Base):

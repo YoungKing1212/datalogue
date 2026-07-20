@@ -1034,7 +1034,7 @@ def _publish_worker_progress(
         )
         return
     publish_agent_progress(
-        user_id=worker_context.get("user_id"),
+        leader_session_id=worker_context.get("leader_session_id"),
         payload=payload,
     )
 

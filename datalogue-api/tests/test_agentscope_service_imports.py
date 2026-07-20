@@ -5,7 +5,7 @@
 #
 # Responsibilities:
 #   - 捕捉 AgentScope Service/Storage extras 缺失导致的启动期导入失败。
-#   - 保证 Datalogue 的 agentscope_service 包暴露稳定 factory 入口。
+#   - 保证 Datalogue 的 canonical runtime 模块暴露稳定入口。
 #
 # Author      : yangkai
 # Created On  : 2026-07-04
@@ -36,23 +36,19 @@ def test_datalogue_agentscope_service_factory_is_importable():
     assert create_embedded_runtime_app is not None
 
 
-def test_datalogue_agentscope_runtime_facade_is_importable():
-    """目录治理新入口先作为 facade 存在，后续迁移调用方时可从这里稳定导入。"""
+def test_datalogue_runtime_canonical_modules_are_importable():
+    """Phase B Step 4c 后从 canonical 模块直接导入运行时能力。"""
 
-    from app.agentscope_runtime.app_factory import create_embedded_runtime_app
-    from app.agentscope_runtime.client import (
-        DEFAULT_AGENTSCOPE_USER_ID,
-        AgentScopeServiceClient,
-    )
-    from app.agentscope_runtime.credentials import DatalogueLLMCredential
-    from app.agentscope_runtime.projection import project_runtime_event
-    from app.agentscope_runtime.registry import build_datalogue_subagent_templates
-    from app.agentscope_runtime.runner import AgentTeamTaskRunner
-    from app.agentscope_runtime.worker_logging import build_datalogue_extra_agent_middlewares
-    from app.runtime.engine.client import DEFAULT_AGENTSCOPE_USER_ID as legacy_default_user_id
+    from app.domains.agent_team.worker_logging import build_datalogue_extra_agent_middlewares
+    from app.runtime.engine.app_factory import create_embedded_runtime_app
+    from app.runtime.engine.client import DEFAULT_AGENTSCOPE_USER_ID, AgentScopeServiceClient
+    from app.runtime.engine.credentials import DatalogueLLMCredential
+    from app.runtime.engine.projection import project_runtime_event
+    from app.runtime.engine.registry import build_datalogue_subagent_templates
+    from app.runtime.engine.runner import AgentTeamTaskRunner
 
     assert create_embedded_runtime_app is not None
-    assert DEFAULT_AGENTSCOPE_USER_ID == legacy_default_user_id
+    assert DEFAULT_AGENTSCOPE_USER_ID == "datalogue-agent-team"
     assert AgentScopeServiceClient is not None
     assert DatalogueLLMCredential is not None
     assert project_runtime_event is not None

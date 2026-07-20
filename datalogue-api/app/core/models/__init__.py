@@ -28,6 +28,7 @@ from .dataset import (
     AnalysisBlueprint,
     BlueprintVersion,
     BlueprintUsageLog,
+    BlueprintAnalyzeTask,
 )
 from .conversation import (
     Conversation,
@@ -67,6 +68,7 @@ __all__ = [
     "AnalysisBlueprint",
     "BlueprintVersion",
     "BlueprintUsageLog",
+    "BlueprintAnalyzeTask",
     "Conversation",
     "Message",
     "ObservabilityTraceIndex",

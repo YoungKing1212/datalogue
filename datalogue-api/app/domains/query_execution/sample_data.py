@@ -17,6 +17,8 @@ from typing import Iterable
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core import models
+
 
 def fetch_sample_rows(
     db: Session,
@@ -54,19 +56,46 @@ def fetch_sample_rows(
         lines.append("（未绑定数据源，跳过样例查询）")
         return "\n".join(lines)
 
-    from app.domains.data_source.service import create_engine_for_datasource, quote_identifier, normalize_db_type
+    from app.domains.data_source.service import create_engine_for_datasource, normalize_db_type
+    from app.domains.data_source.helpers import _table_ref
 
     engine = create_engine_for_datasource(datasource)
     db_type = normalize_db_type(getattr(datasource, "db_type", None))
     try:
         with engine.connect() as conn:
-            for table_name in table_names:
-                if not table_name:
+            safe_per_table = max(1, min(int(per_table or 2), 10))
+            for requested_name in table_names:
+                if not requested_name:
                     continue
                 try:
-                    # 表名来自数据源白名单，不拼接用户输入；这里仍用 quoting 保证安全
-                    table_ref = quote_identifier(table_name, db_type)
-                    rows = conn.execute(text(f"SELECT * FROM {table_ref} LIMIT {int(per_table)}"))
+                    raw_name = str(requested_name).strip()
+                    schema_name, _, table_name = raw_name.rpartition(".")
+                    if not table_name:
+                        table_name, schema_name = schema_name, ""
+                    source_query = db.query(models.SourceTable).filter(
+                        models.SourceTable.datasource_id == datasource.id,
+                        models.SourceTable.table_name == table_name,
+                    )
+                    if schema_name:
+                        source_query = source_query.filter(
+                            models.SourceTable.schema_name == schema_name
+                        )
+                    matches = source_query.limit(2).all()
+                    if len(matches) != 1:
+                        # 样例表引用来自模型/DSL，必须回到已同步元数据解析，不能信任调用方口头承诺。
+                        lines.append(f"表 {raw_name}:（未同步或 schema 不明确，跳过样例）")
+                        continue
+                    source_table = matches[0]
+                    table_ref = _table_ref(
+                        source_table.schema_name, source_table.table_name, db_type
+                    )
+                    limit_clause = (
+                        "FETCH FIRST :limit ROWS ONLY" if db_type == "oracle" else "LIMIT :limit"
+                    )
+                    rows = conn.execute(
+                        text(f"SELECT * FROM {table_ref} {limit_clause}"),
+                        {"limit": safe_per_table},
+                    )
                     columns = list(rows.keys())
                     fetched: list[dict] = []
                     for r in rows:
@@ -77,7 +106,7 @@ def fetch_sample_rows(
                                 val = val.isoformat()
                             row_dict[col] = val
                         fetched.append(row_dict)
-                    lines.append(f"表 {table_name}:")
+                    lines.append(f"表 {source_table.table_name}:")
                     if not fetched:
                         lines.append("  （表存在但无数据）")
                     for row in fetched:
@@ -88,7 +117,8 @@ def fetch_sample_rows(
                     import logging
 
                     logging.getLogger(__name__).warning(f"样例查询失败 table={table_name}: {e}")
-                    lines.append(f"表 {table_name}:（样例查询失败: {e}）")
+                    # Prompt 只能知道样例不可用，驱动异常、内网地址和连接信息仅保留在服务日志。
+                    lines.append(f"表 {table_name}:（样例查询失败，已跳过）")
     finally:
         engine.dispose()
 

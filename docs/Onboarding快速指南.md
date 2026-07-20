@@ -214,7 +214,7 @@ POST /api/agent-team/tasks/stream (SSE 流式)
 | `docs/architecture/执行链路.md` | 端到端执行流程 |
 | `docs/architecture/数据模型.md` | 核心数据库模型 |
 | `docs/architecture/目录治理与模块边界.md` | 目录职责与迁移规则 |
-| `.codex/project-memory.md` | 功能完成记录（按时间线） |
+| `.codex/project-memory.md` | 实际项目变更完成记录（按时间线） |
 | `AGENTS.md` | AI Agent 协作约定（开发标准） |
 
 ---
@@ -270,9 +270,11 @@ npm run test
 - **关键位置**：重要分支、边界条件、跨层状态写入、外部副作用、降级/fallback、异常处理处必须注释
 - **TODO 管理**：实现前标记 TODO，完成后删除
 
-### 6.4 功能完成记录
+### 6.4 项目变更完成记录
 
-每完成一个功能，在 `.codex/project-memory.md` 追加记录，包含：
+仅当实际完成需求变更、代码/测试/运行配置/项目文档改动、缺陷修复或关键技术决策时，才在 `.codex/project-memory.md` 追加记录。普通对话、问答、临时分析、状态确认、纯阅读/审查和项目无关事项不记录。
+
+记录内容包含：
 - 完成时间（`YYYY-MM-DD HH:mm`）
 - 功能名称
 - 涉及文件
@@ -435,10 +437,10 @@ redis-cli -n 0 keys "*agentscope*"  # 查看 AgentScope 相关 key
 
 ### 持续参考
 - `docs/api/API概览.md` — 新增 API 时查阅
-- `.codex/project-memory.md` — 功能历史记录
+- `.codex/project-memory.md` — 实际项目变更历史记录
 - `datalogue-api/docs/CODE_STYLE.md` — 编码规范细节
 - `datalogue-api/docs/CHECKLIST.md` — 提交前自检清单
 
 ---
 
-> 如有疑问或发现本文过时，请在 `.codex/project-memory.md` 记录更新建议，并联系当前维护人（杨凯）。
+> 如有疑问或发现本文过时，请联系当前维护人（杨凯）并直接修正文档；形成实际项目变更后，再按上述规则更新 `.codex/project-memory.md`。

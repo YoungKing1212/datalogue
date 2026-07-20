@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 import json
 import logging
@@ -44,8 +45,10 @@ from app.domains.bi.worker.contracts import (
     RepairRequest,
 )
 from app.domains.bi.worker.runtime import BIWorkerQueryRuntime
+from app.domains.bi.skill.runtime_bridge import DB_EXECUTION_ALREADY_OFFLOADED
 from app.domains.bi.worker.validator import ProgressiveContextState
 from app.domains.agent_team.progress_bridge import publish_agent_event
+from app.domains.agent_team.task_context import resolve_task_context
 from app.domains.agent_team.worker_identity import resolve_team_worker_type
 from app.core.database import SessionLocal
 from app.core.models.dataset import SemanticDataset
@@ -60,6 +63,15 @@ BI_WORKER_PLAN_CONTRACT_MAX_RETRIES = 1
 _BI_WORKER_PLAN_CONTRACT_TOTAL_ATTEMPT_KEY = "__total_contract_attempts__"
 _BI_WORKER_REPAIR_MAX_RETRIES = 2
 _BI_WORKER_REPAIR_ATTEMPT_KEY = "__total_repair_attempts__"
+_REPORT_MARKDOWN_MAX_BYTES = 50 * 1024
+_REPORT_SUMMARY_MAX_CHARS = 1000
+_REPORT_LIMITATION_MAX_ITEMS = 20
+_REPORT_LIMITATION_MAX_CHARS = 500
+_FORBIDDEN_REPORT_OUTPUT_PATTERNS = (
+    re.compile(r"```\s*sql\b", re.IGNORECASE),
+    re.compile(r"\bselect\s+.{0,200}?\s+from\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\b(query_plan|raw_payload|raw_rows|schema_context|repair_patch)\b", re.IGNORECASE),
+)
 
 # 仅允许后端静默移除已经被 QueryPlan v1 替代、且不会影响实际执行语义的历史字段。
 # 例如 join_on 曾被模型写在 supporting_entities 中，但真正可执行的关联只能由
@@ -500,12 +512,19 @@ async def _team_worker_context(
         return None
     agent_data = getattr(agent_record, "data", None)
     agent_name = getattr(agent_data, "name", None)
+    task_context = await resolve_task_context(
+        storage,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
     return {
         "user_id": user_id,
         "agent_id": agent_id,
         "worker_type": worker_type,
         "agent_name": str(agent_name) if agent_name else None,
         "session_id": session_id,
+        **task_context,  # leader_session_id 是跨并发 SSE 路由键，必须来自服务端 Redis/TeamRecord。
     }
 
 
@@ -553,11 +572,26 @@ class DatalogueReportWorkerReadOnlyTool(FunctionTool):
         )
 
 
+class DatalogueReportWorkerSubmitTool(FunctionTool):
+    """Report Worker 报告提交工具；运行时仍会二次校验 worker 身份与 Artifact。"""
+
+    async def check_permissions(
+        self,
+        tool_input: dict[str, Any],
+        context: PermissionContext,
+    ) -> PermissionDecision:
+        return PermissionDecision(
+            behavior=PermissionBehavior.ALLOW,
+            message=f"{self.name} is allowed for verified Report workers.",
+            decision_reason="ALLOWED_BY_TOOL",
+        )
+
+
 def build_datalogue_report_worker_tools(
     *,
     worker_context: dict[str, str | None] | None = None,
 ) -> list[ToolBase]:
-    """创建 Report Worker 可见的只读 artifact 工具集。"""
+    """创建 Report Worker 可见的 Artifact 读取与结构化报告提交工具集。"""
 
     def datalogue_get_artifact_report_input(artifact_ref: str) -> ToolChunk:
         """读取查询 artifact 的报告输入投影。
@@ -575,6 +609,136 @@ def build_datalogue_report_worker_tools(
             payload = build_artifact_report_input(artifact, artifact_ref=str(artifact_ref or ""))
         return _tool_success_chunk(payload)
 
+    def datalogue_submit_report(
+        source_artifact_ref: str,
+        report_markdown: str,
+        summary: str,
+        limitations: list[str] | None = None,
+    ) -> ToolChunk:
+        """提交 Report Worker 基于查询 Artifact 生成的最终中文 Markdown 报告。
+
+        Args:
+            source_artifact_ref: 本报告唯一对应的 sql_result Artifact 引用。
+            report_markdown: 最终用户可见中文 Markdown；禁止 SQL、schema、QueryPlan 等内部态。
+            summary: 报告核心结论的简短安全摘要。
+            limitations: 可选限制说明；输入被裁剪时报告正文必须说明基于可见样本与总量元信息。
+        """
+
+        context = worker_context or {}
+        if context.get("worker_type") != "report":
+            return _tool_success_chunk(
+                _report_submit_failure(
+                    source_artifact_ref,
+                    "REPORT_WORKER_IDENTITY_REQUIRED",
+                    "只有已验证的 Report Worker 可以提交报告。",
+                )
+            )
+        task_id = str(context.get("task_id") or "").strip()
+        worker_agent_id = str(context.get("agent_id") or "").strip()
+        worker_session_id = str(context.get("session_id") or "").strip()
+        leader_session_id = str(context.get("leader_session_id") or "").strip()
+        if not task_id or not worker_agent_id or not worker_session_id or not leader_session_id:
+            return _tool_success_chunk(
+                _report_submit_failure(
+                    source_artifact_ref,
+                    "REPORT_WORKER_CONTEXT_MISSING",
+                    "报告任务上下文不完整，已拒绝提交。",
+                )
+            )
+        validation_error = _validate_report_submission_text(
+            report_markdown=report_markdown,
+            summary=summary,
+            limitations=limitations,
+        )
+        if validation_error is not None:
+            code, message = validation_error
+            return _tool_success_chunk(
+                _report_submit_failure(source_artifact_ref, code, message)
+            )
+
+        source_ref = str(source_artifact_ref or "").strip()
+        markdown = str(report_markdown or "").strip()
+        safe_summary = str(summary or "").strip()
+        safe_limitations = [str(item).strip() for item in (limitations or [])]
+        with SessionLocal() as db:
+            store = ArtifactStore(db)
+            source_artifact = store.get(source_ref)
+            report_input = build_artifact_report_input(
+                source_artifact,
+                artifact_ref=source_ref,
+            )
+            if report_input.get("status") != "completed":
+                return _tool_success_chunk(
+                    _report_submit_failure(
+                        source_ref,
+                        str(report_input.get("code") or "REPORT_SOURCE_ARTIFACT_INVALID"),
+                        "报告来源查询产物不可读取，已拒绝提交。",
+                    )
+                )
+            report_meta = report_input.get("report_input_meta") or {}
+            if report_meta.get("truncated") is True and not _has_truncation_notice(markdown):
+                return _tool_success_chunk(
+                    _report_submit_failure(
+                        source_ref,
+                        "REPORT_TRUNCATION_NOTICE_REQUIRED",
+                        "查询产物已裁剪，报告必须说明结论基于可见样本与总量元信息。",
+                    )
+                )
+
+            report_payload = {
+                "task_id": task_id,
+                "source_artifact_ref": source_ref,
+                "report_markdown": markdown,
+                "summary": safe_summary,
+                "limitations": safe_limitations,
+                "report_worker_agent_id": worker_agent_id,
+                "report_worker_session_id": worker_session_id,
+            }
+            report_ref = store.put_json_idempotent(
+                kind="report",
+                payload=report_payload,
+                idempotency_key=f"{task_id}:{source_ref}",
+                dataset_id=getattr(source_artifact, "dataset_id", None),
+                conversation_id=getattr(source_artifact, "conversation_id", None),
+                message_id=getattr(source_artifact, "message_id", None),
+                trace_id=str(
+                    context.get("trace_id") or getattr(source_artifact, "trace_id", "") or ""
+                )
+                or None,
+            )
+            # 幂等重试必须返回数据库中的首个有效报告，不能回传一个未实际持久化的新正文。
+            canonical_artifact = store.get(report_ref)
+            canonical = (
+                canonical_artifact.content_json
+                if canonical_artifact is not None
+                and isinstance(canonical_artifact.content_json, dict)
+                else report_payload
+            )
+            db.commit()
+
+        payload = {
+            "datalogue_event_type": "report_worker_result",
+            "status": "completed",
+            "source_artifact_ref": source_ref,
+            "report_ref": report_ref,
+            "report_markdown": str(canonical.get("report_markdown") or ""),
+            "summary": str(canonical.get("summary") or ""),
+            "limitations": list(canonical.get("limitations") or []),
+            "report_worker_agent_id": str(
+                canonical.get("report_worker_agent_id") or worker_agent_id
+            ),
+            "report_worker_session_id": str(
+                canonical.get("report_worker_session_id") or worker_session_id
+            ),
+            "report_attempts": 1,
+        }
+        publish_agent_event(
+            leader_session_id=leader_session_id,
+            event_type="report_worker_result",
+            payload=payload,
+        )
+        return _tool_success_chunk(payload)
+
     return [
         DatalogueReportWorkerReadOnlyTool(
             datalogue_get_artifact_report_input,
@@ -584,8 +748,68 @@ def build_datalogue_report_worker_tools(
             ),
             is_concurrency_safe=True,
             is_read_only=True,
-        )
+        ),
+        DatalogueReportWorkerSubmitTool(
+            datalogue_submit_report,
+            description=(
+                "Report Worker 专属提交工具：校验来源查询 Artifact 与报告安全边界，"
+                "幂等保存报告并发布 report_worker_result 完成凭证。"
+            ),
+            is_concurrency_safe=False,
+            is_read_only=False,
+        ),
     ]
+
+
+def _report_submit_failure(
+    source_artifact_ref: str,
+    code: str,
+    message: str,
+) -> dict[str, Any]:
+    """构造不包含内部异常细节的报告提交失败载荷。"""
+
+    return {
+        "datalogue_event_type": "report_worker_result",
+        "status": "failed",
+        "source_artifact_ref": str(source_artifact_ref or "").strip() or None,
+        "code": code,
+        "message": message,
+    }
+
+
+def _validate_report_submission_text(
+    *,
+    report_markdown: object,
+    summary: object,
+    limitations: object,
+) -> tuple[str, str] | None:
+    markdown = str(report_markdown or "").strip()
+    safe_summary = str(summary or "").strip()
+    if not markdown:
+        return "REPORT_MARKDOWN_REQUIRED", "报告正文不能为空。"
+    if len(markdown.encode("utf-8")) > _REPORT_MARKDOWN_MAX_BYTES:
+        return "REPORT_MARKDOWN_TOO_LARGE", "报告正文超过 50 KB 限制。"
+    if not safe_summary or len(safe_summary) > _REPORT_SUMMARY_MAX_CHARS:
+        return "REPORT_SUMMARY_INVALID", "报告摘要不能为空且不能超过 1000 字。"
+    if limitations is not None and not isinstance(limitations, list):
+        return "REPORT_LIMITATIONS_INVALID", "limitations 必须是字符串列表。"
+    if isinstance(limitations, list):
+        if len(limitations) > _REPORT_LIMITATION_MAX_ITEMS or any(
+            not isinstance(item, str)
+            or not item.strip()
+            or len(item.strip()) > _REPORT_LIMITATION_MAX_CHARS
+            for item in limitations
+        ):
+            return "REPORT_LIMITATIONS_INVALID", "limitations 数量或单项长度不符合限制。"
+    visible_text = f"{markdown}\n{safe_summary}\n" + "\n".join(limitations or [])
+    if any(pattern.search(visible_text) for pattern in _FORBIDDEN_REPORT_OUTPUT_PATTERNS):
+        return "REPORT_CONTAINS_FORBIDDEN_DETAIL", "报告包含禁止公开的内部执行细节。"
+    return None
+
+
+def _has_truncation_notice(report_markdown: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(report_markdown or ""))
+    return "可见样本" in normalized and ("总量" in normalized or "总记录" in normalized)
 
 
 def build_datalogue_search_assets_tool(
@@ -857,16 +1081,28 @@ def build_datalogue_progressive_bi_worker_tools(
                 )
             )
         try:
-            with SessionLocal() as db:
-                runtime = BIWorkerQueryRuntime(db)
-                payload = await runtime.execute_query_plan(
-                    dataset_id=dataset_id,
-                    confirmed_question=confirmed_question,
-                    query_plan=plan,
-                    context_state=state,
-                    trace_id=trace_id,
-                )
-                db.commit()
+
+            def execute_query_plan_sync() -> dict[str, Any]:
+                # 整段同步 ORM/SQL 驱动生命周期放入工作线程；线程内独立事件循环只承载 bridge 协议。
+                with SessionLocal() as db:
+                    runtime = BIWorkerQueryRuntime(db)
+                    offload_token = DB_EXECUTION_ALREADY_OFFLOADED.set(True)
+                    try:
+                        result = asyncio.run(
+                            runtime.execute_query_plan(
+                                dataset_id=dataset_id,
+                                confirmed_question=confirmed_question,
+                                query_plan=plan,
+                                context_state=state,
+                                trace_id=trace_id,
+                            )
+                        )
+                    finally:
+                        DB_EXECUTION_ALREADY_OFFLOADED.reset(offload_token)
+                    db.commit()
+                    return result
+
+            payload = await asyncio.to_thread(execute_query_plan_sync)
         except Exception:
             logger.exception(
                 "BI Worker query plan execution failed: dataset_id=%s trace_id=%s",
@@ -888,7 +1124,15 @@ def build_datalogue_progressive_bi_worker_tools(
             payload.get("datalogue_event_type") == "dataset_query_result"
             and payload.get("status") == "completed"
         ):
-            _publish_worker_business_final(worker_context=worker_context, payload=payload)
+            _publish_worker_business_final(
+                worker_context=worker_context,
+                payload=payload,
+                event_type=(
+                    "artifact.created"
+                    if get_settings().DATALOGUE_REPORT_WORKER_ENABLED
+                    else "message.completed"
+                ),
+            )
 
         # 结果分类日志:让运维/开发用一行就能看清最终 outcome(成功/失败类型)。
         # runtime 层已经打过详细失败原因,这里只做面向 wrapper 的收口摘要。
@@ -1054,14 +1298,15 @@ def _publish_worker_business_final(
     *,
     worker_context: dict[str, str | None] | None,
     payload: dict[str, Any],
+    event_type: str = "message.completed",
 ) -> None:
-    """把 BI worker 已脱敏业务结果直投到当前 Datalogue SSE，作为 TeamSay 缺失时的兜底终态。"""
+    """把 BI worker 已脱敏业务结果投到当前 Datalogue SSE。"""
 
     if not worker_context:
         return
     publish_agent_event(
-        user_id=worker_context.get("user_id"),
-        event_type="message.completed",
+        leader_session_id=worker_context.get("leader_session_id"),
+        event_type=event_type,
         payload=payload,
     )
 

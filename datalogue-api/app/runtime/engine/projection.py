@@ -102,6 +102,12 @@ def _event_type(event: dict[str, Any]) -> DatalogueEventType:
         # AgentScope middleware 发出的实时进度事件只承载用户可见摘要；
         # payload 仍由 sanitize_event_payload 清洗，避免把 SQL/schema/raw rows 带到聊天区。
         return "agent.progress"
+    if raw_type == "artifact.created":
+        # BI 成功只代表查询 Artifact 已就绪；Report Worker 尚未完成时不能把任务投成终态。
+        return "artifact.created"
+    if raw_type == "report_worker_result":
+        # Report Worker 的结构化提交是报告链路唯一允许产生的消息终态。
+        return "message.completed"
     if raw_type == "message.completed":
         return "message.completed"
     if _is_thinking_event_type(raw_type):

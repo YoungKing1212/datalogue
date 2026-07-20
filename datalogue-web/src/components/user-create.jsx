@@ -22,6 +22,7 @@ export function UserCreateScreen() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  const [resetResult, setResetResult] = useState(null);
   const [activeUser, setActiveUser] = useState(null);
   const [keyword, setKeyword] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
@@ -94,12 +95,15 @@ export function UserCreateScreen() {
     if (!activeUser) return;
     setActionLoading(true);
     try {
-      await updateUserAccount(activeUser.id, {
+      const updatePayload = {
         full_name: values.fullName || null,
         email: values.email || null,
-        role: values.role,
         is_active: values.isActive,
-      });
+      };
+      if (currentUser?.is_superuser) {
+        updatePayload.role = values.role; // 角色授权只允许超级管理员发起，普通管理员不提交该字段。
+      }
+      await updateUserAccount(activeUser.id, updatePayload);
       message.success(`用户 ${activeUser.username} 已更新`);
       setEditOpen(false);
       setActiveUser(null);
@@ -114,6 +118,7 @@ export function UserCreateScreen() {
 
   const openResetModal = (record) => {
     setActiveUser(record);
+    setResetResult(null);
     setResetOpen(true);
   };
 
@@ -121,10 +126,10 @@ export function UserCreateScreen() {
     if (!activeUser) return;
     setActionLoading(true);
     try {
-      await resetUserAccountPassword(activeUser.id);
-      message.success(`用户 ${activeUser.username} 密码已重置为 ${activeUser.username}@123456`);
-      setResetOpen(false);
-      setActiveUser(null);
+      const result = await resetUserAccountPassword(activeUser.id);
+      setResetResult(result);
+      message.success('密码已重置，请安全转交一次性临时密码');
+      await loadUsers();
     } catch (err) {
       message.error(err?.message || '重置密码失败，请稍后重试');
     } finally {
@@ -426,7 +431,7 @@ export function UserCreateScreen() {
                   { value: 'admin', label: '管理员' },
                   { value: 'user', label: '普通用户' },
                 ]}
-                disabled={Boolean(activeUser?.is_superuser)}
+                disabled={Boolean(activeUser?.is_superuser) || !currentUser?.is_superuser}
               />
             </Form.Item>
 
@@ -472,18 +477,27 @@ export function UserCreateScreen() {
             if (!actionLoading) {
               setResetOpen(false);
               setActiveUser(null);
+              setResetResult(null);
             }
           }}
           footer={null}
           destroyOnClose
         >
-          <Typography.Paragraph style={{ marginBottom: 12 }}>
-            重置后该用户密码将变更为：
-            <Typography.Text strong>{activeUser?.username || ''}@123456</Typography.Text>
-          </Typography.Paragraph>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 18 }}>
-            请通知用户首次登录后尽快修改密码。
-          </Typography.Paragraph>
+          {resetResult ? (
+            <>
+              <Typography.Paragraph style={{ marginBottom: 12 }}>
+                一次性临时密码：
+                <Typography.Text code copyable>{resetResult.temporary_password}</Typography.Text>
+              </Typography.Paragraph>
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 18 }}>
+                此密码关闭窗口后不再显示。用户登录后会被强制修改密码，改密前不能访问业务数据。
+              </Typography.Paragraph>
+            </>
+          ) : (
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 18 }}>
+              系统将生成随机一次性临时密码，并要求用户首次登录后立即改密。
+            </Typography.Paragraph>
+          )}
 
           <div className="user-create-actions">
             <Space>
@@ -492,14 +506,17 @@ export function UserCreateScreen() {
                   if (!actionLoading) {
                     setResetOpen(false);
                     setActiveUser(null);
+                    setResetResult(null);
                   }
                 }}
               >
-                取消
+                {resetResult ? '完成' : '取消'}
               </Button>
-              <Button type="primary" onClick={onConfirmResetPassword} loading={actionLoading}>
-                确认重置
-              </Button>
+              {!resetResult && (
+                <Button type="primary" onClick={onConfirmResetPassword} loading={actionLoading}>
+                  确认重置
+                </Button>
+              )}
             </Space>
           </div>
         </Modal>

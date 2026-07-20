@@ -422,6 +422,7 @@ function ChatPageInner({
   agentVerbosity,
   modelConfigIdRef,
 }) {
+  const navigate = useNavigate();
   const previewSkin = useMemo(() => (
     typeof window !== 'undefined' ? resolveAssistantUiPreviewSkin(window.location.search) : null
   ), []);
@@ -470,7 +471,7 @@ function ChatPageInner({
     const conversationRouteId = conversationRouteIdForDatasetRestore(routeId);
     if (!conversationRouteId || datasetList.length === 0) return undefined;
     let cancelled = false;
-    getConversation(conversationRouteId)
+    getConversation(conversationRouteId, { messageLimit: 1 })
       .then((detail) => {
         if (cancelled) return;
         const datasetId = inferConversationDatasetId(detail);
@@ -657,6 +658,23 @@ function ChatPageInner({
 
   // 监听标题自动更新事件（首条消息后端写入 title 后）— 触发 thread list 重新拉取
   const aui = useAui();
+  useEffect(() => {
+    const startNewThread = async () => {
+      if (!window.__DATALOGUE_START_NEW_THREAD__) return;
+      window.__DATALOGUE_START_NEW_THREAD__ = false; // 一次性消费，避免路由重渲染后重复清空当前会话。
+      try {
+        await aui.threads().switchToNewThread();
+        navigate('/chat');
+      } catch (error) {
+        console.error('[thread-list] global new thread failed', error);
+      }
+    };
+    const onNewThread = () => startNewThread();
+    window.addEventListener('datalogue:new-thread', onNewThread);
+    startNewThread();
+    return () => window.removeEventListener('datalogue:new-thread', onNewThread);
+  }, [aui, navigate]);
+
   useEffect(() => {
     const onRename = (event) => {
       const remoteId = event.detail?.remoteId ? String(event.detail.remoteId) : null;

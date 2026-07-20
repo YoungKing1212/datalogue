@@ -14,10 +14,11 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.core.safety.text_patterns import SQL_STATEMENT_TEXT_RE
 
 
 RepairFailureClass = Literal[
@@ -53,18 +54,12 @@ RepairActionType = Literal[
     "block_repair",
 ]
 
-_SQL_TEXT_RE = re.compile(
-    r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
-    r".{0,200}\b(from|into|set|table|join|where|values)\b"
-)
-
-
 def _reject_visible_sql_text(text: str, *, field_name: str) -> None:
     """用户可见摘要字段不能出现 SQL 片段，RepairPlan 只表达业务修复意图。"""
 
     value = str(text or "")
     lowered = value.lower()
-    if _SQL_TEXT_RE.search(value) or any(
+    if SQL_STATEMENT_TEXT_RE.search(value) or any(
         token in lowered
         for token in ("raw_sql", "raw_result", "schema_context", "control_plane")
     ):

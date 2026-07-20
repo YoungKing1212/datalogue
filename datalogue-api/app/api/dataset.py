@@ -11,7 +11,7 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Any, List
 import logging
 import re
@@ -23,8 +23,10 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.core import schemas, models
+from app.core.time import utc_now_naive
+from app.api.deps import require_api_user
 from app.services.analysis_blueprint import execute_analysis_blueprint
 from app.services.blueprint_analyzer import (
     analyze_description_for_blueprint,
@@ -48,7 +50,6 @@ from app.domains.data_source.service import resolve_schema_name
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-BLUEPRINT_ANALYZE_TASKS: dict[str, dict[str, Any]] = {}
 BLUEPRINT_STATUSES = {"draft", "reviewing", "active", "deprecated"}
 COLUMN_REVIEW_STATUSES = {
     "pending_review",
@@ -67,6 +68,19 @@ TERM_TYPES = {
     "org_scope",
 }
 TERM_ASSET_TYPES = {"metric", "dimension", "column", "blueprint"}
+
+
+def _annotate_table_columns_background(table_id: int) -> None:
+    """后台标注自行创建 Session，禁止复用响应结束后会被关闭的请求会话。"""
+
+    from app.services.annotation import annotate_table_columns
+
+    with SessionLocal() as task_db:
+        try:
+            annotate_table_columns(task_db, table_id)
+        except Exception:
+            task_db.rollback()
+            logger.exception("后台字段标注失败: table_id=%s", table_id)
 
 
 def _mark_manifest_stale_after_schema_change(db: Session, ds_id: int) -> None:
@@ -471,7 +485,10 @@ def convert_column_to_metric(
             format_str=data.get("format_str"),
             filter_sql=data.get("filter_sql"),
             synonyms=_coerce_list(data.get("synonyms")) or _coerce_list(col.suggested_synonyms),
-            description=data.get("description") or col.ai_reason or col.ai_description or col.effective_desc,
+            description=data.get("description")
+            or col.ai_reason
+            or col.ai_description
+            or col.effective_desc,
         )
         db.add(metric)
         db.flush()
@@ -479,7 +496,7 @@ def convert_column_to_metric(
 
     col.converted_metric_id = metric.id
     col.review_status = "converted_to_metric"
-    col.reviewed_at = datetime.utcnow()
+    col.reviewed_at = utc_now_naive()
     db.commit()
     db.refresh(metric)
     db.refresh(col)
@@ -549,7 +566,7 @@ def convert_column_to_dimension(
 
     col.converted_dimension_id = dimension.id
     col.review_status = "converted_to_dimension"
-    col.reviewed_at = datetime.utcnow()
+    col.reviewed_at = utc_now_naive()
     db.commit()
     db.refresh(dimension)
     db.refresh(col)
@@ -574,7 +591,7 @@ def update_column_review_status(
         raise HTTPException(status_code=400, detail="不支持的字段审核状态")
     col = _get_selected_column(ds_id, column_id, db)
     col.review_status = payload.review_status
-    col.reviewed_at = datetime.utcnow()
+    col.reviewed_at = utc_now_naive()
     db.commit()
     db.refresh(col)
     return {"ok": True, "column": _source_column_payload(col)}
@@ -732,13 +749,16 @@ def list_terms(
         query = query.filter(models.BusinessTerm.term_type == term_type)
     if status:
         query = query.filter(models.BusinessTerm.status == status)
-    terms = query.order_by(models.BusinessTerm.updated_at.desc(), models.BusinessTerm.id.desc()).all()
+    terms = query.order_by(
+        models.BusinessTerm.updated_at.desc(), models.BusinessTerm.id.desc()
+    ).all()
     if q:
         needle = q.strip().lower()
         terms = [
             term
             for term in terms
-            if needle in " ".join(
+            if needle
+            in " ".join(
                 [
                     term.name or "",
                     term.display_name or "",
@@ -753,26 +773,16 @@ def list_terms(
             for conflict in _term_conflicts(terms)
             for term_id in conflict.get("term_ids", [])
         }
-        terms = [
-            term
-            for term in terms
-            if (term.id in conflicted_ids) is has_conflict
-        ]
+        terms = [term for term in terms if (term.id in conflicted_ids) is has_conflict]
     return terms
 
 
 @router.post("/{ds_id}/terms", response_model=schemas.BusinessTermOut)
-def create_term(
-    ds_id: int, payload: schemas.BusinessTermCreate, db: Session = Depends(get_db)
-):
+def create_term(ds_id: int, payload: schemas.BusinessTermCreate, db: Session = Depends(get_db)):
     _ensure_dataset(ds_id, db)
     data = _normalize_term_payload(payload.model_dump())
     _validate_term_data(data)
-    exists = (
-        db.query(models.BusinessTerm)
-        .filter_by(dataset_id=ds_id, name=data["name"])
-        .first()
-    )
+    exists = db.query(models.BusinessTerm).filter_by(dataset_id=ds_id, name=data["name"]).first()
     if exists:
         raise HTTPException(status_code=409, detail="同名业务术语已存在")
     term = models.BusinessTerm(dataset_id=ds_id, **data)
@@ -802,9 +812,7 @@ def update_term(
     _validate_term_data(data)
     if data.get("name") and data["name"] != term.name:
         exists = (
-            db.query(models.BusinessTerm)
-            .filter_by(dataset_id=ds_id, name=data["name"])
-            .first()
+            db.query(models.BusinessTerm).filter_by(dataset_id=ds_id, name=data["name"]).first()
         )
         if exists:
             raise HTTPException(status_code=409, detail="同名业务术语已存在")
@@ -929,7 +937,9 @@ def discover_terms(ds_id: int, db: Session = Depends(get_db)):
                 {
                     "name": col.column_name,
                     "display_name": display_name,
-                    "term_type": "metric_concept" if role == "metric_candidate" else "business_object",
+                    "term_type": (
+                        "metric_concept" if role == "metric_candidate" else "business_object"
+                    ),
                     "definition": col.effective_desc or col.ai_description or col.column_comment,
                     "aliases": _coerce_list(col.suggested_synonyms),
                     "examples": _coerce_list(col.suggested_enum_values)[:5]
@@ -940,9 +950,11 @@ def discover_terms(ds_id: int, db: Session = Depends(get_db)):
                         {
                             "asset_type": "column",
                             "asset_id": col.id,
-                            "asset_name": f"{col.table.table_name}.{col.column_name}"
-                            if col.table
-                            else col.column_name,
+                            "asset_name": (
+                                f"{col.table.table_name}.{col.column_name}"
+                                if col.table
+                                else col.column_name
+                            ),
                         }
                     ],
                 }
@@ -1046,6 +1058,7 @@ def save_subagent_manifest(
     ds_id: int,
     payload: schemas.ManifestSavePayload,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
 ):
     """保存 Manifest 人工维护字段草稿，不切换 current 版本。"""
 
@@ -1054,7 +1067,7 @@ def save_subagent_manifest(
         db,
         ds_id,
         payload.manual_fields.model_dump(),
-        created_by=payload.created_by,
+        created_by=current_user.username,
     )
 
 
@@ -1066,6 +1079,7 @@ def publish_subagent_manifest(
     ds_id: int,
     payload: schemas.ManifestPublishPayload,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
 ):
     """发布 Manifest 当前版本，发布校验失败时返回结构化 lint。"""
 
@@ -1075,7 +1089,7 @@ def publish_subagent_manifest(
             db,
             ds_id,
             payload.manual_fields.model_dump() if payload.manual_fields else None,
-            created_by=payload.created_by,
+            created_by=current_user.username,
         )
     except ManifestValidationError as exc:
         raise HTTPException(status_code=400, detail={"lint": exc.issues}) from exc
@@ -1090,6 +1104,7 @@ def rollback_subagent_manifest(
     manifest_version: str,
     payload: schemas.ManifestRollbackPayload,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
 ):
     """把历史 Manifest 版本复制为新的 current 版本。"""
 
@@ -1099,7 +1114,7 @@ def rollback_subagent_manifest(
             db,
             ds_id,
             manifest_version,
-            created_by=payload.created_by,
+            created_by=current_user.username,
             reason=payload.reason,
         )
     except ManifestValidationError as exc:
@@ -1179,9 +1194,7 @@ def _blueprint_snapshot(bp: models.AnalysisBlueprint) -> dict[str, Any]:
         "ai_generation_type": bp.ai_generation_type,
         "ai_confidence": bp.ai_confidence,
         "owner": bp.owner,
-        "last_validated_at": bp.last_validated_at.isoformat()
-        if bp.last_validated_at
-        else None,
+        "last_validated_at": bp.last_validated_at.isoformat() if bp.last_validated_at else None,
         "usage_count": bp.usage_count,
         "last_test_result": bp.last_test_result,
     }
@@ -1221,9 +1234,10 @@ def _run_blueprint_analysis_task(
 ) -> None:
     """执行分析蓝图 AI 分析，并写入任务状态便于日志和兼容查询。"""
     started_perf = time.perf_counter()
-    task = BLUEPRINT_ANALYZE_TASKS.get(task_id, {})
-    queued_perf = task.get("_queued_perf")
-    queue_wait_ms = int((started_perf - queued_perf) * 1000) if queued_perf else 0
+    task = db.get(models.BlueprintAnalyzeTask, task_id)
+    if task is None:
+        raise RuntimeError("BLUEPRINT_ANALYZE_TASK_NOT_FOUND")
+    queue_wait_ms = 0
     logger.info(
         "开始分析蓝图 AI 任务: task_id=%s, queue_wait_ms=%s, sql_chars=%s",
         task_id,
@@ -1244,15 +1258,12 @@ def _run_blueprint_analysis_task(
                 "step_count_after": len(result.get("steps") or []),
             }
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
-        BLUEPRINT_ANALYZE_TASKS[task_id].update(
-            {
-                "status": "done",
-                "result": result,
-                "error": None,
-                "completed_at": time.time(),
-                "duration_ms": duration_ms,
-            }
-        )
+        task.status = "done"
+        task.result = result
+        task.error = None
+        task.completed_at = utc_now_naive()
+        task.duration_ms = duration_ms
+        db.commit()
         timing = result.get("analysis_timing_ms") or {}
         logger.info(
             (
@@ -1276,37 +1287,45 @@ def _run_blueprint_analysis_task(
             timing.get("prompt_chars"),
             timing.get("sql_chars"),
         )
-    except Exception as exc:  # pragma: no cover - 具体异常由模型服务决定
+    except Exception:  # pragma: no cover - 具体异常由模型服务决定
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
-        BLUEPRINT_ANALYZE_TASKS[task_id].update(
-            {
-                "status": "failed",
-                "result": None,
-                "error": str(exc),
-                "completed_at": time.time(),
-                "duration_ms": duration_ms,
-            }
-        )
+        task.status = "failed"
+        task.result = None
+        task.error = "分析任务执行失败，内部错误已记录"
+        task.completed_at = utc_now_naive()
+        task.duration_ms = duration_ms
+        db.commit()
         logger.exception("分析蓝图 AI 任务失败: task_id=%s, duration_ms=%s", task_id, duration_ms)
 
 
+def _cleanup_blueprint_analyze_tasks(db: Session) -> None:
+    """清理 24 小时前的终态任务，避免持久化状态表无界增长。"""
+
+    cutoff = utc_now_naive() - timedelta(hours=24)
+    db.query(models.BlueprintAnalyzeTask).filter(
+        models.BlueprintAnalyzeTask.status.in_(["done", "failed"]),
+        models.BlueprintAnalyzeTask.completed_at < cutoff,
+    ).delete(synchronize_session=False)
+
+
 def _execute_blueprint_analysis_request(
+    ds_id: int,
     sql: str,
     db: Session,
     diff_base: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """同步执行分析任务，避免前端轮询造成高频请求。"""
     task_id = str(uuid.uuid4())
-    created_at = time.time()
-    queued_perf = time.perf_counter()
-    BLUEPRINT_ANALYZE_TASKS[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "result": None,
-        "error": None,
-        "created_at": created_at,
-        "_queued_perf": queued_perf,
-    }
+    _cleanup_blueprint_analyze_tasks(db)
+    task = models.BlueprintAnalyzeTask(
+        task_id=task_id,
+        dataset_id=ds_id,
+        status="running",
+        result=None,
+        error=None,
+    )
+    db.add(task)
+    db.commit()
     logger.info(
         "分析蓝图 AI 同步任务开始: task_id=%s, sql_chars=%s, has_diff_base=%s",
         task_id,
@@ -1314,8 +1333,8 @@ def _execute_blueprint_analysis_request(
         bool(diff_base),
     )
     _run_blueprint_analysis_task(task_id, sql, db, diff_base)
-    BLUEPRINT_ANALYZE_TASKS[task_id].pop("_queued_perf", None)
-    return BLUEPRINT_ANALYZE_TASKS[task_id]
+    db.refresh(task)
+    return _blueprint_task_payload(task)
 
 
 def _dataset_blueprint_context(ds_id: int, db: Session) -> dict[str, Any]:
@@ -1374,20 +1393,24 @@ def _dataset_blueprint_context(ds_id: int, db: Session) -> dict[str, Any]:
 
 
 def _execute_blueprint_description_request(
+    ds_id: int,
     payload: schemas.BlueprintAnalyzeDescriptionPayload,
     dataset_context: dict[str, Any],
     db: Session,
 ) -> dict[str, Any]:
     """同步执行业务场景蓝图分析，返回兼容任务结构。"""
     task_id = str(uuid.uuid4())
+    _cleanup_blueprint_analyze_tasks(db)
     started_perf = time.perf_counter()
-    BLUEPRINT_ANALYZE_TASKS[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "result": None,
-        "error": None,
-        "created_at": time.time(),
-    }
+    task = models.BlueprintAnalyzeTask(
+        task_id=task_id,
+        dataset_id=ds_id,
+        status="running",
+        result=None,
+        error=None,
+    )
+    db.add(task)
+    db.commit()
     logger.info(
         "手动蓝图 AI 同步任务开始: task_id=%s, scenario_chars=%s",
         task_id,
@@ -1399,15 +1422,12 @@ def _execute_blueprint_description_request(
         result["ai_generated"] = True
         result["ai_generation_type"] = "description_analysis"
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
-        BLUEPRINT_ANALYZE_TASKS[task_id].update(
-            {
-                "status": "done",
-                "result": result,
-                "error": None,
-                "completed_at": time.time(),
-                "duration_ms": duration_ms,
-            }
-        )
+        task.status = "done"
+        task.result = result
+        task.error = None
+        task.completed_at = utc_now_naive()
+        task.duration_ms = duration_ms
+        db.commit()
         timing = result.get("analysis_timing_ms") or {}
         logger.info(
             (
@@ -1422,19 +1442,28 @@ def _execute_blueprint_description_request(
             duration_ms,
             timing.get("prompt_chars"),
         )
-    except Exception as exc:  # pragma: no cover - 具体异常由模型服务决定
+    except Exception:  # pragma: no cover - 具体异常由模型服务决定
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
-        BLUEPRINT_ANALYZE_TASKS[task_id].update(
-            {
-                "status": "failed",
-                "result": None,
-                "error": str(exc),
-                "completed_at": time.time(),
-                "duration_ms": duration_ms,
-            }
-        )
+        task.status = "failed"
+        task.result = None
+        task.error = "分析任务执行失败，内部错误已记录"
+        task.completed_at = utc_now_naive()
+        task.duration_ms = duration_ms
+        db.commit()
         logger.exception("手动蓝图 AI 任务失败: task_id=%s, duration_ms=%s", task_id, duration_ms)
-    return BLUEPRINT_ANALYZE_TASKS[task_id]
+    db.refresh(task)
+    return _blueprint_task_payload(task)
+
+
+def _blueprint_task_payload(task: models.BlueprintAnalyzeTask) -> dict[str, Any]:
+    """把持久化任务投影为稳定 API 契约，不向客户端暴露内部异常。"""
+
+    return {
+        "task_id": task.task_id,
+        "status": task.status,
+        "result": task.result,
+        "error": task.error,
+    }
 
 
 @router.get("/{ds_id}/blueprints", response_model=List[schemas.BlueprintOut])
@@ -1443,13 +1472,13 @@ def list_blueprints(ds_id: int, status: str | None = None, db: Session = Depends
     q = db.query(models.AnalysisBlueprint).filter(models.AnalysisBlueprint.dataset_id == ds_id)
     if status:
         q = q.filter(models.AnalysisBlueprint.status == status)
-    return q.order_by(models.AnalysisBlueprint.updated_at.desc(), models.AnalysisBlueprint.id.desc()).all()
+    return q.order_by(
+        models.AnalysisBlueprint.updated_at.desc(), models.AnalysisBlueprint.id.desc()
+    ).all()
 
 
 @router.post("/{ds_id}/blueprints", response_model=schemas.BlueprintOut)
-def create_blueprint(
-    ds_id: int, payload: schemas.BlueprintCreate, db: Session = Depends(get_db)
-):
+def create_blueprint(ds_id: int, payload: schemas.BlueprintCreate, db: Session = Depends(get_db)):
     _ensure_dataset(ds_id, db)
     if payload.status not in BLUEPRINT_STATUSES:
         raise HTTPException(status_code=400, detail="蓝图状态不合法")
@@ -1460,9 +1489,7 @@ def create_blueprint(
     return bp
 
 
-@router.post(
-    "/{ds_id}/blueprints/analyze-sql", response_model=schemas.BlueprintAnalyzeTaskOut
-)
+@router.post("/{ds_id}/blueprints/analyze-sql", response_model=schemas.BlueprintAnalyzeTaskOut)
 def analyze_blueprint_sql(
     ds_id: int,
     payload: schemas.BlueprintAnalyzeSqlPayload,
@@ -1471,7 +1498,7 @@ def analyze_blueprint_sql(
     _ensure_dataset(ds_id, db)
     if not payload.sql.strip():
         raise HTTPException(status_code=400, detail="sql 不能为空")
-    return _execute_blueprint_analysis_request(payload.sql, db)
+    return _execute_blueprint_analysis_request(ds_id, payload.sql, db)
 
 
 @router.post(
@@ -1487,7 +1514,7 @@ def analyze_blueprint_description(
     if not payload.business_scenario.strip():
         raise HTTPException(status_code=400, detail="业务场景不能为空")
     dataset_context = _dataset_blueprint_context(ds_id, db)
-    return _execute_blueprint_description_request(payload, dataset_context, db)
+    return _execute_blueprint_description_request(ds_id, payload, dataset_context, db)
 
 
 @router.get(
@@ -1496,10 +1523,10 @@ def analyze_blueprint_description(
 )
 def get_blueprint_analyze_task(ds_id: int, task_id: str, db: Session = Depends(get_db)):
     _ensure_dataset(ds_id, db)
-    task = BLUEPRINT_ANALYZE_TASKS.get(task_id)
-    if not task:
+    task = db.get(models.BlueprintAnalyzeTask, task_id)
+    if task is None or task.dataset_id != ds_id:
         raise HTTPException(status_code=404, detail="分析任务不存在")
-    return task
+    return _blueprint_task_payload(task)
 
 
 @router.get("/{ds_id}/blueprints/{bid}", response_model=schemas.BlueprintOut)
@@ -1600,14 +1627,16 @@ def test_blueprint(
         or bp.call_template
         or bp.raw_sql,
         "interpretation_preview": (
-            f"{bp.name} 测试成功，返回 {row_count} 行 {len(columns)} 列。"
-            "请确认结果和业务解读是否符合预期。"
-        )
-        if execute_result.get("ok")
-        else None,
+            (
+                f"{bp.name} 测试成功，返回 {row_count} 行 {len(columns)} 列。"
+                "请确认结果和业务解读是否符合预期。"
+            )
+            if execute_result.get("ok")
+            else None
+        ),
         "error_message": execute_result.get("error"),
     }
-    bp.last_validated_at = datetime.utcnow()
+    bp.last_validated_at = utc_now_naive()
     bp.last_test_result = _make_json_serializable(result)
     db.commit()
     return result
@@ -1665,16 +1694,12 @@ def get_blueprint_usage_stats(ds_id: int, bid: int, db: Session = Depends(get_db
         "usage_count": bp.usage_count or total,
         "total_logs": total,
         "execution_success_rate": round(success / total, 4) if total else 0,
-        "avg_execution_time_ms": round(sum(execution_times) / len(execution_times))
-        if execution_times
-        else 0,
-        "user_satisfaction_rate": round(thumbs_up / len(feedback_logs), 4)
-        if feedback_logs
-        else 0,
+        "avg_execution_time_ms": (
+            round(sum(execution_times) / len(execution_times)) if execution_times else 0
+        ),
+        "user_satisfaction_rate": round(thumbs_up / len(feedback_logs), 4) if feedback_logs else 0,
         "common_questions": [
-            {"question": log.question, "count": 1}
-            for log in logs[:5]
-            if log.question
+            {"question": log.question, "count": 1} for log in logs[:5] if log.question
         ],
         "recent_failures": [
             {
@@ -1688,7 +1713,9 @@ def get_blueprint_usage_stats(ds_id: int, bid: int, db: Session = Depends(get_db
     }
 
 
-@router.get("/{ds_id}/blueprints/{bid}/usage-logs", response_model=List[schemas.BlueprintUsageLogOut])
+@router.get(
+    "/{ds_id}/blueprints/{bid}/usage-logs", response_model=List[schemas.BlueprintUsageLogOut]
+)
 def list_blueprint_usage_logs(ds_id: int, bid: int, db: Session = Depends(get_db)):
     _get_blueprint(ds_id, bid, db)
     return (
@@ -1714,6 +1741,7 @@ def re_analyze_blueprint_sql(
     if not payload.sql.strip():
         raise HTTPException(status_code=400, detail="sql 不能为空")
     return _execute_blueprint_analysis_request(
+        ds_id,
         payload.sql,
         db,
         {
@@ -1742,17 +1770,16 @@ def annotate_dataset_columns(ds_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="数据集不存在")
 
     # 只标注「当前数据集已选中的表」：避免对数据源下未选中的表烧 token
-    selected_links = (
-        db.query(models.DatasetSourceTable).filter_by(dataset_id=ds_id).all()
-    )
+    selected_links = db.query(models.DatasetSourceTable).filter_by(dataset_id=ds_id).all()
     selected_table_ids = [link.source_table_id for link in selected_links]
     if not selected_table_ids:
-        raise HTTPException(status_code=400, detail="该数据集尚未选择任何表，请先在「数据源表」中勾选要纳入数据集的表")
+        raise HTTPException(
+            status_code=400,
+            detail="该数据集尚未选择任何表，请先在「数据源表」中勾选要纳入数据集的表",
+        )
 
     tables = (
-        db.query(models.SourceTable)
-        .filter(models.SourceTable.id.in_(selected_table_ids))
-        .all()
+        db.query(models.SourceTable).filter(models.SourceTable.id.in_(selected_table_ids)).all()
     )
 
     # 委托给统一标注服务（同时跑表级 + 列级，写 ai_description / effective_desc）
@@ -2019,10 +2046,8 @@ def select_tables_for_dataset(
 
     # 异步触发 AI 标注（只对新加入的表）
     if added_table_ids:
-        from app.services.annotation import annotate_table_columns
-
         for st_id in added_table_ids:
-            background_tasks.add_task(annotate_table_columns, db, st_id)
+            background_tasks.add_task(_annotate_table_columns_background, st_id)
         logger.info(f"异步触发标注: tables={len(added_table_ids)}")
 
     logger.info(f"选择表完成: added={added}")

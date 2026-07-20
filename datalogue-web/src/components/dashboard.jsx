@@ -2,12 +2,14 @@ import React, { Fragment } from 'react';
 import { Icon } from './icons';
 import { LineChart, Donut, HeatStrip, GroupedBar } from './charts';
 import { Sparkline } from './workspace';
+import { PrototypeNotice } from '../shared/components/prototype-notice';
 
 // Dashboard — auto-generated dashboard editor with cards saved from chat.
 
 function DashboardScreen() {
   return (
     <div className="dash-wrap">
+      <PrototypeNotice />
       <div className="dash-topbar">
         <div className="title">销售周度复盘</div>
         <div className="filters">

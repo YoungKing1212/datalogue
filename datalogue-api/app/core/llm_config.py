@@ -17,7 +17,6 @@ from typing import Optional
 import httpx
 from sqlalchemy.orm import Session
 
-# 此处必须依赖底层客户端，避免导入 facade 时回引 runner，导致默认模型解析阶段循环导入。
 from app.runtime.engine.client import DEFAULT_AGENTSCOPE_USER_ID
 from app.core.config import Settings
 from app.core.models.llm import LLMModelConfig

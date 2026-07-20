@@ -21,9 +21,13 @@ from sqlalchemy.orm import Session
 
 from app.core.models.dataset import SemanticDataset
 from app.core.models.datasource import Datasource
+from app.core.sql_identifiers import quote_identifier as _quote_identifier
 from app.domains.data_source.service import build_datasource_context, normalize_db_type
 
 logger = logging.getLogger(__name__)
+
+# 保留既有 quote_ident 公共入口，但实现唯一归属 core，避免调用方大面积迁移。
+quote_ident = _quote_identifier
 
 
 def resolve_dialect(db: Optional[Session], dataset_id: Optional[int]) -> str:
@@ -45,20 +49,6 @@ def resolve_dialect(db: Optional[Session], dataset_id: Optional[int]) -> str:
     except Exception as e:
         logger.warning(f"推断方言失败，回退 postgres: {e}")
         return "postgres"
-
-
-def quote_ident(name: Optional[str], dialect: str) -> str:
-    """按方言为 identifier 加引号。
-    - postgres / oracle: 双引号 "name"
-    - mysql / sqlite: 反引号 `name`
-    - name 为空 / None 时返回空串（调用方自行决定是否输出 AS）。"""
-    if not name:
-        return ""
-    if dialect in ("mysql", "sqlite", "hive", "trino", "presto", "bigquery", "clickhouse"):
-        return f"`{name}`"
-    if dialect in ("tsql", "sqlserver", "mssql"):
-        return f"[{name}]"
-    return f'"{name}"'
 
 
 # `xxx != null` / `xxx <> null` → `xxx IS NOT NULL`

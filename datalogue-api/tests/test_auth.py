@@ -12,17 +12,26 @@
 # ============================================================
 
 from fastapi.routing import APIRoute
+import pytest
 
 from app.api.deps import get_current_user, require_api_admin, require_api_user
 from app.core import models
-from app.core.security import encrypt_auth_password
 from app.main import app
+
+
+def test_production_settings_reject_default_security_values():
+    """生产环境遗漏密钥配置时必须在启动配置加载阶段失败。"""
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValueError, match="生产环境禁止使用默认安全配置"):
+        Settings(APP_ENV="production", _env_file=None)
 
 
 def _login(client, username: str, plain_password: str):
     return client.post(
         "/api/auth/login",
-        json={"username": username, "password_enc": encrypt_auth_password(plain_password)},
+        json={"username": username, "password": plain_password},
     )
 
 
@@ -214,10 +223,20 @@ def test_manage_user_edit_reset_password_and_delete(client, db_session):
         f"/api/auth/users/{user_id}/reset-password",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    assert reset_res.status_code == 204
+    assert reset_res.status_code == 200
+    temporary_password = reset_res.json()["temporary_password"]
+    assert temporary_password != "manage_target@123456"
 
-    relogin_res = _login(client, "manage_target", "manage_target@123456")
+    relogin_res = _login(client, "manage_target", temporary_password)
     assert relogin_res.status_code == 200
+    assert relogin_res.json()["must_change_password"] is True
+
+    change_res = client.post(
+        "/api/auth/change-password",
+        json={"current_password": temporary_password, "new_password": "a-new-secure-password"},
+        headers={"Authorization": f"Bearer {relogin_res.json()['access_token']}"},
+    )
+    assert change_res.status_code == 204
 
     delete_res = client.delete(
         f"/api/auth/users/{user_id}",
@@ -225,17 +244,96 @@ def test_manage_user_edit_reset_password_and_delete(client, db_session):
     )
     assert delete_res.status_code == 204
 
-    login_after_delete = _login(client, "manage_target", "manage_target@123456")
+    login_after_delete = _login(client, "manage_target", "a-new-secure-password")
     assert login_after_delete.status_code == 401
 
 
-def test_login_requires_encrypted_password(client, db_session):
+def test_login_rejects_legacy_encrypted_password_field(client, db_session):
     _login_admin(client, db_session)
     bad_res = client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "admin"},
+        json={"username": "admin", "password_enc": "legacy-ciphertext"},
     )
     assert bad_res.status_code == 422
+
+
+def test_ordinary_admin_cannot_promote_user_role(client, db_session):
+    """管理员可以维护账号，但只有 superuser 能改变授权角色。"""
+
+    from app.core.security import hash_password
+
+    ordinary_admin = models.User(
+        username="ordinary_admin",
+        hashed_password=hash_password("ordinary-admin-password"),
+        role="admin",
+        is_superuser=False,
+        is_active=True,
+    )
+    target = models.User(
+        username="role_target",
+        hashed_password=hash_password("role-target-password"),
+        role="user",
+        is_superuser=False,
+        is_active=True,
+    )
+    db_session.add_all([ordinary_admin, target])
+    db_session.commit()
+    admin_login = _login(client, ordinary_admin.username, "ordinary-admin-password")
+
+    response = client.patch(
+        f"/api/auth/users/{target.id}",
+        json={"role": "admin"},
+        headers={"Authorization": f"Bearer {admin_login.json()['access_token']}"},
+    )
+
+    assert response.status_code == 403
+    db_session.refresh(target)
+    assert target.role == "user"
+
+
+def test_temporary_password_blocks_business_api_until_changed(client, db_session):
+    """临时密码登录态只能访问本人信息与改密接口。"""
+
+    from app.core.security import hash_password
+
+    temporary_password = "one-time-temporary-password"
+    user = models.User(
+        username="must_change_user",
+        hashed_password=hash_password(temporary_password),
+        role="user",
+        is_superuser=False,
+        is_active=True,
+        must_change_password=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    login_response = _login(client, user.username, temporary_password)
+    token = login_response.json()["access_token"]
+    saved_override = client.app.dependency_overrides.pop(require_api_user)
+    try:
+        blocked = client.get(
+            "/api/conversation",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        changed = client.post(
+            "/api/auth/change-password",
+            json={
+                "current_password": temporary_password,
+                "new_password": "replacement-secure-password",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        allowed = client.get(
+            "/api/conversation",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        client.app.dependency_overrides[require_api_user] = saved_override
+
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"]["code"] == "PASSWORD_CHANGE_REQUIRED"
+    assert changed.status_code == 204
+    assert allowed.status_code == 200
 
 
 def test_bootstrap_admin_preserves_existing_account(monkeypatch, db_session):

@@ -14,7 +14,7 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DatasourceCreate(BaseModel):
@@ -86,3 +86,13 @@ class DatasourceCapabilityOut(BaseModel):
     required_options: list[str] = []
     optional_options: list[str] = []
     supports_sqlalchemy: bool = True
+
+
+class DatasourcePreviewRequest(BaseModel):
+    """数据源表预览请求；表名仍须由 API 与已同步元数据做精确白名单匹配。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_name: Optional[str] = Field(default=None, alias="schema", min_length=1, max_length=100)
+    table: str = Field(..., min_length=1, max_length=100)
+    limit: int = Field(default=5, ge=1, le=100)

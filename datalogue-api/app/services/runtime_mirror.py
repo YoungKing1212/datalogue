@@ -12,7 +12,6 @@
 # ============================================================
 
 from datetime import datetime, timedelta, timezone
-import re
 import uuid
 
 from sqlalchemy.orm import Session
@@ -23,6 +22,7 @@ from app.core.models.agentscope_workbench import (
     AgentScopeRef,
     AgentScopeSession,
 )
+from app.core.safety.text_patterns import INTERNAL_ERROR_TEXT_RE, SQL_QUERY_TEXT_RE
 from app.runtime.thread_resolver import new_runtime_thread_id, normalize_thread_id
 from app.core.schemas.agentscope_workbench import AgentScopeMessageStatus
 
@@ -45,15 +45,6 @@ _FORBIDDEN_KEY_FRAGMENTS = (
     "blueprintbody",
     "table_name",
     "column_name",
-)
-_SQL_TEXT_RE = re.compile(
-    r"\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b", re.IGNORECASE
-)
-_INTERNAL_TEXT_RE = re.compile(
-    r"(\b(select|insert|update|delete|with)\b[\s\S]{0,120}\b(from|into|set)\b)"
-    r"|(\b(psycopg2|sqlalchemy|traceback|undefinedcolumn|undefinedtable|programmingerror|operationalerror)\b)"
-    r"|(\b(column|table|relation)\s+['\"]?[\w.]+['\"]?\s+(does not exist|not found))",
-    re.IGNORECASE,
 )
 _TERMINAL_MESSAGE_STATUSES = {
     AgentScopeMessageStatus.COMPLETED.value,
@@ -81,6 +72,16 @@ def _require_agentscope_thread(thread_id: str) -> str:
     return normalized
 
 
+_FREE_TEXT_PAYLOAD_KEYS = {
+    "answer_summary",
+    "content_summary",
+    "diagnosis",
+    "question",
+    "reason",
+    "summary",
+}
+
+
 def _sanitize_business_payload(payload: dict | None) -> dict:
     payload = payload or {}
     _scan_forbidden_payload_keys(payload)
@@ -91,7 +92,7 @@ def _safe_content_summary(summary: str | None, *, fallback: str) -> str:
     text = (summary or "").strip()
     if not text:
         return fallback
-    if _INTERNAL_TEXT_RE.search(text):
+    if SQL_QUERY_TEXT_RE.search(text) or INTERNAL_ERROR_TEXT_RE.search(text):
         return fallback
     try:
         _scan_forbidden_payload_keys(text)
@@ -100,17 +101,21 @@ def _safe_content_summary(summary: str | None, *, fallback: str) -> str:
     return text
 
 
-def _scan_forbidden_payload_keys(value: object) -> None:
+def _scan_forbidden_payload_keys(value: object, *, parent_key: str | None = None) -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
             key_text = str(key).lower()
             if any(fragment in key_text for fragment in _FORBIDDEN_KEY_FRAGMENTS):
                 raise ValueError("AGENTSCOPE_MIRROR_PAYLOAD_LEAK_DETECTED")
-            _scan_forbidden_payload_keys(nested)
+            _scan_forbidden_payload_keys(nested, parent_key=key_text)
     elif isinstance(value, list):
         for item in value:
-            _scan_forbidden_payload_keys(item)
-    elif isinstance(value, str) and (_SQL_TEXT_RE.search(value) or _INTERNAL_TEXT_RE.search(value)):
+            _scan_forbidden_payload_keys(item, parent_key=parent_key)
+    elif (
+        isinstance(value, str)
+        and parent_key not in _FREE_TEXT_PAYLOAD_KEYS
+        and (SQL_QUERY_TEXT_RE.search(value) or INTERNAL_ERROR_TEXT_RE.search(value))
+    ):
         raise ValueError("AGENTSCOPE_MIRROR_PAYLOAD_LEAK_DETECTED")
 
 
@@ -131,12 +136,28 @@ def create_agentscope_session(
     )
     if existing:
         changed = False
+        if (
+            legacy_conversation_id is not None
+            and existing.legacy_conversation_id is not None
+            and existing.legacy_conversation_id != legacy_conversation_id
+        ):
+            raise ValueError("AGENTSCOPE_SESSION_CONVERSATION_OWNER_MISMATCH")
         if legacy_conversation_id is not None and existing.legacy_conversation_id is None:
             existing.legacy_conversation_id = legacy_conversation_id
             changed = True
         if metadata:
             existing_metadata = dict(existing.metadata_json or {})
-            for key, value in _sanitize_business_payload(metadata).items():
+            sanitized_metadata = _sanitize_business_payload(metadata)
+            incoming_user_id = sanitized_metadata.get("user_id")
+            existing_user_id = existing_metadata.get("user_id")
+            if (
+                incoming_user_id is not None
+                and existing_user_id is not None
+                and str(incoming_user_id) != str(existing_user_id)
+            ):
+                # session owner 一经写入不可被后续 begin turn 覆盖，防止攻击者抢占可枚举 thread_id。
+                raise ValueError("AGENTSCOPE_SESSION_USER_OWNER_MISMATCH")
+            for key, value in sanitized_metadata.items():
                 if value is not None and existing_metadata.get(key) != value:
                     existing_metadata[key] = value
                     changed = True

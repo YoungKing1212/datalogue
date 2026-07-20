@@ -284,6 +284,7 @@ async def test_bi_worker_reply_publishes_safe_realtime_progress_events():
     middleware = BIWorkerProgressMiddleware(
         worker_context={
             "user_id": "user-1",
+            "leader_session_id": "leader-session-1",
             "agent_id": "worker-bi-1",
             "agent_name": "bi-worker",
             "session_id": "session-bi-1",
@@ -301,7 +302,7 @@ async def test_bi_worker_reply_publishes_safe_realtime_progress_events():
         )
         yield SimpleNamespace(type="reply_end", reply_id="reply-1")
 
-    async with agent_progress_subscription(user_id="user-1") as queue:
+    async with agent_progress_subscription(leader_session_id="leader-session-1") as queue:
         events = [
             event
             async for event in middleware.on_reply(
@@ -361,6 +362,7 @@ async def test_bi_worker_thinking_events_publish_safe_reasoning_progress(monkeyp
     middleware = BIWorkerProgressMiddleware(
         worker_context={
             "user_id": "user-1",
+            "leader_session_id": "leader-session-1",
             "agent_id": "worker-bi-1",
             "agent_name": "bi-worker",
             "session_id": "session-bi-1",
@@ -379,7 +381,7 @@ async def test_bi_worker_thinking_events_publish_safe_reasoning_progress(monkeyp
         yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
         yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
 
-    async with agent_progress_subscription(user_id="user-1") as queue:
+    async with agent_progress_subscription(leader_session_id="leader-session-1") as queue:
         events = [
             event
             async for event in middleware.on_reply(
@@ -434,6 +436,7 @@ async def test_bi_worker_thinking_debug_flag_streams_raw_delta(monkeypatch):
     middleware = BIWorkerProgressMiddleware(
         worker_context={
             "user_id": "user-1",
+            "leader_session_id": "leader-session-1",
             "agent_id": "worker-bi-1",
             "agent_name": "bi-worker",
             "session_id": "session-bi-1",
@@ -449,7 +452,7 @@ async def test_bi_worker_thinking_debug_flag_streams_raw_delta(monkeypatch):
         yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
         yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
 
-    async with agent_progress_subscription(user_id="user-1") as queue:
+    async with agent_progress_subscription(leader_session_id="leader-session-1") as queue:
         async for _event in middleware.on_reply(
             agent=agent,
             input_kwargs={"inputs": "查询杨凯2025年日志"},
@@ -496,6 +499,7 @@ async def test_bi_worker_thinking_debug_merges_tokenizer_split_deltas(monkeypatc
     middleware = BIWorkerProgressMiddleware(
         worker_context={
             "user_id": "user-1",
+            "leader_session_id": "leader-session-1",
             "agent_id": "worker-bi-1",
             "agent_name": "bi-worker",
             "session_id": "session-bi-1",
@@ -515,7 +519,7 @@ async def test_bi_worker_thinking_debug_merges_tokenizer_split_deltas(monkeypatc
         yield ThinkingBlockEndEvent(reply_id="reply-1", block_id="think-1")
         yield ReplyEndEvent(session_id="session-bi-1", reply_id="reply-1")
 
-    async with agent_progress_subscription(user_id="user-1") as queue:
+    async with agent_progress_subscription(leader_session_id="leader-session-1") as queue:
         async for _event in middleware.on_reply(
             agent=agent,
             input_kwargs={"inputs": "查询杨凯2025年日志"},
@@ -1186,6 +1190,7 @@ async def test_raw_logs_not_leaked_to_progress_payload():
     middleware = BIWorkerProgressMiddleware(
         worker_context={
             "user_id": "user-1",
+            "leader_session_id": "leader-session-1",
             "agent_id": "worker-bi-1",
             "agent_name": "bi-worker",
             "session_id": "session-bi-1",
@@ -1196,7 +1201,7 @@ async def test_raw_logs_not_leaked_to_progress_payload():
     async def next_handler(**_kwargs):
         yield SimpleNamespace(type="reply_start", reply_id="reply-raw")
 
-    async with agent_progress_subscription(user_id="user-1") as queue:
+    async with agent_progress_subscription(leader_session_id="leader-session-1") as queue:
         async for _event in middleware.on_reply(
             agent=agent,
             input_kwargs={"inputs": "保密输入: SELECT * FROM users"},

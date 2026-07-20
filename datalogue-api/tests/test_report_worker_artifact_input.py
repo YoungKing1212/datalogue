@@ -15,9 +15,51 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
+
+
+def test_put_json_idempotent_handles_unique_race_without_outer_rollback(monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.domains.query_execution.artifact_store import ArtifactStore
+
+    class FakeQuery:
+        def __init__(self, results):
+            self.results = results
+
+        def filter(self, *_args):
+            return self
+
+        def one_or_none(self):
+            return self.results.pop(0)
+
+    class FakeSession:
+        def __init__(self):
+            self.results = [None, SimpleNamespace(kind="report")]
+
+        def query(self, *_args):
+            return FakeQuery(self.results)
+
+        def begin_nested(self):
+            return nullcontext()
+
+    def raise_unique_conflict(*_args, **_kwargs):
+        raise IntegrityError("INSERT", {}, Exception("unique conflict"))
+
+    fake_db = FakeSession()
+    monkeypatch.setattr(ArtifactStore, "_insert", raise_unique_conflict)
+    store = ArtifactStore(fake_db, cleanup_interval_seconds=0)
+
+    artifact_ref = store.put_json_idempotent(
+        kind="report",
+        payload={"summary": "完成"},
+        idempotency_key="task-1:artifact:query-1",
+    )
+
+    assert artifact_ref.startswith("artifact:report:")
 
 
 def test_build_sql_result_report_payload_clips_rows_cells_and_drops_internal_fields():
@@ -259,3 +301,146 @@ async def test_report_worker_tool_fail_closed_for_missing_artifact(monkeypatch, 
 
     assert payload["status"] == "failed"
     assert payload["code"] == "ARTIFACT_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_report_worker_submit_tool_persists_idempotent_report_and_publishes_event(
+    monkeypatch,
+    db_session,
+):
+    from app.domains.query_execution.artifact_store import ArtifactStore
+    from app.domains.query_execution.report_input import build_sql_result_report_payload
+    from app.runtime.engine import tools as tools_module
+    from app.runtime.engine.tools import build_datalogue_report_worker_tools
+
+    class FakeSessionLocal:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    published = []
+    monkeypatch.setattr(tools_module, "SessionLocal", FakeSessionLocal)
+    monkeypatch.setattr(
+        tools_module,
+        "publish_agent_event",
+        lambda **kwargs: published.append(kwargs) or 1,
+    )
+    source_ref = ArtifactStore(db_session).put_json(
+        kind="sql_result",
+        payload=build_sql_result_report_payload(
+            {"columns": ["city"], "rows": [{"city": "上海"}], "row_count": 1}
+        ),
+    )
+    tools = build_datalogue_report_worker_tools(
+        worker_context={
+            "worker_type": "report",
+            "task_id": "task-1",
+            "agent_id": "report-agent-1",
+            "session_id": "report-session-1",
+            "leader_session_id": "leader-session-1",
+            "trace_id": "trace-1",
+        }
+    )
+    submit_tool = next(tool for tool in tools if tool.name == "datalogue_submit_report")
+
+    first_chunk = await submit_tool(
+        source_artifact_ref=source_ref,
+        report_markdown="## 查询结论\n\n上海共有 1 条记录。",
+        summary="上海共有 1 条记录。",
+        limitations=[],
+    )
+    second_chunk = await submit_tool(
+        source_artifact_ref=source_ref,
+        report_markdown="## 被幂等键忽略的新正文",
+        summary="新摘要",
+        limitations=[],
+    )
+    first = json.loads(first_chunk.content[0].text)
+    second = json.loads(second_chunk.content[0].text)
+
+    assert first["status"] == "completed"
+    assert first["report_ref"].startswith("artifact:report:")
+    assert second["report_ref"] == first["report_ref"]
+    assert second["report_markdown"] == first["report_markdown"]
+    report_artifact = ArtifactStore(db_session).get(first["report_ref"])
+    assert report_artifact is not None
+    assert report_artifact.kind == "report"
+    assert report_artifact.content_json["source_artifact_ref"] == source_ref
+    assert published[-1]["event_type"] == "report_worker_result"
+    assert published[-1]["payload"]["report_worker_agent_id"] == "report-agent-1"
+
+
+@pytest.mark.asyncio
+async def test_report_worker_submit_tool_rejects_internal_details_and_unverified_identity(
+    db_session,
+):
+    from app.runtime.engine.tools import build_datalogue_report_worker_tools
+
+    tools = build_datalogue_report_worker_tools(worker_context={"worker_type": "bi"})
+    submit_tool = next(tool for tool in tools if tool.name == "datalogue_submit_report")
+
+    chunk = await submit_tool(
+        source_artifact_ref="artifact:query-1",
+        report_markdown="```sql\nSELECT * FROM secret\n```",
+        summary="内部详情",
+        limitations=[],
+    )
+    payload = json.loads(chunk.content[0].text)
+
+    assert payload["status"] == "failed"
+    assert payload["code"] == "REPORT_WORKER_IDENTITY_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_report_worker_submit_tool_requires_notice_for_truncated_input(
+    monkeypatch,
+    db_session,
+):
+    from types import SimpleNamespace
+
+    from app.domains.query_execution.artifact_store import ArtifactStore
+    from app.domains.query_execution.report_input import build_sql_result_report_payload
+    from app.runtime.engine import tools as tools_module
+    from app.runtime.engine.tools import build_datalogue_report_worker_tools
+
+    class FakeSessionLocal:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(tools_module, "SessionLocal", FakeSessionLocal)
+    source_ref = ArtifactStore(db_session).put_json(
+        kind="sql_result",
+        payload=build_sql_result_report_payload(
+            {"columns": ["city"], "rows": [{"city": "上海"}], "row_count": 2},
+            settings=SimpleNamespace(REPORT_RESULT_MAX_ROWS=1, REPORT_CELL_MAX_CHARS=120),
+        ),
+    )
+    submit_tool = next(
+        tool
+        for tool in build_datalogue_report_worker_tools(
+            worker_context={
+                "worker_type": "report",
+                "task_id": "task-2",
+                "agent_id": "report-agent-2",
+                "session_id": "report-session-2",
+                "leader_session_id": "leader-session-2",
+            }
+        )
+        if tool.name == "datalogue_submit_report"
+    )
+
+    chunk = await submit_tool(
+        source_artifact_ref=source_ref,
+        report_markdown="## 查询结论\n\n上海共有记录。",
+        summary="上海共有记录。",
+        limitations=[],
+    )
+    payload = json.loads(chunk.content[0].text)
+
+    assert payload["status"] == "failed"
+    assert payload["code"] == "REPORT_TRUNCATION_NOTICE_REQUIRED"

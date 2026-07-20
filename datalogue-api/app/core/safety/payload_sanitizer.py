@@ -14,9 +14,7 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
-
 
 FORBIDDEN_DATALOGUE_PAYLOAD_KEYS = {
     "sql",
@@ -93,11 +91,6 @@ FORBIDDEN_TASK_REQUEST_KEY_FRAGMENTS = (
     "blueprintbody",
 )
 
-SQL_TEXT_RE = re.compile(
-    r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
-    r".{0,200}\b(from|into|set|table|join|where|values)\b"
-)
-
 
 class DataloguePayloadSanitizer:
     """业务可见 payload 清洗器；只保留用户/Agent 可见的安全摘要。"""
@@ -116,8 +109,6 @@ class DataloguePayloadSanitizer:
         if isinstance(value, list):
             sanitized_items = [self.sanitize_output(item) for item in value]
             return [item for item in sanitized_items if item is not None]
-        if isinstance(value, str):
-            return None if self._looks_like_execution_payload(value) else value
         return value
 
     @classmethod
@@ -138,23 +129,6 @@ class DataloguePayloadSanitizer:
     def _normalize_key(key: str) -> str:
         return "".join(char for char in str(key).lower() if char.isalnum())
 
-    @staticmethod
-    def _looks_like_execution_payload(value: str) -> bool:
-        lowered = value.lower()
-        sql_markers = (
-            "select ",
-            " from ",
-            " join ",
-            " where ",
-            "insert ",
-            "update ",
-            "delete ",
-        )
-        if any(marker in lowered for marker in sql_markers):
-            return True
-        # table.column 形式通常是物理字段明细，用户可见层只保留业务摘要。
-        return "." in value and any(char.isalpha() for char in value)
-
 
 def sanitize_datalogue_payload(value: Any) -> Any:
     """函数式入口，便于无状态调用方直接清洗 payload。"""
@@ -174,17 +148,14 @@ def contains_internal_task_payload(value: Any) -> bool:
         return False
     if isinstance(value, list):
         return any(contains_internal_task_payload(item) for item in value)
-    if isinstance(value, str):
-        return SQL_TEXT_RE.search(value) is not None
+    # 用户问题、说明和枚举值属于自由文本；入口门禁只阻断结构化内部字段，
+    # SQL 是否可执行必须交给编译器与 SQL Guard，而不是靠自然语言关键词猜测。
     return False
 
 
 def _is_forbidden_task_request_key(key: str) -> bool:
     normalized = DataloguePayloadSanitizer._normalize_key(key)
-    exact = {
-        DataloguePayloadSanitizer._normalize_key(item)
-        for item in FORBIDDEN_TASK_REQUEST_KEYS
-    }
+    exact = {DataloguePayloadSanitizer._normalize_key(item) for item in FORBIDDEN_TASK_REQUEST_KEYS}
     return normalized in exact or any(
         fragment in normalized for fragment in FORBIDDEN_TASK_REQUEST_KEY_FRAGMENTS
     )

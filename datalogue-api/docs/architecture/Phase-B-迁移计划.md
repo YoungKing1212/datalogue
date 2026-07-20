@@ -335,6 +335,9 @@ app/api/agentscope_control_plane.py            → progress_bridge
 3. 运行测试 → 全绿 → `agentscope_service/` 目录完全为空 → 删除。
 
 **Step 4c**：删除 `agentscope_runtime/`（4 个 facade 文件）：
+
+> 完成状态：**已于 2026-07-17 完成**。生产调用方已直连 canonical 模块，旧目录及空 namespace package 均已删除。
+
 - 此时所有外部模块已指向 `runtime/engine/` 或 `domains/agent_team/`。
 - 确认无任何 import 引用 → 删除 `app/agentscope_runtime/`。
 
@@ -461,7 +464,7 @@ Step 2:  agents/bi_agent/ → domains/bi/agent/ [△ 低风险, 7 个 import 点
 Step 3:  bi_worker_* → domains/bi/worker/    [△ 低风险, 2 外部 + 5 测试]
 Step 4a: 框架桥接 → runtime/engine/          [▲ 中风险, 10+ import 点]
 Step 4b: 业务层 → domains/agent_team/        [▲ 中风险, 4 个外部]
-Step 4c: 删除 agentscope_runtime/            [△ 极低风险, fan-in=0]
+Step 4c: 删除 agentscope_runtime/            [✓ 已完成, 2026-07-17]
 Step 5:  services/ 残余清理                  [△ 低风险, 纯改 import]
 Step 6:  utils/ SQL → domains/query_exec/    [▲ 中风险, 10+ import 点]
 Step 7:  app/bi/ → domains/bi/               [△ 低风险, 可选]

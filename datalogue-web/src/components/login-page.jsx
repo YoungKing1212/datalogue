@@ -6,7 +6,7 @@ import { useAuth } from '../auth/auth-context';
 
 export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
-  const { login } = useAuth();
+  const { user, login, changePassword } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -15,10 +15,25 @@ export function LoginPage() {
   const onFinish = async (values) => {
     setSubmitting(true);
     try {
-      await login(values.username, values.password);
-      navigate(from, { replace: true });
+      const current = await login(values.username, values.password);
+      if (!current.must_change_password) {
+        navigate(from, { replace: true });
+      }
     } catch (err) {
       message.error(err?.message || '登录失败，请检查账号密码');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onPasswordChange = async (values) => {
+    setSubmitting(true);
+    try {
+      await changePassword(values.currentPassword, values.newPassword);
+      message.success('密码修改成功');
+      navigate(from, { replace: true });
+    } catch (err) {
+      message.error(err?.message || '密码修改失败，请稍后重试');
     } finally {
       setSubmitting(false);
     }
@@ -59,12 +74,65 @@ export function LoginPage() {
 
         <Card className="login-card" variant="borderless">
           <Typography.Title level={3} className="login-title">
-            欢迎登录
+            {user?.must_change_password ? '设置新密码' : '欢迎登录'}
           </Typography.Title>
           <Typography.Paragraph type="secondary" className="login-subtitle">
-            登录后可访问问数会话、工作台与数据治理能力。
+            {user?.must_change_password
+              ? '当前使用的是管理员签发的临时密码，修改后才能访问业务数据。'
+              : '登录后可访问问数会话、工作台与数据治理能力。'}
           </Typography.Paragraph>
 
+          {user?.must_change_password ? (
+            <Form
+              layout="horizontal"
+              labelAlign="left"
+              labelCol={{ flex: '124px' }}
+              wrapperCol={{ flex: 'auto' }}
+              colon={false}
+              onFinish={onPasswordChange}
+              autoComplete="off"
+              size="large"
+              className="login-form-inline"
+            >
+              <Form.Item
+                label="当前临时密码"
+                name="currentPassword"
+                rules={[{ required: true, message: '请输入当前临时密码' }]}
+              >
+                <Input.Password autoComplete="current-password" />
+              </Form.Item>
+              <Form.Item
+                label="新密码"
+                name="newPassword"
+                rules={[
+                  { required: true, message: '请输入新密码' },
+                  { min: 12, message: '新密码至少 12 位' },
+                ]}
+              >
+                <Input.Password autoComplete="new-password" />
+              </Form.Item>
+              <Form.Item
+                label="确认新密码"
+                name="confirmPassword"
+                dependencies={['newPassword']}
+                rules={[
+                  { required: true, message: '请再次输入新密码' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      return !value || value === getFieldValue('newPassword')
+                        ? Promise.resolve()
+                        : Promise.reject(new Error('两次输入的新密码不一致'));
+                    },
+                  }),
+                ]}
+              >
+                <Input.Password autoComplete="new-password" />
+              </Form.Item>
+              <Button type="primary" htmlType="submit" block loading={submitting} className="login-submit-btn">
+                修改密码并继续
+              </Button>
+            </Form>
+          ) : (
           <Form
             layout="horizontal"
             labelAlign="left"
@@ -94,9 +162,10 @@ export function LoginPage() {
               进入数语平台
             </Button>
           </Form>
+          )}
 
           <Typography.Paragraph className="login-footnote" type="secondary">
-            首次登录请联系管理员获取账号，并在登录后及时修改默认密码。
+            登录密码只通过 HTTPS 传输；非本机 HTTP 地址将拒绝登录。
           </Typography.Paragraph>
         </Card>
       </div>

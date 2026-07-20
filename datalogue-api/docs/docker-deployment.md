@@ -143,7 +143,7 @@ ssh -N -L 8065:127.0.0.1:8065 <部署用户>@<部署机地址>
 docker compose -f docker-compose.phoenix.yml down
 ```
 
-详细初始化与验收步骤见根目录 `docs/Phoenix开发观测部署与验收.md`。
+详细初始化与验收步骤见根目录 `docs/operations/Phoenix开发观测部署与验收.md`。
 
 ## 日常运维
 

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import importlib
 import time
-from datetime import datetime
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -24,9 +23,11 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
 from app.core.security import decrypt_password
+from app.core.time import utc_now
 from app.domains.data_source.capabilities import DatasourceCapability
 from app.domains.data_source.diagnostics import _diagnostic
 from app.core.models.datasource import Datasource
+from app.domains.data_source.helpers import _table_ref, quote_identifier
 
 SYSTEM_SCHEMAS = {
     "information_schema",
@@ -57,23 +58,8 @@ def is_mysql_protocol_type(db_type: str | None) -> bool:
 
 
 def _quote_identifier(name: str, db_type: str | None) -> str:
-    """adapter 内部采样查询使用的标识符引用规则，与服务层 preview 规则保持一致。"""
-    if not name:
-        return name
-    normalized = _normalize_db_type(db_type)
-    if is_mysql_protocol_type(normalized) or normalized in {"hive", "trino", "presto", "bigquery", "clickhouse"}:
-        return f"`{name}`"
-    if normalized == "sqlserver":
-        return f"[{name}]"
-    return f'"{name}"'
-
-
-def _table_ref(schema: str | None, table: str, db_type: str | None) -> str:
-    """生成带 Schema 的表引用；SQLite 保持 main 连接内的单表引用。"""
-    table_q = _quote_identifier(table, db_type)
-    if schema and _normalize_db_type(db_type) != "sqlite":
-        return f"{_quote_identifier(schema, db_type)}.{table_q}"
-    return table_q
+    """兼容旧 adapter 内部名称，真实转义规则统一由 helpers 维护。"""
+    return quote_identifier(name, db_type)
 
 
 def _sample_column_values(
@@ -199,7 +185,9 @@ class DatasourceAdapter:
 
     def create_engine(self, ds: Datasource) -> Engine:
         if not self.driver_available():
-            raise ModuleNotFoundError(self.capability.driver_module or self.capability.sqlalchemy_driver)
+            raise ModuleNotFoundError(
+                self.capability.driver_module or self.capability.sqlalchemy_driver
+            )
         connect_args: dict[str, Any] = {}
         timeout = int(getattr(ds, "connect_timeout_seconds", None) or 10)
         db_type = self.capability.db_type
@@ -279,7 +267,9 @@ class DatasourceAdapter:
             tables = []
             with engine.connect() as conn:
                 for table_name in inspector.get_table_names(schema=schema):
-                    tables.append(self._table_schema(conn, inspector, ds, schema, table_name, db_type))
+                    tables.append(
+                        self._table_schema(conn, inspector, ds, schema, table_name, db_type)
+                    )
             return tables
         finally:
             engine.dispose()
@@ -293,52 +283,72 @@ class DatasourceAdapter:
         tables = self.get_schema(ds, schema_name=schema)
         result_tables: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-        for table in tables:
-            raw_columns = table.get("columns") or []
-            column_names = [str(col.get("name")) for col in raw_columns if col.get("name")]
-            try:
-                # Doris 宽表若逐字段建连采样会长时间阻塞；每张表只执行一次受限扫描。
-                samples_by_column = self.sample_table_values(
-                    ds,
-                    table.get("schema_name"),
-                    table["name"],
-                    column_names,
-                )
-            except Exception as exc:
-                skipped.append(
-                    {
-                        "table": table.get("name"),
-                        "column": "*",
-                        "diagnostic": _diagnostic("SAMPLE_UNREADABLE", "字段样例批量采集失败", exc),
-                    }
-                )
-                samples_by_column = {}
-            columns = []
-            for idx, col in enumerate(raw_columns, start=1):
-                column_name = col.get("name")
-                columns.append(
-                    {
-                        "column_name": column_name,
-                        "data_type": col.get("type"),
-                        "column_comment": col.get("comment"),
-                        "is_nullable": "YES" if col.get("nullable", True) else "NO",
-                        "column_default": col.get("default"),
-                        "ordinal_position": idx,
-                        "sample_values": samples_by_column.get(str(column_name), []),
-                    }
-                )
-            result_tables.append(
-                {
-                    "table_name": table["name"],
-                    "schema_name": table.get("schema_name") or ds.default_schema or ds.database_name,
-                    "table_comment": table.get("comment"),
-                    "row_count_approx": table.get("row_count"),
-                    "columns": columns,
-                }
-            )
+        engine = self.create_engine(ds)
+        try:
+            # 所有表样例共享一个连接；Schema 元数据读取也只使用一个 engine，不再按表反复建连。
+            with engine.connect() as conn:
+                for table in tables:
+                    raw_columns = table.get("columns") or []
+                    column_names = [str(col.get("name")) for col in raw_columns if col.get("name")]
+                    try:
+                        samples_by_column = self.sample_table_values(
+                            ds,
+                            table.get("schema_name"),
+                            table["name"],
+                            column_names,
+                            connection=conn,
+                        )
+                    except TypeError as exc:
+                        if "connection" not in str(exc):
+                            raise
+                        # 兼容自定义 adapter 的旧签名；内置 adapter 均走共享连接。
+                        samples_by_column = self.sample_table_values(
+                            ds,
+                            table.get("schema_name"),
+                            table["name"],
+                            column_names,
+                        )
+                    except Exception as exc:
+                        skipped.append(
+                            {
+                                "table": table.get("name"),
+                                "column": "*",
+                                "diagnostic": _diagnostic(
+                                    "SAMPLE_UNREADABLE", "字段样例批量采集失败", exc
+                                ),
+                            }
+                        )
+                        samples_by_column = {}
+                    columns = []
+                    for idx, col in enumerate(raw_columns, start=1):
+                        column_name = col.get("name")
+                        columns.append(
+                            {
+                                "column_name": column_name,
+                                "data_type": col.get("type"),
+                                "column_comment": col.get("comment"),
+                                "is_nullable": "YES" if col.get("nullable", True) else "NO",
+                                "column_default": col.get("default"),
+                                "ordinal_position": idx,
+                                "sample_values": samples_by_column.get(str(column_name), []),
+                            }
+                        )
+                    result_tables.append(
+                        {
+                            "table_name": table["name"],
+                            "schema_name": table.get("schema_name")
+                            or ds.default_schema
+                            or ds.database_name,
+                            "table_comment": table.get("comment"),
+                            "row_count_approx": table.get("row_count"),
+                            "columns": columns,
+                        }
+                    )
+        finally:
+            engine.dispose()
         return {
             "tables": result_tables,
-            "synced_at": datetime.utcnow().isoformat(),
+            "synced_at": utc_now().isoformat(),
             "skipped": skipped,
             "errors": [],
         }
@@ -373,8 +383,18 @@ class DatasourceAdapter:
         schema: str | None,
         table: str,
         columns: list[str],
+        *,
+        connection=None,
     ) -> dict[str, list[str]]:
         """使用单个连接批量采集整表字段样例。"""
+        if connection is not None:
+            return _sample_table_values(
+                connection,
+                schema,
+                table,
+                columns,
+                self.capability.db_type,
+            )
         engine = self.create_engine(ds)
         try:
             with engine.connect() as conn:
@@ -423,16 +443,14 @@ class DatasourceAdapter:
 
     def _row_count(self, conn, schema: str | None, table: str, db_type: str) -> int | None:
         try:
-            if is_mysql_protocol_type(db_type):
-                table_ref = _table_ref(schema, table, db_type)
-                value = conn.execute(text(f"SELECT COUNT(*) FROM {table_ref}")).scalar()
-                return int(value) if value is not None else None
-            if db_type == "sqlite":
-                value = conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar()
-                return int(value) if value is not None else None
+            # MySQL/Doris/SQLite 没有稳定的低成本统一估算接口；同步阶段宁可未知，也不扫全表 COUNT(*)。
+            if is_mysql_protocol_type(db_type) or db_type == "sqlite":
+                return None
             if db_type in {"postgres", "postgresql"}:
                 value = conn.execute(
-                    text("SELECT reltuples::bigint FROM pg_class WHERE relname = :t AND relkind = 'r'"),
+                    text(
+                        "SELECT reltuples::bigint FROM pg_class WHERE relname = :t AND relkind = 'r'"
+                    ),
                     {"t": table},
                 ).scalar()
                 return int(value) if value is not None else None

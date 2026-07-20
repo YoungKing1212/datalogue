@@ -74,7 +74,7 @@ Datalogue API 启动
 
 ## 六、扩展 Worker 暂缓边界
 
-Report / Python / Audit Worker 可以保留在长期 prompt、事件协议或 worker type 设计中，但当前阶段暂停继续扩展实现。只有当 BI Worker 主链满足“一轮成功率稳定、repair 可闭环、artifact 必达、最终回答不泄露内部计划、Workbench checkpoint 可回放、日志能区分 Leader / Worker / Tool / DB”后，才允许恢复扩展 Worker。
+Report / Python / Audit Worker 可以保留在长期 prompt、事件协议或 worker type 设计中，但当前阶段暂停继续扩展实现。只有同时满足“BI 查询一轮成功率稳定、失败能进入 repair、artifact 必定可查看、最终回答不泄露内部计划、Workbench 能回放 checkpoint、日志能区分 Leader / Worker / Tool / DB”后，才允许恢复扩展 Worker。
 
 运行时接手和部署前，按 `docs/operations/运行时健康检查.md` 检查 AgentScope Service、Redis、Credential、Leader Agent、Session stream、BI Tool、Artifact API 和 Frontend version。
 

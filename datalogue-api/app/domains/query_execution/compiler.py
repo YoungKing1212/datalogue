@@ -44,6 +44,7 @@ def _failure(
         "error": error,
         "sql": None,
         "sql_list": [],
+        "params": {},
         "dialect": dialect,
         "execution_source": EXECUTION_SOURCE_TOOL_COMPILER,
         "sql_guard": sql_guard,
@@ -196,34 +197,30 @@ def _fallback_schema_fields(
     return []
 
 
-def _sql_value_literal(value: Any) -> str:
-    """将 Python 值转为 SQL 字面量，仅限字符串、数字和布尔类型。"""
-    if isinstance(value, str):
-        escaped = value.replace("'", "''")
-        return f"'{escaped}'"
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if value is None:
-        return "NULL"
-    # 兜底：非预期的复杂类型不进入 SQL
-    return "NULL"
+def _bind_filter_value(params: dict[str, Any], value: Any) -> str | None:
+    """为过滤值分配 SQLAlchemy named bind；复杂类型必须 fail-closed。"""
+
+    if not isinstance(value, (str, bool, int, float)) and value is not None:
+        return None
+    name = f"filter_{len(params)}"
+    params[name] = value
+    return f":{name}"
 
 
 def _compile_where_clauses(
     filters: Any,
     main_table: str,
     dialect: str | None,
-) -> list[str] | None:
+) -> tuple[list[str], dict[str, Any]] | None:
     """将 query_plan.filters 列表编译为安全 WHERE 条件片段。
 
     遇到不支持的 operator 时 fail-closed 返回 None，避免过滤条件静默丢失导致查询返回过多行。
     """
     if not isinstance(filters, list) or not filters:
-        return []
+        return [], {}
 
     clauses: list[str] = []
+    params: dict[str, Any] = {}
     for item in filters:
         if not isinstance(item, dict):
             continue
@@ -239,24 +236,35 @@ def _compile_where_clauses(
         )
 
         if operator == "between" and isinstance(value, list) and len(value) >= 2:
-            clauses.append(
-                f"{column_ref} BETWEEN {_sql_value_literal(value[0])} AND {_sql_value_literal(value[1])}"
-            )
+            lower = _bind_filter_value(params, value[0])
+            upper = _bind_filter_value(params, value[1])
+            if not lower or not upper:
+                return None
+            clauses.append(f"{column_ref} BETWEEN {lower} AND {upper}")
         elif operator == "in" and isinstance(value, list):
             if not value:
                 continue
-            in_values = ", ".join(_sql_value_literal(v) for v in value)
+            placeholders = [_bind_filter_value(params, item) for item in value]
+            if any(not placeholder for placeholder in placeholders):
+                return None
+            in_values = ", ".join(str(placeholder) for placeholder in placeholders)
             clauses.append(f"{column_ref} IN ({in_values})")
         elif operator == "contains":
-            safe_value = str(value).replace("%", r"\%").replace("_", r"\_").replace("'", "''")
-            clauses.append(f"{column_ref} LIKE '%{safe_value}%' ESCAPE '\\'")
+            if not isinstance(value, (str, bool, int, float)):
+                return None
+            safe_value = str(value).replace("\\", r"\\").replace("%", r"\%").replace("_", r"\_")
+            placeholder = _bind_filter_value(params, f"%{safe_value}%")
+            clauses.append(f"{column_ref} LIKE {placeholder} ESCAPE '\\'")
         elif operator in {"=", "!=", ">", ">=", "<", "<="}:
-            clauses.append(f"{column_ref} {operator} {_sql_value_literal(value)}")
+            placeholder = _bind_filter_value(params, value)
+            if not placeholder:
+                return None
+            clauses.append(f"{column_ref} {operator} {placeholder}")
         else:
             # 未识别算子 fail-closed：避免过滤条件丢失导致返回过多行
             logger.warning("不支持的筛选算子，fail-closed 拒绝编译: %s", operator)
             return None
-    return clauses
+    return clauses, params
 
 
 def _compile_order_clauses(
@@ -470,7 +478,7 @@ def _compile_select_sql(
     sql_generation_context: dict[str, Any] | None,
     dialect: str | None,
     allowed_tables: list[str] | None = None,
-) -> str | None:
+) -> tuple[str, dict[str, Any]] | None:
     """从查询计划资产引用生成最小可执行 SELECT；不读取任何模型 SQL 文本。"""
 
     main_table = _main_table(query_plan, sql_generation_context)
@@ -521,9 +529,10 @@ def _compile_select_sql(
         sql = sql + " " + " ".join(join_clauses)
 
     # 从 query_plan.filters 生成安全 WHERE 子句
-    where_clauses = _compile_where_clauses(query_plan.get("filters"), main_table, dialect)
-    if where_clauses is None:
+    where_result = _compile_where_clauses(query_plan.get("filters"), main_table, dialect)
+    if where_result is None:
         return None
+    where_clauses, params = where_result
     if where_clauses:
         sql += f" WHERE {' AND '.join(where_clauses)}"
 
@@ -540,13 +549,14 @@ def _compile_select_sql(
     if limit is not None:
         sql += f" {_limit_clause(limit, dialect)}"
 
-    return sql
+    return sql, params
 
 
 def _success_payload(
     *,
     query_plan: dict[str, Any],
     adapted: dict[str, Any],
+    params: dict[str, Any],
 ) -> dict[str, Any]:
     sql = adapted["sql"]
     control_plane = {
@@ -561,6 +571,7 @@ def _success_payload(
         "execution_source": EXECUTION_SOURCE_TOOL_COMPILER,
         "sql": sql,
         "sql_list": [sql],
+        "params": params,
         "query_plan": query_plan,
         "sql_guard": adapted["sql_guard"],
     }
@@ -577,6 +588,7 @@ def _success_payload(
         "error": None,
         "sql": sql,
         "sql_list": [sql],
+        "params": params,
         "dialect": adapted["dialect"],
         "execution_source": EXECUTION_SOURCE_TOOL_COMPILER,
         "sql_guard": adapted["sql_guard"],
@@ -618,19 +630,20 @@ def compile_query_plan_to_sql(
             dialect=dialect,
         )
 
-    sql = _compile_select_sql(
+    compiled_select = _compile_select_sql(
         query_plan=query_plan,
         sql_generation_context=sql_generation_context,
         dialect=dialect,
         allowed_tables=allowed_tables,
     )
-    if not sql:
+    if not compiled_select:
         return _failure(
             code="PLAN_NOT_COMPILABLE",
             error="查询计划缺少可编译的表字段资产",
             dialect=dialect,
         )
 
+    sql, params = compiled_select
     adapted = adapt_sql_for_execution(
         sql,
         dialect=dialect,
@@ -645,4 +658,4 @@ def compile_query_plan_to_sql(
             dialect=adapted.get("dialect") or dialect,
             sql_guard=adapted.get("sql_guard"),
         )
-    return _success_payload(query_plan=query_plan, adapted=adapted)
+    return _success_payload(query_plan=query_plan, adapted=adapted, params=params)

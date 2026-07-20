@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi.encoders import jsonable_encoder
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -100,6 +102,88 @@ class ArtifactStore:
             )
             set_span_attributes(span, {"datalogue.artifact_ref": artifact_ref})
             return artifact_ref
+
+    def put_json_idempotent(
+        self,
+        *,
+        kind: ArtifactKind,
+        payload: Any,
+        idempotency_key: str,
+        dataset_id: int | None = None,
+        conversation_id: int | None = None,
+        message_id: int | None = None,
+        trace_id: str | None = None,
+    ) -> str:
+        """按业务幂等键保存 JSON Artifact，重复提交返回同一有效引用。"""
+
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("idempotency_key is required")
+        encoded = jsonable_encoder(payload)
+        size_bytes = self._json_size(encoded)
+        self._ensure_size(size_bytes)
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:40]
+        artifact_ref = f"artifact:{kind}:{digest}"
+        existing = (
+            self.db.query(QueryArtifact)
+            .filter(QueryArtifact.artifact_id == artifact_ref)
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing.kind != kind:
+                raise ValueError("deterministic artifact reference kind conflict")
+            # 有效结果采用 first-write-wins；报告重试不能悄悄改写已完成的最终凭证。
+            if existing.expires_at.tzinfo is None:
+                existing.expires_at = existing.expires_at.replace(tzinfo=UTC)
+            if existing.expires_at > datetime.now(UTC):
+                return artifact_ref
+            existing.content_json = encoded
+            existing.content_text = None
+            existing.content_mime = "application/json"
+            existing.size_bytes = size_bytes
+            existing.dataset_id = dataset_id
+            existing.conversation_id = conversation_id
+            existing.message_id = message_id
+            existing.trace_id = trace_id
+            existing.expires_at = datetime.now(UTC) + timedelta(seconds=self.ttl_seconds)
+            self.db.add(existing)
+            self.db.flush()
+            return artifact_ref
+
+        with observation_span(
+            "datalogue.artifact.persist",
+            {
+                "datalogue.artifact.kind": kind,
+                "datalogue.artifact.size_bytes": size_bytes,
+                "datalogue.artifact.idempotent": True,
+            },
+        ) as span:
+            try:
+                # 唯一键竞争只回滚 savepoint；不能为了幂等冲突回滚调用方外层业务事务。
+                with self.db.begin_nested():
+                    persisted_ref = self._insert(
+                        kind=kind,
+                        dataset_id=dataset_id,
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        trace_id=trace_id,
+                        content_json=encoded,
+                        content_text=None,
+                        content_mime="application/json",
+                        size_bytes=size_bytes,
+                        artifact_ref=artifact_ref,
+                    )
+            except IntegrityError:
+                concurrent = (
+                    self.db.query(QueryArtifact)
+                    .filter(QueryArtifact.artifact_id == artifact_ref)
+                    .one_or_none()
+                )
+                if concurrent is None or concurrent.kind != kind:
+                    raise
+                persisted_ref = artifact_ref
+            set_span_attributes(span, {"datalogue.artifact_ref": persisted_ref})
+            return persisted_ref
 
     def put_text(
         self,
@@ -202,11 +286,12 @@ class ArtifactStore:
         content_text: str | None,
         content_mime: str,
         size_bytes: int,
+        artifact_ref: str | None = None,
     ) -> str:
         self._maybe_purge_expired()
-        artifact_ref = f"artifact:{uuid4().hex}"
+        resolved_artifact_ref = artifact_ref or f"artifact:{uuid4().hex}"
         artifact = QueryArtifact(
-            artifact_id=artifact_ref,
+            artifact_id=resolved_artifact_ref,
             kind=kind,
             dataset_id=dataset_id,
             conversation_id=conversation_id,
@@ -220,7 +305,7 @@ class ArtifactStore:
         )
         self.db.add(artifact)
         self.db.flush()
-        return artifact_ref
+        return resolved_artifact_ref
 
     def _maybe_purge_expired(self) -> None:
         if self.cleanup_interval_seconds <= 0:

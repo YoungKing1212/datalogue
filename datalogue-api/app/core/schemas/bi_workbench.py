@@ -14,12 +14,13 @@
 
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.core.safety.text_patterns import SQL_STATEMENT_TEXT_RE
 
 
 DatalogueEventType = Literal[
@@ -109,12 +110,6 @@ FORBIDDEN_VISIBLE_KEY_FRAGMENTS = (
     "schemacontext",
 )
 
-_SQL_TEXT_RE = re.compile(
-    r"(?is)\b(select|insert|update|delete|drop|alter|create|with)\b"
-    r".{0,200}\b(from|into|set|table|join|where|values)\b"
-)
-
-
 def _is_blocked_user_visible_key(key: str) -> bool:
     key_lower = key.lower()
     normalized = "".join(char for char in key_lower if char.isalnum())
@@ -149,8 +144,12 @@ def sanitize_event_payload(value: Any, *, key_name: str = "") -> Any:
         ]
     if isinstance(value, str):
         text = value.strip()
-        if _SQL_TEXT_RE.search(text):
+        if SQL_STATEMENT_TEXT_RE.search(text):
             return None
+        if key_name == "report_markdown":
+            # 报告提交工具已执行 50KB、敏感内容与截断声明校验；这里保留完整最终 Markdown，
+            # 避免通用 1000 字摘要上限把唯一 final 截断。其余字符串仍保持紧缩边界。
+            return text[:50 * 1024]
         return text[:1000]
     return value
 
@@ -178,7 +177,7 @@ def _contains_forbidden_visible_detail(value: Any) -> bool:
                 "control_plane",
                 "out_capsule",
             )
-        ) or _SQL_TEXT_RE.search(text) is not None
+        ) or SQL_STATEMENT_TEXT_RE.search(text) is not None
     return False
 
 
@@ -187,7 +186,7 @@ def sanitize_stream_delta_content(content: Any) -> str | None:
 
     if not isinstance(content, str) or not content:
         return None
-    if _SQL_TEXT_RE.search(content):
+    if SQL_STATEMENT_TEXT_RE.search(content):
         return None  # 单个增量命中 SQL 直接丢弃，不写回 content
     return content[:2000]
 

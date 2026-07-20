@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildHistoryMessageCustom } from '../../../src/assistant/thread-list-adapter';
+import { buildHistoryMessageCustom } from '../../../src/features/chat/thread-list-adapter';
 
 describe('artifact metadata custom fields', () => {
   it('maps result/report refs from subagent tool metadata', () => {

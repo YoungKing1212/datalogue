@@ -27,6 +27,7 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.orm import Session
 
 from app.core.observability import observation_span, set_span_attributes
+from app.core.config import get_settings
 from app.core.middlewares.lifecycle import log_lifecycle, log_output
 from app.runtime.thread_resolver import new_runtime_thread_id
 from app.domains.agent_team.contracts import AgentTeamTask, AgentTeamTaskRequest
@@ -36,12 +37,18 @@ from app.domains.agent_team.event_projection import (
     project_agentscope_event,
 )
 from app.runtime.engine.registry import available_datalogue_worker_types
+from app.domains.agent_team.report_execution import (
+    ReportExecutionState,
+    ReportExecutionStatus,
+    ReportWorkerRequiredNotCompletedError,
+)
 from app.services.runtime_mirror import (
     append_user_message,
     create_agentscope_session,
     create_running_assistant_message,
     mark_message_completed,
     mark_message_failed,
+    mark_message_interrupted,
     record_agentscope_ref,
 )
 
@@ -287,11 +294,87 @@ def _visible_final_answer(payload: dict[str, Any], accumulated_text: str) -> str
     raw_summary = str(payload.get("summary") or accumulated_text or "").strip()
     if _requires_dataset_confirmation(payload):
         return _dataset_confirmation_answer(payload)
+    if payload.get("datalogue_event_type") == "report_worker_result":
+        report_markdown = str(payload.get("report_markdown") or "").strip()
+        if report_markdown and not _looks_like_internal_planning_text(report_markdown):
+            return report_markdown
+        if raw_summary and not _looks_like_internal_planning_text(raw_summary):
+            return raw_summary
+        return "报告已生成，可通过查看详情打开完整内容。"
     if _artifact_ref_from_final_payload(payload):
         return _artifact_completion_answer(payload, raw_summary)
     if raw_summary and not _looks_like_internal_planning_text(raw_summary):
         return raw_summary
     return "任务已完成。"
+
+
+def _is_runtime_query_artifact_payload(payload: dict[str, Any]) -> bool:
+    """防御旧 Runner 把查询 Artifact 当作 final 的兼容判断。"""
+
+    if payload.get("datalogue_event_type") == "report_worker_result":
+        return False
+    if _requires_dataset_confirmation(payload):
+        return False
+    return bool(_artifact_ref_from_final_payload(payload))
+
+
+def _observe_runtime_report_event(
+    state: ReportExecutionState,
+    envelope: DatalogueEventEnvelope,
+) -> None:
+    """Runtime 仅依据公开 envelope 重建报告完成凭证，形成独立完成校验。"""
+
+    payload = envelope.payload
+    try:
+        try:
+            state.correction_count = max(
+                state.correction_count,
+                int(payload.get("report_correction_count") or 0),
+            )
+        except (TypeError, ValueError):
+            pass
+        if envelope.event_type == "artifact.created" and _is_runtime_query_artifact_payload(payload):
+            source_ref = _artifact_ref_from_final_payload(payload)
+            if source_ref:
+                state.mark_required(source_ref)
+        if payload.get("datalogue_event_type") != "report_worker_result":
+            return
+        if payload.get("status") != "completed":
+            raise ReportWorkerRequiredNotCompletedError()
+        source_ref = str(payload.get("source_artifact_ref") or "").strip()
+        if not state.required:
+            state.mark_required(source_ref)
+        if state.status in {ReportExecutionStatus.PENDING, ReportExecutionStatus.FAILED}:
+            state.mark_running(
+                worker_agent_id=str(payload.get("report_worker_agent_id") or ""),
+                worker_session_id=str(payload.get("report_worker_session_id") or ""),
+            )
+        state.mark_succeeded(
+            source_artifact_ref=source_ref,
+            report_ref=str(payload.get("report_ref") or ""),
+            worker_agent_id=str(payload.get("report_worker_agent_id") or ""),
+            worker_session_id=str(payload.get("report_worker_session_id") or ""),
+        )
+        try:
+            state.attempt = max(state.attempt, int(payload.get("report_attempts") or 1))
+        except (TypeError, ValueError):
+            pass
+    except (TypeError, ValueError) as exc:
+        raise ReportWorkerRequiredNotCompletedError() from exc
+
+
+def _report_completion_payload(state: ReportExecutionState) -> dict[str, Any]:
+    if not state.required:
+        return {}
+    return {
+        "report_required": state.required,
+        "report_status": state.status.value,
+        "report_ref": state.report_ref,
+        "report_worker_agent_id": state.worker_agent_id,
+        "report_worker_session_id": state.worker_session_id,
+        "report_attempts": max(state.attempt, 1) if state.required else 0,
+        "source_artifact_ref": state.source_artifact_ref,
+    }
 
 
 class AgentTeamTaskRunner(Protocol):
@@ -304,12 +387,45 @@ class AgentTeamTaskRunner(Protocol):
     ) -> AsyncIterator[Any]: ...
 
 
+async def _iterate_with_overall_timeout(
+    events: AsyncIterator[Any],
+    *,
+    timeout_seconds: float,
+) -> AsyncIterator[Any]:
+    """按绝对截止时间消费流；每个事件不会重新获得一整段超时时间。"""
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("agent team task deadline exceeded")
+            try:
+                yield await asyncio.wait_for(anext(events), timeout=remaining)
+            except StopAsyncIteration:
+                break
+    finally:
+        close = getattr(events, "aclose", None)
+        if callable(close):
+            await close()
+
+
 class AgentTeamTaskRuntime:
     """Agent Team 任务入口 runtime；调用方只消费 Datalogue envelope。"""
 
-    def __init__(self, *, db: Session, runner: AgentTeamTaskRunner) -> None:
+    def __init__(
+        self,
+        *,
+        db: Session,
+        runner: AgentTeamTaskRunner,
+        actor_user_id: int | None = None,
+        task_timeout_seconds: float = 300.0,
+    ) -> None:
         self.db = db
         self.runner = runner
+        self.actor_user_id = actor_user_id
+        self.task_timeout_seconds = max(float(task_timeout_seconds), 1.0)
 
     async def stream(self, request: AgentTeamTaskRequest) -> AsyncIterator[DatalogueEventEnvelope]:
         selected_agent = "agent_team_leader"
@@ -335,7 +451,11 @@ class AgentTeamTaskRuntime:
             thread_id=thread_id,
             title=request.question[:80],
             legacy_conversation_id=request.conversation_id,
-            metadata={"task_id": task.task_id, "task_source": request.task_source},
+            metadata={
+                "task_id": task.task_id,
+                "task_source": request.task_source,
+                "user_id": self.actor_user_id,
+            },
         )
         append_user_message(
             self.db,
@@ -408,12 +528,25 @@ class AgentTeamTaskRuntime:
         accumulated_text = ""
         message_completed_emitted = False
         primary_artifact_ref: str | None = None
+        report_ref: str | None = None
         latest_checkpoint_ref: str | None = None
+        report_gate_enabled = bool(
+            get_settings().DATALOGUE_REPORT_WORKER_ENABLED
+            and request.task_type in {"bi_query", "report"}
+        )
+        report_state = ReportExecutionState()
+        report_started_at: float | None = None
+        if report_gate_enabled and request.task_type == "report" and request.artifact_ref:
+            report_state.mark_required(request.artifact_ref)
         reasoning_summary_steps = _seed_reasoning_summary(request)
         first_delta_at: float | None = None
         try:
             user_msg = UserMsg(name="user", content=request.question)
-            async for event in self.runner.stream(request=request, task=task, user_msg=user_msg):
+            runner_events = self.runner.stream(request=request, task=task, user_msg=user_msg)
+            async for event in _iterate_with_overall_timeout(
+                runner_events,
+                timeout_seconds=self.task_timeout_seconds,
+            ):
                 envelope = project_agentscope_event(
                     event,
                     task_id=task.task_id,
@@ -422,6 +555,20 @@ class AgentTeamTaskRuntime:
                     message_id=assistant_message.message_id,
                     selected_agent=selected_agent,
                 )
+                if (
+                    report_gate_enabled
+                    and envelope.event_type == "message.completed"
+                    and _is_runtime_query_artifact_payload(envelope.payload)
+                ):
+                    # Runtime 是第二道独立闸门：即便自定义/旧 Runner 仍把查询 Artifact 投成 final，
+                    # 这里也必须降为中间事件，禁止随后把 task 写成 completed。
+                    envelope = envelope.model_copy(
+                        update={"event_type": "artifact.created", "legacy_payload": {}}
+                    )
+                if report_gate_enabled:
+                    _observe_runtime_report_event(report_state, envelope)
+                    if report_state.required and report_started_at is None:
+                        report_started_at = time.time()
                 if envelope.event_type in {"message.delta", "reasoning.delta"}:
                     if first_delta_at is None:
                         first_delta_at = time.time()
@@ -432,6 +579,13 @@ class AgentTeamTaskRuntime:
                     event_type=envelope.event_type,
                     payload=envelope.payload,
                 )
+                if (
+                    envelope.event_type == "message.completed"
+                    and report_state.required
+                    and not report_state.can_complete
+                ):
+                    # 不把非法 final 暴露给前端；流结束后由下方完成闸门统一收口为安全失败。
+                    continue
                 if envelope.event_type == "message.completed":
                     message_completed_emitted = True
                     accumulated_text = _visible_final_answer(envelope.payload, accumulated_text)
@@ -479,12 +633,11 @@ class AgentTeamTaskRuntime:
                         artifact_ref=envelope.payload.get("artifact_ref"),
                     )
                 if envelope.event_type in {"artifact.created", "message.completed"}:
-                    primary_artifact_ref = (
-                        str(
-                            envelope.payload.get("artifact_ref") or primary_artifact_ref or ""
-                        ).strip()
-                        or None
-                    )
+                    event_artifact_ref = _artifact_ref_from_final_payload(envelope.payload)
+                    if envelope.payload.get("datalogue_event_type") == "report_worker_result":
+                        report_ref = str(envelope.payload.get("report_ref") or "").strip() or None
+                    else:
+                        primary_artifact_ref = event_artifact_ref or primary_artifact_ref
                     latest_checkpoint_ref = (
                         str(
                             envelope.payload.get("checkpoint_ref") or latest_checkpoint_ref or ""
@@ -500,6 +653,8 @@ class AgentTeamTaskRuntime:
                 )
                 yield envelope
 
+            if report_gate_enabled and report_state.required and not report_state.can_complete:
+                raise ReportWorkerRequiredNotCompletedError()
             if not message_completed_emitted:
                 accumulated_text = _visible_final_answer({}, accumulated_text)
             final_answer = accumulated_text or "任务已完成。"
@@ -521,12 +676,12 @@ class AgentTeamTaskRuntime:
                     ],
                     "artifact_ref": primary_artifact_ref,
                     "checkpoint_ref": latest_checkpoint_ref,
+                    **_report_completion_payload(report_state),
                 },
             )
             # 自动生成会话标题（在后台线程执行，不阻塞主链路）
             if not getattr(task, "_title_generated", False):
                 try:
-                    from app.core.config import get_settings
                     from app.domains.agent_team.title_generator import maybe_auto_title_async
 
                     if get_settings().DATALOGUE_AUTO_TITLE_ENABLED:
@@ -545,6 +700,7 @@ class AgentTeamTaskRuntime:
                 thread_id=session.thread_id,
                 message_id=assistant_message.message_id,
                 artifact_ref=primary_artifact_ref,
+                report_ref=report_ref,
                 checkpoint_ref=latest_checkpoint_ref,
             )
             task.status = "completed"
@@ -553,8 +709,10 @@ class AgentTeamTaskRuntime:
                 "reasoning_summary": reasoning_summary_steps[:6],
                 "artifact_ref": primary_artifact_ref,
                 "checkpoint_ref": latest_checkpoint_ref,
+                **_report_completion_payload(report_state),
             }
             task.artifact_refs_json = _append_unique(task.artifact_refs_json, primary_artifact_ref)
+            task.artifact_refs_json = _append_unique(task.artifact_refs_json, report_ref)
             task.checkpoint_refs_json = _append_unique(
                 task.checkpoint_refs_json, latest_checkpoint_ref
             )
@@ -566,6 +724,15 @@ class AgentTeamTaskRuntime:
                     "datalogue.task.status": "completed",
                     "datalogue.artifact_ref": primary_artifact_ref,
                     "datalogue.total_duration_ms": round((time.time() - task_started_at) * 1000),
+                    "report.required": report_state.required,
+                    "report.status": report_state.status.value,
+                    "report.attempt": report_state.attempt,
+                    "report.correction_count": report_state.correction_count,
+                    "report.duration_ms": round(
+                        (time.time() - (report_started_at or task_started_at)) * 1000
+                    ),
+                    "source_artifact_ref": report_state.source_artifact_ref,
+                    "report_ref": report_state.report_ref,
                 },
             )
             log_lifecycle(
@@ -576,6 +743,12 @@ class AgentTeamTaskRuntime:
                 message_id=assistant_message.message_id,
                 selected_agent=selected_agent,
                 emitted_message_completed=message_completed_emitted,
+                report_required=report_state.required,
+                report_status=report_state.status.value,
+                report_attempt=report_state.attempt,
+                report_correction_count=report_state.correction_count,
+                source_artifact_ref=report_state.source_artifact_ref,
+                report_ref=report_state.report_ref,
             )
             if not message_completed_emitted:
                 _append_reasoning_summary_step(
@@ -621,12 +794,24 @@ class AgentTeamTaskRuntime:
                 thread_id=session.thread_id,
                 message_id=assistant_message.message_id,
                 selected_agent=selected_agent,
-                payload={"summary": "Agent Team 任务已完成。"},
+                payload={
+                    "summary": "Agent Team 任务已完成。",
+                    **_report_completion_payload(report_state),
+                },
             )
         except asyncio.CancelledError:
-            # 任务协程被取消时不能吞掉取消信号；仅写观测状态，保留原有取消语义。
+            # 客户端断流或上层取消时立即收口 mirror/task，避免遗留永久 running 记录。
             set_span_attributes(task_span, {"datalogue.task.status": "cancelled"})
             task_span.set_status(Status(StatusCode.ERROR, "agent team task cancelled"))
+            mark_message_interrupted(
+                self.db,
+                message_id=assistant_message.message_id,
+                reason="任务已中断。",
+            )
+            task.status = "cancelled"
+            task.error_payload_json = {"error_code": "AGENT_TEAM_TASK_CANCELLED"}
+            self.db.add(task)
+            self.db.commit()
             raise
         except Exception as exc:
             # 异常已转换为 SSE 失败事件，需显式标记 span 才能在 Phoenix 中检索失败链路。
@@ -644,6 +829,44 @@ class AgentTeamTaskRuntime:
                 type(exc).__name__,
                 exc,
             )
+            is_timeout = isinstance(exc, TimeoutError)
+            is_report_incomplete = isinstance(
+                exc, ReportWorkerRequiredNotCompletedError
+            ) or (is_timeout and report_state.required and not report_state.can_complete)
+            error_code = (
+                "REPORT_WORKER_REQUIRED_NOT_COMPLETED"
+                if is_report_incomplete
+                else ("AGENT_TEAM_TASK_TIMEOUT" if is_timeout else "AGENT_TEAM_TASK_FAILED")
+            )
+            error_summary = (
+                "查询结果已保留，但报告整理未完成，请稍后重试。"
+                if is_report_incomplete
+                else (
+                    "Agent Team 任务执行超时，请缩小问题范围后重试。"
+                    if is_timeout
+                    else "Agent Team 任务执行失败，内部细节已隐藏。"
+                )
+            )
+            if is_report_incomplete and report_state.required and not report_state.can_complete:
+                if report_state.status in {
+                    ReportExecutionStatus.PENDING,
+                    ReportExecutionStatus.RUNNING,
+                }:
+                    report_state.mark_failed(error_code)
+            set_span_attributes(
+                task_span,
+                {
+                    "report.required": report_state.required,
+                    "report.status": report_state.status.value,
+                    "report.attempt": report_state.attempt,
+                    "report.correction_count": report_state.correction_count,
+                    "report.duration_ms": round(
+                        (time.time() - (report_started_at or task_started_at)) * 1000
+                    ),
+                    "source_artifact_ref": report_state.source_artifact_ref,
+                    "report_ref": report_state.report_ref,
+                },
+            )
             log_output(
                 event_type="task.failed",
                 task_id=task.task_id,
@@ -651,8 +874,14 @@ class AgentTeamTaskRuntime:
                 thread_id=session.thread_id,
                 message_id=assistant_message.message_id,
                 selected_agent=selected_agent,
-                error_code="AGENT_TEAM_TASK_FAILED",
-                error_summary="Agent Team 任务执行失败，内部细节已隐藏。",
+                error_code=error_code,
+                report_required=report_state.required,
+                report_status=report_state.status.value,
+                report_attempt=report_state.attempt,
+                report_correction_count=report_state.correction_count,
+                source_artifact_ref=report_state.source_artifact_ref,
+                report_ref=report_state.report_ref,
+                error_summary=error_summary,
             )
             log_lifecycle(
                 "agent_team.task.failed",
@@ -661,16 +890,34 @@ class AgentTeamTaskRuntime:
                 thread_id=session.thread_id,
                 message_id=assistant_message.message_id,
                 selected_agent=selected_agent,
-                error_code="AGENT_TEAM_TASK_FAILED",
+                error_code=error_code,
             )
             mark_message_failed(
                 self.db,
                 message_id=assistant_message.message_id,
-                error_summary="Agent Team 任务执行失败，内部细节已隐藏。",
-                payload={"task_id": task.task_id, "error_code": "AGENT_TEAM_TASK_FAILED"},
+                error_summary=error_summary,
+                payload={
+                    "task_id": task.task_id,
+                    "error_code": error_code,
+                    "artifact_ref": primary_artifact_ref,
+                    **_report_completion_payload(report_state),
+                },
+            )
+            self._record_completion_refs(
+                thread_id=session.thread_id,
+                message_id=assistant_message.message_id,
+                artifact_ref=primary_artifact_ref,
+                report_ref=report_ref,
+                checkpoint_ref=latest_checkpoint_ref,
             )
             task.status = "failed"
-            task.error_payload_json = {"error_code": "AGENT_TEAM_TASK_FAILED"}
+            task.error_payload_json = {
+                "error_code": error_code,
+                "artifact_ref": primary_artifact_ref,
+                **_report_completion_payload(report_state),
+            }
+            task.artifact_refs_json = _append_unique(task.artifact_refs_json, primary_artifact_ref)
+            task.artifact_refs_json = _append_unique(task.artifact_refs_json, report_ref)
             self.db.add(task)
             self.db.commit()
             yield build_task_envelope(
@@ -681,9 +928,11 @@ class AgentTeamTaskRuntime:
                 message_id=assistant_message.message_id,
                 selected_agent=selected_agent,
                 payload={
-                    "error_code": "AGENT_TEAM_TASK_FAILED",
-                    "error_summary": "Agent Team 任务执行失败，内部细节已隐藏。",
+                    "error_code": error_code,
+                    "error_summary": error_summary,
                     "retryable": True,
+                    "artifact_ref": primary_artifact_ref,
+                    **_report_completion_payload(report_state),
                 },
             )
         finally:
@@ -722,6 +971,7 @@ class AgentTeamTaskRuntime:
         thread_id: str,
         message_id: str,
         artifact_ref: str | None,
+        report_ref: str | None,
         checkpoint_ref: str | None,
     ) -> None:
         if artifact_ref:
@@ -741,6 +991,15 @@ class AgentTeamTaskRuntime:
                 ref_type="checkpoint",
                 ref_value=checkpoint_ref,
                 relation="latest",
+            )
+        if report_ref:
+            _record_thread_ref_once(
+                self.db,
+                thread_id=thread_id,
+                message_id=message_id,
+                ref_type="report",
+                ref_value=report_ref,
+                relation="report",
             )
 
 

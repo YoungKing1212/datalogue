@@ -215,7 +215,11 @@ function ActionButton({ action, onAction }) {
       onClick={() => {
         if (normalized.disabled) return;
         if (normalized.actionType === 'retry') {
-          dispatchRetry(normalized);
+          if (onAction) {
+            onAction(normalized); // Chat 消息由单个卡片处理 retry，避免所有历史消息监听同一全局事件。
+          } else {
+            dispatchRetry(normalized); // 保留无宿主场景的兼容事件，不影响独立 ArtifactCard 使用方。
+          }
           return;
         }
         if (onAction) onAction(normalized);

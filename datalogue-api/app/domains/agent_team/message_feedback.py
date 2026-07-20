@@ -13,13 +13,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core import models
+from app.core.time import utc_now
 
 ACTION_TO_SCORE = {
     "approve": 1,
@@ -35,6 +35,7 @@ def submit_message_feedback(
     db: Session,
     *,
     message_id: int,
+    owner_user_id: int | None = None,
     action: str,
     comment: str | None = None,
     trace_id: str | None = None,
@@ -42,7 +43,14 @@ def submit_message_feedback(
 ) -> dict[str, Any]:
     """提交消息反馈；当前只更新本地消息 metadata。"""
 
-    message = db.get(models.Message, message_id)
+    query = db.query(models.Message).filter(models.Message.id == message_id)
+    if owner_user_id is not None:
+        # 反馈对象必须属于当前用户会话；关联查询同时封堵顺序 message_id 枚举。
+        query = query.join(
+            models.Conversation,
+            models.Conversation.id == models.Message.conversation_id,
+        ).filter(models.Conversation.user_id == owner_user_id)
+    message = query.one_or_none()
     if not message:
         raise HTTPException(status_code=404, detail="消息不存在")
     if message.role != "assistant":
@@ -62,7 +70,7 @@ def submit_message_feedback(
         "score": ACTION_TO_SCORE.get(normalized),
         "comment": comment,
         "reason": reason,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": utc_now().isoformat(),
     }
     metadata["feedback"] = feedback_payload
     message.response_metadata = metadata

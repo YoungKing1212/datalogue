@@ -16,6 +16,7 @@ import pytest
 
 from app.core.models.agent_team_task import AgentTeamTask
 from app.core.schemas.agentscope_agent_team_task import AgentTeamTaskRequest
+from app.core.safety import sanitize_datalogue_payload
 from app.core.schemas.bi_workbench import build_datalogue_event_envelope
 
 
@@ -47,8 +48,22 @@ def test_agent_team_task_request_allows_workbench_retry_refs():
     assert request.client_context == {"action": "retry_last_step"}
 
 
+def test_agent_team_task_request_and_output_allow_legitimate_free_text():
+    request = AgentTeamTaskRequest(
+        task_source="chat",
+        question="create a chart from sales，显示同比增长 12.5% 和枚举值 1.5L",
+    )
+
+    sanitized = sanitize_datalogue_payload({"answer_summary": "同比增长 12.5%，规格为 1.5L"})
+
+    assert request.question.startswith("create a chart")
+    assert sanitized["answer_summary"] == "同比增长 12.5%，规格为 1.5L"
+
+
 def test_agent_team_task_request_requires_complete_agentscope_model_selection():
-    with pytest.raises(ValueError, match="AGENTSCOPE_MODEL_SELECTION_REQUIRES_CREDENTIAL_AND_MODEL"):
+    with pytest.raises(
+        ValueError, match="AGENTSCOPE_MODEL_SELECTION_REQUIRES_CREDENTIAL_AND_MODEL"
+    ):
         AgentTeamTaskRequest(
             task_source="chat",
             task_type="bi_query",

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Icon } from './icons';
+import { PrototypeNotice } from '../shared/components/prototype-notice';
 
 // NotificationsPopover — bell-triggered dropdown in top bar.
 // Anomaly-first: spikes/dips/threshold-breaches detected by the system,
@@ -141,6 +142,7 @@ function NotificationsPopover({ open, onClose }) {
             <button className="icon-btn" title="设置"><Icon name="cog" /></button>
           </div>
         </div>
+        <PrototypeNotice compact />
 
         <div className="np-tabs">
           {tabs.map(t => (

@@ -20,6 +20,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_api_user
+from app.core import models
 from app.core.database import get_db
 from app.core.schemas.agentscope_workbench import (
     WorkbenchArtifactView,
@@ -42,11 +44,20 @@ router = APIRouter()
 
 
 @router.get("/thread/{thread_id}", response_model=WorkbenchThreadView)
-def get_workbench_thread(thread_id: str, db: Session = Depends(get_db)) -> WorkbenchThreadView:
+def get_workbench_thread(
+    thread_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
+) -> WorkbenchThreadView:
     """读取 C3 Workbench 线程视图；as_* 来自 mirror，conv_* 为旧会话只读回放。"""
 
     try:
-        return build_workbench_thread_view(db, thread_id=thread_id)
+        return build_workbench_thread_view(
+            db,
+            thread_id=thread_id,
+            owner_user_id=current_user.id,
+            allow_all=current_user.is_superuser,
+        )
     except WorkbenchViewNotFoundError as exc:
         raise HTTPException(status_code=404, detail="workbench thread not found") from exc
     except ValueError as exc:
@@ -59,11 +70,18 @@ def get_workbench_artifact(
     artifact_ref: str,
     thread_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
 ) -> WorkbenchArtifactView:
     """读取工作台 artifact 摘要；只返回业务级 preview，不返回原始结果或 RepairPlan patch 主体。"""
 
     try:
-        return build_workbench_artifact_view(db, artifact_ref=artifact_ref, thread_id=thread_id)
+        return build_workbench_artifact_view(
+            db,
+            artifact_ref=artifact_ref,
+            thread_id=thread_id,
+            owner_user_id=current_user.id,
+            allow_all=current_user.is_superuser,
+        )
     except WorkbenchViewNotFoundError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
     except ValueError as exc:
@@ -74,12 +92,18 @@ def get_workbench_artifact(
 def post_workbench_retry(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_api_user),
 ) -> WorkbenchRetryResponse:
     """受理 Workbench 受控 retry；只接收 checkpoint/ref，不直接执行查询。"""
 
     try:
         request = WorkbenchRetryRequest.model_validate(payload)
-        return request_controlled_retry(db, request=request)
+        return request_controlled_retry(
+            db,
+            request=request,
+            owner_user_id=current_user.id,
+            allow_all=current_user.is_superuser,
+        )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail="invalid retry payload") from exc
     except WorkbenchActionNotFoundError as exc:

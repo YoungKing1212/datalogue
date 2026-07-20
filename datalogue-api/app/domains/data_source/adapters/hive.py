@@ -20,6 +20,7 @@ from sqlalchemy import text
 
 from app.domains.data_source.adapters.base import DatasourceAdapter
 from app.core.models.datasource import Datasource
+from app.domains.data_source.helpers import quote_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +42,15 @@ class HiveAdapter(DatasourceAdapter):
         engine = self.create_engine(ds)
         try:
             with engine.connect() as conn:
-                table_rows = conn.execute(text(f"SHOW TABLES IN `{schema}`")).fetchall()
+                schema_ref = quote_identifier(schema, "hive")
+                table_rows = conn.execute(text(f"SHOW TABLES IN {schema_ref}")).fetchall()
                 tables = []
                 for row in table_rows:
                     table_name = str(row[0])
                     columns = []
                     try:
-                        col_rows = conn.execute(text(f"DESCRIBE `{schema}`.`{table_name}`")).fetchall()
+                        table_ref = quote_identifier(table_name, "hive")
+                        col_rows = conn.execute(text(f"DESCRIBE {schema_ref}.{table_ref}")).fetchall()
                         for col in col_rows:
                             col_name = str(col[0] or "").strip()
                             if not col_name or col_name.startswith("#"):

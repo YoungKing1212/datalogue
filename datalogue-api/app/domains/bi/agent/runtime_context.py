@@ -123,7 +123,7 @@ def _bind_query_executor(
         getattr(datasource, "dialect", None) or getattr(datasource, "db_type", None) or "unknown"
     )
 
-    def _execute(sql: str) -> dict[str, Any]:
+    def _execute(sql: str, params: dict[str, Any]) -> dict[str, Any]:
         # execute_compiled_query 是唯一能读取私有 SQL 的位置；上层 Agent 只拿 artifact 引用。
         with observation_span(
             "datalogue.bi.sql.execute",
@@ -135,7 +135,13 @@ def _bind_query_executor(
                 "db.statement": sql,
             },
         ) as span:
-            result = preview_dataset_sql(db, dataset=dataset, sql=sql, question=question)
+            result = preview_dataset_sql(
+                db,
+                dataset=dataset,
+                sql=sql,
+                params=params,
+                question=question,
+            )
             payload = result if isinstance(result, dict) else {"rows": []}
             set_span_attributes(
                 span,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Icon } from './icons';
 import { AnalysisBlueprintsPanel } from './analysis-blueprints';
 import {
@@ -266,6 +266,9 @@ function DatasetsScreen() {
   const [inspectLoading, setInspectLoading] = useState(false);
   const inspectSeqRef = useRef(0); // 防止旧请求覆盖新结果
   const previewSeqRef = useRef(0); // 防止旧预览请求覆盖新结果
+  const metaSeqRef = useRef(0);
+  const sourceTablesSeqRef = useRef(0);
+  const selectedTablesSeqRef = useRef(0);
 
   // ── 字段编辑状态 ──
   const [editingColumnId, setEditingColumnId] = useState(null);
@@ -424,12 +427,6 @@ function DatasetsScreen() {
     }
   }, [activeDsId]);
 
-  useEffect(() => {
-    if (previewTableId && allSourceTables.length > 0 && activeDsId) {
-      loadPreview(previewTableId);
-    }
-  }, [previewTableId, allSourceTables, activeDsId]);
-
   // 切换/选中状态变化时清理 inspect：若该表已被勾选，就交给已选字段视图展示
   useEffect(() => {
     if (inspectingTableId && selectedTableIds.has(inspectingTableId)) {
@@ -536,6 +533,7 @@ function DatasetsScreen() {
   };
 
   const loadDsMeta = async (dsId) => {
+    const seq = ++metaSeqRef.current;
     try {
       const [ms, ds, terms, cases, manifest] = await Promise.all([
         listDatasetMetrics(dsId),
@@ -544,6 +542,7 @@ function DatasetsScreen() {
         listSemanticValidationCases(dsId),
         getDatasetSubAgentManifest(dsId),
       ]);
+      if (seq !== metaSeqRef.current) return;
       setMetrics(ms);
       setDimensions(ds);
       setBusinessTerms(terms);
@@ -554,6 +553,7 @@ function DatasetsScreen() {
       setManifestMessage('');
       setSelectedTermId(prev => (prev && terms.some(t => t.id === prev) ? prev : terms[0]?.id ?? null));
     } catch (err) {
+      if (seq !== metaSeqRef.current) return;
       console.error(err);
       setManifestDetail(null);
     }
@@ -561,12 +561,15 @@ function DatasetsScreen() {
 
   // 加载数据源所有表（目录）
   const loadAllSourceTables = async (dsId) => {
+    const seq = ++sourceTablesSeqRef.current;
     const ds = datasets.find(d => d.id === dsId);
     if (!ds) return;
     try {
       const tables = await listSourceTables(ds.datasource_id, ds.schema_name);
+      if (seq !== sourceTablesSeqRef.current) return;
       setAllSourceTables(tables);
     } catch (err) {
+      if (seq !== sourceTablesSeqRef.current) return;
       console.error(err);
       setAllSourceTables([]);
     }
@@ -574,11 +577,13 @@ function DatasetsScreen() {
 
   // 加载数据集已选表 + 合并字段
   const loadSelectedTables = async (dsId) => {
+    const seq = ++selectedTablesSeqRef.current;
     try {
       const [selectedTables, cols] = await Promise.all([
         listSelectedTables(dsId),
         listSelectedColumns(dsId),
       ]);
+      if (seq !== selectedTablesSeqRef.current) return;
       const nextSelectedIds = new Set(selectedTables.map(t => t.id));
       setSelectedTableIds(nextSelectedIds);
       setSelectedColumns(cols);
@@ -605,7 +610,7 @@ function DatasetsScreen() {
     }
   };
 
-  const loadPreview = async (tableId) => {
+  const loadPreview = useCallback(async (tableId) => {
     const seq = ++previewSeqRef.current;
     const table = allSourceTables.find(t => t.id === tableId);
     if (!table) {
@@ -630,7 +635,13 @@ function DatasetsScreen() {
     } finally {
       if (seq === previewSeqRef.current) setPreviewLoading(false);
     }
-  };
+  }, [activeDsId, allSourceTables, datasets]);
+
+  useEffect(() => {
+    if (previewTableId && allSourceTables.length > 0 && activeDsId) {
+      loadPreview(previewTableId);
+    }
+  }, [activeDsId, allSourceTables.length, loadPreview, previewTableId]);
 
   // ── 字段编辑 ──
   const handleStartEditColumn = (col) => {
@@ -1312,7 +1323,7 @@ function DatasetsScreen() {
     setManifestSaving(true);
     setManifestMessage('');
     try {
-      await saveDatasetSubAgentManifest(currentDsId, manifestManualFieldsFromForm(manifestForm), 'yangkai');
+      await saveDatasetSubAgentManifest(currentDsId, manifestManualFieldsFromForm(manifestForm));
       await loadManifestDetail(currentDsId);
       setManifestMessage('草稿已保存。');
     } catch (err) {
@@ -1327,7 +1338,7 @@ function DatasetsScreen() {
     setManifestPublishing(true);
     setManifestMessage('');
     try {
-      await publishDatasetSubAgentManifest(currentDsId, manifestManualFieldsFromForm(manifestForm), 'yangkai');
+      await publishDatasetSubAgentManifest(currentDsId, manifestManualFieldsFromForm(manifestForm));
       await loadManifestDetail(currentDsId);
       setManifestMessage('Manifest 已发布为当前版本。');
     } catch (err) {
@@ -1347,7 +1358,7 @@ function DatasetsScreen() {
     setManifestRollingBackVersion(version);
     setManifestMessage('');
     try {
-      await rollbackDatasetSubAgentManifest(currentDsId, version, 'yangkai', '治理页手动回滚');
+      await rollbackDatasetSubAgentManifest(currentDsId, version, '治理页手动回滚');
       await loadManifestDetail(currentDsId);
       setManifestMessage(`已基于 ${version} 生成新的 current 版本。`);
     } catch (err) {
@@ -1430,10 +1441,18 @@ function DatasetsScreen() {
   ];
   const capabilityTabs = [...primaryCapabilityTabs, ...advancedGovernanceTabs];
   const selectedTableNames = [...new Set(selectedColumns.map(c => c.table_name).filter(Boolean))];
-  const selectedPreviewTables = allSourceTables.filter(t => selectedTableIds.has(t.id));
-  const activePreviewTable = previewTableId
-    ? allSourceTables.find(t => t.id === previewTableId)
-    : selectedPreviewTables[0];
+  const selectedPreviewTables = useMemo(
+    () => allSourceTables.filter(table => selectedTableIds.has(table.id)),
+    [allSourceTables, selectedTableIds],
+  );
+  const activePreviewTable = useMemo(
+    () => (
+      previewTableId
+        ? allSourceTables.find(table => table.id === previewTableId)
+        : selectedPreviewTables[0]
+    ),
+    [allSourceTables, previewTableId, selectedPreviewTables],
+  );
   const focusedSelectedTable = focusedTableId
     ? allSourceTables.find(t => t.id === focusedTableId)
     : null;
@@ -1551,11 +1570,15 @@ function DatasetsScreen() {
     setShowDimForm(true);
   };
 
-  const handlePreviewTableChange = (nextId) => {
+  const handlePreviewTableChange = useCallback((nextId) => {
     if (!nextId) return;
     setPreviewTableId(nextId);
     if (selectedTableIds.has(nextId)) setFocusedTableId(nextId);
-  };
+  }, [selectedTableIds]);
+  const handlePreviewRefresh = useCallback(() => {
+    const nextId = previewTableId || activePreviewTable?.id;
+    if (nextId) loadPreview(nextId);
+  }, [activePreviewTable?.id, loadPreview, previewTableId]);
 
   const getColumnRoleBadge = (col) => {
     const effectiveRole = col.user_semantic_role || col.ai_semantic_role || col.semantic_role;
@@ -3062,10 +3085,7 @@ function DatasetsScreen() {
                 previewData={previewData}
                 loading={previewLoading}
                 onSelectTable={handlePreviewTableChange}
-                onRefresh={() => {
-                  const nextId = previewTableId || activePreviewTable?.id;
-                  if (nextId) loadPreview(nextId);
-                }}
+                onRefresh={handlePreviewRefresh}
               />
             )}
           </div>
@@ -3561,7 +3581,7 @@ function DatasetsScreen() {
   );
 }
 
-function DataPreviewPanel({ tables, previewTableId, previewTable, previewData, loading, onSelectTable, onRefresh }) {
+const DataPreviewPanel = React.memo(function DataPreviewPanel({ tables, previewTableId, previewTable, previewData, loading, onSelectTable, onRefresh }) {
   const columns = previewData?.columns || [];
   const rows = previewData?.rows || [];
   const selectedValue = previewTableId || previewTable?.id || '';
@@ -3646,7 +3666,7 @@ function DataPreviewPanel({ tables, previewTableId, previewTable, previewData, l
       )}
     </section>
   );
-}
+});
 
 function PreviewCellValue({ value }) {
   if (value === null || value === undefined) {

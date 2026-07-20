@@ -39,6 +39,7 @@ vi.mock('@assistant-ui/react', () => ({
       };
       return ThreadListItem ? <ThreadListItem /> : <div data-testid="persisted-thread-items" />;
     },
+    LoadMore: ({ children, className }) => <button className={className}>{children}</button>,
   },
   ThreadListItemPrimitive: {
     Root: ({ children, className }) => <div className={className}>{children}</div>,
@@ -56,7 +57,7 @@ vi.mock('@assistant-ui/react', () => ({
   useAuiState: (selector) => selector(assistantUiMocks.state),
 }));
 
-import { startNewConversationDraft, ThreadList } from '../../../src/assistant/ThreadList';
+import { startNewConversationDraft, ThreadList } from '../../../src/features/chat/ThreadList';
 
 describe('startNewConversationDraft', () => {
   it('只切换到本地新 thread 并回到 /chat，不调用创建或刷新接口', async () => {

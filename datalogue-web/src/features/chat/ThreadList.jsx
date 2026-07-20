@@ -165,6 +165,9 @@ export function ThreadList() {
             <DraftThreadListItem />
             <ThreadListPrimitive.Items components={{ ThreadListItem }} />
           </div>
+          <ThreadListPrimitive.LoadMore className="thread-list-load-more">
+            加载更多
+          </ThreadListPrimitive.LoadMore>
         </div>
 
         <div className="thread-list-section">

@@ -2,7 +2,7 @@
 
 本文聚焦 `datalogue_execute_query_plan_bundle` 之外的 BI Worker 工具设计。这些工具不负责真实 SQL 执行，而是负责候选数据集筛选、资产发现、上下文准备、schema 切片、表详情补齐和失败修复建议。
 
-![BI Worker 工具族设计图](assets/bi_worker_tool_family_design.png)
+![BI Worker 工具族设计图](../assets/diagrams/architecture/bi_worker_tool_family_design.png)
 
 ## 工具清单
 

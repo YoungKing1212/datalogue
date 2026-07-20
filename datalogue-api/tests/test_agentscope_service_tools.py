@@ -107,7 +107,10 @@ async def test_extra_agent_tools_returns_report_tool_for_report_worker_only():
 
     tools = await factory("user-1", "worker-report-1", "session-1")
 
-    assert [tool.name for tool in tools] == ["datalogue_get_artifact_report_input"]
+    assert [tool.name for tool in tools] == [
+        "datalogue_get_artifact_report_input",
+        "datalogue_submit_report",
+    ]
     assert "datalogue_execute_query_plan_bundle" not in {tool.name for tool in tools}
     assert AGENTSCOPE_SERVICE_BUILTIN_TOOL_NAMES.isdisjoint({tool.name for tool in tools})
 
@@ -637,8 +640,12 @@ async def test_bi_worker_candidate_dataset_tool_publishes_safe_final_event(monke
         "select_candidate_datasets_for_agent_team",
         fake_select_candidate_datasets_for_agent_team,
     )
+    async def fake_resolve_task_context(*_args, **_kwargs):
+        return {"leader_session_id": "leader-session-1"}
 
-    async with agent_progress_subscription(user_id="user-1") as queue:
+    monkeypatch.setattr(tools_module, "resolve_task_context", fake_resolve_task_context)
+
+    async with agent_progress_subscription(leader_session_id="leader-session-1") as queue:
         factory = build_datalogue_extra_agent_tools(storage=FakeStorage())
         tools = await factory("user-1", "worker-bi-1", "worker-session-1")
         tool = next(item for item in tools if item.name == "datalogue_select_candidate_datasets")
@@ -650,6 +657,27 @@ async def test_bi_worker_candidate_dataset_tool_publishes_safe_final_event(monke
     assert event["payload"]["datalogue_event_type"] == "dataset_candidates"
     assert event["payload"]["requires_user_confirmation"] is True
     assert event["payload"]["route_decision"]["candidates"][0]["dataset_id"] == 10
+
+
+@pytest.mark.asyncio
+async def test_bi_worker_query_artifact_event_is_non_terminal():
+    from app.domains.agent_team.progress_bridge import agent_progress_subscription
+    from app.runtime.engine.tools import _publish_worker_business_final
+
+    async with agent_progress_subscription(leader_session_id="leader-session-1") as queue:
+        _publish_worker_business_final(
+            worker_context={"leader_session_id": "leader-session-1"},
+            event_type="artifact.created",
+            payload={
+                "datalogue_event_type": "dataset_query_result",
+                "status": "completed",
+                "artifact_ref": "artifact:query-1",
+            },
+        )
+        event = queue.get_nowait()
+
+    assert event["event_type"] == "artifact.created"
+    assert event["payload"]["artifact_ref"] == "artifact:query-1"
 
 
 def test_plan_contract_error_expected_guides_join_condition_to_join_keys():

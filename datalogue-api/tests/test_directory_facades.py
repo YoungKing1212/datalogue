@@ -4,29 +4,29 @@
 #   验证 typed worker lane 目标目录 facade 能与旧模块入口并存。
 #
 # Responsibilities:
-#   - 覆盖后端 facade-first 包骨架的导入兼容性，避免目录迁移期间破坏旧调用方。
-#   - 确认关键 facade 仅复用旧实现对象，不在新目录承载业务逻辑。
+#   - 覆盖后端目录边界与 canonical 实现入口。
+#   - 防止已经删除的兼容 facade 被生产调用方重新引入。
 #
 # Author      : KenYang
 # Created On  : 2026-07-09
 # ============================================================
 
-"""typed worker lane facade-first 目录骨架导入测试。"""
+"""typed worker lane 目录边界测试。"""
 
 import importlib
 import inspect
+from importlib.util import find_spec
 from pathlib import Path
 
 
 def test_target_packages_are_importable():
-    """目标领域包先作为兼容层存在，迁移期不要求承载新业务逻辑。"""
+    """目标领域包与运行时引擎入口均可直接导入。"""
 
     for module_name in [
         "app.domains.data_source",
         "app.domains.query_execution",
         "app.domains.agent_team",
         "app.domains.bi",
-        "app.agentscope_runtime",
         "app.runtime.engine",
     ]:
         assert importlib.import_module(module_name)
@@ -55,47 +55,29 @@ def test_runtime_engine_app_factory_is_direct_source():
     assert callable(engine.create_embedded_runtime_app)
 
 
-def test_agentscope_runtime_facade_exposes_only_service_runtime_boundary():
-    """Phase E: agentscope_runtime 先作为 AgentScope Service 嵌入边界 facade，不承载 BI 工具业务。"""
+def test_removed_agentscope_runtime_facade_is_not_importable():
+    """已删除的过渡 facade 不得以空目录或 namespace package 形式复活。"""
 
-    facade = importlib.import_module("app.agentscope_runtime")
-    legacy = importlib.import_module("app.runtime.engine")
-    worker_logging = importlib.import_module("app.agentscope_runtime.worker_logging")
-    legacy_worker_logging = importlib.import_module("app.domains.agent_team.worker_logging")
-
-    assert facade.create_embedded_runtime_app is legacy.create_embedded_runtime_app
-    assert facade.AgentScopeServiceClient is legacy.AgentScopeServiceClient
-    assert facade.AgentTeamTaskRunner is legacy.AgentTeamTaskRunner
-    assert facade.project_runtime_event is legacy.project_runtime_event
-    assert facade.setup_runtime_tracing is legacy.setup_runtime_tracing
-    assert facade.build_datalogue_extra_agent_middlewares is (
-        legacy_worker_logging.build_datalogue_extra_agent_middlewares
-    )
-    assert worker_logging.build_datalogue_extra_agent_middlewares is (
-        legacy_worker_logging.build_datalogue_extra_agent_middlewares
-    )
-    # BI worker 工具链仍在 runtime.engine.tools / domains.bi 内；新 facade 暂不把业务工具暴露为顶层 API。
-    assert "build_datalogue_extra_agent_tools" not in facade.__all__
-    assert not hasattr(facade, "build_datalogue_extra_agent_tools")
+    assert find_spec("app.agentscope_runtime") is None
 
 
-def test_agentscope_runtime_covered_callers_import_new_facade():
-    """G054: 已有测试覆盖的生产调用方必须通过 agentscope_runtime facade 进入 Service runtime。"""
+def test_runtime_engine_callers_use_canonical_modules():
+    """Phase B Step 4c: 生产调用方直连 canonical 模块，禁止恢复已删除 facade。"""
 
     api_root = Path(__file__).resolve().parents[1] / "app"
-    covered_callers = [
-        api_root / "main.py",
-        api_root / "api" / "agent_team.py",
-        api_root / "api" / "agentscope_control_plane.py",
-        api_root / "api" / "llm.py",
-        api_root / "core" / "llm_config.py",
-    ]
+    covered_callers = {
+        api_root / "main.py": ("app.runtime.engine.app_factory", "app.runtime.engine.otel_setup"),
+        api_root / "api" / "agent_team.py": ("app.runtime.engine.runner",),
+        api_root / "api" / "agentscope_control_plane.py": ("app.runtime.engine.client",),
+        api_root / "api" / "llm.py": ("app.runtime.engine.client",),
+        api_root / "core" / "llm_config.py": ("app.runtime.engine.client",),
+    }
 
-    for caller in covered_callers:
+    for caller, expected_modules in covered_callers.items():
         source = caller.read_text(encoding="utf-8")
-        assert "app.agentscope_runtime" in source
-        assert "from app.runtime.engine" not in source
-        assert "import app.runtime.engine" not in source
+        assert "app.agentscope_runtime" not in source
+        for module_name in expected_modules:
+            assert module_name in source
 
 
 def test_data_source_implementation_lives_in_domain_modules():
@@ -121,14 +103,15 @@ def test_data_source_implementation_lives_in_domain_modules():
 
 
 def test_query_execution_guard_and_dialect_implementation_lives_in_domain_modules():
-    """Phase B: SQL guard / dialect 实体已直接迁入 query_execution，旧 utils 路径通过 facade 转发。"""
+    """SQL Guard 留在领域层，标识符转义统一复用 core 的方言实现。"""
 
     domain_guard = importlib.import_module("app.domains.query_execution.guard")
     domain_names = importlib.import_module("app.domains.query_execution.dialect.names")
+    core_identifiers = importlib.import_module("app.core.sql_identifiers")
 
     assert domain_guard.SQLGuardResult.__module__ == "app.domains.query_execution.guard"
     assert domain_guard.guard_readonly_sql.__module__ == "app.domains.query_execution.guard"
-    assert domain_names.quote_ident.__module__ == "app.domains.query_execution.dialect.names"
+    assert domain_names.quote_ident is core_identifiers.quote_identifier
     assert domain_names.sanitize_filter_sql.__module__ == "app.domains.query_execution.dialect.names"
 
     # utils facade 必须转发到同领域对象
@@ -144,7 +127,7 @@ def test_query_execution_guard_and_dialect_implementation_lives_in_domain_module
         "app/domains/query_execution/guard.py"
     )
     assert inspect.getsourcefile(domain_names.quote_ident).endswith(
-        "app/domains/query_execution/dialect/names.py"
+        "app/core/sql_identifiers.py"
     )
 
 
@@ -192,6 +175,7 @@ def test_domains_bi_boundary_is_canonical_source_for_bi_capabilities():
         "__init__.py",
         "agent",
         "agent_services.py",
+        "capability_policy.py",
         "skill",
         "toolkit",
         "worker",

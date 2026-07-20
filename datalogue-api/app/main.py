@@ -23,7 +23,8 @@ from app.core.logging import setup_logging
 from app.core.models import User
 from app.core.security import hash_password
 from app.api import router as api_router
-from app.agentscope_runtime import create_embedded_runtime_app, setup_runtime_tracing
+from app.runtime.engine.app_factory import create_embedded_runtime_app
+from app.runtime.engine.otel_setup import setup_runtime_tracing
 
 # 初始化带颜色的日志，可选持久化到文件
 settings = get_settings()

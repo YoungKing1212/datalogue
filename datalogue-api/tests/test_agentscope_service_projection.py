@@ -100,6 +100,48 @@ def test_projection_maps_terminal_and_tool_events_to_stable_event_types():
     assert tool.payload == {"summary": "工具执行完成", "row_count": 3}
 
 
+def test_projection_keeps_query_artifact_non_terminal_and_maps_report_result_to_final():
+    from app.runtime.engine.projection import project_runtime_event
+
+    long_markdown = "报告正文" * 400
+
+    artifact = project_runtime_event(
+        {
+            "event_type": "artifact.created",
+            "payload": {
+                "datalogue_event_type": "dataset_query_result",
+                "artifact_ref": "artifact:query-1",
+                "summary": "查询结果已生成。",
+            },
+        },
+        task_id="task-report",
+        trace_id="trace-report",
+        selected_agent="bi_worker",
+    )
+    report = project_runtime_event(
+        {
+            "event_type": "report_worker_result",
+            "payload": {
+                "datalogue_event_type": "report_worker_result",
+                "status": "completed",
+                "source_artifact_ref": "artifact:query-1",
+                "report_ref": "artifact:report:1",
+                "report_markdown": long_markdown,
+                "report_worker_agent_id": "report-agent-1",
+                "report_worker_session_id": "report-session-1",
+            },
+        },
+        task_id="task-report",
+        trace_id="trace-report",
+        selected_agent="report_worker",
+    )
+
+    assert artifact.event_type == "artifact.created"
+    assert report.event_type == "message.completed"
+    assert report.payload["datalogue_event_type"] == "report_worker_result"
+    assert report.payload["report_markdown"] == long_markdown
+
+
 def test_projection_preserves_agent_progress_as_realtime_safe_event():
     from app.runtime.engine.projection import project_runtime_event
 

@@ -24,7 +24,11 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core import models
-from app.domains.data_source.service import create_engine_for_datasource, normalize_db_type
+from app.domains.data_source.service import (
+    configure_statement_timeout,
+    create_engine_for_datasource,
+    normalize_db_type,
+)
 from app.domains.query_execution.query_constraints import normalize_query_constraints
 from app.domains.query_execution.guard import guard_readonly_sql
 import sqlglot
@@ -143,10 +147,10 @@ def _apply_max_row_limit(expression: exp.Expression, dialect: str, max_rows: int
     return expression.sql(dialect=dialect)
 
 
-def _execute_count(conn, count_sql: str) -> int | None:
+def _execute_count(conn, count_sql: str, params: dict[str, Any] | None = None) -> int | None:
     """执行 COUNT(*) SQL，失败返回 None。"""
     try:
-        result_proxy = conn.execute(text(count_sql))
+        result_proxy = conn.execute(text(count_sql), params or {})
         row = result_proxy.fetchone()
         if row is None:
             return None
@@ -169,6 +173,7 @@ def preview_dataset_sql(
     *,
     dataset: models.SemanticDataset,
     sql: str,
+    params: dict[str, Any] | None = None,
     question: str | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
@@ -227,13 +232,14 @@ def preview_dataset_sql(
     engine = create_engine_for_datasource(datasource)
     try:
         with engine.connect() as conn:
+            conn = configure_statement_timeout(conn, datasource)
             # 先执行 COUNT(*) 获知真实总量；失败时降级为直接执行原 SQL。
             total_row_count: int | None = None
             parsed = _parse_sql(normalized_sql, dialect)
             if parsed is not None:
                 count_sql = _build_count_sql(parsed, dialect)
                 try:
-                    total_row_count = _execute_count(conn, count_sql)
+                    total_row_count = _execute_count(conn, count_sql, params)
                 except Exception as exc:
                     logger.warning(
                         "SQL preview COUNT 执行失败，降级为直接执行: dataset_id=%s error=%s",
@@ -243,7 +249,8 @@ def preview_dataset_sql(
                 if total_row_count is not None and total_row_count > _MAX_PREVIEW_ROWS:
                     normalized_sql = _apply_max_row_limit(parsed, dialect, _MAX_PREVIEW_ROWS)
 
-            result_proxy = conn.execute(text(normalized_sql))
+            # 编译器过滤值只能经 params 绑定；这里禁止重新内联，确保 Guard 与数据库解析同一份 SQL 结构。
+            result_proxy = conn.execute(text(normalized_sql), params or {})
             columns = list(result_proxy.keys())
             rows: list[dict[str, Any]] = []
             for row in result_proxy:
@@ -279,7 +286,7 @@ def preview_dataset_sql(
         return _empty_response(
             dataset_id=dataset_id,
             sql=normalized_sql,
-            error=f"SQL 执行失败: {exc}",
+            error="SQL 执行失败，内部错误已记录",
             sql_guard=guard_payload,
         )
     finally:

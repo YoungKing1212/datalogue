@@ -29,34 +29,7 @@ import {
   buildArtifactDetailViewEvent,
   emitWorkbenchRetentionUiEvent,
 } from '../../assistant/workbench-retention-events';
-
-// ── Step 节点名称映射（agent panel 兼容） ──
-const NODE_STEP_NAMES = {
-  message_gateway: '任务理解',
-  'message-gateway': '任务理解',
-  lead_agent_tools: '能力匹配',
-  manifest_route: '场景匹配',
-  clarification_resolution: '澄清处理',
-  intent_recognition: '意图识别',
-  entry_intent_classification: '入口判断',
-  analysis_blueprint_execute: '分析蓝图执行',
-  candidate_assets: '数据资产匹配',
-  schema_recall: '数据范围确认',
-  term_normalize_node: '术语标准化',
-  semantic_asset_resolution_node: '语义资产解析',
-  metric_resolution_node: '指标解析',
-  dsl_generate: '查询生成',
-  dsl_validate: '查询校验',
-  dsl_compiler: '执行计划生成',
-  sql_execute: '查询执行',
-  sql_audit: '结果诊断',
-  report_generator: '结果整理',
-  reasoning_summary: '处理摘要',
-  live_thinking: '分析进度',
-  multi_agent_handoff: 'Agent 协作',
-  confirmation: '待确认',
-  'agent-worker-thinking': '分析进度',
-};
+import { NODE_DISPLAY_NAMES } from './node-display';
 
 const NODE_ICONS = {
   clarification_resolution: 'book',
@@ -83,16 +56,16 @@ function safeReasoningLabelText(value) {
 function reasoningStepLabel(part, node) {
   if (part.reasoningKind === 'bi_worker_thinking_summary') return '分析进度';
   if (node && String(node).startsWith('agent-')) {
-    if (NODE_STEP_NAMES[String(node).split(':')[0]]) {
-      return NODE_STEP_NAMES[String(node).split(':')[0]];
+    if (NODE_DISPLAY_NAMES[String(node).split(':')[0]]) {
+      return NODE_DISPLAY_NAMES[String(node).split(':')[0]];
     }
     return part.agentName || (part.agentRole === 'worker' ? 'Worker Agent' : 'Lead Agent');
   }
   if (node === 'reasoning_summary') {
     // 最终摘要每条自带业务标题（如“识别任务”“生成结果”），优先使用，避免全部退化为“任务处理”。
-    return safeReasoningLabelText(part.title) || NODE_STEP_NAMES.reasoning_summary;
+    return safeReasoningLabelText(part.title) || NODE_DISPLAY_NAMES.reasoning_summary;
   }
-  return NODE_STEP_NAMES[node] || safeReasoningLabelText(part.title) || '任务处理';
+  return NODE_DISPLAY_NAMES[node] || safeReasoningLabelText(part.title) || '任务处理';
 }
 
 // 调试型 reasoning 可能携带执行面原文；Thread 用户可见层只保留业务级过程摘要。
@@ -135,7 +108,7 @@ function preprocessAssistantMarkdown(text) {
  * StepCard — 单个流式步骤的视觉卡片（供 AgentPanel 复用）
  */
 export function StepCard({ node, display_name, status, elapsed_ms }) {
-  const label = NODE_STEP_NAMES[node] || NODE_STEP_NAMES[display_name] || '任务处理';
+  const label = NODE_DISPLAY_NAMES[node] || NODE_DISPLAY_NAMES[display_name] || '任务处理';
   return (
     <div className={`step-card step-card-${status}`}>
       <div className="step-icon">
@@ -450,7 +423,13 @@ function ArtifactDetailPanel({ detail, onClose }) {
           <strong>查询结果详情</strong>
           <span>{detail.ref || '结果产物'}</span>
         </div>
-        <button type="button" className="artifact-detail-close" onClick={onClose}>
+        <button
+          type="button"
+          className="artifact-detail-close"
+          onClick={onClose}
+          title="关闭结果详情"
+          aria-label="关闭结果详情"
+        >
           <Icon name="x" />
         </button>
       </div>
@@ -475,7 +454,7 @@ function ArtifactDetailPanel({ detail, onClose }) {
             rows={tableRows}
             totalRowCount={rowCount}
             truncated={artifact?.content_json?.truncated === true}
-            pageSize={20}
+            pageSize={100}
           />
         </div>
       )}
@@ -969,35 +948,39 @@ export function AIMessage() {
     emitWorkbenchRetentionUiEvent(event); // 退役 gate 的“应出现详情”只以 Chat 侧 artifact 投影为准，不再从 Workbench 旧日志倒推。
   }, [artifactCard, message?.id]);
 
-  useEffect(() => {
-    const onArtifactAction = async (event) => {
-      const detail = event?.detail || {};
-      if (detail.actionType !== 'retry' || !detail.checkpointRef) return;
+  const handleArtifactAction = async (action) => {
+    const actionType = action?.actionType || action?.action_type || action?.action_id || action?.actionId;
+    if (actionType === 'retry') {
+      const checkpointRef = action?.checkpoint_ref || action?.checkpointRef || action?.payload_ref || action?.payloadRef;
+      const threadId = action?.thread_id || action?.threadId || custom.threadId;
+      const sourceMessageId = action?.message_id || action?.messageId || custom.messageId;
+      if (!checkpointRef || !threadId || !sourceMessageId) {
+        setArtifactDetail({ status: 'error', error: '重试上下文不完整，请刷新会话后再试' });
+        return;
+      }
+      setArtifactDetail({ status: 'loading' });
       try {
         const response = await requestWorkbenchRetry({
-          checkpoint_ref: detail.checkpointRef, // 只把检查点交给后端，由后端恢复完整上下文。
+          thread_id: threadId,
+          message_id: sourceMessageId,
+          checkpoint_ref: checkpointRef, // 只传归属明确的检查点句柄，不回传 SQL 或执行上下文。
           selected_action: 'retry_last_step',
         });
         const taskRequest = response?.accepted ? response?.task_request || null : null;
-        if (!taskRequest) return;
+        if (!taskRequest) {
+          setArtifactDetail({ status: 'error', error: response?.disabled_reason || '当前步骤不可重试' });
+          return;
+        }
         window.__DATALOGUE_PENDING_WORKBENCH_RETRY__ = taskRequest;
-        window.dispatchEvent(
-          new CustomEvent('datalogue:composer-submit', {
-            detail: {
-              text: taskRequest.question || taskRequest.display_text || '重试上一步',
-            },
-          }),
-        );
+        window.dispatchEvent(new CustomEvent('datalogue:composer-submit', {
+          detail: { text: taskRequest.question || taskRequest.display_text || '重试上一步' },
+        }));
+        setArtifactDetail({ status: 'idle' });
       } catch (error) {
-        console.error('[artifact-card] retry request failed', error);
+        setArtifactDetail({ status: 'error', error: error?.message || '重试请求失败，请稍后再试' });
       }
-    };
-    window.addEventListener('datalogue:artifact-action', onArtifactAction);
-    return () => window.removeEventListener('datalogue:artifact-action', onArtifactAction);
-  }, []);
-
-  const handleArtifactAction = async (action) => {
-    const actionType = action?.actionType || action?.action_type || action?.action_id || action?.actionId;
+      return;
+    }
     if (actionType === 'copy') {
       const ref = actionArtifactRef(action, artifactCard);
       if (ref) navigator.clipboard?.writeText(ref).catch(console.error);
@@ -1041,7 +1024,7 @@ export function AIMessage() {
         {isStreaming ? (
           <span className="stage">
               <span className="thread-status-dot" aria-hidden="true" />
-              正在整理结论
+              {custom.currentPhase === 'report' ? '正在整理报告' : '正在整理结论'}
           </span>
         ) : timing?.totalStreamTime ? (
           <span className="msg-timing">用时 {(timing.totalStreamTime / 1000).toFixed(1)} 秒</span>

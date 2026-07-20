@@ -9,7 +9,7 @@ import {
   useAuiState,
   useLocalRuntime,
 } from '@assistant-ui/react';
-import { makeChatAdapter } from '../assistant/chat-adapter';
+import { makeChatAdapter } from '../features/chat/chat-adapter';
 import { Icon } from './icons';
 
 const TAB_PROMPTS = {

@@ -45,9 +45,25 @@ class MessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MessagePageOut(BaseModel):
+    """消息历史页信息；next_before_message_id 为空表示已到最早消息。"""
+
+    has_more: bool = False
+    next_before_message_id: Optional[int] = None
+    limit: int
+
+
 class ConversationDetailOut(BaseModel):
     conversation: ConversationOut
     messages: List[MessageOut]
+    message_page: Optional[MessagePageOut] = None
+
+
+class ConversationPageOut(BaseModel):
+    """assistant-ui RemoteThreadListAdapter 使用的游标分页结果。"""
+
+    items: List[ConversationOut]
+    next_cursor: Optional[str] = None
 
 
 class ConversationCreate(BaseModel):

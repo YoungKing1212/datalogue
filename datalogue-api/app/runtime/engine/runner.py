@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from typing import Any
 
@@ -30,6 +30,11 @@ from redis.asyncio import Redis
 from app.runtime.engine.client import AgentScopeServiceClient
 from app.domains.bi.worker.dataset_query import execute_dataset_query_for_agent_team_direct_fallback
 from app.domains.agent_team.progress_bridge import agent_progress_subscription
+from app.domains.agent_team.report_execution import (
+    ReportExecutionState,
+    ReportExecutionStatus,
+    ReportWorkerRequiredNotCompletedError,
+)
 from app.runtime.engine.projection import project_runtime_event
 from app.runtime.engine.registry import (
     available_datalogue_worker_types,
@@ -106,24 +111,32 @@ class AgentTeamTaskRunner:
             task=task,
         )
 
-        await self.client.trigger_chat(
-            agent_id=leader_agent_id,
-            session_id=service_session_id,
-            text=_build_agent_input_text(request=request, user_msg=user_msg),
-        )
-        log_lifecycle(
-            "agentscope_agent_team.runner.chat_triggered",
-            task_id=task.task_id,
-            trace_id=task.trace_id,
-            agent_id=leader_agent_id,
-            service_session_id=service_session_id,
-        )
-
         current_reply_spawned_worker = False
         current_reply_text = ""
-        progress_user_id = str(getattr(self.client, "user_id", "") or "")
+        report_gate_enabled = bool(
+            self.settings.DATALOGUE_REPORT_WORKER_ENABLED
+            and request.task_type in {"bi_query", "report"}
+        )
+        report_state = ReportExecutionState()
+        if report_gate_enabled and request.task_type == "report" and request.artifact_ref:
+            report_state.mark_required(request.artifact_ref)
         try:
-            async with agent_progress_subscription(user_id=progress_user_id) as progress_queue:
+            async with agent_progress_subscription(
+                leader_session_id=service_session_id
+            ) as progress_queue:
+                # 必须先建立本地/Redis 订阅再触发 chat，否则快速 worker 事件会落在订阅空窗期。
+                await self.client.trigger_chat(
+                    agent_id=leader_agent_id,
+                    session_id=service_session_id,
+                    text=_build_agent_input_text(request=request, user_msg=user_msg),
+                )
+                log_lifecycle(
+                    "agentscope_agent_team.runner.chat_triggered",
+                    task_id=task.task_id,
+                    trace_id=task.trace_id,
+                    agent_id=leader_agent_id,
+                    service_session_id=service_session_id,
+                )
                 leader_events = self.client.stream_session(
                     service_session_id,
                     agent_id=leader_agent_id,
@@ -131,6 +144,12 @@ class AgentTeamTaskRunner:
                 merged_events = _merge_leader_and_progress_events(
                     leader_events=leader_events,
                     progress_queue=progress_queue,
+                    leader_session_id=service_session_id,
+                    should_keep_progress=lambda: bool(
+                        report_gate_enabled
+                        and report_state.required
+                        and not report_state.can_complete
+                    ),
                 )
                 try:
                     async for event in merged_events:
@@ -145,6 +164,20 @@ class AgentTeamTaskRunner:
                             message_id=task.message_id,
                             selected_agent=task.selected_agent,
                         )
+                        query_terminal_was_normalized = False
+                        if (
+                            report_gate_enabled
+                            and envelope.event_type == "message.completed"
+                            and _is_query_artifact_payload(envelope.payload)
+                        ):
+                            # 兼容旧 Worker/乱序 TeamSay：凡查询结果带 Artifact 的“完成”都降为中间产物，
+                            # 只有结构化 report_worker_result 才能成为最终消息。
+                            envelope = envelope.model_copy(
+                                update={"event_type": "artifact.created", "legacy_payload": {}}
+                            )
+                            query_terminal_was_normalized = True
+                        if report_gate_enabled:
+                            _observe_report_event(report_state, envelope)
                         if (
                             envelope.event_type == "message.completed"
                             and _is_intermediate_team_reply(
@@ -158,14 +191,32 @@ class AgentTeamTaskRunner:
                             current_reply_spawned_worker = False
                             current_reply_text = ""
                             continue
-                        if _should_run_confirmed_dataset_fallback(
-                            request=request, payload=envelope.payload
+                        if (
+                            envelope.event_type == "message.completed"
+                            and _should_run_confirmed_dataset_fallback(
+                                request=request, payload=envelope.payload
+                            )
                         ):
                             async for fallback_event in _run_confirmed_dataset_query_fallback(
                                 request=request,
                                 task=task,
+                                report_required=report_gate_enabled,
                             ):
+                                if report_gate_enabled:
+                                    _observe_report_event(report_state, fallback_event)
                                 yield fallback_event
+                            if report_gate_enabled and report_state.required:
+                                await _trigger_report_correction(
+                                    client=self.client,
+                                    leader_agent_id=leader_agent_id,
+                                    service_session_id=service_session_id,
+                                    task=task,
+                                    state=report_state,
+                                )
+                                yield _report_progress_envelope(task=task, state=report_state)
+                                current_reply_spawned_worker = False
+                                current_reply_text = ""
+                                continue
                             break
                         if envelope.event_type == "message.completed" and _has_pending_tool_calls(
                             envelope.payload
@@ -175,10 +226,42 @@ class AgentTeamTaskRunner:
                             current_reply_spawned_worker = False
                             current_reply_text = ""
                             continue
+                        if (
+                            report_gate_enabled
+                            and envelope.event_type == "message.completed"
+                            and report_state.required
+                            and not report_state.can_complete
+                        ):
+                            # Leader 的自然语言 final 不能绕过结构化 Report Worker 提交。
+                            await _trigger_report_correction(
+                                client=self.client,
+                                leader_agent_id=leader_agent_id,
+                                service_session_id=service_session_id,
+                                task=task,
+                                state=report_state,
+                            )
+                            yield _report_progress_envelope(task=task, state=report_state)
+                            current_reply_spawned_worker = False
+                            current_reply_text = ""
+                            continue
                         yield envelope
+                        if query_terminal_was_normalized:
+                            await _trigger_report_correction(
+                                client=self.client,
+                                leader_agent_id=leader_agent_id,
+                                service_session_id=service_session_id,
+                                task=task,
+                                state=report_state,
+                            )
+                            yield _report_progress_envelope(task=task, state=report_state)
+                            current_reply_spawned_worker = False
+                            current_reply_text = ""
+                            continue
                         if envelope.event_type == "message.completed":
                             # AgentScope session stream 是可跨多轮复用的长连接；Datalogue API 一次任务完成后要主动退出。
                             break
+                    if report_gate_enabled and report_state.required and not report_state.can_complete:
+                        raise ReportWorkerRequiredNotCompletedError()
                 finally:
                     await merged_events.aclose()
         finally:
@@ -576,7 +659,11 @@ def _is_business_terminal_payload(payload: dict[str, Any]) -> bool:
     if payload.get("artifact_ref") or payload.get("result_ref") or payload.get("artifact_card"):
         return True
     datalogue_event_type = str(payload.get("datalogue_event_type") or "")
-    if datalogue_event_type in {"dataset_candidates", "dataset_query_result"}:
+    if datalogue_event_type in {
+        "dataset_candidates",
+        "dataset_query_result",
+        "report_worker_result",
+    }:
         return True
     route_decision = (
         payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
@@ -614,6 +701,7 @@ async def _run_confirmed_dataset_query_fallback(
     *,
     request: AgentTeamTaskRequest,
     task: AgentTeamTask,
+    report_required: bool = False,
 ) -> AsyncIterator[DatalogueEventEnvelope]:
     """确认态 worker 未产出 artifact 时，使用显式代码级 fallback 补齐终态。"""
 
@@ -669,7 +757,7 @@ async def _run_confirmed_dataset_query_fallback(
         selected_agent=task.selected_agent,
     )
     yield build_datalogue_event_envelope(
-        event_type="message.completed",
+        event_type="artifact.created" if report_required else "message.completed",
         visibility="user_visible",
         payload=payload,
         task_id=task.task_id,
@@ -680,10 +768,160 @@ async def _run_confirmed_dataset_query_fallback(
     )
 
 
+def _is_query_artifact_payload(payload: dict[str, Any]) -> bool:
+    """查询 Artifact 是报告阶段输入，不是用户消息终态。"""
+
+    if str(payload.get("datalogue_event_type") or "") == "report_worker_result":
+        return False
+    if _requires_dataset_confirmation_payload(payload):
+        return False
+    return bool(_artifact_ref_from_payload(payload))
+
+
+def _requires_dataset_confirmation_payload(payload: dict[str, Any]) -> bool:
+    route_decision = (
+        payload.get("route_decision") if isinstance(payload.get("route_decision"), dict) else {}
+    )
+    clarification = (
+        payload.get("clarification") if isinstance(payload.get("clarification"), dict) else {}
+    )
+    return bool(
+        payload.get("datalogue_event_type") == "dataset_candidates"
+        or payload.get("requires_user_confirmation")
+        or route_decision.get("decision") in {"ambiguous", "no_match"}
+        or clarification.get("kind") in {"dataset_choice", "dataset_confirmation"}
+    )
+
+
+def _artifact_ref_from_payload(payload: dict[str, Any]) -> str | None:
+    direct = payload.get("source_artifact_ref") or payload.get("artifact_ref") or payload.get(
+        "result_ref"
+    )
+    if direct:
+        return str(direct).strip() or None
+    artifact_card = payload.get("artifact_card")
+    if not isinstance(artifact_card, dict):
+        return None
+    primary_ref = artifact_card.get("primary_ref") or artifact_card.get("primaryRef")
+    if isinstance(primary_ref, str):
+        return primary_ref.strip() or None
+    if isinstance(primary_ref, dict):
+        value = primary_ref.get("ref_id") or primary_ref.get("ref")
+        return str(value).strip() if value else None
+    return None
+
+
+def _observe_report_event(
+    state: ReportExecutionState,
+    envelope: DatalogueEventEnvelope,
+) -> None:
+    """仅从公开事件重建报告完成凭证，Runner/Runtime 可独立验证。"""
+
+    payload = envelope.payload
+    datalogue_event_type = str(payload.get("datalogue_event_type") or "")
+    try:
+        if envelope.event_type == "artifact.created" and _is_query_artifact_payload(payload):
+            source_ref = _artifact_ref_from_payload(payload)
+            if source_ref:
+                state.mark_required(source_ref)
+        if datalogue_event_type != "report_worker_result":
+            return
+        source_ref = str(payload.get("source_artifact_ref") or "").strip()
+        if payload.get("status") != "completed":
+            if not state.required:
+                state.mark_required(source_ref)
+            if state.status in {ReportExecutionStatus.PENDING, ReportExecutionStatus.RUNNING}:
+                state.mark_failed(
+                    str(payload.get("code") or "REPORT_WORKER_REQUIRED_NOT_COMPLETED")
+                )
+            return
+        if not state.required:
+            state.mark_required(source_ref)
+        if state.status in {ReportExecutionStatus.PENDING, ReportExecutionStatus.FAILED}:
+            state.mark_running(
+                worker_agent_id=str(payload.get("report_worker_agent_id") or ""),
+                worker_session_id=str(payload.get("report_worker_session_id") or ""),
+            )
+        state.mark_succeeded(
+            source_artifact_ref=source_ref,
+            report_ref=str(payload.get("report_ref") or ""),
+            worker_agent_id=str(payload.get("report_worker_agent_id") or ""),
+            worker_session_id=str(payload.get("report_worker_session_id") or ""),
+        )
+        try:
+            state.attempt = max(state.attempt, int(payload.get("report_attempts") or 1))
+        except (TypeError, ValueError):
+            pass
+    except (ValueError, TypeError) as exc:
+        raise ReportWorkerRequiredNotCompletedError() from exc
+
+
+def _report_progress_envelope(
+    *,
+    task: AgentTeamTask,
+    state: ReportExecutionState,
+) -> DatalogueEventEnvelope:
+    return build_datalogue_event_envelope(
+        event_type="agent.progress",
+        visibility="user_visible",
+        payload={
+            "summary": "查询结果已生成，正在整理报告。",
+            "phase": "report",
+            "status": "running",
+            "report_required": True,
+            "report_status": state.status.value,
+            "report_attempts": max(state.attempt, 1),
+            "report_correction_count": state.correction_count,
+            "source_artifact_ref": state.source_artifact_ref,
+        },
+        task_id=task.task_id,
+        trace_id=task.trace_id,
+        thread_id=task.thread_id,
+        message_id=task.message_id,
+        selected_agent=task.selected_agent,
+    )
+
+
+async def _trigger_report_correction(
+    *,
+    client: AgentScopeServiceClient,
+    leader_agent_id: str,
+    service_session_id: str,
+    task: AgentTeamTask,
+    state: ReportExecutionState,
+) -> None:
+    """在原 Leader Session 中纠偏，明确禁止再次执行 BI。"""
+
+    if not state.increment_correction(max_corrections=2):
+        raise ReportWorkerRequiredNotCompletedError()
+    log_lifecycle(
+        "agentscope_agent_team.runner.report_correction",
+        task_id=task.task_id,
+        trace_id=task.trace_id,
+        source_artifact_ref=state.source_artifact_ref,
+        report_status=state.status.value,
+        report_correction_count=state.correction_count,
+    )
+    await client.trigger_chat(
+        agent_id=leader_agent_id,
+        session_id=service_session_id,
+        text=(
+            "<datalogue-control code=\"REPORT_WORKER_REQUIRED\">"
+            f"查询阶段已经完成，source_artifact_ref={state.source_artifact_ref}。"
+            "禁止重新执行 BI、重新选择数据集或输出自然语言 final。"
+            "必须在当前 Team 中创建或继续 Report Worker，由其读取该 Artifact，"
+            "并调用 datalogue_submit_report 完成结构化提交；只有 report_worker_result 才能结束任务。"
+            "</datalogue-control>"
+        ),
+    )
+
+
 async def _merge_leader_and_progress_events(
     *,
     leader_events: AsyncIterator[dict[str, Any]],
     progress_queue: asyncio.Queue[dict[str, Any]],
+    leader_session_id: str,
+    should_keep_progress: Callable[[], bool] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """合流 AgentScope leader stream 与 middleware 实时进度，先到先投影给前端。"""
 
@@ -691,11 +929,16 @@ async def _merge_leader_and_progress_events(
     leader_task: asyncio.Task[dict[str, Any]] | None = asyncio.create_task(anext(leader_iter))
     progress_task: asyncio.Task[dict[str, Any]] | None = asyncio.create_task(progress_queue.get())
     try:
-        while leader_task is not None:
+        while leader_task is not None or (should_keep_progress and should_keep_progress()):
             pending = {task for task in (leader_task, progress_task) if task is not None}
             done, _pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
             if progress_task in done:
-                yield progress_task.result()
+                progress_event = progress_task.result()
+                if progress_event.get("leader_session_id") == leader_session_id:
+                    # 路由字段只用于服务端隔离，不进入公开事件协议。
+                    progress_event = dict(progress_event)
+                    progress_event.pop("leader_session_id", None)
+                    yield progress_event
                 # Worker 进度只影响用户可见实时过程，不驱动主链完成；持续等待下一条。
                 progress_task = asyncio.create_task(progress_queue.get())
             if leader_task in done:

@@ -48,6 +48,7 @@
     "display_name": "Datalogue Report Worker",
     "allowed_tools": [
       "datalogue_get_artifact_report_input",
+      "datalogue_submit_report",
       "TeamSay"
     ],
     "denied_tools": [

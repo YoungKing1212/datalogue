@@ -1,197 +1,37 @@
 # Datalogue API 项目规范
 
-## 项目概述
+## 项目身份
 
-- **项目名称**: Datalogue API（数语 AI 原生智能问数平台后端）
-- **技术栈**: Python 3.11 + FastAPI + SQLAlchemy + LangGraph
-- **代码规范**: 参见 `docs/CODE_STYLE.md`
+- 当前目录：数语后端 API（`datalogue-api`）。
+- 默认使用中文回复，并继承仓库根目录 `AGENTS.md`；本文件只保留后端特有约束。
 
----
+## 技术栈与主链
 
-## 代码风格
+- Python 3.11、FastAPI、SQLAlchemy 2、Pydantic 2、AgentScope 2.0.3。
+- 主链：`POST /api/agent-team/tasks/stream` → `AgentTeamTaskRuntime` → `AgentScopeServiceTaskRunner` → AgentScope Service → Agent Team → Datalogue BI 工具 → 查询编译与执行。
+- `app/graph/` 是旧 LangGraph 残留，仅保留少量 LLM 调用辅助；新能力默认沿用 AgentScope 主链。
 
-### 工具链
+## 必须保持的业务边界
 
-| 工具 | 用途 | 命令 |
-|------|------|------|
-| **Black** | 代码格式化 | `black .` |
-| **Ruff** | Linting + 导入排序 | `ruff check . --fix` |
-| **mypy** | 静态类型检查 | `mypy app/` |
+- BI Worker/LLM 只能调用 Datalogue 暴露的安全查询工具，不得自行生成或执行 SQL，也不得读取原始行数据。
+- SQL、schema、原始行、数据库原始错误和修复细节只能存在于私有诊断层，不得进入 LLM prompt、用户可见 SSE、artifact 摘要、普通上下文或交接文档正文。
+- LLM prompt 统一放在 `app/prompts/`，业务代码从该模块导入，避免散落 prompt 字符串。
+- `TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete` 使用 AgentScope 官方工具，不自研替代协作协议。
 
-### 格式化要求
+## 后端执行偏好
 
-- 缩进：4 空格
-- 行长度：100 字符
-- 导入顺序：stdlib → third-party → local
-- 无行尾空格
-- 文件末尾保留一个空行
+- 默认只查看和修改直接相关模块，优先运行对应测试文件或最小复现；不因普通修复自动执行全量真实链路、全仓测试或跨层取证。
+- 只有问题无法由局部证据定位、涉及 SSE/状态回放/跨层契约，或用户明确要求时，才检查页面回放、trace、后端日志、prompt/token 和最终 payload。
+- 截图及临时验证产物放系统临时目录，不写入仓库。
+- 新增 Python 文件沿用相邻文件风格，用简短中文注释或文档字符串说明职责；只为复杂边界和非直观决策添加关键注释。
 
-### 注释规范
+## 代码规范与工具链
 
-**基本原则：优先使用描述性命名，注释用于解释"为什么"，而非"是什么"。**
+- 详细规范见 `docs/CODE_STYLE.md`：Black/Ruff/mypy 配置、类型注解、API/数据库/测试/安全/日志/错误处理规范、提交前检查清单。
+- 注释：优先使用描述性命名，注释解释「为什么」而非「是什么」。
 
-- **文件头注释**：说明文件用途
-  ```python
-  # 问数对话路由 — SSE 流式输出 + LangGraph Agent 工作流
-  ```
-- **函数注释**：说明输入、输出、副作用
-  ```python
-  def encrypt_password(plain: str) -> str:
-      """加密明文密码，使用 AES-GCM 加密。
-      
-      Args:
-          plain: 明文密码
-      Returns:
-          Base64 编码的加密串（包含 nonce）
-      """
-  ```
-- **复杂逻辑注释**：解释业务决策
-- **TODO/FIXME**：标注待处理问题
+## 按需参考
 
----
-
-## 类型注解
-
-### 必须标注
-
-- 所有公共函数/方法的签名
-- 类属性（如果非 Optional）
-
-### 标注示例
-
-```python
-from typing import list, dict, Any
-
-def process_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    ...
-
-def create_dataset(name: str, description: str | None = None) -> SemanticDataset:
-    ...
-```
-
-### 类型检查
-
-```bash
-mypy app/
-```
-
----
-
-## 项目结构
-
-```
-app/
-├── __init__.py
-├── main.py              # FastAPI 应用入口
-├── core/                # 核心模块（config、database、security）
-├── models/              # SQLAlchemy 模型
-├── schemas/             # Pydantic Schema
-├── api/                 # API 路由
-├── services/            # 业务逻辑
-└── graph/               # LangGraph 工作流
-```
-
----
-
-## API 设计规范
-
-- 路由命名：小写 + 下划线（`/chat/stream`）
-- 资源复数形式（`/datasources`、`/datasets`）
-- 请求/响应使用 Pydantic Schema
-- 状态码：200/201/400/401/403/404/422/500
-
----
-
-## 数据库规范
-
-- 表命名：`snake_case` 复数形式
-- 列命名：`snake_case`
-- 外键关系明确使用 `relationship`
-- 迁移使用 Alembic
-
----
-
-## 测试规范
-
-### 命名
-
-- 文件：`test_<模块>.py`
-- 函数：`test_<模块>_<行为>`
-
-### Fixture 作用域
-
-- `scope="function"`：每个测试函数独立
-- `scope="session"`：整个会话共享
-
-### 覆盖率目标
-
-- 核心模块（graph/、services/）：≥80%
-- 新增代码：≥70%
-
----
-
-## 安全要求
-
-- 所有外部输入通过 Pydantic Schema 验证
-- 敏感信息使用 `app.core.security` 加密
-- 禁止硬编码，使用环境变量
-- 日志中脱敏敏感信息
-
----
-
-## 日志规范
-
-- 使用 `logging.getLogger(__name__)`
-- 关键节点记录 INFO 级别
-- 异常使用 `logger.exception()`
-- 日志格式：`%(asctime)s - %(name)s - %(levelname)s - %(message)s`
-
----
-
-## 错误处理
-
-- 使用 `HTTPException` 处理业务异常
-- 错误信息对用户友好，不暴露技术细节
-- 工作流异常优雅降级
-
----
-
-## 提交前检查
-
-```bash
-# 格式化
-black app/ tests/ scripts/
-
-# Linting
-ruff check . --fix
-
-# 类型检查
-mypy app/
-
-# 测试
-pytest tests/ -v
-```
-
-详细规范见 `docs/CODE_STYLE.md`，审查清单见 `docs/CHECKLIST.md`。
-
----
-
-## 工作流程
-
-### 实现功能
-
-1. 阅读 `docs/CODE_STYLE.md` 了解规范
-2. 编写代码，添加类型注解
-3. 运行格式化工具
-4. 运行类型检查
-5. 编写测试
-6. 自检 `docs/CHECKLIST.md`
-7. 提交代码
-
-### 代码审查
-
-使用 `docs/CHECKLIST.md` 进行自检，确保：
-- [ ] 格式化通过（Black、Ruff）
-- [ ] 类型检查通过（mypy）
-- [ ] 测试通过（pytest）
-- [ ] 注释完整（中文优先）
+- 任务路由：`../docs/上下文入口.md`
+- 架构与链路：`../docs/architecture/`
+- AgentScope 官方文档：`~/code_place/study/agentscope-docs/`

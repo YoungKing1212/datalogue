@@ -11,7 +11,6 @@
 # Created On  : 2026-06-05
 # ============================================================
 
-from datetime import datetime
 from sqlalchemy import (
     Boolean,
     Column,
@@ -29,6 +28,7 @@ from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 from app.core.models.base import TimestampMixin
+from app.core.time import utc_now_naive
 
 
 class SemanticDataset(Base, TimestampMixin):
@@ -116,7 +116,7 @@ class SourceTable(Base, TimestampMixin):
     annotated_at = Column(DateTime)
     row_count_approx = Column(Integer)
     status = Column(String(20), default="active")
-    synced_at = Column(DateTime, default=datetime.utcnow)
+    synced_at = Column(DateTime, default=utc_now_naive)
 
     datasource = relationship("Datasource", backref="source_tables")
     columns = relationship(
@@ -178,7 +178,7 @@ class DatasetSourceTable(Base):
     source_table_id = Column(
         Integer, ForeignKey("source_table.id", ondelete="CASCADE"), nullable=False
     )
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
     dataset = relationship("SemanticDataset", back_populates="selected_tables")
     source_table = relationship("SourceTable", backref="dataset_links")
@@ -227,7 +227,7 @@ class BusinessTermAssetLink(Base):
     asset_type = Column(String(30), nullable=False)
     asset_id = Column(Integer, nullable=False)
     asset_name = Column(String(150))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
     term = relationship("BusinessTerm", back_populates="asset_links")
 
@@ -247,7 +247,7 @@ class BusinessTermRelation(Base):
     )
     relation_type = Column(String(30), nullable=False)
     note = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
 
 class BusinessTermChangeLog(Base):
@@ -259,7 +259,7 @@ class BusinessTermChangeLog(Base):
     before_snapshot = Column(JSON)
     after_snapshot = Column(JSON)
     actor = Column(String(50))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
     term = relationship("BusinessTerm", back_populates="change_logs")
 
@@ -395,7 +395,7 @@ class BlueprintVersion(Base):
     snapshot = Column(JSON, nullable=False)
     change_summary = Column(Text)
     published_by = Column(String(50))
-    published_at = Column(DateTime, default=datetime.utcnow)
+    published_at = Column(DateTime, default=utc_now_naive)
 
     blueprint = relationship("AnalysisBlueprint", back_populates="versions")
 
@@ -415,6 +415,26 @@ class BlueprintUsageLog(Base):
     diagnosis = Column(JSON)
     user_feedback = Column(String(10))
     error_message = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
     blueprint = relationship("AnalysisBlueprint", back_populates="usage_logs")
+
+
+class BlueprintAnalyzeTask(Base):
+    """分析蓝图 AI 任务状态；数据库持久化保证多 worker 查询一致。"""
+
+    __tablename__ = "blueprint_analyze_task"
+
+    task_id = Column(String(36), primary_key=True)
+    dataset_id = Column(
+        Integer,
+        ForeignKey("semantic_dataset.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status = Column(String(20), nullable=False, default="running", index=True)
+    result = Column(JSON)
+    error = Column(Text)
+    duration_ms = Column(Integer)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    completed_at = Column(DateTime)

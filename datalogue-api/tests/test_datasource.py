@@ -19,6 +19,7 @@ import importlib.util
 from pathlib import Path
 
 from app.core.models.datasource import Datasource
+from app.core.models.dataset import SourceTable
 from app.core.security import encrypt_password
 from app.domains.data_source import service as datasource_service
 
@@ -239,6 +240,51 @@ class TestDatasourceAPI:
         data = resp.json()
         assert data["db_type"] == "doris"
         assert data["dialect"] == "mysql"
+
+    def test_preview_rejects_unsynced_or_injected_table_name(
+        self,
+        client,
+        db_session,
+        sample_datasource,
+        monkeypatch,
+    ):
+        """预览只接受已同步 SourceTable，恶意裸表名不能进入 SQL 执行服务。"""
+
+        db_session.add(
+            SourceTable(
+                datasource_id=sample_datasource.id,
+                schema_name="main",
+                table_name="orders",
+            )
+        )
+        db_session.commit()
+        called = False
+
+        def fake_preview(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            return {"columns": [], "rows": [], "count": 0}
+
+        monkeypatch.setattr("app.api.datasource.preview_table", fake_preview)
+        response = client.post(
+            f"/api/datasource/{sample_datasource.id}/preview",
+            json={
+                "schema": "main",
+                "table": "orders` UNION SELECT user FROM mysql.user--",
+                "limit": 5,
+            },
+        )
+
+        assert response.status_code == 404
+        assert called is False
+
+    def test_preview_limit_is_capped_by_schema(self, client, sample_datasource):
+        response = client.post(
+            f"/api/datasource/{sample_datasource.id}/preview",
+            json={"schema": "main", "table": "orders", "limit": 101},
+        )
+
+        assert response.status_code == 422
 
 
 def test_build_datasource_context_normalizes_doris_stale_dialect():

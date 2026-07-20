@@ -3,18 +3,19 @@
 ## Source of truth
 
 - Status: Active · 已选定「石墨天青」方案
-- Last refreshed: 2026-07-15
+- Last refreshed: 2026-07-17
 - Primary product surfaces: 数语 Web 工作台、对话问数、数据资产治理、数据源、系统设置、LLM 模型配置。
 - Evidence reviewed:
   - `datalogue-web/src/styles.css`：全局颜色变量、按钮、设置页、LLM 控制台和弹窗样式。
   - `datalogue-web/src/components/settings.jsx`：LLM credential 的新增、编辑、发现模型、启停和删除交互，以及全部字段契约。
   - `datalogue-web/src/App.jsx`：主导航、面包屑和平台默认主题色。
-  - `docs/assets/screenshots/user-manual/02-chat.png`、`assets/images/01-homepage.png`：工作台与问数页视觉基线。
+  - `docs/assets/screenshots/user-manual/02-chat.png`、`docs/archive/2026-07-03-legacy-assets/screenshots/01-homepage.png`：工作台与问数页视觉基线。
   - `docs/assets/screenshots/user-manual/35-settings-llm-models.png`：历史 LLM 配置布局。
   - `~/.codex/generated_images/019f5fcc-3459-7543-a4f5-c46e5690f5aa/exec-e5b85c88-45c7-43af-9596-cf64c84eb961.png`：已确认的「石墨天青」配色参考图。
   - `datalogue-web/src/shared/components/icons.jsx`：当前跨页面共享的图标入口与语义名称。
   - `datalogue-web/src/features/chat/chat-page.jsx`、`MyComposer.jsx`、`MyMessage.jsx`、`datalogue-web/src/assistant-ui/DatalogueThread.jsx`：对话空态、Thread 外壳、上下文选择、会话同步、结果卡与安全推理摘要的现有交互边界。
-  - `assets/images/chat-cot-expanded.png`、`assets/images/chat-final-clean.png`：对话完成态与过程摘要的历史视觉参考。
+  - `docs/archive/2026-07-03-legacy-assets/screenshots/chat-cot-expanded.png`、`docs/archive/2026-07-03-legacy-assets/screenshots/chat-final-clean.png`：对话完成态与过程摘要的历史视觉参考。
+  - `docs/architecture/Leader统一收口与ECharts可视化设计.md`：Leader 结构化收口、受限可视化规格与 ECharts 确定性渲染契约。
 - 本文中的“应当”是开发与评审的设计约束；“推断”来自现有产品证据，未替代产品需求。
 
 ## Brand
@@ -27,11 +28,13 @@
 
 - Goals:
   - 让业务人员从一个自然语言问题快速获得可行动的结论、关键数字与可追溯的数据依据，而不是阅读执行过程。
+  - 查询 Artifact 生成后由 Leader 统一生成最终结论和可选图表意图，用结构化收口保证单一 final、安全校验和结果可追溯。
   - 让管理员在一分钟内确认哪些模型已可用、哪些配置缺少密钥、当前可以执行什么操作。
   - 降低新增 credential 的填写成本，并让“模板自动填充”成为主路径。
   - 让新增、保存、发现模型的先后条件清晰可见，避免用户把“发现模型”误解为未保存也能连接测试。
 - Non-goals:
   - 不把对话问数设计成数据驾驶舱；图表、表格、引用和追问均是同一答案的证据层，不抢占对话主线。
+  - 不强制为每次查询创建 Report Worker，不让模型直接输出任意 ECharts option、JavaScript 函数或外部资源。
   - 不在用户可见页面展示 SQL、schema、raw rows、query plan 或模型内部推理原文。
   - 不在本次设计中增加模型路由、默认模型策略、用量计费或 API Key 明文查看能力。
   - 不改变 AgentScope credential API、持久化字段或现有新增/编辑/启停/删除行为。
@@ -130,6 +133,7 @@
   - `LLM_PRESETS`、`LLM_PROVIDER_OPTIONS`、`buildFormFromPreset` 和现有 credential API 调用逻辑。
 - New/changed components:
   - `ChatAnswerCanvas`（由现有 `Thread` / `MyMessage` 组合实现）：每个完成回答按“结论摘要 → 指标带 → 证据块 → 建议追问”呈现；沿用现有安全的 `ArtifactCard`、图表和表格预览，不新增原始执行数据。
+  - `AnswerVisualization`：只消费后端已校验的 `visualization_spec` 和授权 Artifact；通过项目内置 builder 生成 ECharts option，展示标题、文本摘要、图表与结果详情入口，加载失败时不影响回答正文。
   - `AnswerSignalStrip`：置于回答首段下方，最多展示 3 个有单位和同比/环比语义的关键数字；每项可定位到下方结果卡或图表，不能单独伪装成 KPI 大盘。
   - `EvidenceRail`：桌面端在画布右侧显示当前线程的“数据集 / 已生成结果 / 处理状态”三个短锚点；760px 以下并回回答流顶部，避免横向挤压正文。
   - `WelcomeQuestionCanvas`：保留现有数据集、模型、时间范围和分析方式选择，但把空态文案收敛为“直接提问 + 可复制的业务问题模板”，不使用营销式 AI 大标题。
@@ -244,6 +248,7 @@
 
 - Loading: 首次加载保留与卡片数量匹配的 2–4 个浅色骨架，不显示“暂无模型配置”。
 - 对话生成中：用户问题立即固定在画布中，回答区域显示 1–3 条业务语义的进度摘要；不得显示内部 chain-of-thought、SQL 或 schema。
+- 查询产物已就绪：`artifact.created` 后结果卡可先展示，回答区显示“正在整理结论”；在 Leader 结构化收口前仍属于 running，不出现第二个 final。
 - Empty: 使用蓝灰空态，明确说明“尚未建立模型连接”，提供“创建第一个 credential”按钮。
 - Error: 加载、保存、发现失败显示简洁中文原因；保留用户已填写的表单字段。
 - Success: 保存成功提示“AgentScope credential 已保存”；发现成功提示可用模型数量。
@@ -269,9 +274,10 @@
 - Design-token constraints:
   - 优先复用现有 `--accent` 及 `--accent-soft` / `--accent-line`，允许 LLM 局部的浅蓝常量仅用于边框或信息面。
   - 不改全局 `.btn` 的 6px 圆角；仅通过 `.llm-section .btn`、`.llm-add-button`、`.st-modal-footer .btn` 等局部选择器设为 8px。
-- Performance constraints: 不新增外部字体、运行时图像/CDN、第三方图标库、动画库或实时图表；图标继续由项目自有 SVG 源码随前端构建交付，现有卡片数据继续从 credential 列表派生。
+- Performance constraints: 不新增外部字体、运行时图像/CDN、第三方图标库、动画库或持续刷新型实时图表；图标继续由项目自有 SVG 源码随前端构建交付。回答图表复用已安装的 ECharts 并按需动态导入，option 只由本地受控 builder 生成。
 - Compatibility constraints: 保持现有 API 路径与表单字段；保存后才允许发现模型的边界不能被视觉改动绕过。
 - 对话问数兼容约束：保留 `DatalogueComposer` 的数据集/模型选择、`Thread` 的会话同步、`ArtifactCard` 的结果引用、`MyMessage` 的安全过滤与现有受控 retry；视觉改版不得将受控内部字段传入用户可见层。
+- Leader 可视化契约：只接受 `docs/architecture/Leader统一收口与ECharts可视化设计.md` 定义的 `visualization_spec` v1；不渲染 Markdown 中的任意 `echarts` JSON 代码块。
 - Test/screenshot expectations:
   - 保持 `settings.test.jsx` 的新增保存、启停行为通过，并补充新增弹窗字段分组、禁用发现模型、焦点返回的测试。
   - 执行 `npm run lint`、`npm run test -- src/components/settings.test.jsx`、`npm run build`。

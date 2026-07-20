@@ -58,7 +58,7 @@ class BIAtomicToolContext:
     """BI 原子工具共享的受控执行上下文；敏感状态只保存在 Datalogue 侧。"""
 
     db: Session
-    query_executor: Callable[[str], Any] | None = None
+    query_executor: Callable[[str, dict[str, Any]], Any] | None = None
     sanitizer: DataloguePayloadSanitizer = field(default_factory=DataloguePayloadSanitizer)
     compiled_queries: dict[str, dict[str, Any]] = field(default_factory=dict)
     toolkit: Any | None = None
@@ -263,6 +263,7 @@ class CompileDslToSqlTool(DatalogueBIAtomicTool):
             "execution_source": compiled.get("execution_source"),
             "sql": compiled.get("sql"),
             "sql_list": compiled.get("sql_list") or [],
+            "params": dict(compiled.get("params") or {}),
             "query_plan": dsl,
             "sql_generation_context": copy.deepcopy(sql_generation_context or {}),
             "current_datasource_dialect": current_datasource_dialect,
@@ -320,7 +321,10 @@ class ExecuteCompiledQueryTool(DatalogueBIAtomicTool):
 
         try:
             # 只有 execute 工具能读取私有 SQL；执行结果马上落 artifact，Agent 只拿安全摘要。
-            raw_execution_result = self.context.query_executor(str(compiled["sql"]))
+            raw_execution_result = self.context.query_executor(
+                str(compiled["sql"]),
+                dict(compiled.get("params") or {}),
+            )
             if isinstance(raw_execution_result, dict) and raw_execution_result.get("error"):
                 # sql_preview 会把数据库异常包装成结构化 error 返回；这里必须把它重新归类为 Runtime 状态。
                 failure = _safe_execution_failure_from_text(compiled_query_ref, str(raw_execution_result.get("error") or ""))
@@ -490,7 +494,7 @@ class DatalogueBIAtomicToolkit:
 def build_bi_atomic_toolkit(
     db: Session,
     *,
-    query_executor: Callable[[str], Any] | None = None,
+    query_executor: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> DatalogueBIAtomicToolkit:
     """构建 AS-R0 Dataset Query Skill 可见的 AgentScope Toolkit。"""
 

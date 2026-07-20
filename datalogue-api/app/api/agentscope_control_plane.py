@@ -20,11 +20,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+from app.runtime.engine.client import AgentScopeServiceClient
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from langchain_core.messages import HumanMessage
 from sqlalchemy.orm import Session
 
-from app.agentscope_runtime.client import AgentScopeServiceClient
 from app.core import schemas
 from app.core.config import get_settings
 from app.core.database import get_db

@@ -20,7 +20,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy.orm import Session
 
 from app.core import models, schemas
-from app.agentscope_runtime.client import AgentScopeServiceClient
+from app.runtime.engine.client import AgentScopeServiceClient
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.llm import AgentScopeChatClient, _llm_call_policy, build_llm_model_kwargs
@@ -149,9 +149,7 @@ async def create_llm_model(payload: schemas.LLMModelConfigCreate, db: Session = 
             # credential 写入失败时回滚本地投影，避免页面出现不可用的“半条配置”。
             db.delete(config)
             db.commit()
-            raise HTTPException(
-                status_code=502, detail=f"AgentScope credential 写入失败: {exc}"
-            ) from exc
+            raise HTTPException(status_code=502, detail="AgentScope 凭据服务暂不可用") from exc
     logger.info(
         "LLM 模型配置创建成功: id=%s, provider=%s, model=%s",
         config.id,
@@ -209,9 +207,7 @@ async def update_llm_model(
             setattr(config, key, value)
         config.api_key_enc = previous_api_key_enc
         db.commit()
-        raise HTTPException(
-            status_code=502, detail=f"AgentScope credential 更新失败: {exc}"
-        ) from exc
+        raise HTTPException(status_code=502, detail="AgentScope 凭据服务暂不可用") from exc
     logger.info("LLM 模型配置更新成功: id=%s", config.id)
     credential_ids = _credential_ids(await _list_agentscope_credentials())
     return model_config_to_dict(config, credential_ids)
@@ -271,7 +267,6 @@ async def test_llm_model(config_id: int, db: Session = Depends(get_db)):
             model_kwargs=build_llm_model_kwargs(config),
             thinking_enabled=bool(config.thinking_enabled),
             max_tokens=call_policy.get("max_tokens"),
-            response_format=call_policy.get("response_format"),
             call_policy=call_policy,
         )
         response = await llm.ainvoke([HumanMessage(content="请回复 OK，用于连接测试。")])

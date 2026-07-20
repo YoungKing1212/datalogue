@@ -100,6 +100,19 @@ def test_guard_blocks_into_outfile():
     assert result.code == "INTO_OUTFILE"
 
 
+def test_guard_blocks_select_into_table():
+    """PostgreSQL/SQL Server 的 SELECT INTO 会建表，不能穿过只读边界。"""
+
+    result = guard_readonly_sql(
+        "SELECT * INTO copied_orders FROM orders",
+        dialect="postgres",
+    )
+
+    assert result.ok is False
+    assert result.code == "FORBIDDEN_KEYWORD"
+    assert result.keyword == "select into"
+
+
 def test_guard_clamps_existing_limit():
     """超过上限的 LIMIT 会被裁剪。"""
     result = guard_readonly_sql(
@@ -147,6 +160,19 @@ def test_guard_allows_tables_inside_dataset_whitelist():
 
     assert result.ok is True
     assert result.normalized_sql == "SELECT id FROM orders LIMIT 10000"
+
+
+def test_guard_rejects_same_table_name_from_unauthorized_schema():
+    """授权 public.orders 不能放行其他 schema 下的同名表。"""
+
+    result = guard_readonly_sql(
+        "SELECT * FROM information_schema.orders",
+        dialect="postgres",
+        allowed_tables=["public.orders"],
+    )
+
+    assert result.ok is False
+    assert result.code == "SQL_GUARD_BLOCKED"
 
 
 def test_guard_does_not_treat_cte_names_as_unauthorized_tables():

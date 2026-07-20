@@ -421,4 +421,76 @@ describe('agentTeamEnvelopeToChatEvent', () => {
     expect(encoded).not.toMatch(/pattern|input/i);
     expect(encoded).not.toContain('/tmp/private');
   });
+
+  it('maps report phase progress to a stable user-visible label', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-report-progress',
+      event_envelope: {
+        event_type: 'agent.progress',
+        payload: {
+          agent_role: 'worker',
+          phase: 'report',
+          status: 'running',
+          raw_rows: [{ private_col: 'hidden' }],
+        },
+      },
+    }, AGENT_TEAM_OPTIONS);
+
+    expect(event).toMatchObject({
+      type: 'agent_progress',
+      phase: 'report',
+      title: '正在整理报告',
+      summary: '正在根据查询结果生成分析报告。',
+    });
+    expect(JSON.stringify(event)).not.toMatch(/private_col|raw_rows/i);
+  });
+
+  it('maps report worker result to one final payload with source and report refs', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-report-result',
+      event_envelope: {
+        event_type: 'report_worker_result',
+        payload: {
+          source_artifact_ref: 'artifact:query-1',
+          report_ref: 'artifact:report-1',
+          report_markdown: '## 分析结论\n销售额保持增长。',
+          report_worker_agent_id: 'report-agent-1',
+          report_worker_session_id: 'report-session-1',
+          status: 'completed',
+        },
+      },
+    }, AGENT_TEAM_OPTIONS);
+
+    expect(event).toMatchObject({
+      type: 'final',
+      answer: '## 分析结论\n销售额保持增长。',
+      result_ref: 'artifact:query-1',
+      report_ref: 'artifact:report-1',
+      report_worker_agent_id: 'report-agent-1',
+      report_worker_session_id: 'report-session-1',
+      entry_route: 'report_worker_result',
+    });
+  });
+
+  it('keeps the query artifact and hides internal details when required report generation fails', () => {
+    const event = agentTeamEnvelopeToChatEvent({
+      task_id: 'task-report-failed',
+      event_envelope: {
+        event_type: 'task.failed',
+        payload: {
+          error_code: 'REPORT_WORKER_REQUIRED_NOT_COMPLETED',
+          error_summary: 'SELECT secret_col FROM hidden_table',
+          artifact_ref: 'artifact:query-2',
+        },
+      },
+    }, AGENT_TEAM_OPTIONS);
+
+    expect(event).toMatchObject({
+      type: 'final',
+      answer: '数据查询已完成，但分析报告暂时生成失败。您仍可以查看查询结果。',
+      result_ref: 'artifact:query-2',
+      error_code: 'REPORT_WORKER_REQUIRED_NOT_COMPLETED',
+    });
+    expect(JSON.stringify(event)).not.toMatch(/SELECT|secret_col|hidden_table/i);
+  });
 });
